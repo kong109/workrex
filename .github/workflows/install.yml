@@ -17,9 +17,9 @@ permissions:
   contents: read
 
 env:
-  BIN_NAME: workmux
+  BIN_NAME: workrex
   TARGET: aarch64-apple-darwin
-  ARCHIVE_NAME: workmux-darwin-arm64.tar.gz
+  ARCHIVE_NAME: workrex-darwin-arm64.tar.gz
 
 jobs:
   build:

@@ -14,7 +14,7 @@ use crate::agent_setup::json_config::{
 };
 
 /// Hooks extracted from `.claude-plugin/plugin.json` at compile time.
-const PLUGIN_JSON: &str = include_str!("../../.claude-plugin/plugin.json");
+const PLUGIN_JSON: &str = crate::rebrand!(include_str!("../../.claude-plugin/plugin.json"));
 
 fn claude_dir_from_config(home: PathBuf, config_dir: Option<std::ffi::OsString>) -> PathBuf {
     config_dir
@@ -197,6 +197,29 @@ mod tests {
             Some(std::ffi::OsString::from("/tmp/workmux-test-claude-cfg")),
         );
         assert_eq!(path, PathBuf::from("/tmp/workmux-test-claude-cfg"));
+    }
+
+    #[test]
+    fn installed_hooks_call_workrex() {
+        let tmp = tempfile::tempdir().unwrap();
+        install_dir(tmp.path()).unwrap();
+        let settings: Value = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join("settings.json")).unwrap(),
+        )
+        .unwrap();
+
+        let commands: Vec<&str> = settings["hooks"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|groups| groups.as_array().unwrap())
+            .flat_map(|group| group["hooks"].as_array().unwrap())
+            .map(|hook| hook["command"].as_str().unwrap())
+            .collect();
+        assert!(!commands.is_empty());
+        for command in commands {
+            assert!(command.starts_with("workrex "), "{command}");
+        }
     }
 
     #[test]

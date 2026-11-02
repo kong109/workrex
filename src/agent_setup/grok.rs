@@ -16,7 +16,7 @@ use crate::agent_setup::json_config::{
     self, EmptyJsonRoot, JsonHookInstallSpec, JsonHookUninstallSpec,
 };
 
-const HOOKS_JSON: &str = include_str!("../../.grok/hooks/workmux-status.json");
+const HOOKS_JSON: &str = crate::rebrand!(include_str!("../../.grok/hooks/workmux-status.json"));
 
 fn grok_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("GROK_HOME")
@@ -154,10 +154,10 @@ mod tests {
 
     #[test]
     fn test_hooks_json_contains_workmux_commands() {
-        assert!(HOOKS_JSON.contains("workmux register-agent"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status working"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status waiting"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status done"));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux register-agent")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status working")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status waiting")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status done")));
     }
 
     #[test]

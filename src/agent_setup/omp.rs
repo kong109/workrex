@@ -13,7 +13,9 @@ use super::{StatusCheck, UpdatePreview};
 use crate::agent_setup::extension_file;
 
 /// The OMP extension source, embedded at compile time.
-const EXTENSION_SOURCE: &str = include_str!("../../resources/omp/extensions/workmux-status.ts");
+const EXTENSION_SOURCE: &str = crate::rebrand!(include_str!(
+    "../../resources/omp/extensions/workmux-status.ts"
+));
 
 fn omp_agent_dir() -> Option<PathBuf> {
     let home = home::home_dir()?;
@@ -144,10 +146,9 @@ mod tests {
             .expect("agent_start handler");
 
         assert!(registration < agent_start);
-        assert!(
-            EXTENSION_SOURCE
-                .contains("await pi.exec(\"workmux\", [\"register-agent\"]).catch(() => {});")
-        );
+        assert!(EXTENSION_SOURCE.contains(crate::rebrand!(
+            "await pi.exec(\"workmux\", [\"register-agent\"]).catch(() => {});"
+        )));
     }
 
     #[test]
@@ -156,7 +157,7 @@ mod tests {
         let path = temp.path().join("workmux-status.ts");
         let previous_source = EXTENSION_SOURCE
             .replace(
-                "  pi.on(\"session_start\", async () => {\n    pendingPrompt = undefined;\n    await pi.exec(\"workmux\", [\"register-agent\"]).catch(() => {});\n  });\n\n",
+                crate::rebrand!("  pi.on(\"session_start\", async () => {\n    pendingPrompt = undefined;\n    await pi.exec(\"workmux\", [\"register-agent\"]).catch(() => {});\n  });\n\n"),
                 "",
             );
         std::fs::write(&path, previous_source).unwrap();

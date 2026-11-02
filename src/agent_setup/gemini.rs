@@ -16,7 +16,7 @@ use crate::agent_setup::json_config::{
 };
 
 /// Hooks configuration embedded at compile time.
-const HOOKS_JSON: &str = include_str!("../../resources/gemini/settings.json");
+const HOOKS_JSON: &str = crate::rebrand!(include_str!("../../resources/gemini/settings.json"));
 
 fn gemini_dir() -> Option<PathBuf> {
     gemini_dir_from_env(
@@ -210,14 +210,14 @@ mod tests {
 
     #[test]
     fn test_hooks_json_contains_workmux_command() {
-        assert!(HOOKS_JSON.contains("workmux set-window-status"));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status")));
 
         let config: Value = serde_json::from_str(HOOKS_JSON).unwrap();
         let session_start = &config["hooks"]["SessionStart"];
         assert!(session_start[0].get("matcher").is_none());
         assert_eq!(
             session_start[0]["hooks"][0]["command"],
-            "workmux register-agent"
+            crate::rebrand!("workmux register-agent")
         );
     }
 

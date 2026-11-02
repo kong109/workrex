@@ -21,27 +21,27 @@ pub struct BundledSkill {
 pub const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
         name: "merge",
-        content: include_str!("../skills/merge/SKILL.md"),
+        content: crate::rebrand!(include_str!("../skills/merge/SKILL.md")),
     },
     BundledSkill {
         name: "rebase",
-        content: include_str!("../skills/rebase/SKILL.md"),
+        content: crate::rebrand!(include_str!("../skills/rebase/SKILL.md")),
     },
     BundledSkill {
         name: "worktree",
-        content: include_str!("../skills/worktree/SKILL.md"),
+        content: crate::rebrand!(include_str!("../skills/worktree/SKILL.md")),
     },
     BundledSkill {
         name: "coordinator",
-        content: include_str!("../skills/coordinator/SKILL.md"),
+        content: crate::rebrand!(include_str!("../skills/coordinator/SKILL.md")),
     },
     BundledSkill {
         name: "open-pr",
-        content: include_str!("../skills/open-pr/SKILL.md"),
+        content: crate::rebrand!(include_str!("../skills/open-pr/SKILL.md")),
     },
     BundledSkill {
-        name: "workmux",
-        content: include_str!("../skills/workmux/SKILL.md"),
+        name: crate::bin_name::BIN,
+        content: crate::rebrand!(include_str!("../skills/workmux/SKILL.md")),
     },
 ];
 
@@ -411,7 +411,7 @@ mod tests {
         assert!(names.contains(&"worktree"));
         assert!(names.contains(&"coordinator"));
         assert!(names.contains(&"open-pr"));
-        assert!(names.contains(&"workmux"));
+        assert!(names.contains(&crate::bin_name::BIN));
     }
 
     #[test]

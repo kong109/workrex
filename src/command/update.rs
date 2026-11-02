@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const REPO: &str = "raine/workmux";
+use crate::bin_name::BIN;
+
+const REPO: &str = "kong109/workrex";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 const NOTIFY_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
@@ -137,7 +139,16 @@ fn verify_checksum(file: &std::path::Path, expected_line: &str) -> Result<()> {
     Ok(())
 }
 
-/// Download release `version` of `artifact_name` (e.g. `workmux-linux-arm64`)
+/// Release artifact name of this binary for `platform` (e.g. `workrex-linux-arm64`).
+pub(crate) fn release_artifact(platform: &str) -> String {
+    format!("{BIN}-{platform}")
+}
+
+fn release_url(version: &str, file: &str) -> String {
+    format!("https://github.com/{REPO}/releases/download/v{version}/{file}")
+}
+
+/// Download release `version` of `artifact_name` (e.g. `workrex-linux-arm64`)
 /// into `dir`, verify its published sha256, and return the extracted binary.
 pub(crate) fn fetch_release_binary(
     version: &str,
@@ -148,10 +159,14 @@ pub(crate) fn fetch_release_binary(
     let tar_path = dir.join(format!("{artifact_name}.tar.gz"));
     let sha_path = dir.join(format!("{artifact_name}.sha256"));
 
-    let base_url = format!("https://github.com/{REPO}/releases/download/v{version}");
-
-    download(&format!("{base_url}/{artifact_name}.tar.gz"), &tar_path)?;
-    download(&format!("{base_url}/{artifact_name}.sha256"), &sha_path)?;
+    download(
+        &release_url(version, &format!("{artifact_name}.tar.gz")),
+        &tar_path,
+    )?;
+    download(
+        &release_url(version, &format!("{artifact_name}.sha256")),
+        &sha_path,
+    )?;
 
     on_step("Verifying checksum...");
     let sha_content = std::fs::read_to_string(&sha_path).context("Failed to read checksum file")?;
@@ -161,9 +176,9 @@ pub(crate) fn fetch_release_binary(
     std::fs::create_dir(&extract_dir)?;
     extract_tar(&tar_path, &extract_dir)?;
 
-    let binary = extract_dir.join("workmux");
+    let binary = extract_dir.join(BIN);
     if !binary.exists() {
-        bail!("Extracted archive does not contain 'workmux' binary");
+        bail!("Extracted archive does not contain '{BIN}' binary");
     }
     Ok(binary)
 }
@@ -218,7 +233,7 @@ fn do_update(
     replace_binary(&new_binary, current_exe)?;
 
     Ok(format!(
-        "Updated workmux v{CURRENT_VERSION} -> v{latest_version}"
+        "Updated {BIN} v{CURRENT_VERSION} -> v{latest_version}"
     ))
 }
 
@@ -233,7 +248,7 @@ pub fn run() -> Result<()> {
     }
 
     let platform = platform_suffix()?;
-    let artifact_name = format!("workmux-{platform}");
+    let artifact_name = release_artifact(platform);
 
     let pb = indicatif::ProgressBar::new_spinner();
     pb.set_style(
@@ -371,13 +386,13 @@ pub fn check_and_notify(config: &crate::config::Config) {
                 .is_some_and(|p| is_homebrew_install(&p));
 
             let update_cmd = if is_brew {
-                "brew upgrade workmux"
+                "brew upgrade workmux".to_string()
             } else {
-                "workmux update"
+                format!("{BIN} update")
             };
 
             eprintln!(
-                "Update available: workmux v{CURRENT_VERSION} -> v{latest} (run `{update_cmd}`)"
+                "Update available: {BIN} v{CURRENT_VERSION} -> v{latest} (run `{update_cmd}`)"
             );
 
             cache.last_notified = Some(now);
@@ -416,6 +431,16 @@ mod tests {
         // Should succeed on any supported CI/dev platform
         let suffix = platform_suffix().unwrap();
         assert!(["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"].contains(&suffix));
+    }
+
+    #[test]
+    fn release_url_points_at_fork_artifact() {
+        let platform = release_platform("linux", "x86_64").unwrap();
+        let file = format!("{}.tar.gz", release_artifact(platform));
+        assert_eq!(
+            release_url("0.1.278", &file),
+            "https://github.com/kong109/workrex/releases/download/v0.1.278/workrex-linux-amd64.tar.gz"
+        );
     }
 
     #[test]

@@ -1335,12 +1335,20 @@ class WorkmuxCommandResult:
     stderr: str
 
 
+BIN = "workrex"
+
+
+def rebrand(text: str) -> str:
+    """Apply the binary rename that `rebrand!` applies to embedded hook and skill text."""
+    return re.sub(r"(?<![\w./@:-])workmux(?![\w/@:-]|\.[^\W_])", BIN, text)
+
+
 @pytest.fixture(scope="session")
 def workmux_exe_path() -> Path:
     """
     Returns the path to the local workmux build for testing.
     """
-    local_path = Path(__file__).parent.parent / "target/debug/workmux"
+    local_path = Path(__file__).parent.parent / f"target/debug/{BIN}"
     if not local_path.exists():
         pytest.fail("Could not find workmux executable. Run 'cargo build' first.")
     return local_path

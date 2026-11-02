@@ -184,7 +184,7 @@ impl_passthrough_typed_value_parser!(GitBranchParser);
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
-#[command(name = "workmux")]
+#[command(name = crate::bin_name::BIN)]
 #[command(about = "An opinionated workflow tool that orchestrates git worktrees and tmux")]
 #[command(help_template = "\
 {about}
@@ -1506,15 +1506,27 @@ fn prepare_zsh_base(script: &str, name: &str) -> String {
 }
 
 fn print_zsh_dynamic_completion() {
-    print!("{}", include_str!("scripts/completions/zsh_dynamic.zsh"));
+    print!(
+        "{}",
+        include_str!("scripts/completions/zsh_dynamic.zsh")
+            .replace("workmux", crate::bin_name::BIN)
+    );
 }
 
 fn print_bash_dynamic_completion() {
-    print!("{}", include_str!("scripts/completions/bash_dynamic.bash"));
+    print!(
+        "{}",
+        include_str!("scripts/completions/bash_dynamic.bash")
+            .replace("workmux", crate::bin_name::BIN)
+    );
 }
 
 fn print_fish_dynamic_completion() {
-    print!("{}", include_str!("scripts/completions/fish_dynamic.fish"));
+    print!(
+        "{}",
+        include_str!("scripts/completions/fish_dynamic.fish")
+            .replace("workmux", crate::bin_name::BIN)
+    );
 }
 
 #[cfg(test)]
@@ -1856,7 +1868,7 @@ mod tests {
 
     #[test]
     fn prepare_zsh_base_works_with_real_clap_output() {
-        let mut cmd = Cli::command();
+        let mut cmd = Cli::command().name("workmux");
         let name = cmd.get_name().to_string();
         let mut buf = Vec::new();
         generate(Shell::Zsh, &mut cmd, &name, &mut buf);
@@ -1884,7 +1896,7 @@ mod tests {
     /// Helper: produce the full `workmux completions zsh` output
     /// (base post-processed by prepare_zsh_base + dynamic wrapper).
     fn generate_full_zsh_completions() -> String {
-        let mut cmd = Cli::command();
+        let mut cmd = Cli::command().name("workmux");
         let name = cmd.get_name().to_string();
         let mut buf = Vec::new();
         generate(Shell::Zsh, &mut cmd, &name, &mut buf);
@@ -1972,7 +1984,7 @@ mod tests {
 
     #[test]
     fn bash_output_unaffected_by_zsh_postprocessing() {
-        let mut cmd = Cli::command();
+        let mut cmd = Cli::command().name("workmux");
         let name = cmd.get_name().to_string();
         let mut buf = Vec::new();
         generate(Shell::Bash, &mut cmd, &name, &mut buf);
@@ -1990,7 +2002,7 @@ mod tests {
 
     #[test]
     fn fish_output_unaffected_by_zsh_postprocessing() {
-        let mut cmd = Cli::command();
+        let mut cmd = Cli::command().name("workmux");
         let name = cmd.get_name().to_string();
         let mut buf = Vec::new();
         generate(Shell::Fish, &mut cmd, &name, &mut buf);

@@ -7,8 +7,11 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-fn is_workmux_hook_command(command: &str) -> bool {
-    command.contains("workmux set-window-status") || command.contains("workmux register-agent")
+pub(crate) fn is_workmux_hook_command(command: &str) -> bool {
+    ["workmux", crate::bin_name::BIN].iter().any(|bin| {
+        command.contains(&format!("{bin} set-window-status"))
+            || command.contains(&format!("{bin} register-agent"))
+    })
 }
 
 /// Check if a parsed JSON value contains any workmux status hooks.

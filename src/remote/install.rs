@@ -41,7 +41,7 @@ impl Pin {
     pub fn for_spec(spec: &RemoteSpec) -> Result<Self> {
         let Some(path) = &spec.binary else {
             return Ok(Self {
-                name: format!("workmux-{}", env!("CARGO_PKG_VERSION")),
+                name: format!("{}-{}", crate::bin_name::BIN, env!("CARGO_PKG_VERSION")),
                 source: PinSource::Release,
             });
         };
@@ -173,7 +173,7 @@ pub fn setup(spec: &RemoteSpec) -> Result<()> {
             println!("Downloading workmux v{version} for {platform}...");
             crate::command::update::fetch_release_binary(
                 version,
-                &format!("workmux-{platform}"),
+                &crate::command::update::release_artifact(platform),
                 temp_dir.path(),
                 &|_| {},
             )
@@ -385,7 +385,7 @@ mod tests {
         };
         assert_eq!(
             Pin::for_spec(&release).unwrap().name,
-            format!("workmux-{}", env!("CARGO_PKG_VERSION"))
+            format!("{}-{}", crate::bin_name::BIN, env!("CARGO_PKG_VERSION"))
         );
 
         let missing = RemoteSpec {

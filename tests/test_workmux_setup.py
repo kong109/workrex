@@ -7,6 +7,7 @@ import pytest
 
 from .conftest import (
     MuxEnvironment,
+    rebrand,
     run_workmux_command,
 )
 from .support.setup import (
@@ -100,7 +101,9 @@ class TestSetupNoPrompt:
             / "plugins"
             / "workmux-status.ts"
         )
-        (plugin_dir / "workmux-status.ts").write_text(bundled_plugin.read_text())
+        (plugin_dir / "workmux-status.ts").write_text(
+            rebrand(bundled_plugin.read_text())
+        )
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -127,7 +130,7 @@ class TestSetupNoPrompt:
             / "workmux-status"
         )
         for name in ("index.ts", "tui.ts", "status.ts"):
-            (plugin_dir / name).write_text((bundled / name).read_text())
+            (plugin_dir / name).write_text(rebrand((bundled / name).read_text()))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -150,7 +153,9 @@ class TestSetupNoPrompt:
             / "extensions"
             / "workmux-status.ts"
         )
-        (extension_dir / "workmux-status.ts").write_text(bundled_extension.read_text())
+        (extension_dir / "workmux-status.ts").write_text(
+            rebrand(bundled_extension.read_text())
+        )
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -175,7 +180,9 @@ class TestSetupNoPrompt:
             / "plugins"
             / "workmux-status.ts"
         )
-        (plugin_dir / "workmux-status.ts").write_text(bundled_plugin.read_text())
+        (plugin_dir / "workmux-status.ts").write_text(
+            rebrand(bundled_plugin.read_text())
+        )
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -268,7 +275,7 @@ class TestSetupInstall:
         run_setup_with_answers(
             mux_server,
             workmux_exe_path,
-            expected_output=("workmux register-agent",),
+            expected_output=(rebrand("workmux set-window-status working"),),
         )
 
     def test_outdated_opencode_plugin_explains_update_prompt(
@@ -297,7 +304,8 @@ class TestSetupInstall:
         )
 
         assert (
-            "workmux register-agent" in (plugin_dir / "workmux-status.ts").read_text()
+            rebrand("workmux register-agent")
+            in (plugin_dir / "workmux-status.ts").read_text()
         )
 
     def test_claude_install_accept(
@@ -370,7 +378,7 @@ class TestSetupInstall:
         assert plugin_path.exists()
         assert not (opencode_dir / "package.json").exists()
         plugin_text = plugin_path.read_text()
-        assert "workmux register-agent" in plugin_text
+        assert rebrand("workmux register-agent") in plugin_text
 
     @pytest.mark.parametrize(
         "v1_source",
@@ -407,7 +415,9 @@ class TestSetupInstall:
         )
         installed_v2 = plugins / "workmux-status"
         for name in ("index.ts", "tui.ts", "status.ts"):
-            assert (installed_v2 / name).read_text() == (bundled_v2 / name).read_text()
+            assert (installed_v2 / name).read_text() == rebrand(
+                (bundled_v2 / name).read_text()
+            )
         assert not (plugins / "workmux-status.ts").exists()
         assert (plugins / "custom.ts").read_text() == "// keep me"
 
@@ -502,12 +512,12 @@ class TestSetupInstall:
             for hook in group.get("hooks", [])
         ]
         assert "afplay /System/Library/Sounds/Glass.aiff" in stop_commands
-        assert "workmux set-window-status done" in stop_commands
+        assert rebrand("workmux set-window-status done") in stop_commands
         assert settings["hooks"]["SessionStart"][0]["matcher"] == (
             "startup|resume|clear|fork"
         )
         assert settings["hooks"]["SessionStart"][0]["hooks"][0]["command"] == (
-            "workmux register-agent"
+            rebrand("workmux register-agent")
         )
         assert "UserPromptSubmit" in settings["hooks"]
         assert "Notification" in settings["hooks"]

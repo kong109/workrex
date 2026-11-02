@@ -12,10 +12,12 @@ use std::path::{Path, PathBuf};
 use super::{StatusCheck, UpdatePreview};
 
 const WORKMUX_GROUP: &str = "workmux-status";
-const REGISTER_COMMAND: &str = "workmux register-agent >/dev/null 2>&1 || true; printf '{}\\n'";
+const REGISTER_COMMAND: &str =
+    crate::rebrand!("workmux register-agent >/dev/null 2>&1 || true; printf '{}\\n'");
 const WORKING_COMMAND: &str =
-    "workmux set-window-status working >/dev/null 2>&1 || true; printf '{}\\n'";
-const STOP_COMMAND: &str = "workmux set-window-status done >/dev/null 2>&1 || true; printf '{}\\n'";
+    crate::rebrand!("workmux set-window-status working >/dev/null 2>&1 || true; printf '{}\\n'");
+const STOP_COMMAND: &str =
+    crate::rebrand!("workmux set-window-status done >/dev/null 2>&1 || true; printf '{}\\n'");
 
 fn gemini_dir() -> Option<PathBuf> {
     home::home_dir().map(|home| home.join(".gemini"))

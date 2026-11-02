@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from ..conftest import rebrand
 from .conftest import RemoteCli, dev_pin, write_script
 
 FAKE_PROTOCOL_999 = (
@@ -325,8 +326,10 @@ def test_setup_installs_status_hooks_where_containers_mount_them(
     assert "installed status hooks for Claude Code, Codex, Gemini CLI" in result.stdout
     for settings in [".claude/settings.json", ".gemini/settings.json"]:
         hooks = json.loads((home / settings).read_text())["hooks"]
-        assert "workmux set-window-status" in json.dumps(hooks), settings
-    assert "workmux set-window-status" in (home / ".codex/hooks.json").read_text()
+        assert rebrand("workmux set-window-status") in json.dumps(hooks), settings
+    assert (
+        rebrand("workmux set-window-status") in (home / ".codex/hooks.json").read_text()
+    )
     assert "hooks = true" in (home / ".codex/config.toml").read_text()
     for agent_dir in [".pi/agent", ".omp/agent"]:
         assert (home / agent_dir / "extensions/workmux-status.ts").is_file()
@@ -354,7 +357,7 @@ def test_doctor_reports_status_hooks(loopback_cli: RemoteCli, workmux_exe_path: 
     settings = loopback_cli.home / ".claude" / "settings.json"
     settings.parent.mkdir()
     assert loopback_cli.run("remote", "setup", "lo").returncode == 0
-    assert "workmux set-window-status" in settings.read_text()
+    assert rebrand("workmux set-window-status") in settings.read_text()
 
     ready = loopback_cli.run("remote", "doctor", "lo")
     settings.write_text('{"theme": "dark"}\n')

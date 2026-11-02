@@ -23,7 +23,9 @@ use crate::agent_setup::json_config::{
 };
 
 /// Hooks configuration embedded at compile time.
-const HOOKS_JSON: &str = include_str!("../../resources/codex/hooks/workmux-status.json");
+const HOOKS_JSON: &str = crate::rebrand!(include_str!(
+    "../../resources/codex/hooks/workmux-status.json"
+));
 
 fn codex_dir() -> Option<PathBuf> {
     codex_dir_from_env(
@@ -397,16 +399,16 @@ mod tests {
 
     #[test]
     fn test_hooks_json_contains_workmux_commands() {
-        assert!(HOOKS_JSON.contains("workmux set-window-status working"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status waiting"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status done"));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status working")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status waiting")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status done")));
 
         let config: Value = serde_json::from_str(HOOKS_JSON).unwrap();
         let session_start = &config["hooks"]["SessionStart"];
         assert_eq!(session_start[0]["matcher"], "startup|resume|clear");
         assert_eq!(
             session_start[0]["hooks"][0]["command"],
-            "workmux register-agent"
+            crate::rebrand!("workmux register-agent")
         );
         assert!(
             !session_start[0]["matcher"]

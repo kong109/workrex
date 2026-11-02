@@ -9,6 +9,7 @@ from ..conftest import (
     get_scripts_dir,
     make_env_script,
     poll_until_file_has_content,
+    rebrand,
     wait_for_pane_output,
 )
 
@@ -16,7 +17,7 @@ from ..conftest import (
 def write_claude_manual_status_hook(claude_dir: Path) -> None:
     claude_dir.mkdir(parents=True, exist_ok=True)
     plugin_path = Path(__file__).parents[2] / ".claude-plugin" / "plugin.json"
-    plugin = json.loads(plugin_path.read_text())
+    plugin = json.loads(rebrand(plugin_path.read_text()))
     (claude_dir / "settings.json").write_text(json.dumps({"hooks": plugin["hooks"]}))
 
 
