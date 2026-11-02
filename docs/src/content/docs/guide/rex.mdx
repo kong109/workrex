@@ -29,6 +29,28 @@ If you run tmux inside a Rex pane, workmux uses tmux, because `$TMUX` is checked
 - **Capture.** `workmux capture` reads the block's full scrollback and keeps the last lines.
 - **Shells.** workmux starts each block's shell directly as a login shell (`$SHELL -l`), as tmux does. It does not go through `/usr/bin/login`, so the environment of the Rex server reaches the pane unchanged.
 
+## Dashboard
+
+The [dashboard](/guide/dashboard/) opens in a floating layer over the current tab, the Rex counterpart of a tmux popup. Copy [`resources/rex/workrex.lua`](https://github.com/kong109/workrex/blob/main/resources/rex/workrex.lua) to `~/.config/rex/workrex.lua` and load it from `~/.config/rex/init.lua`:
+
+```lua
+require("workrex")
+```
+
+Check the file and reload the configuration:
+
+```bash
+rex config check ~/.config/rex/workrex.lua
+rex config reload
+```
+
+Press `Shift+Cmd+D`, or run **workrex: Open Dashboard** from the command palette. Pressing the key again while the dashboard is open focuses it instead of opening a second one. The key replaces Rex's default for **Split Pane Down**, which keeps `Shift+Cmd+Down`. To use another key, change the `rex.bind` line at the end of the file.
+
+- **Jumping.** Choosing an agent focuses its block and closes the layer. An agent in another session switches the app to that session first, which needs **Remote Control** turned on in the app's settings.
+- **Closing.** Press `q` to close the layer. Focus returns to the block you were in.
+- **Options.** The action passes `args` to `workrex dashboard`, for example `rex.bind("shift+cmd+d", "workrex_dashboard", { args = { "--session" } })`.
+- **Binary.** The action runs `workrex` from your login shell's `PATH`. To run another binary, set `WORKREX_BIN` in the Rex server's environment.
+
 ## Requirements
 
 - The `rex` CLI. Inside a Rex pane it is already on `PATH`.

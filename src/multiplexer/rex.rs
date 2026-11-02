@@ -17,6 +17,8 @@ use super::agent::shell_quote;
 use super::types::*;
 use super::util;
 
+mod layer;
+
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
 
 macro_rules! rex_id {
@@ -83,6 +85,8 @@ struct WindowView {
 
 #[derive(Debug, Deserialize)]
 struct LayerView {
+    #[serde(default)]
+    kind: String,
     #[serde(default)]
     blocks: Vec<BlockView>,
 }
@@ -350,6 +354,7 @@ pub fn in_rex_pane() -> bool {
 #[derive(Debug, Default)]
 pub struct RexBackend {
     server: Option<String>,
+    program: Option<PathBuf>,
     endpoint: OnceLock<String>,
     block_sessions: Mutex<HashMap<BlockId, SessionId>>,
 }
@@ -371,7 +376,18 @@ impl RexBackend {
         }
     }
 
-    fn program() -> String {
+    #[cfg(test)]
+    fn with_program(program: PathBuf) -> Self {
+        Self {
+            program: Some(program),
+            ..Self::default()
+        }
+    }
+
+    fn program(&self) -> String {
+        if let Some(program) = &self.program {
+            return program.to_string_lossy().into_owned();
+        }
         std::env::var_os("REX_BIN_DIR")
             .map(|dir| PathBuf::from(dir).join("rex"))
             .filter(|path| path.is_file())
@@ -381,6 +397,8 @@ impl RexBackend {
 
     /// `rex block call -b` fails with "block target not found" when the
     /// inherited `REX_SESSION` names a different session than the block's.
+    /// `REX_CLIENT` passes through: the dashboard action sets it to the app
+    /// that opened the dashboard, which `rex do session.select` then targets.
     const INHERITED_SCOPE_VARS: [&'static str; 2] = ["REX_SESSION", "REX_BLOCK"];
 
     fn global_args(&self) -> Vec<&str> {
@@ -392,7 +410,7 @@ impl RexBackend {
     }
 
     fn run(&self, args: &[&str], stdin: Option<&str>) -> CallResult<String> {
-        let program = Self::program();
+        let program = self.program();
         let mut command = Command::new(&program);
         for var in Self::INHERITED_SCOPE_VARS {
             command.env_remove(var);
@@ -678,7 +696,7 @@ impl RexBackend {
         for var in Self::INHERITED_SCOPE_VARS {
             words.extend(["-u".to_string(), var.to_string()]);
         }
-        words.push(shell_quote(&Self::program()));
+        words.push(shell_quote(&self.program()));
         words.extend(
             self.global_args()
                 .iter()
@@ -820,10 +838,8 @@ impl Multiplexer for RexBackend {
 
     fn active_pane_id(&self) -> Option<String> {
         let view = self.current_or_only_view().ok()?;
-        view.active_window()?
-            .focused_block_id
-            .as_ref()
-            .map(|block| block.as_str().to_string())
+        layer::active_block(&view, Self::env_block().as_ref(), layer::origin_block())
+            .map(|block| block.0)
     }
 
     fn get_client_active_pane_path(&self) -> Result<PathBuf> {
@@ -1151,12 +1167,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn switch_to_pane(&self, pane_id: &str, _window_hint: Option<&str>) -> Result<()> {
-        let block = BlockId::parse(pane_id)?;
-        let session = self.require_session_of(&block)?;
-        if Self::env_session().as_ref() != Some(&session) {
-            self.select_session(&session)?;
-        }
-        self.select_pane(pane_id)
+        self.jump_to_block(&BlockId::parse(pane_id)?)
     }
 
     fn kill_pane(&self, pane_id: &str) -> Result<()> {
