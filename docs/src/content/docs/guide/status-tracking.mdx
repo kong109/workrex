@@ -50,6 +50,23 @@ doing.
 - 💬 = agent is waiting for user input
 - ✅ = agent finished (auto-clears on window focus in tmux)
 
+## Rex program status
+
+Under the [Rex backend](/guide/rex/), workmux also reads the status that programs report to Rex through the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status) (OSC 7501). Claude Code reports it without any setup, so its status shows up in `workmux status` and the dashboard with no hooks installed.
+
+| Rex state | workmux status   |
+| --------- | ---------------- |
+| `working` | 🤖 working       |
+| `blocked` | 💬 waiting       |
+| `done`    | ✅ done          |
+| `error`   | ✅ done          |
+| `idle`    | none             |
+
+- When a pane reports program status, that status wins over the hook status. Hooks still track agents that do not report it.
+- A pane that reports status but was never registered by a hook counts as an agent only when its working directory is a git worktree.
+- A record left behind by a program that is no longer in the foreground is ignored, so an agent that exits drops out of the list.
+- Hook-reported status puts its icon in front of the Rex window label. Rex draws its own indicator on tabs for program status. The icon does not clear on window focus; it changes with the next status.
+
 ## Automated setup
 
 Run `workmux setup` to automatically detect your agent CLIs and install status tracking hooks:

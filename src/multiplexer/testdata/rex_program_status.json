@@ -1,0 +1,326 @@
+{
+  "working": {
+    "records": [
+      {
+        "state": "working",
+        "app": "fake",
+        "effective_app": "fake",
+        "updated_at": "2026-11-02T15:22:36.943312-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "working_with_progress": {
+    "records": [
+      {
+        "state": "working",
+        "progress": 40,
+        "app": "fake",
+        "effective_app": "fake",
+        "msg": "Working",
+        "updated_at": "2026-11-02T15:22:37.299588-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "blocked_permission": {
+    "records": [
+      {
+        "state": "blocked",
+        "kind": "permission",
+        "app": "fake",
+        "effective_app": "fake",
+        "msg": "Approve?",
+        "updated_at": "2026-11-02T15:22:53.205831-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "blocked_question": {
+    "records": [
+      {
+        "state": "blocked",
+        "kind": "question",
+        "app": "fake",
+        "effective_app": "fake",
+        "msg": "Approve?",
+        "updated_at": "2026-11-02T15:22:53.557548-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "blocked_auth": {
+    "records": [
+      {
+        "state": "blocked",
+        "kind": "auth",
+        "app": "fake",
+        "effective_app": "fake",
+        "msg": "Approve?",
+        "updated_at": "2026-11-02T15:22:53.908507-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "blocked_without_kind": {
+    "records": [
+      {
+        "state": "blocked",
+        "app": "fake",
+        "effective_app": "fake",
+        "updated_at": "2026-11-02T15:22:38.721916-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "blocked_unknown_kind": {
+    "records": [
+      {
+        "state": "blocked",
+        "app": "fake",
+        "effective_app": "fake",
+        "updated_at": "2026-11-02T15:22:39.074966-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "idle": {
+    "records": [
+      {
+        "state": "idle",
+        "app": "fake",
+        "effective_app": "fake",
+        "updated_at": "2026-11-02T15:22:54.628264-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "done": {
+    "records": [
+      {
+        "state": "done",
+        "app": "fake",
+        "effective_app": "fake",
+        "msg": "Done",
+        "updated_at": "2026-11-02T15:22:54.982742-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "error": {
+    "records": [
+      {
+        "state": "error",
+        "app": "fake",
+        "effective_app": "fake",
+        "msg": "Failed",
+        "updated_at": "2026-11-02T15:22:55.332725-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "empty": {
+    "records": []
+  },
+  "idle_root_blocked_child": {
+    "records": [
+      {
+        "state": "idle",
+        "app": "claude-code",
+        "effective_app": "claude-code",
+        "updated_at": "2026-11-02T15:23:05.077052-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      },
+      {
+        "id": "build",
+        "state": "working",
+        "effective_app": "claude-code",
+        "title": "Build",
+        "updated_at": "2026-11-02T15:23:05.406623-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      },
+      {
+        "id": "build/test",
+        "state": "blocked",
+        "kind": "question",
+        "app": "pytest",
+        "effective_app": "pytest",
+        "updated_at": "2026-11-02T15:23:05.735881-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      },
+      {
+        "id": "other",
+        "state": "done",
+        "app": "other",
+        "effective_app": "other",
+        "updated_at": "2026-11-02T15:23:06.065055-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "records_left_after_exit": {
+    "records": [
+      {
+        "id": "w2",
+        "state": "idle",
+        "app": "fake",
+        "effective_app": "fake",
+        "updated_at": "2026-11-02T15:23:18.834944-08:00",
+        "owner": {
+          "pid": 58052,
+          "name": "Python"
+        }
+      },
+      {
+        "id": "w3",
+        "state": "done",
+        "app": "fake",
+        "effective_app": "fake",
+        "updated_at": "2026-11-02T15:23:19.265621-08:00",
+        "owner": {
+          "pid": 58052,
+          "name": "Python"
+        }
+      },
+      {
+        "id": "w4",
+        "state": "error",
+        "app": "fake",
+        "effective_app": "fake",
+        "updated_at": "2026-11-02T15:23:19.695353-08:00",
+        "owner": {
+          "pid": 58052,
+          "name": "Python"
+        }
+      }
+    ]
+  },
+  "claude_code_idle": {
+    "records": [
+      {
+        "state": "idle",
+        "app": "claude-code",
+        "effective_app": "claude-code",
+        "updated_at": "2026-11-02T15:25:58.659637-08:00",
+        "owner": {
+          "pid": 85917,
+          "name": "claude.exe"
+        }
+      }
+    ]
+  },
+  "claude_code_blocked": {
+    "records": [
+      {
+        "state": "blocked",
+        "kind": "permission",
+        "app": "claude-code",
+        "effective_app": "claude-code",
+        "msg": "approve Bash: uname -a > uname.txt && cat uname.txt; date \"+%m/%d/%y %I:%M %p\"",
+        "updated_at": "2026-11-02T15:26:54.778804-08:00",
+        "owner": {
+          "pid": 85917,
+          "name": "claude.exe"
+        }
+      }
+    ]
+  },
+  "claude_code_working": {
+    "records": [
+      {
+        "state": "working",
+        "app": "claude-code",
+        "effective_app": "claude-code",
+        "msg": "Writing current date to now.txt and getting timestamp",
+        "updated_at": "2026-11-02T15:26:06.611768-08:00",
+        "owner": {
+          "pid": 85917,
+          "name": "claude.exe"
+        }
+      }
+    ]
+  },
+  "claude_code_done": {
+    "records": [
+      {
+        "state": "done",
+        "app": "claude-code",
+        "effective_app": "claude-code",
+        "updated_at": "2026-11-02T15:26:09.7742-08:00",
+        "owner": {
+          "pid": 85917,
+          "name": "claude.exe"
+        }
+      }
+    ]
+  },
+  "claude_code_after_esc": {
+    "records": [
+      {
+        "state": "idle",
+        "app": "claude-code",
+        "effective_app": "claude-code",
+        "updated_at": "2026-11-02T15:27:05.606337-08:00",
+        "owner": {
+          "pid": 85917,
+          "name": "claude.exe"
+        }
+      }
+    ]
+  },
+  "unknown_state": {
+    "records": [
+      {
+        "state": "frobnicate",
+        "app": "fake",
+        "updated_at": "2026-11-02T15:22:55.683592-08:00",
+        "owner": {
+          "pid": 73872,
+          "name": "Python"
+        }
+      }
+    ]
+  }
+}

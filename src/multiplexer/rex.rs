@@ -17,6 +17,8 @@ use super::agent::shell_quote;
 use super::types::*;
 use super::util;
 
+mod status;
+
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
 
 macro_rules! rex_id {
@@ -73,7 +75,7 @@ struct SessionView {
 #[derive(Debug, Deserialize)]
 struct WindowView {
     window_id: WindowId,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "status::deserialize_base_label")]
     label: String,
     #[serde(default)]
     focused_block_id: Option<BlockId>,
@@ -352,6 +354,7 @@ pub struct RexBackend {
     server: Option<String>,
     endpoint: OnceLock<String>,
     block_sessions: Mutex<HashMap<BlockId, SessionId>>,
+    program_status: Mutex<HashMap<BlockId, Option<ReportedStatus>>>,
 }
 
 impl RexBackend {
@@ -722,6 +725,7 @@ impl RexBackend {
         else {
             return Ok(None);
         };
+        self.observe_program_status(block, process.foreground.as_ref().map(|fg| fg.pid));
         let title = found(self.block_call::<TitleReport>(block, "title", json!({})))?
             .map(|report| report.title)
             .unwrap_or_default();
@@ -1254,12 +1258,16 @@ impl Multiplexer for RexBackend {
         Ok(())
     }
 
-    fn set_status(&self, _pane_id: &str, _icon: &str, _auto_clear_on_focus: bool) -> Result<()> {
-        Ok(())
+    fn set_status(&self, pane_id: &str, icon: &str, _auto_clear_on_focus: bool) -> Result<()> {
+        self.set_window_icon(pane_id, Some(icon))
     }
 
-    fn clear_status(&self, _pane_id: &str) -> Result<()> {
-        Ok(())
+    fn clear_status(&self, pane_id: &str) -> Result<()> {
+        self.set_window_icon(pane_id, None)
+    }
+
+    fn reported_status(&self, pane_id: &str) -> Option<ReportedStatus> {
+        self.program_status_of(pane_id)
     }
 
     fn ensure_status_format(&self, _pane_id: &str) -> Result<()> {

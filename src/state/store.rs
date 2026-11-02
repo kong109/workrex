@@ -1434,6 +1434,19 @@ impl StateStore {
         prune_stale: bool,
     ) -> Result<Vec<crate::multiplexer::AgentPane>> {
         let backend = mux.name();
+        let adopted = super::reported::adopt_reporting_panes(
+            &all_agents,
+            mux,
+            instance,
+            current_boot_id,
+            live_panes,
+        );
+        if prune_stale {
+            for state in &adopted {
+                self.upsert_agent(state)?;
+            }
+        }
+        let all_agents = all_agents.into_iter().chain(adopted);
         let auto_renamed_tmux_windows = if backend == "tmux" {
             tmux_auto_renamed_windows(live_panes)
         } else {
@@ -1531,6 +1544,14 @@ impl StateStore {
                     }
                 }
                 Some(live) => {
+                    let mut state = state;
+                    if let Some(reported) = mux.reported_status(&state.pane_key.pane_id)
+                        && super::reported::apply(&mut state, reported)
+                        && prune_stale
+                    {
+                        // Written through so raw-store readers like last-done agree.
+                        self.upsert_agent(&state)?;
+                    }
                     // Valid - include in dashboard
                     let mut agent_pane = state.to_agent_pane(
                         live.session

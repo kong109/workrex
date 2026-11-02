@@ -688,6 +688,14 @@ def rex_binary() -> Optional[str]:
     return None
 
 
+def rex_base_label(label: str) -> str:
+    """A Rex window label without the status icon workmux puts in front."""
+    icon, _, name = label.partition(" ")
+    if name and icon and not any(c.isalnum() for c in icon):
+        return name
+    return label
+
+
 class RexEnvironment(MuxEnvironment):
     SHELL_FLAVOR = "com.superlogical.terminal.shell"
 
@@ -852,7 +860,7 @@ class RexEnvironment(MuxEnvironment):
             (view["session_id"], window)
             for view in self.views()
             for window in view.get("windows", [])
-            if window.get("label") == label
+            if rex_base_label(window.get("label", "")) == label
         ]
 
     @staticmethod
@@ -887,7 +895,9 @@ class RexEnvironment(MuxEnvironment):
         raise RuntimeError(f"Window '{target}' not found")
 
     def list_windows(self) -> list[str]:
-        return [w["label"] for w in self._test_view().get("windows", [])]
+        return [
+            rex_base_label(w["label"]) for w in self._test_view().get("windows", [])
+        ]
 
     def list_window_ids(self) -> list[str]:
         return [w["window_id"] for w in self._test_view().get("windows", [])]
@@ -929,7 +939,7 @@ class RexEnvironment(MuxEnvironment):
         active = view.get("active_window_id")
         for window in view.get("windows", []):
             if window["window_id"] == active:
-                return window.get("label")
+                return rex_base_label(window.get("label", ""))
         return None
 
     def select_window(self, window_name: str) -> None:

@@ -76,6 +76,16 @@ pub enum AgentStatus {
     Done,
 }
 
+/// What an agent reported to the multiplexer itself, such as Rex program
+/// status. It wins over the status hooks reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportedStatus {
+    /// `since` is the Unix timestamp of the report.
+    Agent { status: AgentStatus, since: u64 },
+    /// At rest with nothing to show, such as after an interrupt.
+    Idle,
+}
+
 /// Information about a specific pane running a workmux agent
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentPane {

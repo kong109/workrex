@@ -15,7 +15,7 @@ If you run tmux inside a Rex pane, workmux uses tmux, because `$TMUX` is checked
 
 | Feature              | tmux                 | Rex                                 |
 | -------------------- | -------------------- | ----------------------------------- |
-| Agent status in tabs | Yes (window names)   | Dashboard only                      |
+| Agent status in tabs | Yes (window names)   | Yes (window labels)                 |
 | Tab ordering         | Insert after current | Insert after current                |
 | Scope                | tmux session         | Rex session                         |
 | Pane IDs             | `%12`                | `block:<uuid>`                      |
@@ -26,6 +26,7 @@ If you run tmux inside a Rex pane, workmux uses tmux, because `$TMUX` is checked
 - **Tabs.** A workmux window is a Rex window, labeled with the window name. New windows open right after the current one.
 - **Panes.** Each pane is a Rex block. Splits keep the configured `size` or `percentage`.
 - **Respawning.** Rex cannot restart the program in a block. When workmux needs to restart a pane, it opens a new block in the same place and closes the old one, so the pane ID changes.
+- **Status.** Agents that report Rex program status (OSC 7501), such as Claude Code, show their status without hooks. See [Status tracking](/guide/status-tracking/#rex-program-status).
 - **Capture.** `workmux capture` reads the block's full scrollback and keeps the last lines.
 - **Shells.** workmux starts each block's shell directly as a login shell (`$SHELL -l`), as tmux does. It does not go through `/usr/bin/login`, so the environment of the Rex server reaches the pane unchanged.
 
@@ -51,5 +52,4 @@ workmux identifies the server by its address, which stays the same across restar
 ## Known limitations
 
 - Session mode (`--session` or `mode: session`) is not supported yet
-- Agent status icons do not appear in tab titles
 - Window ownership tracking and remote agents need tmux
