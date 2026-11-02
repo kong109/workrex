@@ -400,8 +400,11 @@ class TestSetupInstall:
         opencode_dir = mux_server.home_path / ".config" / "opencode"
         plugins = opencode_dir / "plugins"
         plugins.mkdir(parents=True)
-        bundled_v1 = Path(__file__).parent.parent / v1_source
-        (plugins / "workmux-status.ts").write_text(bundled_v1.read_text())
+        bundled_v1 = (Path(__file__).parent.parent / v1_source).read_text()
+        if v1_source.startswith("resources/"):
+            # Setup installs the bundled source with the binary name rewritten.
+            bundled_v1 = rebrand(bundled_v1)
+        (plugins / "workmux-status.ts").write_text(bundled_v1)
         (plugins / "custom.ts").write_text("// keep me")
 
         run_setup_with_answers(mux_server, workmux_exe_path, hooks_answer="y")
