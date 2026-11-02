@@ -1,5 +1,7 @@
 """Tests for `workmux add --session` command - session mode worktree creation."""
 
+import pytest
+
 from ..conftest import (
     assert_session_exists,
     assert_session_not_exists,
@@ -11,6 +13,9 @@ from ..conftest import (
     write_workmux_config,
 )
 from .conftest import add_branch_and_get_worktree
+
+# Session mode is tmux-only until WR-3 lifts the gate for Rex.
+pytestmark = pytest.mark.tmux_only
 
 
 class TestSessionCreation:

@@ -8,6 +8,7 @@ pub mod conversation;
 pub mod handle;
 pub mod handshake;
 pub mod kitty;
+pub mod rex;
 pub mod tmux;
 pub mod types;
 pub mod util;
@@ -1055,10 +1056,11 @@ pub trait Multiplexer: Send + Sync {
 ///
 /// 1. `$WORKMUX_BACKEND` set → use that backend
 /// 2. `$TMUX` set → tmux
-/// 3. `$WEZTERM_PANE` set → WezTerm
-/// 4. `$ZELLIJ`, `$ZELLIJ_PANE_ID`, or `$ZELLIJ_SESSION_NAME` set → Zellij
-/// 5. `$KITTY_WINDOW_ID` set → Kitty
-/// 6. None → defaults to tmux (for backward compatibility)
+/// 3. `$REX_BLOCK` or `$REX_SESSION` set → Rex
+/// 4. `$WEZTERM_PANE` set → WezTerm
+/// 5. `$ZELLIJ`, `$ZELLIJ_PANE_ID`, or `$ZELLIJ_SESSION_NAME` set → Zellij
+/// 6. `$KITTY_WINDOW_ID` set → Kitty
+/// 7. None → defaults to tmux (for backward compatibility)
 ///
 /// This ordering ensures that running tmux inside kitty (or wezterm) correctly
 /// selects the innermost multiplexer.
@@ -1068,7 +1070,7 @@ pub fn detect_backend() -> BackendType {
             Ok(bt) => return bt,
             Err(_) => {
                 eprintln!(
-                    "workmux: invalid WORKMUX_BACKEND={val:?}, expected tmux|wezterm|kitty|zellij"
+                    "workmux: invalid WORKMUX_BACKEND={val:?}, expected tmux|rex|wezterm|kitty|zellij"
                 );
             }
         }
@@ -1083,7 +1085,7 @@ pub fn detect_backend_strict() -> Result<BackendType> {
         && !value.trim().is_empty()
     {
         return value.parse().map_err(|_| {
-            anyhow!("invalid WORKMUX_BACKEND={value:?}, expected tmux|wezterm|kitty|zellij")
+            anyhow!("invalid WORKMUX_BACKEND={value:?}, expected tmux|rex|wezterm|kitty|zellij")
         });
     }
 
@@ -1091,6 +1093,10 @@ pub fn detect_backend_strict() -> Result<BackendType> {
 }
 
 fn detect_backend_from_environment() -> BackendType {
+    let tmux = std::env::var("TMUX").is_ok();
+    if prefers_rex(tmux, rex::in_rex_pane()) {
+        return BackendType::Rex;
+    }
     resolve_backend(
         std::env::var("TMUX").is_ok(),
         std::env::var("WEZTERM_PANE").is_ok(),
@@ -1099,6 +1105,10 @@ fn detect_backend_from_environment() -> BackendType {
             || std::env::var("ZELLIJ_SESSION_NAME").is_ok(),
         std::env::var("KITTY_WINDOW_ID").is_ok(),
     )
+}
+
+fn prefers_rex(tmux: bool, rex: bool) -> bool {
+    rex && !tmux
 }
 
 /// Pure auto-detection logic, separated for testability.
@@ -1129,6 +1139,7 @@ pub fn create_backend(backend_type: BackendType) -> Arc<dyn Multiplexer> {
         BackendType::WezTerm => Arc::new(wezterm::WezTermBackend::new()),
         BackendType::Kitty => Arc::new(kitty::KittyBackend::new()),
         BackendType::Zellij => Arc::new(zellij::ZellijBackend::new()),
+        BackendType::Rex => Arc::new(rex::RexBackend::new()),
     }
 }
 
@@ -1139,6 +1150,7 @@ pub fn create_backend_for_instance(
     match backend_type {
         BackendType::Tmux => Arc::new(TmuxBackend::for_socket(instance)),
         BackendType::Zellij => Arc::new(zellij::ZellijBackend::for_session(instance)),
+        BackendType::Rex => Arc::new(rex::RexBackend::for_server(instance)),
         _ => create_backend(backend_type),
     }
 }
@@ -1284,6 +1296,28 @@ mod tests {
             resolve_backend(false, false, true, true),
             BackendType::Zellij
         );
+    }
+
+    #[test]
+    fn rex_pane_alone_selects_rex() {
+        assert!(prefers_rex(false, true));
+    }
+
+    #[test]
+    fn tmux_inside_rex_selects_tmux() {
+        assert!(!prefers_rex(true, true));
+    }
+
+    #[test]
+    fn outside_rex_defers_to_other_backends() {
+        assert!(!prefers_rex(false, false));
+    }
+
+    #[test]
+    fn workmux_backend_names_rex() {
+        assert_eq!("rex".parse::<BackendType>(), Ok(BackendType::Rex));
+        assert_eq!("Rex".parse::<BackendType>(), Ok(BackendType::Rex));
+        assert_eq!(BackendType::Rex.to_string(), "rex");
     }
 
     #[test]

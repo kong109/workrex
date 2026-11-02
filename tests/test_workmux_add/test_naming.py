@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from ..conftest import (
     DEFAULT_WINDOW_PREFIX,
     MuxEnvironment,
@@ -166,6 +168,7 @@ class TestTargetNameOptions:
         assert worktree_path.is_dir()
         assert_window_exists(env, expected_window)
 
+    @pytest.mark.tmux_only
     def test_add_parent_session_preserves_exact_existing_session(
         self,
         mux_server: TmuxEnvironment,
@@ -236,6 +239,7 @@ class TestTargetNameOptions:
         assert "already exists" in result.stderr
         assert f"{DEFAULT_WINDOW_PREFIX}shared-review" in result.stderr
 
+    @pytest.mark.tmux_only
     def test_add_parent_session_parent_session_can_be_reused(
         self,
         mux_server: TmuxEnvironment,
@@ -268,6 +272,7 @@ class TestTargetNameOptions:
         assert f"{DEFAULT_WINDOW_PREFIX}feature-parent-session-a" in windows
         assert f"{DEFAULT_WINDOW_PREFIX}feature-parent-session-b" in windows
 
+    @pytest.mark.tmux_only
     def test_custom_parent_session_lifecycle_uses_persisted_target(
         self,
         mux_server: TmuxEnvironment,
