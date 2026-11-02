@@ -28,7 +28,12 @@ const fn is_command_at(src: &[u8], i: usize) -> bool {
         k += 1;
     }
     if i > 0 && joins(src[i - 1]) {
-        return false;
+        // `/workmux` after a space or quote names the skill as a slash command.
+        let slash_command = src[i - 1] == b'/'
+            && (i == 1 || matches!(src[i - 2], b' ' | b'\n' | b'"' | b'\'' | b'`' | b'('));
+        if !slash_command {
+            return false;
+        }
     }
     if end < src.len() && joins(src[end]) {
         // A sentence may end on the name; a dotted name may not.
@@ -102,6 +107,7 @@ mod tests {
     fn rebrand_rewrites_invocations_and_keeps_compound_names() {
         let src = rebrand!(
             "workmux add x; $`workmux set-window-status`; spawn(\"workmux\", a); use workmux.\n\
+             \"/workmux add\" \
              .workmux.yaml workmux-status@workmux raine/workmux workmux.dev ~/.config/workmux/ \
              WORKMUX_X workmux_pipe workmux:"
         );
@@ -109,6 +115,7 @@ mod tests {
             src,
             format!(
                 "{BIN} add x; $`{BIN} set-window-status`; spawn(\"{BIN}\", a); use {BIN}.\n\
+                 \"/{BIN} add\" \
                  .workmux.yaml workmux-status@workmux raine/workmux workmux.dev ~/.config/workmux/ \
                  WORKMUX_X workmux_pipe workmux:"
             )

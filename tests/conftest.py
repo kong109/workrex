@@ -1340,7 +1340,9 @@ BIN = "workrex"
 
 def rebrand(text: str) -> str:
     """Apply the binary rename that `rebrand!` applies to embedded hook and skill text."""
-    return re.sub(r"(?<![\w./@:-])workmux(?![\w/@:-]|\.[^\W_])", BIN, text)
+    return re.sub(
+        r"(?:(?<![\w./@:-])|(?<=[\s\"'`(]/))workmux(?![\w/@:-]|\.[^\W_])", BIN, text
+    )
 
 
 @pytest.fixture(scope="session")

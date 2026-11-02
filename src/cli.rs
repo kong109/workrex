@@ -186,7 +186,7 @@ impl_passthrough_typed_value_parser!(GitBranchParser);
 #[command(author, version, about, long_about = None)]
 #[command(name = crate::bin_name::BIN)]
 #[command(about = "An opinionated workflow tool that orchestrates git worktrees and tmux")]
-#[command(help_template = "\
+#[command(help_template = crate::rebrand!("\
 {about}
 
 {usage-heading} {usage}
@@ -236,7 +236,7 @@ Options:
   -V, --version  Print version
 
 Run 'workmux docs' for detailed documentation.
-")]
+"))]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
