@@ -508,12 +508,20 @@ pub trait Multiplexer: Send + Sync {
     /// switch by pane ID directly (tmux, WezTerm) ignore this parameter.
     fn switch_to_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()>;
 
-    /// Focuses the first pane of a session `add` just created. tmux moves
-    /// the caller's client there. A backend that cannot tell which session
-    /// the user's view shows only focuses the pane in its session and returns
-    /// a line that tells the user how to get there.
-    fn focus_new_session(&self, pane_id: &str, _full_name: &str) -> Result<Option<String>> {
+    /// Focuses the first pane of a session `add` just created for the
+    /// worktree `handle`. tmux moves the caller's client there. A backend
+    /// that cannot tell which session the user's view shows only focuses the
+    /// pane in its session and returns a line that tells the user how to get
+    /// there.
+    fn focus_new_session(&self, pane_id: &str, _handle: &str) -> Result<Option<String>> {
         self.switch_to_pane(pane_id, None).map(|()| None)
+    }
+
+    /// A pane in the session `full_name` that a user-initiated jump should
+    /// pass to `switch_to_pane`, for a backend whose `switch_to_session`
+    /// leaves the user's view alone. `None` opens the session instead.
+    fn session_pane(&self, _full_name: &str) -> Result<Option<String>> {
+        Ok(None)
     }
 
     /// Whether jumping to a pane should exit the dashboard.

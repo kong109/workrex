@@ -1037,10 +1037,6 @@ impl RexBackend {
             .join("; ")
     }
 
-    fn shell_destroy_cmd(&self, session: &SessionId) -> String {
-        self.shell_api_cmd("session.destroy", json!({ "session_id": session.as_str() }))
-    }
-
     fn schedule(delay: Duration, commands: &str) -> Result<()> {
         if commands.is_empty() {
             return Ok(());
@@ -1700,9 +1696,13 @@ impl Multiplexer for RexBackend {
     /// A session-mode `add` may run in a background agent's pane, and Rex
     /// cannot tell that from the pane the user looks at, so the app stays
     /// put and the user is told how to get there.
-    fn focus_new_session(&self, pane_id: &str, full_name: &str) -> Result<Option<String>> {
+    fn focus_new_session(&self, pane_id: &str, handle: &str) -> Result<Option<String>> {
         self.select_pane(pane_id)?;
-        Ok(Some(session::new_session_hint(full_name)))
+        Ok(Some(session::new_session_hint(handle)))
+    }
+
+    fn session_pane(&self, full_name: &str) -> Result<Option<String>> {
+        RexBackend::session_pane(self, full_name)
     }
 
     /// The one call that moves Rex.app. Rex does not say which session an
@@ -2635,13 +2635,10 @@ mod tests {
     #[test]
     fn a_session_mode_add_focuses_the_pane_and_leaves_the_app_alone() {
         let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
-        let hint = fake
-            .rex
-            .focus_new_session("block:agent", "wm-feat-a")
-            .unwrap();
+        let hint = fake.rex.focus_new_session("block:agent", "feat-a").unwrap();
         assert_eq!(
             hint.as_deref(),
-            Some("Rex.app stays put: open wm-feat-a from its sidebar or workmux dashboard.")
+            Some("Rex.app stays put: to see feat-a, press Enter on its row in workmux dashboard.")
         );
         assert!(fake.calls(" do ").is_empty(), "{:?}", fake.calls(" do "));
         assert_eq!(fake.calls("session.focus_block").len(), 1);

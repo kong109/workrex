@@ -5,6 +5,8 @@ mod appearance;
 mod background;
 mod events;
 mod preview;
+#[cfg(test)]
+mod rex_jump_tests;
 mod types;
 mod worktrees;
 
