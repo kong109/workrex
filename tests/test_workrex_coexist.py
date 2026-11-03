@@ -118,7 +118,7 @@ def test_setup_then_uninstall_leaves_upstream_hooks_byte_identical(
             assert path.read_bytes() == before, path
 
     output = run_uninstall(mux_server, workmux_exe_path)
-    assert "Kept the directories upstream workmux shares" in output
+    assert "Kept the directories workmux shares" in output
 
     for path, before in upstream.items():
         assert path.read_bytes() == before, path

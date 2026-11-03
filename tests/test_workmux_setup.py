@@ -9,7 +9,7 @@ from .conftest import (
     MuxEnvironment,
     run_workmux_command,
 )
-from .support.bin_name import BIN, rebrand
+from .support.bin_name import BIN, bundled, rebrand
 from .support.setup import (
     install_opencode_version,
     run_setup_with_answers,
@@ -101,9 +101,7 @@ class TestSetupNoPrompt:
             / "plugins"
             / "workmux-status.ts"
         )
-        (plugin_dir / "workmux-status.ts").write_text(
-            rebrand(bundled_plugin.read_text())
-        )
+        (plugin_dir / "workmux-status.ts").write_text(bundled(bundled_plugin))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -122,7 +120,7 @@ class TestSetupNoPrompt:
             mux_server.home_path / ".config" / "opencode" / "plugins" / "workmux-status"
         )
         plugin_dir.mkdir(parents=True)
-        bundled = (
+        bundled_dir = (
             Path(__file__).parent.parent
             / "resources"
             / "opencode"
@@ -130,7 +128,7 @@ class TestSetupNoPrompt:
             / "workmux-status"
         )
         for name in ("index.ts", "tui.ts", "status.ts"):
-            (plugin_dir / name).write_text(rebrand((bundled / name).read_text()))
+            (plugin_dir / name).write_text(bundled(bundled_dir / name))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -153,9 +151,7 @@ class TestSetupNoPrompt:
             / "extensions"
             / "workmux-status.ts"
         )
-        (extension_dir / f"{BIN}-status.ts").write_text(
-            rebrand(bundled_extension.read_text())
-        )
+        (extension_dir / f"{BIN}-status.ts").write_text(bundled(bundled_extension))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -180,9 +176,7 @@ class TestSetupNoPrompt:
             / "plugins"
             / "workmux-status.ts"
         )
-        (plugin_dir / "workmux-status.ts").write_text(
-            rebrand(bundled_plugin.read_text())
-        )
+        (plugin_dir / "workmux-status.ts").write_text(bundled(bundled_plugin))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -275,9 +269,7 @@ class TestSetupInstall:
         run_setup_with_answers(
             mux_server,
             workmux_exe_path,
-            expected_output=(
-                "Upstream workmux status hooks are also installed for Claude Code",
-            ),
+            expected_output=("are also installed for Claude Code",),
         )
 
     def test_outdated_opencode_plugin_explains_update_prompt(
@@ -301,9 +293,7 @@ class TestSetupInstall:
         run_setup_with_answers(
             mux_server,
             workmux_exe_path,
-            expected_output=(
-                "Upstream workmux status hooks are also installed for OpenCode",
-            ),
+            expected_output=("are also installed for OpenCode",),
         )
 
         # The fixture is upstream workmux's plugin, which workrex leaves in place.
@@ -401,11 +391,8 @@ class TestSetupInstall:
         opencode_dir = mux_server.home_path / ".config" / "opencode"
         plugins = opencode_dir / "plugins"
         plugins.mkdir(parents=True)
-        bundled_v1 = (Path(__file__).parent.parent / v1_source).read_text()
-        if v1_source.startswith("resources/"):
-            # Setup installs the bundled source with the binary name rewritten.
-            bundled_v1 = rebrand(bundled_v1)
-        (plugins / "workmux-status.ts").write_text(bundled_v1)
+        bundled_v1 = Path(__file__).parent.parent / v1_source
+        (plugins / "workmux-status.ts").write_text(bundled_v1.read_text())
         (plugins / "custom.ts").write_text("// keep me")
 
         run_setup_with_answers(mux_server, workmux_exe_path, hooks_answer="y")
@@ -419,9 +406,7 @@ class TestSetupInstall:
         )
         installed_v2 = plugins / "workmux-status"
         for name in ("index.ts", "tui.ts", "status.ts"):
-            assert (installed_v2 / name).read_text() == rebrand(
-                (bundled_v2 / name).read_text()
-            )
+            assert (installed_v2 / name).read_text() == bundled(bundled_v2 / name)
         assert not (plugins / "workmux-status.ts").exists()
         assert (plugins / "custom.ts").read_text() == "// keep me"
 

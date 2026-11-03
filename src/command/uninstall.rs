@@ -70,15 +70,14 @@ pub fn run(dry_run: bool) -> Result<()> {
     // Phase 3: XDG dirs (only cache + state, NOT config)
     println!("  {} Data directories", style("●").dim());
     let dirs = [("Cache", xdg::cache_dir()), ("State", xdg::state_dir())];
-    let shared = crate::bin_name::BIN != "workmux";
-    if shared {
+    if crate::bin_name::BIN != "workmux" {
         println!(
-            "    {} Kept the directories upstream workmux shares",
+            "    {} Kept the directories workmux shares",
             style("~").dim()
         );
     }
 
-    for (label, path_result) in dirs.iter().filter(|_| !shared) {
+    for (label, path_result) in dirs.iter().filter(|_| crate::bin_name::BIN == "workmux") {
         match path_result {
             Ok(path) if path.exists() => {
                 if dry_run {

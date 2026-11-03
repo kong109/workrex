@@ -14,6 +14,11 @@ def rebrand(text: str) -> str:
     )
 
 
+def bundled(path: Path) -> str:
+    """A bundled source as `setup` installs it."""
+    return rebrand(path.read_text())
+
+
 def hook_bin() -> str:
     """The command the bundled Claude Code status hooks run, as `setup` installs them."""
     plugin = Path(__file__).parents[2] / ".claude-plugin" / "plugin.json"
