@@ -12,7 +12,10 @@ def check(tag: str, version: str, tmp_path: Path) -> subprocess.CompletedProcess
     cargo = tmp_path / "Cargo.toml"
     cargo.write_text(f'[package]\nname = "workmux"\nversion = "{version}"\n')
     return subprocess.run(
-        [SCRIPT, tag, cargo], capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"}
+        [SCRIPT, tag, cargo],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin"},
     )
 
 
