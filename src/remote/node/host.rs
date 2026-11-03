@@ -921,6 +921,23 @@ mod tests {
     }
 
     #[test]
+    fn a_server_that_fails_its_version_too_is_named_by_its_opening_read() {
+        let fake = Fake::new(&[
+            ("server.status", "!Error: the opening read was refused"),
+            (
+                "call?server.version",
+                "!Error: the version call was refused",
+            ),
+        ]);
+        let message = format!("{:#}", fake.open(true).err().expect("open fails"));
+        assert!(
+            message.contains("the opening read was refused"),
+            "{message}"
+        );
+        assert!(!message.contains("version call"), "{message}");
+    }
+
+    #[test]
     fn a_supported_server_whose_opening_read_is_not_an_object_says_so() {
         let fake = Fake::new(&[("server.status", "[\"a changed envelope\"]")]);
         let message = format!("{:#}", fake.open(true).err().expect("open fails"));
