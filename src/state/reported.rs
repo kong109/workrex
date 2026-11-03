@@ -35,6 +35,10 @@ pub(crate) struct ReportedRecord {
     #[serde(deserialize_with = "Option::deserialize")]
     pub hook_seen: Option<HookVersion>,
     pub workdir: PathBuf,
+    /// The linked worktree that adoption found the pane in. Only adopted
+    /// records have one, and an adopted record without it is not read.
+    #[serde(default)]
+    pub worktree: Option<PathBuf>,
     pub window_name: Option<String>,
     pub session_name: Option<String>,
 }
@@ -100,7 +104,7 @@ impl<'a> Reports<'a> {
         apply(state, reported);
         if let ReportedStatus::Agent { status, since } = reported {
             self.shown
-                .push(record(state, status, since, Some(hook_seen)));
+                .push(record(state, status, since, Some(hook_seen), None));
         }
     }
 
@@ -127,17 +131,18 @@ impl<'a> Reports<'a> {
         let worktrees = current_linked_worktrees();
         candidates
             .into_iter()
-            .filter(|(_, live, _, _)| within(&worktrees, &live.working_dir))
-            .map(|(pane_id, live, status, since)| {
+            .filter_map(|(pane_id, live, status, since)| {
+                let worktree = containing(&worktrees, &live.working_dir)?.clone();
                 let state = self.adopted_state(pane_id, live, status, since, boot_id);
-                self.shown.push(record(&state, status, since, None));
+                self.shown
+                    .push(record(&state, status, since, None, Some(worktree)));
                 let mut pane = state.to_agent_pane(
                     live.session.clone().unwrap_or_default(),
                     live.window.clone().unwrap_or_default(),
                 );
                 pane.window_index = live.window_index;
                 pane.window_id = live.window_id.clone().unwrap_or_default();
-                pane
+                Some(pane)
             })
             .collect()
     }
@@ -222,8 +227,10 @@ impl<'a> Reports<'a> {
 /// A record holds the result of a live merge against one hook status, so it
 /// applies only while the hook still has that status. Once the hook changes,
 /// the hook stands until a pruning reader merges the live report again and
-/// rewrites the record. An adopted record applies only while its worktree
-/// still exists, since adoption required it.
+/// rewrites the record. An adopted record, which has no hook state, is read
+/// only while the worktree that adoption found its pane in is still a linked
+/// worktree, with its `.git` file and its repository's entry for it naming
+/// each other.
 pub(crate) fn with_reported(
     store: &StateStore,
     agents: Vec<AgentState>,
@@ -250,7 +257,10 @@ pub(crate) fn with_reported(
     merged.extend(
         records
             .into_values()
-            .filter(|record| record.hook_seen.is_none() && record.workdir.is_dir())
+            .filter(|record| {
+                record.hook_seen.is_none()
+                    && record.worktree.as_deref().is_some_and(is_linked_worktree)
+            })
             .map(|record| AgentState {
                 workdir: record.workdir,
                 status: Some(record.status),
@@ -278,6 +288,7 @@ fn record(
     status: AgentStatus,
     since: u64,
     hook_seen: Option<HookVersion>,
+    worktree: Option<PathBuf>,
 ) -> ReportedRecord {
     ReportedRecord {
         pane_key: state.pane_key.clone(),
@@ -285,6 +296,7 @@ fn record(
         since,
         hook_seen,
         workdir: state.workdir.clone(),
+        worktree,
         window_name: state.window_name.clone(),
         session_name: state.session_name.clone(),
     }
@@ -338,9 +350,31 @@ fn current_linked_worktrees() -> Vec<PathBuf> {
         .collect()
 }
 
-fn within(worktrees: &[PathBuf], dir: &Path) -> bool {
+fn containing<'a>(worktrees: &'a [PathBuf], dir: &Path) -> Option<&'a PathBuf> {
     let dir = resolved(dir);
-    worktrees.iter().any(|worktree| dir.starts_with(worktree))
+    worktrees
+        .iter()
+        .filter(|worktree| dir.starts_with(worktree))
+        .max_by_key(|worktree| worktree.components().count())
+}
+
+/// Whether `root` is a linked worktree: its `.git` is a file naming an
+/// administrative directory whose `gitdir` file names `root` back. A main
+/// worktree's `.git` is a directory, so it does not count.
+fn is_linked_worktree(root: &Path) -> bool {
+    let Ok(dot_git) = fs::read_to_string(root.join(".git")) else {
+        return false;
+    };
+    let Some(admin) = dot_git.trim_end().strip_prefix("gitdir: ") else {
+        return false;
+    };
+    let admin = root.join(admin);
+    fs::read_to_string(admin.join("gitdir")).is_ok_and(|back| {
+        admin
+            .join(back.trim_end())
+            .parent()
+            .is_some_and(|back| resolved(back) == root)
+    })
 }
 
 fn resolved(path: &Path) -> PathBuf {

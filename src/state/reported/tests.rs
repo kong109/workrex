@@ -1,9 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use super::fake_mux::{FakeMux, INSTANCE};
 use super::*;
 use crate::multiplexer::AgentStatus;
+use crate::test_support::{init_repo, run_git};
 
 pub(crate) fn hooked(pane_id: &str, status: AgentStatus, status_ts: u64) -> AgentState {
     AgentState {
@@ -268,7 +269,7 @@ fn a_reader_keeps_the_records_of_another_server() {
     let dir = store.reported_dir();
     fs::create_dir_all(&dir).unwrap();
     let other_path = dir.join(other.pane_key.to_filename());
-    let other_record = record(&other, AgentStatus::Working, 100, None);
+    let other_record = record(&other, AgentStatus::Working, 100, None, None);
     fs::write(&other_path, serde_json::to_vec(&other_record).unwrap()).unwrap();
     store
         .upsert_agent(&hooked("block:a", AgentStatus::Waiting, 100))
@@ -308,7 +309,13 @@ fn a_record_applies_only_while_the_hook_has_the_status_it_was_merged_against() {
     let (_dir, store) = temp_store();
     let seen = hooked("block:a", AgentStatus::Working, 100);
     store.upsert_agent(&seen).unwrap();
-    let done = record(&seen, AgentStatus::Done, 90, Some(HookVersion::of(&seen)));
+    let done = record(
+        &seen,
+        AgentStatus::Done,
+        90,
+        Some(HookVersion::of(&seen)),
+        None,
+    );
     store_record(&store, &done);
     assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
 
@@ -328,18 +335,60 @@ fn a_record_applies_only_while_the_hook_has_the_status_it_was_merged_against() {
     assert_eq!(last_done_status(&store), Some(AgentStatus::Working));
 }
 
+/// A repository in `dir` with one linked worktree, returned as git lists it.
+fn linked_worktree(dir: &Path) -> (PathBuf, PathBuf) {
+    let repo = dir.join("repo");
+    fs::create_dir(&repo).unwrap();
+    init_repo(&repo);
+    let worktree = dir.join("wt");
+    run_git(
+        &repo,
+        &["worktree", "add", "-q", worktree.to_str().unwrap()],
+    );
+    (
+        repo.canonicalize().unwrap(),
+        worktree.canonicalize().unwrap(),
+    )
+}
+
+type Unlink = fn(&Path, &Path);
+
+fn remove_worktree(repo: &Path, worktree: &Path) {
+    run_git(
+        repo,
+        &["worktree", "remove", "--force", worktree.to_str().unwrap()],
+    );
+}
+
+fn adopted_in(worktree: &Path, workdir: PathBuf) -> ReportedRecord {
+    let mut adopted = hooked("block:b", AgentStatus::Done, 200);
+    adopted.workdir = workdir;
+    record(
+        &adopted,
+        AgentStatus::Done,
+        200,
+        None,
+        Some(worktree.to_path_buf()),
+    )
+}
+
 #[test]
 fn a_record_merged_against_a_hook_that_is_gone_is_not_read() {
     let (dir, store) = temp_store();
+    let (_repo, worktree) = linked_worktree(dir.path());
     let seen = hooked("block:a", AgentStatus::Working, 100);
     store.upsert_agent(&seen).unwrap();
     store_record(
         &store,
-        &record(&seen, AgentStatus::Done, 200, Some(HookVersion::of(&seen))),
+        &record(
+            &seen,
+            AgentStatus::Done,
+            200,
+            Some(HookVersion::of(&seen)),
+            None,
+        ),
     );
-    let mut adopted = hooked("block:b", AgentStatus::Done, 200);
-    adopted.workdir = dir.path().to_path_buf();
-    store_record(&store, &record(&adopted, AgentStatus::Done, 200, None));
+    store_record(&store, &adopted_in(&worktree, worktree.clone()));
     store.delete_agent(&seen.pane_key).unwrap();
 
     let merged = with_reported(&store, store.list_all_agents().unwrap()).unwrap();
@@ -351,16 +400,116 @@ fn a_record_merged_against_a_hook_that_is_gone_is_not_read() {
 }
 
 #[test]
-fn an_adopted_record_is_not_read_once_its_worktree_is_gone() {
-    let (_dir, store) = temp_store();
-    let worktree = tempfile::tempdir().unwrap();
-    let mut adopted = hooked("block:b", AgentStatus::Done, 200);
-    adopted.workdir = worktree.path().to_path_buf();
-    store_record(&store, &record(&adopted, AgentStatus::Done, 200, None));
-    assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
+fn an_adopted_record_is_read_while_its_worktree_is_linked_though_its_directory_is_gone() {
+    let (dir, store) = temp_store();
+    let (_repo, worktree) = linked_worktree(dir.path());
+    let sub = worktree.join("sub");
+    fs::create_dir(&sub).unwrap();
+    store_record(&store, &adopted_in(&worktree, sub.clone()));
 
-    worktree.close().unwrap();
+    fs::remove_dir(&sub).unwrap();
+
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
+}
+
+#[test]
+fn an_adopted_record_is_not_read_once_its_worktree_is_no_longer_linked() {
+    let unlink: [(&str, Unlink); 9] = [
+        ("removed", remove_worktree),
+        ("moved", |repo, worktree| {
+            let to = worktree.with_file_name("moved");
+            let args = [
+                "worktree",
+                "move",
+                worktree.to_str().unwrap(),
+                to.to_str().unwrap(),
+            ];
+            run_git(repo, &args);
+        }),
+        ("unregistered, directory kept", |repo, worktree| {
+            fs::remove_file(worktree.join(".git")).unwrap();
+            run_git(repo, &["worktree", "prune"]);
+        }),
+        ("entry gone, .git file kept", |repo, _| {
+            fs::remove_dir_all(repo.join(".git/worktrees/wt")).unwrap();
+        }),
+        ("plain directory at the path", |repo, worktree| {
+            remove_worktree(repo, worktree);
+            fs::create_dir(worktree).unwrap();
+        }),
+        ("file at the path", |repo, worktree| {
+            remove_worktree(repo, worktree);
+            fs::write(worktree, "").unwrap();
+        }),
+        ("symlink to the main worktree", |repo, worktree| {
+            remove_worktree(repo, worktree);
+            std::os::unix::fs::symlink(repo, worktree).unwrap();
+        }),
+        ("symlink to another linked worktree", |repo, worktree| {
+            remove_worktree(repo, worktree);
+            let other = worktree.with_file_name("other");
+            run_git(repo, &["worktree", "add", "-q", other.to_str().unwrap()]);
+            std::os::unix::fs::symlink(other, worktree).unwrap();
+        }),
+        ("dangling symlink", |repo, worktree| {
+            remove_worktree(repo, worktree);
+            std::os::unix::fs::symlink(repo.join("missing"), worktree).unwrap();
+        }),
+    ];
+    for (case, unlink) in unlink {
+        let (dir, store) = temp_store();
+        let (repo, worktree) = linked_worktree(dir.path());
+        store_record(&store, &adopted_in(&worktree, worktree.clone()));
+        assert_eq!(last_done_status(&store), Some(AgentStatus::Done), "{case}");
+
+        unlink(&repo, &worktree);
+
+        assert_eq!(last_done_status(&store), None, "{case}");
+    }
+}
+
+#[test]
+fn an_adopted_record_in_a_main_worktree_is_not_read() {
+    let (dir, store) = temp_store();
+    let (repo, _worktree) = linked_worktree(dir.path());
+
+    store_record(&store, &adopted_in(&repo, repo.clone()));
+
     assert_eq!(last_done_status(&store), None);
+}
+
+#[test]
+fn an_adopted_record_from_before_worktrees_were_stored_is_read_once_rewritten() {
+    let (dir, store) = temp_store();
+    let (_repo, worktree) = linked_worktree(dir.path());
+    let current = adopted_in(&worktree, worktree.clone());
+    let mut old = serde_json::to_value(&current).unwrap();
+    old.as_object_mut().unwrap().remove("worktree");
+    let reported = store.reported_dir();
+    fs::create_dir_all(&reported).unwrap();
+    fs::write(
+        reported.join(current.pane_key.to_filename()),
+        serde_json::to_vec(&old).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(last_done_status(&store), None);
+
+    let mux = FakeMux {
+        live: HashMap::from([("block:b".to_string(), live(worktree.to_str().unwrap()))]),
+        reported: HashMap::from([(
+            "block:b".to_string(),
+            ReportedStatus::Agent {
+                status: AgentStatus::Done,
+                since: 200,
+            },
+        )]),
+        during_query: Mutex::new(None),
+    };
+    let mut reports = Reports::new(&mux, INSTANCE);
+    reports.shown.push(current);
+    reports.persist(&store, &mux.live).unwrap();
+
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
 }
 
 #[test]
@@ -368,7 +517,7 @@ fn a_record_without_the_hook_it_was_merged_against_is_not_read() {
     let (_dir, store) = temp_store();
     let seen = hooked("block:a", AgentStatus::Working, 100);
     store.upsert_agent(&seen).unwrap();
-    let mut old = serde_json::to_value(record(&seen, AgentStatus::Done, 200, None)).unwrap();
+    let mut old = serde_json::to_value(record(&seen, AgentStatus::Done, 200, None, None)).unwrap();
     old.as_object_mut().unwrap().remove("hook_seen");
     let dir = store.reported_dir();
     fs::create_dir_all(&dir).unwrap();
