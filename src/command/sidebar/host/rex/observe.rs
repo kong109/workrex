@@ -115,6 +115,10 @@ impl Observed {
                     pane.title = (!title.is_empty()).then(|| title.clone());
                 }
             }
+            // The next fill asks Rex again, which skips an exited program.
+            Event::ChildExited { block_id, .. } => {
+                cache.panes.remove(block_id);
+            }
             _ => {}
         }
     }
@@ -350,6 +354,27 @@ mod tests {
         assert_eq!(pane.current_command.as_deref(), Some("claude"));
         assert_eq!(pane.working_dir, PathBuf::from("/repo/wt"));
         assert_eq!(pane.title.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn an_exited_program_leaves_the_snapshot() {
+        let view: View = serde_json::from_str(MULTI_WINDOW).unwrap();
+        let block = view.windows[0].block_ids().next().unwrap().to_string();
+        let observed = Observed::default();
+        {
+            let mut cache = observed.cache.lock().unwrap();
+            cache.views.insert(view.session_id.clone(), view.clone());
+            cache.panes.insert(block.clone(), pane("/repo"));
+        }
+        let exited = format!(
+            r#"{{"type":"session_event","payload":{{"session_id":"{}","event":{{"type":"block_event","payload":{{"block_id":"{block}","creator_name":"com.superlogical.terminal","name":"child_exited","payload":{{"exit_code":3}}}}}}}}}}"#,
+            view.session_id
+        );
+
+        observed.apply(&Event::parse(&exited).unwrap());
+
+        let snapshot = observed.snapshot(&Options::default(), &Persisted::default());
+        assert!(!snapshot.live_panes.contains_key(&block));
     }
 
     #[test]

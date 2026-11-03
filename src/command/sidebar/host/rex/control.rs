@@ -788,7 +788,9 @@ impl Follower {
                     sizes.insert(block_id.clone(), *columns);
                     touch(&mut sessions, session_id);
                 }
-                Event::ProgramStatusChanged { .. } | Event::ProgramStatusRemoved { .. } => {
+                Event::ProgramStatusChanged { .. }
+                | Event::ProgramStatusRemoved { .. }
+                | Event::ChildExited { .. } => {
                     wake = true;
                 }
                 _ => {}

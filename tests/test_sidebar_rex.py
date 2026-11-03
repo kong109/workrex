@@ -557,3 +557,37 @@ def test_a_refused_jump_shows_the_fix_in_the_sidebar_until_a_key(rex):
     assert poll_until(
         lambda: "Remote Control" not in capture(env, sidebar), timeout=2
     ), capture(env, sidebar)
+
+
+def test_an_agent_that_exits_leaves_the_running_sidebar(rex):
+    env = rex
+    go = env.tmp_path / "go"
+    made = json.loads(
+        env.mux_command(
+            ["run", "-s", env.session_id, "--keep-open", "--shell=none"]
+            + ["--focus=false", "-c", str(env.tmp_path), "--json", "--"]
+            + ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.1; done; exit 3"]
+        ).stdout
+    )
+    agent = made["block_ids"][0]
+    subprocess.run(
+        [str(env.workmux), "set-window-status", "working"],
+        env=dict(env.env, REX_SESSION=env.session_id, REX_BLOCK=agent),
+        cwd=env.tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    cli(env, "on")
+    window = windows(env, env.session_id)[made["window_id"]]
+    sidebar = placed_sidebar(window)["block_id"]
+    assert poll_until(
+        lambda: SPINNER.search(capture(env, sidebar)) is not None, timeout=3
+    ), capture(env, sidebar)
+
+    go.touch()
+    assert poll_until(
+        lambda: "last_exit" in (env.block_call(agent, "process") or {}), timeout=5
+    )
+    assert poll_until(
+        lambda: SPINNER.search(capture(env, sidebar)) is None, timeout=3
+    ), capture(env, sidebar)

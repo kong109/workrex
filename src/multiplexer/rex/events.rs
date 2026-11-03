@@ -66,6 +66,11 @@ pub(crate) enum Event {
         session_id: String,
         block_id: String,
     },
+    /// The block's program exited. A block opened with `--keep-open` stays.
+    ChildExited {
+        session_id: String,
+        block_id: String,
+    },
 }
 
 /// The foreground process of a terminal block.
@@ -160,6 +165,10 @@ impl Event {
                 })
             }
             "program_status_removed" => Some(Self::ProgramStatusRemoved {
+                session_id,
+                block_id,
+            }),
+            "child_exited" => Some(Self::ChildExited {
                 session_id,
                 block_id,
             }),
