@@ -290,14 +290,14 @@ def test_attach_relay_reconnects_and_closes_with_the_session(
     # tmux prints "detached" before the relay handles its exit and accepts
     # reconnect keys. Wait for the relay's own prompt.
     wait_for_pane_output(mux_server, window, "r reconnect", timeout=10)
-    mux_server.tmux(["send-keys", "-t", window, "-l", "echo dropped"])
+    mux_server.tmux(["send-keys", "-t", window, "-l", "echo skipped"])
     mux_server.tmux(["send-keys", "-t", window, "r"])
     assert poll_until(lambda: len(client_pids()) == 1, timeout=15)
     wait_for_relay(mux_server, node, window, ex_id, "AGAIN")
     mux_server.tmux(["send-keys", "-t", window, "echo rejoined", "Enter"])
     wait_for_pane_output(mux_server, window, "rejoined", timeout=10)
     content = mux_server.capture_pane(window) or ""
-    assert "echo droppedecho" not in content
+    assert "echo skippedecho" not in content
 
     # Exit messages of earlier attaches don't pile up and scroll the screen.
     node.tmux("detach-client", "-s", f"={ex_id}-0")
