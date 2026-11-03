@@ -87,13 +87,9 @@ rex.action{
       rex.session.close_layer{ layer_id = existing_layer }
     end
 
-    -- REX_CLIENT makes the dashboard switch sessions through the app that
-    -- opened it. The origin block stands in for the dashboard's own block
-    -- when the dashboard asks which pane is active.
+    -- The origin block stands in for the dashboard's own block when the
+    -- dashboard asks which pane is active.
     local command = { "env" }
-    if ctx.client_id ~= nil then
-      table.insert(command, "REX_CLIENT=" .. ctx.client_id)
-    end
     if ctx.block_id ~= nil then
       table.insert(command, "WORKREX_REX_ORIGIN_BLOCK=" .. ctx.block_id)
     end

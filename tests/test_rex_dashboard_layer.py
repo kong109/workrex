@@ -214,17 +214,19 @@ HINT = "Turn on Remote Control in Rex Settings to jump across tabs"
 
 
 def refusing_rex(workmux: Path, tmp_path: Path) -> Path:
-    """A workmux whose rex reports a connected app and fails session.select,
-    as Rex.app does with Remote Control off. Rex sets REX_BIN_DIR in every
-    block, so the wrapper overrides it."""
+    """A workmux whose rex reports an app that owns every block and is
+    attached to the sessions `attach_app` names, and
+    fails session.select, as Rex.app does with Remote Control off. Rex sets
+    REX_BIN_DIR in every block, so the wrapper overrides it."""
     bin_dir = tmp_path / "refusing-rex"
     bin_dir.mkdir()
-    app = '{"clients":[{"client_id":"client:app","info":{"kind":"app"}}]}'
+    owner = '{"columns":80,"rows":24,"owner":"client:app"}'
     (bin_dir / "rex").write_text(
         f"""#!/bin/sh
 case "$*" in
   *session.select*) echo 'Error: client refused session.select' >&2; exit 1 ;;
-  *client.list*) echo '{app}'; exit 0 ;;
+  *client.list*) cat '{bin_dir / "clients.json"}'; exit 0 ;;
+  *"block call -b "*" size "*) echo '{owner}'; exit 0 ;;
 esac
 exec '{rex_binary()}' "$@"
 """
@@ -235,6 +237,20 @@ exec '{rex_binary()}' "$@"
     for program in ("rex", "workmux"):
         (bin_dir / program).chmod(0o755)
     return bin_dir / "workmux"
+
+
+def attach_app(rex: RexServer, session: str) -> None:
+    clients = {
+        "clients": [
+            {
+                "client_id": "client:app",
+                "info": {"kind": "app"},
+                "session_ids": [session],
+            }
+        ]
+    }
+    bin_dir = Path(rex.env["WORKREX_BIN"]).parent
+    (bin_dir / "clients.json").write_text(json.dumps(clients))
 
 
 @pytest.fixture
@@ -269,6 +285,7 @@ def open_dashboard_over(rex: RexServer, session: str, shell: str) -> str:
 
 def test_refused_jump_within_the_tab_still_lands_and_closes(refusing: RexServer):
     session, shell, agent = refusing.split_session(agent_command(refusing))
+    attach_app(refusing, session)
     dashboard = open_dashboard_over(refusing, session, shell)
 
     refusing.cli("send-key", "-b", dashboard, "Enter")
@@ -283,6 +300,7 @@ def test_refused_jump_to_another_tab_keeps_the_dashboard_and_its_hint(
     session, shell, _ = refusing.split_session(
         agent_command(refusing), agent_in_new_tab=True
     )
+    attach_app(refusing, session)
     dashboard = open_dashboard_over(refusing, session, shell)
 
     refusing.cli("send-key", "-b", dashboard, "Enter")

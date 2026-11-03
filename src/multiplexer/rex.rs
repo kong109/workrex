@@ -7,6 +7,7 @@ use std::io::Write;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -46,6 +47,7 @@ macro_rules! rex_id {
 rex_id!(SessionId);
 rex_id!(WindowId);
 rex_id!(BlockId);
+rex_id!(ClientId);
 
 impl BlockId {
     fn parse(pane_id: &str) -> Result<Self> {
@@ -201,7 +203,8 @@ impl ServerVersion {
 /// Whether a server's API is supported, or the error naming why not.
 type Verdict = std::result::Result<(), String>;
 
-/// One verdict per server address for the life of the process.
+/// One verdict per server for the life of the process, keyed on the
+/// canonical address so every spelling of one socket shares it.
 static SERVER_VERDICTS: LazyLock<Mutex<HashMap<Option<String>, Verdict>>> =
     LazyLock::new(Default::default);
 
@@ -266,6 +269,8 @@ struct FormatReport {
 struct SizeReport {
     columns: u32,
     rows: u32,
+    #[serde(default)]
+    owner: Option<ClientId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -312,11 +317,24 @@ struct ClientList {
 
 #[derive(Debug, Deserialize)]
 struct ClientEntry {
-    client_id: String,
+    client_id: ClientId,
     #[serde(default)]
     info: Option<ClientInfo>,
     #[serde(default)]
     connection_state: String,
+    #[serde(default)]
+    session_ids: Option<Vec<SessionId>>,
+}
+
+impl ClientList {
+    fn is_app_attached_to(&self, client: &ClientId, session: &SessionId) -> bool {
+        self.clients.iter().any(|entry| {
+            &entry.client_id == client
+                && entry.connection_state != "lost"
+                && entry.info.as_ref().is_some_and(|info| info.kind == "app")
+                && entry.session_ids.iter().flatten().any(|id| id == session)
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -334,8 +352,6 @@ struct WindowRecord {
     primary: bool,
     session_id: SessionId,
     window_id: WindowId,
-    #[serde(default)]
-    block_id: Option<BlockId>,
 }
 
 /// A recorded window that still exists, with its current labels.
@@ -528,10 +544,59 @@ pub fn in_rex_terminal() -> bool {
     std::env::var("REX_BLOCK").is_ok_and(|value| !value.is_empty())
 }
 
+/// The Rex pane workmux runs in, from `REX_SESSION` and `REX_BLOCK`.
+#[derive(Debug, Default)]
+struct Caller {
+    session: Option<SessionId>,
+    block: Option<BlockId>,
+    /// The block a dashboard layer was opened over.
+    origin: Option<BlockId>,
+}
+
+impl Caller {
+    fn from_env() -> Self {
+        Self {
+            session: std::env::var("REX_SESSION")
+                .ok()
+                .filter(|id| id.starts_with("session:"))
+                .map(SessionId),
+            block: std::env::var("REX_BLOCK")
+                .ok()
+                .and_then(|id| BlockId::parse(&id).ok()),
+            origin: layer::origin_block(),
+        }
+    }
+}
+
+/// What came of asking Rex.app to show a window.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AppSwitch {
+    Shown,
+    Refused,
+    NoApp,
+}
+
+impl AppSwitch {
+    /// The switch is a courtesy: when the app refuses, the fix is printed
+    /// and the command carries on.
+    fn hint_if_refused(self) {
+        if self == AppSwitch::Refused && !REMOTE_CONTROL_HINT.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "Rex.app did not switch to the window. Turn on Remote Control \
+                 in Rex Settings so workrex can switch the app."
+            );
+        }
+    }
+}
+
+/// Printed once per process, so a loop over panes repeats no hint.
+static REMOTE_CONTROL_HINT: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug)]
 pub struct RexBackend {
     program: String,
     server: Option<String>,
+    caller: Caller,
     endpoint: OnceLock<String>,
     block_sessions: Mutex<HashMap<BlockId, SessionId>>,
 }
@@ -558,6 +623,7 @@ impl RexBackend {
         Self {
             program,
             server,
+            caller: Caller::from_env(),
             endpoint: OnceLock::new(),
             block_sessions: Mutex::new(HashMap::new()),
         }
@@ -583,13 +649,17 @@ impl RexBackend {
     /// Fails every call on a server whose API this backend does not speak,
     /// before a changed response shape surfaces as a parse error.
     fn ensure_supported(&self) -> CallResult<()> {
+        let key = self
+            .server
+            .as_deref()
+            .map(|server| canonical_unix_endpoint(server).unwrap_or_else(|| server.to_string()));
         let mut verdicts = SERVER_VERDICTS.lock().unwrap();
-        let verdict = match verdicts.get(&self.server) {
+        let verdict = match verdicts.get(&key) {
             Some(verdict) => verdict.clone(),
             None => {
                 let output = self.exec(&["api", "call", "server.version"], None)?;
                 let verdict = Self::parse::<ServerVersion>("server.version", &output)?.check();
-                verdicts.insert(self.server.clone(), verdict.clone());
+                verdicts.insert(key, verdict.clone());
                 verdict
             }
         };
@@ -703,22 +773,9 @@ impl RexBackend {
             .collect())
     }
 
-    fn env_session() -> Option<SessionId> {
-        std::env::var("REX_SESSION")
-            .ok()
-            .filter(|id| id.starts_with("session:"))
-            .map(SessionId)
-    }
-
-    fn env_block() -> Option<BlockId> {
-        std::env::var("REX_BLOCK")
-            .ok()
-            .and_then(|id| BlockId::parse(&id).ok())
-    }
-
     fn current_view(&self) -> Result<Option<SessionView>> {
-        match Self::env_session() {
-            Some(session) => found(self.view(&session)),
+        match &self.caller.session {
+            Some(session) => found(self.view(session)),
             None => Ok(None),
         }
     }
@@ -846,9 +903,9 @@ impl RexBackend {
                     .map(|window| (view.session_id.clone(), window.window_id.clone()))
             })
             .collect();
-        let current = Self::env_block().and_then(|block| {
+        let current = self.caller.block.as_ref().and_then(|block| {
             views.iter().find_map(|view| {
-                let window = view.window_of(&block)?;
+                let window = view.window_of(block)?;
                 Some((view.session_id.clone(), window.window_id.clone()))
             })
         });
@@ -867,10 +924,8 @@ impl RexBackend {
         Ok(())
     }
 
-    /// The app keeps its own shown tab, which `session.focus_window` and
-    /// `session.focus_block` leave alone, so the app is asked to show it.
     fn focus_window(&self, session: &SessionId, window: &WindowId) -> Result<()> {
-        self.show_on_app(session, Some(window))?;
+        self.show_on_app(session, Some(window)).hint_if_refused();
         self.api::<Value>(
             "session.focus_window",
             json!({ "session_id": session.as_str(), "window_id": window.as_str() }),
@@ -945,28 +1000,68 @@ impl RexBackend {
         Ok(pane_info(session, window, &process, title))
     }
 
-    fn select_session(&self, session: &SessionId) -> Result<()> {
-        self.show_on_app(session, None)
-    }
-
-    fn show_on_app(&self, session: &SessionId, window: Option<&WindowId>) -> Result<()> {
-        let Some(app) = self.app_client()? else {
-            return Ok(());
+    /// The Rex.app client showing the caller's pane, as tmux moves only the
+    /// clients that show the caller's session. The app attaches to every
+    /// session in its sidebar, so attachment alone does not say it shows
+    /// the caller. It also claims each terminal block it shows, and the claim
+    /// outlasts the view, so an app that showed the caller's pane earlier
+    /// still counts.
+    fn app_showing_caller(&self) -> Result<Option<ClientId>> {
+        let (Some(session), Some(block)) = (&self.caller.session, &self.caller.block) else {
+            return Ok(None);
         };
-        let session = format!("session_id={}", session.as_str());
-        let window = window.map(|window| format!("window_id={}", window.as_str()));
-        let mut args = vec!["-C", app.as_str(), "do", "session.select", session.as_str()];
-        args.extend(window.as_deref());
-        self.run(&args, None).map_err(anyhow::Error::from).context(
-            "The Rex app did not switch to the window. Turn on Remote Control in \
-             Rex Settings so workrex can show it",
-        )?;
-        Ok(())
+        let Some(owner) = found(self.block_call::<SizeReport>(block, "size", json!({})))?
+            .and_then(|size| size.owner)
+        else {
+            return Ok(None);
+        };
+        let clients: ClientList = self.api("client.list", json!({}))?;
+        Ok(clients.is_app_attached_to(&owner, session).then_some(owner))
     }
 
-    fn shell_select_session_cmd(&self, session: &SessionId) -> String {
-        let selector = format!("session_id={}", session.as_str());
-        self.shell_rex_cmd(&["do", "session.select", &selector])
+    fn select_args(app: &ClientId, session: &SessionId, window: Option<&WindowId>) -> Vec<String> {
+        let mut args = vec![
+            "-C".to_string(),
+            app.as_str().to_string(),
+            "do".to_string(),
+            "session.select".to_string(),
+            format!("session_id={}", session.as_str()),
+        ];
+        args.extend(window.map(|window| format!("window_id={}", window.as_str())));
+        args
+    }
+
+    /// Rex.app keeps its own shown tab, which `session.focus_window` and
+    /// `session.focus_block` leave alone, so the app is asked to show it.
+    fn show_on_app(&self, session: &SessionId, window: Option<&WindowId>) -> AppSwitch {
+        let app = match self.app_showing_caller() {
+            Ok(Some(app)) => app,
+            Ok(None) => return AppSwitch::NoApp,
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), "rex: app lookup failed");
+                return AppSwitch::NoApp;
+            }
+        };
+        let args = Self::select_args(&app, session, window);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        match self.run(&args, None) {
+            Ok(_) => AppSwitch::Shown,
+            Err(error) => {
+                tracing::warn!(error = %error, "rex: app refused session.select");
+                AppSwitch::Refused
+            }
+        }
+    }
+
+    fn shell_select_session_cmd(&self, session: &SessionId) -> Result<String> {
+        Ok(match self.app_showing_caller()? {
+            Some(app) => {
+                let args = Self::select_args(&app, session, None);
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                self.shell_rex_cmd(&args)
+            }
+            None => "true".to_string(),
+        })
     }
 
     fn records_dir(&self) -> Result<PathBuf> {
@@ -1057,7 +1152,7 @@ impl RexBackend {
     fn labeled_session(&self, label: &str) -> Result<Option<SessionId>> {
         Ok(prefer_current(
             self.sessions_labeled(label)?,
-            Self::env_session().as_ref(),
+            self.caller.session.as_ref(),
         ))
     }
 
@@ -1073,19 +1168,21 @@ impl Multiplexer for RexBackend {
     }
 
     fn is_running(&self) -> Result<bool> {
+        // An unsupported server is running: the calls that follow name why
+        // workrex cannot use it, where callers that read `false` as "no
+        // server" would hide it.
         match self.run(&["api", "call", "session.list"], None) {
-            Ok(_) => Ok(true),
-            Err(CallError::Unsupported(message)) => Err(anyhow!(message)),
+            Ok(_) | Err(CallError::Unsupported(_)) => Ok(true),
             Err(_) => Ok(false),
         }
     }
 
     fn current_window_id(&self) -> Result<Option<String>> {
-        let (Some(view), Some(block)) = (self.current_view()?, Self::env_block()) else {
+        let (Some(view), Some(block)) = (self.current_view()?, &self.caller.block) else {
             return Ok(None);
         };
         Ok(view
-            .window_of(&block)
+            .window_of(block)
             .map(|window| window.window_id.as_str().to_string()))
     }
 
@@ -1098,7 +1195,11 @@ impl Multiplexer for RexBackend {
     }
 
     fn current_session_id(&self) -> Result<Option<String>> {
-        Ok(Self::env_session().map(|session| session.0))
+        Ok(self
+            .caller
+            .session
+            .as_ref()
+            .map(|session| session.0.clone()))
     }
 
     fn shell_close_window_by_id_guard_cmd(&self, id: &str) -> Result<String> {
@@ -1118,17 +1219,21 @@ impl Multiplexer for RexBackend {
     }
 
     fn current_pane_id(&self) -> Option<String> {
-        Self::env_block().map(|block| block.0)
+        self.caller.block.as_ref().map(|block| block.0.clone())
     }
 
     fn active_pane_id(&self) -> Option<String> {
         let view = self.current_or_only_view().ok()?;
-        layer::active_block(&view, Self::env_block().as_ref(), layer::origin_block())
-            .map(|block| block.0)
+        layer::active_block(
+            &view,
+            self.caller.block.as_ref(),
+            self.caller.origin.clone(),
+        )
+        .map(|block| block.0)
     }
 
     fn get_client_active_pane_path(&self) -> Result<PathBuf> {
-        let block = match Self::env_block() {
+        let block = match self.caller.block.clone() {
             Some(block) => block,
             None => BlockId::parse(
                 &self
@@ -1222,25 +1327,25 @@ impl Multiplexer for RexBackend {
     }
 
     fn set_window_ownership(&self, pane_id: &str, token: &str, is_primary: bool) -> Result<()> {
-        let (target, block) = if pane_id.starts_with("window:") {
-            (self.resolve("window", pane_id)?, None)
+        let is_window = pane_id.starts_with("window:");
+        let target = if is_window {
+            self.resolve("window", pane_id)?
         } else {
-            let block = BlockId::parse(pane_id)?;
-            (self.resolve("block", block.as_str())?, Some(block))
+            self.resolve("block", BlockId::parse(pane_id)?.as_str())?
         };
         let target = target.ok_or_else(|| anyhow!("Rex target {pane_id} not found"))?;
-        let window_id = match &block {
-            Some(_) => target
+        let window_id = if is_window {
+            WindowId(pane_id.to_string())
+        } else {
+            target
                 .window_id
-                .ok_or_else(|| anyhow!("Rex block {pane_id} is not in a window"))?,
-            None => WindowId(pane_id.to_string()),
+                .ok_or_else(|| anyhow!("Rex block {pane_id} is not in a window"))?
         };
         self.write_record(&WindowRecord {
             token: token.to_string(),
             primary: is_primary,
             session_id: target.session_id,
             window_id,
-            block_id: block,
         })
     }
 
@@ -1296,7 +1401,8 @@ impl Multiplexer for RexBackend {
 
     fn switch_to_session(&self, prefix: &str, name: &str) -> Result<()> {
         let session = self.first_session_labeled(&util::prefixed(prefix, name))?;
-        self.select_session(&session)
+        self.show_on_app(&session, None).hint_if_refused();
+        Ok(())
     }
 
     fn session_exists(&self, full_name: &str) -> Result<bool> {
@@ -1414,7 +1520,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn shell_switch_session_cmd(&self, full_name: &str) -> Result<String> {
-        Ok(self.shell_select_session_cmd(&self.first_session_labeled(full_name)?))
+        self.shell_select_session_cmd(&self.first_session_labeled(full_name)?)
     }
 
     fn shell_kill_session_cmd(&self, full_name: &str) -> Result<String> {
@@ -1441,10 +1547,10 @@ impl Multiplexer for RexBackend {
     }
 
     fn current_window_name(&self) -> Result<Option<String>> {
-        let (Some(view), Some(block)) = (self.current_view()?, Self::env_block()) else {
+        let (Some(view), Some(block)) = (self.current_view()?, &self.caller.block) else {
             return Ok(None);
         };
-        Ok(view.window_of(&block).map(|window| window.label.clone()))
+        Ok(view.window_of(block).map(|window| window.label.clone()))
     }
 
     fn get_all_window_names(&self) -> Result<HashSet<String>> {
@@ -1498,8 +1604,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn select_pane(&self, pane_id: &str) -> Result<()> {
-        let here = layer::origin_block().or_else(Self::env_block);
-        self.jump_to_block(&BlockId::parse(pane_id)?, here.as_ref())
+        self.jump_to_block(&BlockId::parse(pane_id)?)
     }
 
     fn zoom_pane(&self, pane_id: &str) -> Result<()> {
@@ -1774,6 +1879,7 @@ mod tests {
     const VERSION_MAC: &str = include_str!("testdata/rex_server_version_mac.json");
     const VERSION_LINUX: &str = include_str!("testdata/rex_server_version_linux.json");
     const VIEW_WITH_FLOATING: &str = include_str!("testdata/rex_session_view_floating.json");
+    const CLIENT_LIST: &str = include_str!("testdata/rex_client_list.json");
 
     fn view() -> SessionView {
         serde_json::from_str(VIEW).unwrap()
@@ -2081,50 +2187,433 @@ mod tests {
         assert_eq!(prefer_current(Vec::<&str>::new(), Some(&"a")), None);
     }
 
-    fn fake_rex(dir: &Path, cases: &str) -> RexBackend {
-        use std::os::unix::fs::PermissionsExt;
-        let program = dir.join("rex");
-        std::fs::write(
-            &program,
-            format!(
-                "#!/bin/sh\ncase \"$*\" in\n\
-                 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
-                 {cases}\n\
-                 *) echo \"unexpected: $*\" >&2; exit 1;; esac\n"
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-        RexBackend {
-            program: program.display().to_string(),
-            ..RexBackend::for_server(&format!("unix://{}/s.sock", dir.display()))
+    /// A `rex` that answers each call with the reply of the first pattern
+    /// its arguments and stdin match, and logs every call.
+    struct FakeRex {
+        dir: tempfile::TempDir,
+        rex: RexBackend,
+    }
+
+    impl FakeRex {
+        fn new(cases: &[(&str, &str)]) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let mut arms = String::new();
+            for (index, (pattern, reply)) in cases.iter().enumerate() {
+                let file = dir.path().join(format!("reply{index}"));
+                let arm = match reply.strip_prefix('!') {
+                    Some(stderr) => {
+                        std::fs::write(&file, stderr).unwrap();
+                        format!("cat '{}' >&2; exit 1", file.display())
+                    }
+                    None => {
+                        std::fs::write(&file, reply).unwrap();
+                        format!("cat '{}'", file.display())
+                    }
+                };
+                // A space would end the case pattern; `?` matches it.
+                let pattern = pattern.replace(' ', "?");
+                arms.push_str(&format!("  *{pattern}*) {arm};;\n"));
+            }
+            let program = dir.path().join("rex");
+            std::fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
+                     case \"$call\" in\n\
+                     {arms}\
+                     \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
+                     \x20 *) echo \"unexpected: $call\" >&2; exit 1;;\nesac\n",
+                    log = dir.path().join("calls").display(),
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let rex = RexBackend {
+                program: program.display().to_string(),
+                caller: Caller::default(),
+                ..RexBackend::for_server(&format!("unix://{}/s.sock", dir.path().display()))
+            };
+            Self { dir, rex }
+        }
+
+        fn in_pane(mut self, session: &str, block: &str) -> Self {
+            self.rex.caller = Caller {
+                session: Some(SessionId(session.into())),
+                block: Some(BlockId(block.into())),
+                origin: None,
+            };
+            self
+        }
+
+        fn calls(&self, needle: &str) -> Vec<String> {
+            std::fs::read_to_string(self.dir.path().join("calls"))
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| line.contains(needle))
+                .map(str::to_string)
+                .collect()
         }
     }
 
     #[test]
     fn empty_text_is_not_sent() {
-        let dir = tempfile::tempdir().unwrap();
-        let rex = fake_rex(dir.path(), "");
-        rex.send_text_fragment("block:01a19e59-43d8-72fd-860c-3a1d6f183cc3", "")
+        let fake = FakeRex::new(&[]);
+        fake.rex
+            .send_text_fragment("block:01a19e59-43d8-72fd-860c-3a1d6f183cc3", "")
             .unwrap();
+        assert!(fake.calls("write").is_empty());
+    }
+
+    const APP: &str = "client:app-1";
+    const CALLER_SESSION: &str = "session:b";
+    const CALLER_BLOCK: &str = "block:caller";
+
+    fn clients(apps: &[(&str, &[&str])]) -> String {
+        let clients: Vec<Value> = apps
+            .iter()
+            .map(|(id, sessions)| {
+                json!({
+                    "client_id": id,
+                    "info": { "kind": "app" },
+                    "connection_state": "connected",
+                    "session_ids": sessions,
+                })
+            })
+            .chain([json!({ "client_id": "client:cli", "info": { "kind": "cli" } })])
+            .collect();
+        json!({ "clients": clients }).to_string()
+    }
+
+    fn owner(client: &str) -> String {
+        json!({ "columns": 80, "rows": 24, "owner": client }).to_string()
+    }
+
+    /// The caller's pane is in session B, window W, and `apps` are connected.
+    fn app_fake(owner_id: &str, apps: &[(&str, &[&str])], select: &str) -> FakeRex {
+        let resolved = json!({ "results": [{
+            "status": "resolved",
+            "target": { "session_id": "session:b", "window_id": "window:w" },
+        }] })
+        .to_string();
+        let view = json!({
+            "session_id": "session:b",
+            "label": "b",
+            "windows": [{ "window_id": "window:w", "label": "wm-feat", "layers": [] }],
+        })
+        .to_string();
+        FakeRex::new(&[
+            ("block call -b block:caller size", &owner(owner_id)),
+            ("client.list", &clients(apps)),
+            ("session.select", select),
+            ("target.resolve", &resolved),
+            ("session.view", &view),
+            ("session.focus_block", "{}"),
+            ("session.focus_window", "{}"),
+            ("session.list", &session_list(&[("session:b", "b")])),
+        ])
+        .in_pane(CALLER_SESSION, CALLER_BLOCK)
     }
 
     #[test]
-    fn a_refused_app_switch_names_remote_control() {
-        let dir = tempfile::tempdir().unwrap();
-        let rex = fake_rex(
-            dir.path(),
-            r#"*client.list*) echo '{"clients":[{"client_id":"client:1","info":{"kind":"app"}}]}';;
-               *session.select*) echo 'Error: client refused the action' >&2; exit 1;;"#,
+    fn switching_panes_shows_the_window_on_the_app_showing_the_caller() {
+        let fake = app_fake(APP, &[(APP, &[CALLER_SESSION])], "{}");
+        fake.rex.select_pane("block:agent").unwrap();
+        assert_eq!(
+            fake.calls("session.select"),
+            [format!(
+                "--autostart=false -S unix://{}/s.sock -C client:app-1 do session.select \
+                 session_id=session:b window_id=window:w ",
+                fake.dir.path().display()
+            )]
         );
-        let error = rex
-            .show_on_app(
-                &SessionId("session:1".into()),
-                Some(&WindowId("window:2".into())),
-            )
-            .unwrap_err();
-        let message = format!("{error:#}");
-        assert!(message.contains("Turn on Remote Control"), "{message}");
-        assert!(message.contains("client refused the action"), "{message}");
+        assert_eq!(fake.calls("session.focus_block").len(), 1);
+    }
+
+    #[test]
+    fn selecting_a_window_shows_it_on_the_app_showing_the_caller() {
+        let fake = app_fake(APP, &[(APP, &[CALLER_SESSION])], "{}");
+        fake.rex
+            .select_window_target(&WindowTarget::with_id(
+                "wm-feat".into(),
+                None,
+                "window:w".into(),
+            ))
+            .unwrap();
+        let selects = fake.calls("session.select");
+        assert_eq!(selects.len(), 1, "{selects:?}");
+        assert!(
+            selects[0].ends_with(
+                "-C client:app-1 do session.select session_id=session:b window_id=window:w "
+            ),
+            "{selects:?}"
+        );
+        assert_eq!(fake.calls("session.focus_window").len(), 1);
+    }
+
+    #[test]
+    fn a_refused_app_switch_does_not_fail_the_command() {
+        let fake = app_fake(
+            APP,
+            &[(APP, &[CALLER_SESSION])],
+            "!Error: Remote Control is off for this client (code=refused)",
+        );
+        fake.rex.select_pane("block:agent").unwrap();
+        fake.rex
+            .select_window_target(&WindowTarget::with_id(
+                "wm-feat".into(),
+                None,
+                "window:w".into(),
+            ))
+            .unwrap();
+        fake.rex.switch_to_session("", "b").unwrap();
+        assert_eq!(fake.calls("session.select").len(), 3);
+        assert_eq!(fake.calls("session.focus_block").len(), 1);
+        assert_eq!(fake.calls("session.focus_window").len(), 1);
+    }
+
+    #[test]
+    fn with_two_apps_only_the_one_showing_the_caller_is_asked() {
+        let other = "client:app-2";
+        let fake = app_fake(
+            other,
+            &[(APP, &[CALLER_SESSION]), (other, &[CALLER_SESSION])],
+            "{}",
+        );
+        fake.rex.select_pane("block:agent").unwrap();
+        let selects = fake.calls(" do ");
+        assert_eq!(selects.len(), 1, "{selects:?}");
+        assert!(
+            selects[0].contains("-C client:app-2 do session.select"),
+            "{selects:?}"
+        );
+    }
+
+    #[test]
+    fn a_background_add_leaves_an_app_showing_another_session_alone() {
+        // The app attaches to every session in its sidebar, the caller's
+        // included, but another client owns the caller's never-shown block.
+        let fake = app_fake("client:cli", &[(APP, &[CALLER_SESSION, "session:c"])], "{}");
+        fake.rex.select_pane("block:agent").unwrap();
+        assert!(fake.calls("session.select").is_empty());
+        assert_eq!(fake.calls("session.focus_block").len(), 1);
+
+        // An app that owns the block but is not attached to the session.
+        let fake = app_fake(APP, &[(APP, &["session:c"])], "{}");
+        fake.rex.select_pane("block:agent").unwrap();
+        assert!(fake.calls("session.select").is_empty());
+    }
+
+    #[test]
+    fn outside_a_rex_pane_no_app_is_moved() {
+        let mut fake = app_fake(APP, &[(APP, &[CALLER_SESSION])], "{}");
+        fake.rex.caller = Caller::default();
+        fake.rex.select_pane("block:agent").unwrap();
+        assert!(fake.calls("session.select").is_empty());
+        assert!(fake.calls("client.list").is_empty());
+    }
+
+    #[test]
+    fn client_list_reads_which_sessions_each_app_attached() {
+        let list: ClientList = serde_json::from_str(CLIENT_LIST).unwrap();
+        let app = ClientId("client:01a19e67-c952-7923-a102-902347c1c3c1".into());
+        // A background session the app never showed: attachment alone does
+        // not say which session the app shows.
+        let background = SessionId("session:01a19ef9-36fc-7b33-82f2-f92a49dfc4a4".into());
+        assert!(list.is_app_attached_to(&app, &background));
+        assert!(!list.is_app_attached_to(&app, &SessionId("session:other".into())));
+        let cli = ClientId("client:01a19ef9-3f38-7055-b9ee-b34985685609".into());
+        assert!(!list.is_app_attached_to(&cli, &background));
+    }
+
+    fn view_json(session: &str, label: &str, windows: &[(&str, &str)]) -> String {
+        let windows: Vec<Value> = windows
+            .iter()
+            .map(|(id, label)| json!({ "window_id": id, "label": label, "layers": [] }))
+            .collect();
+        json!({ "session_id": session, "label": label, "windows": windows }).to_string()
+    }
+
+    fn session_list(sessions: &[(&str, &str)]) -> String {
+        let sessions: Vec<Value> = sessions
+            .iter()
+            .map(|(id, label)| json!({ "session_id": id, "label": label }))
+            .collect();
+        json!({ "sessions": sessions }).to_string()
+    }
+
+    #[test]
+    fn killing_a_repeated_window_label_closes_one_window() {
+        let fake = FakeRex::new(&[
+            ("session.list", &session_list(&[("session:s", "proj")])),
+            (
+                "session.view",
+                &view_json(
+                    "session:s",
+                    "proj",
+                    &[("window:1", "wm-x"), ("window:2", "wm-x")],
+                ),
+            ),
+            ("session.close_window", "{}"),
+        ]);
+        fake.rex.kill_window("wm-x").unwrap();
+        let closes = fake.calls("session.close_window");
+        assert_eq!(closes.len(), 1, "{closes:?}");
+        assert!(closes[0].contains("window:1"), "{closes:?}");
+    }
+
+    #[test]
+    fn killing_a_repeated_session_label_destroys_one_session() {
+        let fake = FakeRex::new(&[
+            (
+                "session.list",
+                &session_list(&[("session:1", "dup"), ("session:2", "dup")]),
+            ),
+            ("session.destroy", "{}"),
+        ]);
+        fake.rex.kill_session("dup").unwrap();
+        let destroys = fake.calls("session.destroy");
+        assert_eq!(destroys.len(), 1, "{destroys:?}");
+        assert!(destroys[0].contains("session:1"), "{destroys:?}");
+    }
+
+    #[test]
+    fn a_window_under_a_parent_session_is_found_in_that_session() {
+        let fake = FakeRex::new(&[
+            (
+                "session.list",
+                &session_list(&[("session:main", "main"), ("session:rp", "ReviewParents")]),
+            ),
+            (
+                "session.view*session:main",
+                &view_json("session:main", "main", &[("window:m", "wm-a")]),
+            ),
+            (
+                "session.view*session:rp",
+                &view_json("session:rp", "ReviewParents", &[("window:r", "wm-a")]),
+            ),
+        ]);
+        let target = WindowTarget::new("wm-a".into(), Some("ReviewParents".into()));
+        assert_eq!(
+            fake.rex.target_window(&target).unwrap(),
+            Some((SessionId("session:rp".into()), WindowId("window:r".into())))
+        );
+    }
+
+    #[test]
+    fn the_pane_scans_report_tiled_terminals_only() {
+        let onboarding: SessionView = serde_json::from_str(VIEW_WITH_ONBOARDING).unwrap();
+        let floating: SessionView = serde_json::from_str(VIEW_WITH_FLOATING).unwrap();
+        let resolve = |view: &SessionView| {
+            json!({ "results": [{
+                "status": "resolved",
+                "target": { "session_id": view.session_id.as_str() },
+            }] })
+            .to_string()
+        };
+        let onboarding_block = "block:01a19eaf-63fc-73f7-98de-5f7544025b81";
+        let floating_block = "block:01a19e98-1751-7d75-a63c-2b457e2bb6ee";
+        let fake = FakeRex::new(&[
+            (
+                "session.list",
+                &session_list(&[
+                    (onboarding.session_id.as_str(), "onb"),
+                    (floating.session_id.as_str(), "wr5a"),
+                ]),
+            ),
+            (
+                &format!("session.view*{}", onboarding.session_id.as_str()),
+                VIEW_WITH_ONBOARDING,
+            ),
+            (
+                &format!("session.view*{}", floating.session_id.as_str()),
+                VIEW_WITH_FLOATING,
+            ),
+            (
+                &format!("target.resolve*{onboarding_block}"),
+                &resolve(&onboarding),
+            ),
+            (
+                &format!("target.resolve*{floating_block}"),
+                &resolve(&floating),
+            ),
+            (" process ", PROCESS),
+            (" title ", r#"{"title":""}"#),
+        ]);
+        let mut panes: Vec<_> = fake
+            .rex
+            .get_all_live_pane_info()
+            .unwrap()
+            .into_keys()
+            .collect();
+        panes.sort();
+        assert_eq!(
+            panes,
+            [
+                "block:01a19e95-dd18-7392-8f63-ecbea2aaae97",
+                "block:01a19eb3-bba0-7877-a324-fd904ebf9873",
+            ]
+        );
+        assert!(
+            fake.rex
+                .get_live_pane_info(onboarding_block)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            fake.rex
+                .get_live_pane_info(floating_block)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn listing_on_an_unsupported_server_names_the_server() {
+        let repo = tempfile::tempdir().unwrap();
+        crate::test_support::init_repo(repo.path());
+        let fake = FakeRex::new(&[(
+            "server.version",
+            r#"{"rex_version":"0.0.1-old","api_revision":3}"#,
+        )]);
+        assert!(fake.rex.is_running().unwrap());
+        let Err(error) = crate::workflow::list_in(
+            &crate::config::Config::default(),
+            &fake.rex,
+            false,
+            &[],
+            Some(repo.path()),
+        ) else {
+            panic!("listing succeeded on an unsupported server");
+        };
+        assert!(
+            format!("{error:#}").contains("unsupported Rex 0.0.1-old"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn every_spelling_of_one_socket_shares_one_version_check() {
+        let fake = FakeRex::new(&[("session.list", &session_list(&[]))]);
+        let socket = fake.dir.path().join("s.sock");
+        std::fs::write(&socket, "").unwrap();
+        let parent = fake
+            .dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string();
+        for spelling in [
+            format!("unix://{parent}/s.sock"),
+            format!("unix://{parent}//./s.sock"),
+        ] {
+            let rex = RexBackend {
+                program: fake.rex.program.clone(),
+                ..RexBackend::for_server(&spelling)
+            };
+            rex.sessions().unwrap();
+        }
+        assert_eq!(fake.calls("server.version").len(), 1);
     }
 }

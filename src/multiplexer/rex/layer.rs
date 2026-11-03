@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{BlockId, ClientEntry, ClientList, RexBackend, SessionView, WindowId};
+use super::{AppSwitch, BlockId, RexBackend, SessionView, WindowId};
 
 const REMOTE_CONTROL_HINT: &str = "Turn on Remote Control in Rex Settings to jump across tabs";
 
@@ -14,27 +14,6 @@ pub(super) enum LayerKind {
     #[default]
     #[serde(other)]
     Other,
-}
-
-impl ClientEntry {
-    fn is_live_app(&self) -> bool {
-        self.info.as_ref().is_some_and(|info| info.kind == "app") && self.connection_state != "lost"
-    }
-}
-
-/// The app that opened the dashboard (`REX_CLIENT`) while it is still
-/// connected, else the app that connected last. Only apps qualify: `-C`
-/// aimed at any other client waits forever.
-fn pick_app(clients: Vec<ClientEntry>, preferred: Option<&str>) -> Option<String> {
-    let mut apps: Vec<String> = clients
-        .into_iter()
-        .filter(ClientEntry::is_live_app)
-        .map(|client| client.client_id)
-        .collect();
-    if let Some(index) = preferred.and_then(|id| apps.iter().position(|app| app == id)) {
-        return Some(apps.swap_remove(index));
-    }
-    apps.pop()
 }
 
 /// The block that was focused when the dashboard action opened its layer.
@@ -67,19 +46,12 @@ pub(super) fn active_block(
 }
 
 impl RexBackend {
-    pub(super) fn app_client(&self) -> Result<Option<String>> {
-        let list: ClientList = self.api("client.list", json!({}))?;
-        Ok(pick_app(
-            list.clients,
-            std::env::var("REX_CLIENT").ok().as_deref(),
-        ))
-    }
-
-    /// Shows the block's tab on the app, then focuses the block. `here` is
-    /// the block the user is in, whose tab the app shows. When the app
-    /// refuses to switch tabs (Remote Control off), a block in that same tab
-    /// is still focused; any other jump fails and leaves focus alone.
-    pub(super) fn jump_to_block(&self, block: &BlockId, here: Option<&BlockId>) -> Result<()> {
+    /// Shows the block's tab on the app, then focuses the block. When the
+    /// app refuses to switch tabs (Remote Control off), the dashboard layer
+    /// still reaches a block in the tab it is open over; any other jump from
+    /// it fails with a hint short enough for its footer and leaves focus
+    /// alone. Outside the layer, the jump goes on as other commands do.
+    pub(super) fn jump_to_block(&self, block: &BlockId) -> Result<()> {
         let target = self
             .resolve("block", block.as_str())?
             .ok_or_else(|| anyhow!("Rex block {} not found", block.as_str()))?;
@@ -87,10 +59,14 @@ impl RexBackend {
             .lock()
             .unwrap()
             .insert(block.clone(), target.session_id.clone());
-        if let Err(refused) = self.show_on_app(&target.session_id, target.window_id.as_ref())
-            && (target.window_id.is_none() || target.window_id != self.window_of(here)?)
-        {
-            return Err(refused.context(REMOTE_CONTROL_HINT));
+        match self.show_on_app(&target.session_id, target.window_id.as_ref()) {
+            AppSwitch::Refused if self.caller.origin.is_some() => {
+                let here = self.caller.origin.as_ref();
+                if target.window_id.is_none() || target.window_id != self.window_of(here)? {
+                    return Err(anyhow!(REMOTE_CONTROL_HINT));
+                }
+            }
+            switch => switch.hint_if_refused(),
         }
         self.block_session_call(
             "session.focus_block",
@@ -112,10 +88,10 @@ impl RexBackend {
     /// Focuses the block the dashboard was opened over. A layer whose
     /// program exits hands focus to the last block of the tab instead.
     pub(super) fn return_to_origin(&self) {
-        if let Some(origin) = origin_block() {
+        if let Some(origin) = &self.caller.origin {
             let _ = self.block_session_call(
                 "session.focus_block",
-                &origin,
+                origin,
                 json!({ "block_id": origin.as_str() }),
             );
         }
@@ -124,6 +100,7 @@ impl RexBackend {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Caller, SessionId};
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -131,7 +108,6 @@ mod tests {
     const LAYER_VIEW: &str = include_str!("../testdata/rex_session_view_dashboard_layer.json");
     const APP_CLIENTS: &str = include_str!("../testdata/rex_client_list.json");
     const NO_APP_CLIENTS: &str = include_str!("../testdata/rex_client_list_no_app.json");
-    const TWO_APP_CLIENTS: &str = include_str!("../testdata/rex_client_list_two_apps.json");
     const SERVER_VERSION: &str = include_str!("../testdata/rex_server_version_mac.json");
     const DASHBOARD: &str = "block:01a19e98-1751-7d75-a63c-2b457e2bb6ee";
     const SHELL: &str = "block:01a19e95-dd18-7392-8f63-ecbea2aaae97";
@@ -139,7 +115,8 @@ mod tests {
     const AGENT_SESSION: &str = "session:agent";
     const AGENT_WINDOW: &str = "window:agent";
     const APP: &str = "client:01a19e67-c952-7923-a102-902347c1c3c1";
-    const LATER_APP: &str = "client:01a1a0c2-0000-7000-8000-000000000002";
+    /// A session `APP` is attached to in `APP_CLIENTS`.
+    const HERE_SESSION: &str = "session:01a19a0d-248b-7036-a995-09504a4b77e2";
     const HERE_IN_AGENT_TAB: &str = "block:here-in-agent-tab";
     const HERE_ELSEWHERE: &str = "block:here-elsewhere";
 
@@ -153,7 +130,8 @@ mod tests {
 
     /// A `rex` that logs each call's arguments and input, one line per call,
     /// and answers the calls a jump makes. `HERE_IN_AGENT_TAB` resolves to
-    /// the agent's window, any other block to another window.
+    /// the agent's window, any other block to another window. `APP` owns
+    /// every block, as Rex.app owns the dashboard layer it opened.
     struct FakeRex {
         dir: tempfile::TempDir,
     }
@@ -185,6 +163,7 @@ case "$* $input" in
   *target.resolve*{AGENT}\"*) echo '{{"results":[{{"status":"resolved","target":{{"session_id":"{AGENT_SESSION}","window_id":"{AGENT_WINDOW}"}}}}]}}' ;;
   *target.resolve*{HERE_IN_AGENT_TAB}*) echo '{{"results":[{{"status":"resolved","target":{{"session_id":"{AGENT_SESSION}","window_id":"{AGENT_WINDOW}"}}}}]}}' ;;
   *target.resolve*) echo '{{"results":[{{"status":"resolved","target":{{"session_id":"session:other","window_id":"window:other"}}}}]}}' ;;
+  *"block call"*size*) echo '{{"columns":80,"rows":24,"owner":"{APP}"}}' ;;
   *client.list*) cat "$d/clients.json" ;;
   *server.version*) cat "$d/version.json" ;;
   *session.select*) {select} ;;
@@ -200,9 +179,10 @@ esac
             Self { dir }
         }
 
-        fn backend(&self) -> RexBackend {
+        fn backend(&self, caller: Caller) -> RexBackend {
             RexBackend {
                 program: self.dir.path().join("rex").display().to_string(),
+                caller,
                 ..RexBackend::for_server(&format!("unix://{}/s.sock", self.dir.path().display()))
             }
         }
@@ -211,12 +191,30 @@ esac
             let log = fs::read_to_string(self.dir.path().join("log")).unwrap_or_default();
             log.lines()
                 .filter(|line| {
-                    !["target.resolve", "client.list", "server.version"]
+                    ["target.resolve", "client.list", "server.version", " size "]
                         .iter()
-                        .any(|method| line.contains(method))
+                        .all(|method| !line.contains(method))
                 })
                 .map(str::to_string)
                 .collect()
+        }
+    }
+
+    /// The dashboard in its layer, opened over `origin`.
+    fn in_dashboard(origin: &str) -> Caller {
+        Caller {
+            session: Some(SessionId(HERE_SESSION.into())),
+            block: Some(block(DASHBOARD)),
+            origin: Some(block(origin)),
+        }
+    }
+
+    /// A program in the `here` pane itself, with no dashboard layer.
+    fn in_pane(here: &str) -> Caller {
+        Caller {
+            session: Some(SessionId(HERE_SESSION.into())),
+            block: Some(block(here)),
+            origin: None,
         }
     }
 
@@ -229,25 +227,29 @@ esac
         assert!(call.contains(&format!(r#""block_id":"{AGENT}""#)), "{call}");
     }
 
-    fn select_call(app: &str) -> String {
-        format!("-C {app} do session.select session_id={AGENT_SESSION} window_id={AGENT_WINDOW} ")
+    fn select_call() -> String {
+        format!("-C {APP} do session.select session_id={AGENT_SESSION} window_id={AGENT_WINDOW} ")
     }
 
     #[test]
-    fn jump_shows_the_agents_session_and_window_on_the_app_before_focusing_it() {
+    fn jump_shows_the_agents_tab_on_the_app_then_focuses_it() {
         let rex = FakeRex::new(APP_CLIENTS);
-        rex.backend().jump_to_block(&block(AGENT), None).unwrap();
+        rex.backend(in_dashboard(HERE_ELSEWHERE))
+            .jump_to_block(&block(AGENT))
+            .unwrap();
 
         let calls = rex.calls();
         assert_eq!(calls.len(), 2, "{calls:?}");
-        assert!(calls[0].ends_with(&select_call(APP)), "{calls:?}");
+        assert!(calls[0].ends_with(&select_call()), "{calls:?}");
         assert_focuses_agent(&calls[1]);
     }
 
     #[test]
     fn jump_without_an_app_only_focuses() {
         let rex = FakeRex::new(NO_APP_CLIENTS);
-        rex.backend().jump_to_block(&block(AGENT), None).unwrap();
+        rex.backend(in_dashboard(HERE_ELSEWHERE))
+            .jump_to_block(&block(AGENT))
+            .unwrap();
 
         let calls = rex.calls();
         assert_eq!(calls.len(), 1, "{calls:?}");
@@ -255,67 +257,43 @@ esac
     }
 
     #[test]
-    fn jump_with_two_apps_targets_the_live_app_that_connected_last() {
-        let rex = FakeRex::new(TWO_APP_CLIENTS);
-        rex.backend().jump_to_block(&block(AGENT), None).unwrap();
-
-        let calls = rex.calls();
-        assert!(calls[0].ends_with(&select_call(LATER_APP)), "{calls:?}");
-    }
-
-    #[test]
-    fn refused_select_still_focuses_a_block_in_the_users_tab() {
+    fn refused_select_still_focuses_a_block_in_the_dashboards_tab() {
         let rex = FakeRex::refusing_select(APP_CLIENTS);
-        let here = block(HERE_IN_AGENT_TAB);
-
-        rex.backend()
-            .jump_to_block(&block(AGENT), Some(&here))
+        rex.backend(in_dashboard(HERE_IN_AGENT_TAB))
+            .jump_to_block(&block(AGENT))
             .unwrap();
+
         let calls = rex.calls();
         assert_eq!(calls.len(), 2, "{calls:?}");
-        assert!(calls[0].ends_with(&select_call(APP)), "{calls:?}");
+        assert!(calls[0].ends_with(&select_call()), "{calls:?}");
         assert_focuses_agent(&calls[1]);
-    }
-
-    fn assert_refused_without_focus(rex: &FakeRex, here: Option<&BlockId>) {
-        let err = rex
-            .backend()
-            .jump_to_block(&block(AGENT), here)
-            .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "Turn on Remote Control in Rex Settings to jump across tabs"
-        );
-        let calls = rex.calls();
-        assert_eq!(calls.len(), 1, "{calls:?}");
-        assert!(calls[0].ends_with(&select_call(APP)), "{calls:?}");
     }
 
     #[test]
     fn refused_select_for_another_tab_fails_with_the_hint_and_keeps_focus() {
         let rex = FakeRex::refusing_select(APP_CLIENTS);
-        assert_refused_without_focus(&rex, Some(&block(HERE_ELSEWHERE)));
+        let err = rex
+            .backend(in_dashboard(HERE_ELSEWHERE))
+            .jump_to_block(&block(AGENT))
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), REMOTE_CONTROL_HINT);
+        let calls = rex.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].ends_with(&select_call()), "{calls:?}");
     }
 
     #[test]
-    fn refused_select_from_an_unknown_tab_fails_and_keeps_focus() {
+    fn refused_select_outside_the_dashboard_still_focuses_another_tab() {
         let rex = FakeRex::refusing_select(APP_CLIENTS);
-        assert_refused_without_focus(&rex, None);
-    }
+        rex.backend(in_pane(HERE_ELSEWHERE))
+            .jump_to_block(&block(AGENT))
+            .unwrap();
 
-    #[test]
-    fn app_choice_prefers_the_app_that_opened_the_dashboard() {
-        let clients = || {
-            serde_json::from_str::<ClientList>(TWO_APP_CLIENTS)
-                .unwrap()
-                .clients
-        };
-        assert_eq!(pick_app(clients(), Some(APP)), Some(APP.to_string()));
-        assert_eq!(pick_app(clients(), None), Some(LATER_APP.to_string()));
-        let lost = "client:01a1a0c2-0000-7000-8000-000000000003";
-        let cli = "client:01a19e99-4682-783d-8b8d-c76ae0c3fa13";
-        assert_eq!(pick_app(clients(), Some(lost)), Some(LATER_APP.to_string()));
-        assert_eq!(pick_app(clients(), Some(cli)), Some(LATER_APP.to_string()));
+        let calls = rex.calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls[0].ends_with(&select_call()), "{calls:?}");
+        assert_focuses_agent(&calls[1]);
     }
 
     #[test]
