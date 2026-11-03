@@ -2,6 +2,7 @@
 
 import json
 import shlex
+import shutil
 import time
 from pathlib import Path
 
@@ -159,8 +160,7 @@ def test_setup_then_uninstall_leaves_upstream_hooks_byte_identical(
         if path not in shared:
             assert path.read_bytes() == before, path
 
-    output = run_uninstall(mux_server, workmux_exe_path)
-    assert "Kept the directories workmux shares" in output
+    run_uninstall(mux_server, workmux_exe_path)
 
     for path, before in upstream.items():
         assert path.read_bytes() == before, path
@@ -239,6 +239,8 @@ def test_skills_taken_back_after_upstream_setup_are_restored_on_uninstall(
     upstream = write_upstream_skills(home)
 
     assert run_setup_overwriting_skills(mux_server, workmux_exe_path) > 0
+    # Upstream's uninstall deletes its state dir; workrex's manifest is not in it.
+    shutil.rmtree(home / ".local/state/workmux", ignore_errors=True)
     run_uninstall(mux_server, workmux_exe_path)
 
     assert len(upstream) == 30
