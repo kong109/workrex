@@ -12,6 +12,7 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::bin_name::BIN;
 use crate::config::SplitDirection;
 
 use super::Multiplexer;
@@ -186,7 +187,7 @@ impl ServerVersion {
             return Ok(());
         }
         Err(format!(
-            "unsupported Rex {} (API revisions {} to {}), workmux supports Rex API revisions {} to {}",
+            "unsupported Rex {} (API revisions {} to {}), {BIN} supports Rex API revisions {} to {}",
             self.rex_version,
             theirs.start(),
             theirs.end(),
@@ -928,7 +929,7 @@ impl RexBackend {
             return Ok(self.view(&session)?);
         }
         Err(anyhow!(
-            "Cannot tell which Rex session to use. Run workmux inside a Rex pane \
+            "Cannot tell which Rex session to use. Run {BIN} inside a Rex pane \
              or set REX_SESSION."
         ))
     }
@@ -2269,9 +2270,10 @@ mod tests {
             serde_json::from_str(r#"{"rex_version":"0.0.1-old"}"#).unwrap();
         assert_eq!(
             ancient.check(),
-            Err("unsupported Rex 0.0.1-old (API revisions 0 to 0), \
-                 workmux supports Rex API revisions 8 to 9"
-                .to_string())
+            Err(format!(
+                "unsupported Rex 0.0.1-old (API revisions 0 to 0), \
+                 {BIN} supports Rex API revisions 8 to 9"
+            ))
         );
         let future: ServerVersion = serde_json::from_str(
             r#"{"rex_version":"0.1.0","api_min_revision":10,"api_revision":11}"#,
