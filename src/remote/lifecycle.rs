@@ -903,8 +903,10 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
         }
     };
     super::homecoming::finish_pending(&node, &record.ws_id);
-    // Observing adopts siblings, which may open this window meanwhile.
+    // Observing adopts siblings, which may open this window meanwhile,
+    // through a backend of its own, so this one's earlier reads predate it.
     super::observe::current_on(&node);
+    mux.forget_reads();
     if !window && window_target(mux, &record)?.is_some() {
         return switch(&record);
     }
