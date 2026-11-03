@@ -28,6 +28,7 @@
               --fish <($out/bin/workrex completions fish) \
               --zsh <($out/bin/workrex completions zsh)
           '';
+          meta.mainProgram = "workrex";
         };
       });
     };
