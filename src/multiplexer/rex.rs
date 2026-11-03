@@ -2674,6 +2674,81 @@ mod tests {
     }
 
     #[test]
+    fn a_process_change_does_not_reread_a_block_with_no_records() {
+        // A busy shell makes Rex send several `process_changed` a second.
+        let fake = FakeRex::new(&[
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", r#"{"foreground":{"pid":4242,"name":"zsh"}}"#),
+        ]);
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let process_changed = events::Event::ProcessChanged {
+            session_id: "session:1".into(),
+            block_id: block.into(),
+            foreground: None,
+        };
+        fake.write("status", r#"{"records":[]}"#);
+        fake.rex.program_statuses().follow(true);
+
+        assert_eq!(fake.rex.reported_status(block), None);
+        fake.rex.program_statuses().apply(&process_changed);
+        assert_eq!(fake.rex.reported_status(block), None);
+        assert_eq!(fake.calls("program_status").len(), 1, "no re-read");
+
+        fake.write("status", &status_json("working"));
+        fake.rex
+            .program_statuses()
+            .apply(&events::Event::ProgramStatusChanged {
+                session_id: "session:1".into(),
+                block_id: block.into(),
+                state: "working".into(),
+                kind: None,
+                app: None,
+            });
+        assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+        fake.rex.program_statuses().apply(&process_changed);
+        assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+        assert_eq!(
+            fake.calls("program_status").len(),
+            3,
+            "a record is read again"
+        );
+    }
+
+    #[test]
+    fn a_record_shows_once_its_owner_takes_the_foreground() {
+        // Rex can send an agent's first report before the process change
+        // that puts the agent in the foreground.
+        let fake = FakeRex::new(&[
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", "$cat \"$dir/process\""),
+        ]);
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let foreground = |pid: u32, name: &str| {
+            fake.write(
+                "process",
+                &json!({ "foreground": { "pid": pid, "name": name } }).to_string(),
+            );
+        };
+        let owner = json!({ "pid": 82590, "name": "Python" });
+        let record =
+            json!({ "state": "working", "updated_at": "2026-11-03T08:00:00Z", "owner": owner });
+        fake.write("status", &json!({ "records": [record] }).to_string());
+        foreground(4242, "zsh");
+        fake.rex.program_statuses().follow(true);
+
+        assert_eq!(shown_status(&fake.rex, block), None, "zsh is in front");
+        foreground(82590, "Python");
+        fake.rex
+            .program_statuses()
+            .apply(&events::Event::ProcessChanged {
+                session_id: "session:1".into(),
+                block_id: block.into(),
+                foreground: None,
+            });
+        assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+    }
+
+    #[test]
     fn a_look_at_one_pane_keeps_nothing_that_no_stream_drops() {
         // The sidebar daemon's backend reads this way until its event stream
         // connects and between streams. Reconcile's validate_agent_alive

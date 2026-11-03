@@ -157,15 +157,14 @@ pub(super) struct ProgramStatusCall(Result<Option<ProgramStatusReport>>);
 impl ProgramStatusCall {
     /// What `block` reported, given its foreground process, or `None` when
     /// the call failed. A block that closed reports nothing.
-    fn reported(
-        self,
-        block: &BlockId,
-        foreground: Option<&ProcessEntry>,
-    ) -> Option<Option<ReportedStatus>> {
+    fn reported(self, block: &BlockId, foreground: Option<&ProcessEntry>) -> Option<Entry> {
         match self.0 {
             Ok(report) => {
+                let report = report.unwrap_or_default();
+                let recorded = !report.records.is_empty();
                 let foreground = foreground.map(|fg| (fg.pid, fg.name.as_str()));
-                Some(report.and_then(|report| report.owned_by_foreground(foreground).reported()))
+                let reported = report.owned_by_foreground(foreground).reported();
+                Some(Entry { reported, recorded })
             }
             Err(error) => {
                 warn!(block = block.as_str(), %error, "rex: program_status failed");
@@ -187,7 +186,16 @@ struct Statuses {
     followed: bool,
     /// Counts drops, so a read that overlapped one is not kept.
     drops: u64,
-    reported: HashMap<BlockId, Option<ReportedStatus>>,
+    reported: HashMap<BlockId, Entry>,
+}
+
+/// What one block reported.
+#[derive(Debug, Clone, Copy)]
+struct Entry {
+    reported: Option<ReportedStatus>,
+    /// Whether Rex held any record for the block. A new foreground process
+    /// changes only what a record says, so it leaves an entry without one.
+    recorded: bool,
 }
 
 /// How a read reached a block.
@@ -211,7 +219,7 @@ impl ProgramStatuses {
     }
 
     fn get(&self, block: &BlockId) -> Option<Option<ReportedStatus>> {
-        self.lock().reported.get(block).copied()
+        self.lock().reported.get(block).map(|entry| entry.reported)
     }
 
     pub(super) fn begin(&self, read: Read) -> Reading {
@@ -221,10 +229,10 @@ impl ProgramStatuses {
         }
     }
 
-    fn keep(&self, block: &BlockId, reading: Reading, reported: Option<ReportedStatus>) {
+    fn keep(&self, block: &BlockId, reading: Reading, entry: Entry) {
         let mut statuses = self.lock();
         if statuses.drops == reading.drops && (statuses.followed || reading.read == Read::Scan) {
-            statuses.reported.insert(block.clone(), reported);
+            statuses.reported.insert(block.clone(), entry);
         }
     }
 
@@ -245,7 +253,9 @@ impl ProgramStatuses {
         statuses.reported.clear();
     }
 
-    /// Drop the entry of a block whose status `event` may have changed.
+    /// Drop the entry of a block whose status `event` may have changed, and
+    /// every read under way. A new foreground process leaves an entry read
+    /// from no records, and the reads under way, alone.
     pub(crate) fn apply(&self, event: &Event) {
         let (Event::ProgramStatusChanged { block_id, .. }
         | Event::ProgramStatusRemoved { block_id, .. }
@@ -256,8 +266,16 @@ impl ProgramStatuses {
             return;
         };
         let mut statuses = self.lock();
+        let block = BlockId(block_id.clone());
+        let unrecorded = statuses
+            .reported
+            .get(&block)
+            .is_some_and(|entry| !entry.recorded);
+        if unrecorded && matches!(event, Event::ProcessChanged { .. }) {
+            return;
+        }
         statuses.drops += 1;
-        statuses.reported.remove(&BlockId(block_id.clone()));
+        statuses.reported.remove(&block);
     }
 }
 
@@ -280,9 +298,9 @@ impl RexBackend {
         call: ProgramStatusCall,
         foreground: Option<&ProcessEntry>,
     ) -> Option<ReportedStatus> {
-        let reported = call.reported(block, foreground)?;
-        self.program_status.keep(block, reading, reported);
-        reported
+        let entry = call.reported(block, foreground)?;
+        self.program_status.keep(block, reading, entry);
+        entry.reported
     }
 
     /// What this backend keeps for `pane_id`, or else what Rex says now.
@@ -345,6 +363,13 @@ mod tests {
         })
     }
 
+    fn recorded(reported: Option<ReportedStatus>) -> Entry {
+        Entry {
+            reported,
+            recorded: true,
+        }
+    }
+
     fn block_event(name: &str, block: &str) -> Event {
         let line = format!(
             r#"{{"type":"session_event","payload":{{"session_id":"session:1","event":{{"type":"block_event","payload":{{"block_id":"{block}","name":"{name}","payload":{{"record":{{"state":"done"}},"title":"t"}}}}}}}}}}"#
@@ -356,9 +381,9 @@ mod tests {
     fn without_a_stream_only_a_scan_is_kept() {
         let statuses = ProgramStatuses::default();
         let block = BlockId("block:1".into());
-        statuses.keep(&block, statuses.begin(Read::Look), working());
+        statuses.keep(&block, statuses.begin(Read::Look), recorded(working()));
         assert_eq!(statuses.get(&block), None);
-        statuses.keep(&block, statuses.begin(Read::Scan), working());
+        statuses.keep(&block, statuses.begin(Read::Scan), recorded(working()));
         assert_eq!(statuses.get(&block), Some(working()));
     }
 
@@ -367,20 +392,20 @@ mod tests {
         let statuses = ProgramStatuses::default();
         statuses.follow(true);
         let (block, other) = (BlockId("block:1".into()), BlockId("block:2".into()));
-        statuses.keep(&other, statuses.begin(Read::Look), working());
+        statuses.keep(&other, statuses.begin(Read::Look), recorded(working()));
         for name in [
             "program_status_changed",
             "program_status_removed",
             "process_changed",
             "child_exited",
         ] {
-            statuses.keep(&block, statuses.begin(Read::Look), working());
+            statuses.keep(&block, statuses.begin(Read::Look), recorded(working()));
             statuses.apply(&block_event("title_changed", "block:1"));
             assert_eq!(statuses.get(&block), Some(working()), "after title_changed");
             statuses.apply(&block_event(name, "block:1"));
             assert_eq!(statuses.get(&block), None, "after {name}");
         }
-        statuses.keep(&block, statuses.begin(Read::Look), working());
+        statuses.keep(&block, statuses.begin(Read::Look), recorded(working()));
         statuses.apply(&Event::BlockClosed {
             session_id: "session:1".into(),
             block_id: "block:1".into(),
@@ -390,21 +415,59 @@ mod tests {
     }
 
     #[test]
+    fn a_new_foreground_process_keeps_an_entry_read_from_no_records() {
+        let statuses = ProgramStatuses::default();
+        statuses.follow(true);
+        let (block, agent) = (BlockId("block:1".into()), BlockId("block:2".into()));
+        let unrecorded = Entry {
+            reported: None,
+            recorded: false,
+        };
+        statuses.keep(&block, statuses.begin(Read::Look), unrecorded);
+        let reading = statuses.begin(Read::Look);
+        statuses.apply(&block_event("process_changed", "block:1"));
+        statuses.keep(&agent, reading, recorded(working()));
+        assert_eq!(statuses.get(&agent), Some(working()), "a read across it");
+        statuses.apply(&block_event("process_changed", "block:2"));
+        assert_eq!(statuses.get(&block), Some(None), "no record to change");
+        assert_eq!(
+            statuses.get(&agent),
+            None,
+            "its record may not be the foreground's"
+        );
+        for name in [
+            "program_status_changed",
+            "program_status_removed",
+            "child_exited",
+        ] {
+            statuses.keep(&block, statuses.begin(Read::Look), unrecorded);
+            statuses.apply(&block_event(name, "block:1"));
+            assert_eq!(statuses.get(&block), None, "after {name}");
+        }
+        statuses.keep(&block, statuses.begin(Read::Look), unrecorded);
+        statuses.apply(&Event::BlockClosed {
+            session_id: "session:1".into(),
+            block_id: "block:1".into(),
+        });
+        assert_eq!(statuses.get(&block), None, "after block_closed");
+    }
+
+    #[test]
     fn a_read_across_a_drop_or_a_change_of_stream_is_not_kept() {
         let statuses = ProgramStatuses::default();
         let block = BlockId("block:1".into());
         statuses.follow(true);
         let reading = statuses.begin(Read::Look);
         statuses.apply(&block_event("program_status_changed", "block:1"));
-        statuses.keep(&block, reading, working());
+        statuses.keep(&block, reading, recorded(working()));
         assert_eq!(statuses.get(&block), None, "across an event");
 
-        statuses.keep(&block, statuses.begin(Read::Look), working());
+        statuses.keep(&block, statuses.begin(Read::Look), recorded(working()));
         statuses.follow(false);
         assert_eq!(statuses.get(&block), None, "past the stream's end");
         let reading = statuses.begin(Read::Scan);
         statuses.follow(true);
-        statuses.keep(&block, reading, working());
+        statuses.keep(&block, reading, recorded(working()));
         assert_eq!(statuses.get(&block), None, "across a new stream");
     }
 
