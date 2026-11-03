@@ -56,7 +56,11 @@ impl SessionHost {
             RemoteTerminal::Tmux => Self::tmux(root),
             RemoteTerminal::Rex => {
                 let host = RexHost::open(root, true)?;
-                crate::util::write_atomic(&hosted_marker(root), b"")?;
+                let marker = hosted_marker(root);
+                if let Some(run) = marker.parent() {
+                    crate::remote::transport::ensure_private_dir(run, unsafe { libc::getuid() })?;
+                }
+                crate::util::write_atomic(&marker, b"")?;
                 Ok(Self::Rex(Box::new(host)))
             }
         }
