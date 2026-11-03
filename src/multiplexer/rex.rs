@@ -2447,6 +2447,14 @@ mod tests {
          (status=403 code=refused)";
     const UNAVAILABLE: &str = "!Error: stream response \"control-1\" failed: client \
          client:app-1 is not connected (status=503 code=client_unavailable)";
+    /// Rex's real answers when the app is slow or lacks the action.
+    const TIMEOUT: &str = "!Error: stream response \"control-1\" failed: \"rexbook\" did \
+         not answer within 1ms (status=504 code=timeout)";
+    const NOT_SUPPORTED: &str = "!Error: stream response \"control-1\" failed: \"rexbook\" \
+         does not offer \"wr.no_such_action\" (status=400 code=not_supported)";
+    /// The refusal as `rex do` prints it, with no code: only the code counts.
+    const REFUSED_WITHOUT_CODE: &str = "!Error: Rex.app is not accepting actions. Turn on \
+         Remote Control in its Settings under Rex Server.";
 
     /// The caller's pane is in session B, window W, the pane `block:agent`
     /// is in the same window, and `clients` are connected.
@@ -2587,11 +2595,11 @@ mod tests {
     fn only_a_refused_jump_prints_the_fix() {
         for (select, expected) in [
             ("{}", String::new()),
-            (
-                "!Error: the client did not answer (code=timeout)",
-                String::new(),
-            ),
+            (TIMEOUT, String::new()),
+            (NOT_SUPPORTED, String::new()),
             (UNAVAILABLE, String::new()),
+            (REFUSED_WITHOUT_CODE, String::new()),
+            ("!Error: connection reset by peer", String::new()),
             (REFUSED, format!("{REMOTE_CONTROL_FIX}\n")),
         ] {
             let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], select);
@@ -2600,6 +2608,16 @@ mod tests {
             let _ = fake.rex.jump_to_pane("block:agent", &printed, &mut out);
             assert_eq!(String::from_utf8(out).unwrap(), expected, "{select}");
         }
+    }
+
+    #[test]
+    fn the_remote_control_fix_matches_the_docs() {
+        assert_eq!(
+            REMOTE_CONTROL_FIX,
+            "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings."
+        );
+        let doc = include_str!("../../docs/src/content/docs/guide/rex.mdx");
+        assert!(doc.contains(&format!("`{REMOTE_CONTROL_FIX}`")));
     }
 
     #[test]
