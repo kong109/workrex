@@ -15,7 +15,8 @@ from typing import Optional
 
 import pytest
 
-from .conftest import RexEnvironment, poll_until
+from .conftest import poll_until
+from .rex_env import RexEnvironment
 
 SIDEBAR_LABEL = "workrex-sidebar"
 SPINNER = re.compile("[⠀-⣿]")

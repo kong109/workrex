@@ -51,7 +51,7 @@ pub(crate) struct Layer {
 pub(crate) struct Block {
     pub block_id: String,
     #[serde(default)]
-    pub flavor: String,
+    pub creator_name: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -139,10 +139,7 @@ pub(crate) struct OwnBlock {
 impl RexBackend {
     /// A backend for another thread that talks to the same server.
     pub(crate) fn detached(&self) -> RexBackend {
-        RexBackend {
-            server: self.server.clone(),
-            ..RexBackend::default()
-        }
+        RexBackend::with_server(self.server.clone())
     }
 
     pub(crate) fn server_address(&self) -> Option<&str> {
@@ -257,7 +254,8 @@ impl RexBackend {
         )
     }
 
-    /// Live pane info for every terminal block in `views` except `skip`.
+    /// Live pane info for every tiled terminal block in `views` except
+    /// `skip`, the blocks the backend's own pane scan reads.
     /// A block that fails to answer is left out rather than failing the scan.
     pub(crate) fn sidebar_live_panes(
         &self,
@@ -267,8 +265,10 @@ impl RexBackend {
         let mut blocks = Vec::new();
         for view in views {
             for window in &view.windows {
-                for block in window.layers.iter().flat_map(|layer| &layer.blocks) {
-                    if block.flavor == super::SHELL_FLAVOR && !skip.contains(&block.block_id) {
+                for block in window.tiled().into_iter().flat_map(|layer| &layer.blocks) {
+                    if block.creator_name == super::TERMINAL_CREATOR
+                        && !skip.contains(&block.block_id)
+                    {
                         blocks.push((view, window, block.block_id.as_str()));
                     }
                 }

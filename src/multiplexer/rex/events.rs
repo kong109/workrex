@@ -201,7 +201,8 @@ impl RexBackend {
     /// and `program_status_changed` need `--all`; the unscoped stream
     /// carries only session and window changes.
     pub(crate) fn events(&self) -> Result<EventStream> {
-        let mut command = Command::new(Self::program());
+        self.ensure_supported()?;
+        let mut command = Command::new(&self.program);
         for var in Self::INHERITED_SCOPE_VARS {
             command.env_remove(var);
         }
