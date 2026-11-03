@@ -7,9 +7,9 @@ description: Use Rex as an alternative multiplexer backend
 The Rex backend is new. It supports window mode. Session mode is not supported yet.
 :::
 
-Rex can be used as an alternative to tmux. workmux detects it automatically from `$REX_BLOCK` or `$REX_SESSION`, which Rex sets in every pane. To force it, set `WORKMUX_BACKEND=rex`.
+Rex can be used as an alternative to tmux. workmux detects it automatically from `$REX_BLOCK`, which Rex sets in every pane. To force it, set `WORKMUX_BACKEND=rex`.
 
-If you run tmux inside a Rex pane, workmux uses tmux, because `$TMUX` is checked first.
+If you run tmux, WezTerm, Zellij or kitty inside a Rex pane, workmux uses that multiplexer. Rex is checked last, because every program started from a Rex pane inherits `$REX_BLOCK`.
 
 workmux needs a Rex server that speaks API revision 8 or 9. On first use it reads the server's `server.version` and stops with `unsupported Rex <version>` when the server's supported revisions miss that range.
 
@@ -29,7 +29,12 @@ workmux needs a Rex server that speaks API revision 8 or 9. On first use it read
 - **Panes.** Each pane is a Rex block. Splits keep the configured `size` or `percentage`.
 - **Respawning.** Rex cannot restart the program in a block. When workmux needs to restart a pane, it opens a new block in the same place and closes the old one, so the pane ID changes.
 - **Capture.** `workmux capture` reads the block's full scrollback and keeps the last lines.
+- **The app.** Rex.app keeps its own shown tab. When workmux opens or switches to a window, it asks the Rex.app client that shows your pane to show that window too. Apps showing other sessions stay where they are, as tmux clients do.
 - **Shells.** workmux starts each block's shell directly as a login shell (`$SHELL -l`), as tmux does. It does not go through `/usr/bin/login`, so the environment of the Rex server reaches the pane unchanged.
+
+## Remote Control
+
+Switching the tab Rex.app shows needs Remote Control, which you turn on in Rex Settings. Without it, the app refuses the switch: workmux prints `Turn on Remote Control in Rex Settings so workrex can switch the app.` once, and the command carries on. The window is still created and focused in the Rex session; only the app's view stays put.
 
 ## Requirements
 
@@ -64,4 +69,4 @@ workmux identifies the server by its address, which stays the same across restar
 
 - Session mode (`--session` or `mode: session`) is not supported yet
 - Agent status icons do not appear in tab titles
-- Window ownership tracking and remote agents need tmux
+- Remote agents need tmux
