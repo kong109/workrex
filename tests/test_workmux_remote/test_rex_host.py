@@ -5,6 +5,7 @@ sessions. Runs with WORKREX_TEST_NODE_TERMINAL=rex on the Rex backend,
 whose isolated server stands in for the node's."""
 
 import json
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -280,3 +281,49 @@ def test_open_restarts_an_agent_whose_session_closed_since_the_observation(
     assert restarted != session
     node.wait_for_agent(env, "feat", "AGENT-UP")
     wm(env, exe, repo, "remove --force feat")
+
+
+def test_a_hosted_start_runs_four_rex_processes(
+    mux_server, workmux_exe_path: Path, mux_repo_path: Path, node: Node, tmp_path: Path
+):
+    """A hosted start reads the server's version, status and sessions with
+    one `rex` process, creates the session, swaps in the agent's block with
+    one more, and types the agent's command and its Enter in one write."""
+    env = mux_server
+    shim = tmp_path / "rex-shim"
+    shim.mkdir()
+    log = tmp_path / "rex-calls"
+    write_script(
+        shim / "rex",
+        'case "$*" in\n'
+        '  *" do -e "*server.status*) step="do open";;\n'
+        '  *" do -e "*session.new_split*) step="do respawn";;\n'
+        '  *" do -e "*) step="do";;\n'
+        "  *) step=$(printf '%s\\n' \"$*\" | awk '{ i = 1;"
+        ' if ($i == "--autostart=false") i++; if ($i == "-S") i += 2;'
+        ' print ($i == "api") ? $(i+2) : ($i == "block") ? $(i+4) : $i }\');;\n'
+        "esac\n"
+        f'printf \'%s\\t%s\\n\' "$(ps -o args= -p $PPID)" "$step" >> {shlex.quote(str(log))}\n'
+        f'exec {shlex.quote(str(rex_of(node).rex))} "$@"\n',
+    )
+    claude = write_script(
+        tmp_path / "claude", "echo AGENT-UP\nwhile read -r line; do :; done\n"
+    )
+    commit_project(
+        mux_repo_path,
+        {"nerdfont": False, "agent": str(claude), "panes": [{"command": "<agent>"}]},
+    )
+    added = wm(
+        env,
+        workmux_exe_path,
+        mux_repo_path,
+        "add feat --remote lo",
+        {"REX_BIN_DIR": str(shim)},
+    )
+    assert "Successfully created remote workspace" in added.stdout, added.stderr
+    node.wait_for_agent(env, "feat", "AGENT-UP")
+
+    calls = [line.split("\t") for line in log.read_text().splitlines()]
+    start = [step for parent, step in calls if " node start-execution" in parent]
+    assert start == ["do open", "session.create", "do respawn", "write"], calls
+    wm(env, workmux_exe_path, mux_repo_path, "remove --force feat")

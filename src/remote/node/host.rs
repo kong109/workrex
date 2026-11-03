@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::{Result, anyhow};
 use sha2::{Digest, Sha256};
@@ -30,6 +31,10 @@ pub struct RexHost {
     tag: String,
     pub host_label: String,
     pub instance_id: String,
+    /// The sessions a start's opening read listed, which its first kill
+    /// uses instead of listing them again. Only that start's own sessions,
+    /// created after the read, are missing from it.
+    listed: Mutex<Option<Vec<HostedSession>>>,
 }
 
 impl SessionHost {
@@ -249,8 +254,11 @@ impl RexHost {
     /// here would serve no tailnet, so Rex.app could not show its sessions.
     /// Only a new execution needs the tailnet; stopping one does not.
     pub fn open(root: &NodeRoot, for_start: bool) -> Result<Self> {
-        let mux = RexBackend::new();
-        let status = mux.server_status().map_err(|err| {
+        Self::open_with(RexBackend::new(), root, for_start)
+    }
+
+    fn open_with(mux: RexBackend, root: &NodeRoot, for_start: bool) -> Result<Self> {
+        let opened = mux.open_server(for_start).map_err(|err| {
             refuse(
                 code::REX_UNAVAILABLE,
                 format!(
@@ -259,6 +267,7 @@ impl RexHost {
                 ),
             )
         })?;
+        let status = opened.status;
         let host_label = match status.tailnet_name() {
             Some(name) => name.to_string(),
             // The loopback test node stands in for a tailnet server with
@@ -283,6 +292,7 @@ impl RexHost {
             tag: root_tag(&root.path),
             host_label,
             instance_id: status.instance_id,
+            listed: Mutex::new(opened.sessions),
         })
     }
 
@@ -378,7 +388,8 @@ impl RexHost {
 
     /// Destroy the sessions `matches` selects.
     fn kill_where(&self, matches: impl Fn(&HostedSession) -> bool) {
-        let sessions = match self.mux.hosted_sessions() {
+        let listed = self.listed.lock().unwrap().take();
+        let sessions = match listed.map_or_else(|| self.mux.hosted_sessions(), Ok) {
             Ok(sessions) => sessions,
             Err(err) => {
                 tracing::warn!("failed to list Rex sessions: {err:#}");
@@ -479,8 +490,15 @@ mod tests {
             // Shell builtins only: the Nix build sandbox has no `cat`.
             let mut arms = String::new();
             for (pattern, reply) in cases {
+                // A reply starting with `!` fails with the rest on stderr.
+                let (reply, out) = match reply.strip_prefix('!') {
+                    Some(stderr) => (stderr, ">&2; exit 1"),
+                    None => (*reply, ""),
+                };
                 let reply = reply.replace('\'', "'\\''");
-                arms.push_str(&format!("  *{pattern}*) printf '%s\\n' '{reply}';;\n"));
+                arms.push_str(&format!(
+                    "  *{pattern}*) printf '%s\\n' '{reply}' {out};;\n"
+                ));
             }
             let program = dir.path().join("rex");
             std::fs::write(
@@ -488,7 +506,7 @@ mod tests {
                 format!(
                     "#!/bin/sh\ninput=\nwhile IFS= read -r line || [ -n \"$line\" ]; do \
                      input=\"$input$line\"; done\ncall=\"$* $input\"\n\
-                     echo \"$call\" >> '{}'\ncase \"$call\" in\n\
+                     printf '%s\\036' \"$call\" >> '{}'\ncase \"$call\" in\n\
                      {arms}  *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":9}}';;\n\
                      \x20 *) echo \"unexpected: $call\" >&2; exit 1;;\nesac\n",
                     dir.path().join("calls").display()
@@ -502,6 +520,7 @@ mod tests {
                 tag: TAG.into(),
                 host_label: "rex.example.ts.net".into(),
                 instance_id: "instance-1".into(),
+                listed: Mutex::new(None),
             }));
             Self { dir, host }
         }
@@ -519,12 +538,51 @@ mod tests {
             }
         }
 
+        /// Every `rex` process the fake ran, in order.
         fn calls(&self) -> Vec<String> {
             std::fs::read_to_string(self.dir.path().join("calls"))
                 .unwrap_or_default()
-                .lines()
+                .split_terminator('\u{1e}')
                 .map(str::to_string)
                 .collect()
+        }
+
+        /// What each process did: the method of an API call, `write` for a
+        /// block write, and the script a `rex do` ran.
+        fn steps(&self) -> Vec<String> {
+            self.calls()
+                .iter()
+                .map(|call| {
+                    let call = call.split_once("s.sock ").map_or(call.as_str(), |(_, c)| c);
+                    let script = [("server.status", "open"), ("session.new_split", "respawn")]
+                        .into_iter()
+                        .find(|(needle, _)| call.starts_with("do -e") && call.contains(needle));
+                    let words: Vec<&str> = call.split_whitespace().collect();
+                    match (script, &words[..]) {
+                        (Some((_, name)), _) => format!("do {name}"),
+                        (None, ["api", "call", method, ..]) => method.to_string(),
+                        (None, ["block", "call", "-b", _, method, ..]) => method.to_string(),
+                        _ => call.to_string(),
+                    }
+                })
+                .collect()
+        }
+
+        /// A host opened on the fake as `RexHost::open` opens one, with
+        /// the fixed tag.
+        fn open(&self, for_start: bool) -> Result<RexHost> {
+            let host = RexHost::open_with(
+                RexBackend::with_program(
+                    &self.dir.path().join("rex"),
+                    &format!("unix://{}/s.sock", self.dir.path().display()),
+                ),
+                &self.root(),
+                for_start,
+            )?;
+            Ok(RexHost {
+                tag: TAG.into(),
+                ..host
+            })
         }
     }
 
@@ -557,7 +615,6 @@ mod tests {
         let fake = Fake::new(&[
             ("session.create", CREATED),
             ("session.new_split", r#"{"block_ids":["block:agent"]}"#),
-            ("block.close", "{}"),
         ]);
         let root = fake.root();
         std::fs::create_dir_all(&root.path).unwrap();
@@ -615,6 +672,246 @@ mod tests {
         for call in &calls {
             assert!(call.starts_with("--autostart=false -S unix://"), "{call}");
             assert!(!call.contains("s3cr3t"), "{call}");
+        }
+    }
+
+    /// The answer of the opening read: a server of `api_revision`, on the
+    /// tailnet or not, with the sessions in `listed` by id and label.
+    fn opened(api_revision: u32, tailnet: bool, listed: Option<&[(&str, &str)]>) -> String {
+        let sessions = listed.map(|listed| {
+            listed
+                .iter()
+                .map(|(id, label)| (id.to_string(), serde_json::json!(label)))
+                .collect::<serde_json::Map<_, _>>()
+        });
+        serde_json::json!({
+            "version": { "rex_version": "t", "api_revision": api_revision },
+            "status": {
+                "instance_id": "instance-1",
+                "tailscale": {
+                    "state": if tailnet { "running" } else { "disabled" },
+                    "dns_name": "rex.example.ts.net",
+                },
+            },
+            "sessions": sessions,
+        })
+        .to_string()
+    }
+
+    fn new_session<'a>(root: &'a NodeRoot, config_path: &'a Path) -> NewSession<'a> {
+        NewSession {
+            name: "x0123456789ab-0",
+            window_label: "feat-r",
+            conf: Path::new("/unused"),
+            cwd: Path::new("/work"),
+            config_path,
+            spawn_env: Some((&root.path, "w0123456789ab")),
+            secrets: &EMPTY,
+        }
+    }
+
+    static EMPTY: Secrets = Secrets(BTreeMap::new());
+
+    #[test]
+    fn a_hosted_start_runs_four_rex_processes() {
+        let fake = Fake::new(&[
+            ("session.new_split", r#"{"block_ids":["block:agent"]}"#),
+            ("server.status", &opened(9, true, Some(&[]))),
+            ("session.create", CREATED),
+            ("write", "{}"),
+        ]);
+        let root = fake.root();
+        std::fs::create_dir_all(&root.path).unwrap();
+        let host = SessionHost::Rex(Box::new(fake.open(true).unwrap()));
+        let execution = execution(&[], "instance-1");
+        host.kill_pane(&root, &execution, 0);
+        let config_path = root.path.join("config.json");
+        let created = host
+            .create(&root, &new_session(&root, &config_path))
+            .unwrap();
+        let agent = host
+            .mux()
+            .respawn_pane(&created.pane_id, Path::new("/work"), Some("handshake"))
+            .unwrap();
+        host.mux().run_in_shell(&agent, " claude").unwrap();
+
+        // The version, status and session list come from one read, the
+        // replacement block and the close from another, and the command and
+        // its Enter from one write.
+        assert_eq!(
+            fake.steps(),
+            ["do open", "session.create", "do respawn", "write"],
+            "{:#?}",
+            fake.calls()
+        );
+        let calls = fake.calls();
+        assert!(calls[0].contains(r#""sessions":true"#), "{}", calls[0]);
+        assert!(calls[2].contains(r#""old":"block:b0""#), "{}", calls[2]);
+        assert!(calls[3].contains("block:agent"), "{}", calls[3]);
+        assert!(
+            calls[3].ends_with(r#"{"data":" claude\r"}"#),
+            "{}",
+            calls[3]
+        );
+    }
+
+    #[test]
+    fn a_start_destroys_the_orphans_its_opening_read_listed_and_lists_again_after() {
+        let orphan = format!("{TAG}x0123456789ab-0");
+        let fake = Fake::new(&[
+            (
+                "server.status",
+                &opened(9, true, Some(&[("session:orphan", &orphan)])),
+            ),
+            (
+                "session.list",
+                &serde_json::json!({ "sessions": [
+                    { "session_id": "session:late", "label": orphan },
+                ]})
+                .to_string(),
+            ),
+            ("session.destroy", "{}"),
+        ]);
+        let root = fake.root();
+        let host = SessionHost::Rex(Box::new(fake.open(true).unwrap()));
+        let execution = execution(&[], "instance-1");
+        host.kill_pane(&root, &execution, 0);
+        host.kill_pane(&root, &execution, 0);
+        assert_eq!(
+            fake.steps(),
+            [
+                "do open",
+                "session.destroy",
+                "session.list",
+                "session.destroy"
+            ]
+        );
+        let calls = fake.calls();
+        assert!(calls[1].contains(r#""session:orphan""#), "{}", calls[1]);
+        assert!(calls[3].contains(r#""session:late""#), "{}", calls[3]);
+    }
+
+    #[test]
+    fn only_a_start_lists_sessions_when_it_opens_the_server() {
+        let fake = Fake::new(&[
+            ("server.status", &opened(9, false, None)),
+            ("session.list", r#"{"sessions":[]}"#),
+        ]);
+        let host = fake.open(false).unwrap();
+        assert_eq!(host.host_label, "");
+        assert_eq!(host.instance_id, "instance-1");
+        assert!(fake.calls()[0].contains(r#""sessions":false"#));
+        host.kill_where(|_| true);
+        assert_eq!(fake.steps(), ["do open", "session.list"]);
+    }
+
+    #[test]
+    fn a_start_needs_a_supported_server_on_the_tailnet() {
+        let err = |fake: &Fake| fake.open(true).err().expect("open fails").to_string();
+
+        let old = Fake::new(&[("server.status", &opened(3, true, Some(&[])))]);
+        let message = err(&old);
+        assert!(message.contains("does not answer"), "{message}");
+        assert!(message.contains("unsupported Rex t"), "{message}");
+        // The verdict holds for the process: no call reaches the server.
+        assert!(old.rex().mux.hosted_sessions().is_err());
+        assert_eq!(old.steps(), ["do open"]);
+
+        // A server too old for the one-process read is named as unsupported.
+        let older = Fake::new(&[
+            ("server.status", "!Error: unknown command \"do\""),
+            (
+                "call?server.version",
+                r#"{"rex_version":"t","api_revision":3}"#,
+            ),
+        ]);
+        let message = err(&older);
+        assert!(message.contains("unsupported Rex t"), "{message}");
+
+        let off = Fake::new(&[("server.status", &opened(9, false, Some(&[])))]);
+        let message = err(&off);
+        assert!(message.contains("not on the tailnet"), "{message}");
+    }
+
+    #[test]
+    fn a_failed_opening_read_names_its_step() {
+        let status_failed = serde_json::json!({
+            "version": { "rex_version": "t", "api_revision": 9 },
+            "status_error": "stream response failed: boom (status=500 code=internal)",
+        })
+        .to_string();
+        let fake = Fake::new(&[("server.status", &status_failed)]);
+        let message = fake.open(true).err().unwrap().to_string();
+        assert!(
+            message.contains(
+                "does not answer (rex server.status failed: stream response failed: boom"
+            ),
+            "{message}"
+        );
+
+        // A `rex do` that cannot reach the server is named, not quoted.
+        let down = Fake::new(&[("server.status", "!Error: dial unix s.sock: connect refused")]);
+        let message = format!("{:#}", down.open(true).err().unwrap());
+        assert!(
+            message.contains("rex do open failed: Error: dial unix s.sock: connect refused"),
+            "{message}"
+        );
+        assert!(!message.contains("rex.call"), "{message}");
+    }
+
+    #[test]
+    fn a_respawn_names_the_step_rex_refused() {
+        let fake = Fake::new(&[
+            ("session.create", CREATED),
+            (
+                "session.new_split",
+                r#"{"split_error":"stream response failed: no room (status=409 code=conflict)"}"#,
+            ),
+        ]);
+        let root = fake.root();
+        std::fs::create_dir_all(&root.path).unwrap();
+        let config_path = root.path.join("config.json");
+        let created = fake
+            .host
+            .create(&root, &new_session(&root, &config_path))
+            .unwrap();
+        let err = fake
+            .host
+            .mux()
+            .respawn_pane(&created.pane_id, Path::new("/work"), Some("handshake"))
+            .unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "Failed to start the replacement Rex block: stream response failed: no room \
+             (status=409 code=conflict)"
+        );
+
+        for (close_error, ok) in [
+            (
+                "block block:b0 not found in any window (status=404 code=not_found)",
+                true,
+            ),
+            (
+                "stream response failed: busy (status=500 code=internal)",
+                false,
+            ),
+        ] {
+            let reply =
+                serde_json::json!({ "block_ids": ["block:agent"], "close_error": close_error });
+            let fake = Fake::new(&[
+                ("session.create", CREATED),
+                ("session.new_split", &reply.to_string()),
+            ]);
+            let created = fake
+                .host
+                .create(&root, &new_session(&root, &config_path))
+                .unwrap();
+            let respawned = fake.host.mux().respawn_pane(
+                &created.pane_id,
+                Path::new("/work"),
+                Some("handshake"),
+            );
+            assert_eq!(respawned.is_ok(), ok, "{close_error}: {respawned:?}");
         }
     }
 

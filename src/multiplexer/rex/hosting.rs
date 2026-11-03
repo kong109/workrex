@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use super::super::{LivePaneInfo, Multiplexer};
 use super::{
-    CallError, ClientList, CreatedWindow, ProcessReport, RexBackend, SessionId, SessionView,
-    WindowView, found, pane_info, shell_block,
+    CallError, ClientList, CreatedWindow, ProcessReport, RexBackend, ServerVersion, SessionId,
+    SessionView, WindowView, found, pane_info, shell_block,
 };
 
 /// Reads the env file in `$1`, removes it, replaces the environment the
@@ -67,6 +67,50 @@ for _, id in ipairs(rex.args.sessions) do
 end
 return out
 "#;
+
+/// What a node reads of its Rex server before using it, in one `rex do`:
+/// its version and status and, when `rex.args.sessions` is set, its sessions
+/// by id. Each part carries the error Rex gave for it instead.
+const OPEN: &str = r#"
+local out = {}
+out.version, out.version_error = rex.call("server.version", {})
+out.status, out.status_error = rex.call("server.status", {})
+if rex.args.sessions then
+  local list, err = rex.call("session.list", {})
+  out.sessions_error = err
+  if list then
+    out.sessions = {}
+    for _, session in ipairs(list.sessions or {}) do
+      out.sessions[session.session_id] = session.label
+    end
+  end
+end
+return out
+"#;
+
+#[derive(Debug, Deserialize)]
+struct OpenRead {
+    #[serde(default)]
+    version: Option<Value>,
+    #[serde(default)]
+    version_error: Option<String>,
+    #[serde(default)]
+    status: Option<Value>,
+    #[serde(default)]
+    status_error: Option<String>,
+    #[serde(default)]
+    sessions: Option<HashMap<String, String>>,
+    #[serde(default)]
+    sessions_error: Option<String>,
+}
+
+/// A Rex server a node is about to use.
+#[derive(Debug)]
+pub struct OpenedServer {
+    pub status: ServerStatus,
+    /// Its sessions, when asked for and Rex listed them.
+    pub sessions: Option<Vec<HostedSession>>,
+}
 
 #[derive(Debug, Deserialize)]
 struct SessionRead {
@@ -223,8 +267,48 @@ fn pick_app(clients: &ClientList, wanted: Option<&str>, server: &str) -> Result<
 }
 
 impl RexBackend {
-    pub fn server_status(&self) -> Result<ServerStatus> {
-        Ok(self.api("server.status", json!({}))?)
+    /// Check the server's API version and read its status, and its sessions
+    /// with `list_sessions`, with one `rex` process. The version is checked
+    /// before any other answer is parsed, and later calls reuse the verdict.
+    pub fn open_server(&self, list_sessions: bool) -> Result<OpenedServer> {
+        let output = match self.exec_script("open", OPEN, &json!({ "sessions": list_sessions })) {
+            Ok(output) => output,
+            Err(err) => {
+                // Name an unsupported server rather than how its `do` failed.
+                if let Err(CallError::Unsupported(why)) = self.ensure_supported() {
+                    bail!(why);
+                }
+                return Err(err.into());
+            }
+        };
+        let read: OpenRead = Self::parse("open", &output)?;
+        let version = read.version.ok_or_else(|| {
+            anyhow!(
+                "rex server.version failed: {}",
+                read.version_error.as_deref().unwrap_or("no answer")
+            )
+        })?;
+        let version: ServerVersion =
+            serde_json::from_value(version).context("Failed to parse rex server.version output")?;
+        self.record_verdict(&version)?;
+        let status = read.status.ok_or_else(|| {
+            anyhow!(
+                "rex server.status failed: {}",
+                read.status_error.as_deref().unwrap_or("no answer")
+            )
+        })?;
+        let status =
+            serde_json::from_value(status).context("Failed to parse rex server.status output")?;
+        if let Some(err) = &read.sessions_error {
+            tracing::warn!("failed to list Rex sessions: {err}");
+        }
+        let sessions = read.sessions.map(|sessions| {
+            sessions
+                .into_iter()
+                .map(|(id, label)| HostedSession { id, label })
+                .collect()
+        });
+        Ok(OpenedServer { status, sessions })
     }
 
     /// Every session on the server, by id and label as Rex reports them.
@@ -286,10 +370,7 @@ impl RexBackend {
         if ids.is_empty() {
             return Ok(reads);
         }
-        let output = self.run(
-            &["do", "-e", READ_SESSIONS, "--args", "-", "--json"],
-            Some(&json!({ "sessions": ids }).to_string()),
-        )?;
+        let output = self.run_script("session read", READ_SESSIONS, &json!({ "sessions": ids }))?;
         let mut found: HashMap<String, SessionRead> = Self::parse("session read", &output)?;
         for id in ids {
             let read = match found.remove(*id) {

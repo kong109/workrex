@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -284,6 +284,32 @@ struct CreatedWindow {
 #[derive(Debug, Deserialize)]
 struct CreatedSplit {
     block_ids: Vec<BlockId>,
+}
+
+/// Starts the replacement for block `old` beside it and closes `old`, in
+/// one `rex do`. `rex do` drops error codes, so each step returns the error
+/// Rex gave for it.
+const RESPAWN: &str = r#"
+local a = rex.args
+local attached, failed = rex.session.attach{session_id = a.session_id}
+if not attached then return {split_error = failed} end
+local split, err = rex.call("session.new_split", {
+  session_id = a.session_id, anchor_id = a.old, direction = "horizontal",
+  side = "after", layout = a.layout,
+})
+if not split then return {split_error = err} end
+local _, closed = rex.call("block.close", {session_id = a.session_id, block_id = a.old})
+return {block_ids = split.block_ids, close_error = closed}
+"#;
+
+#[derive(Debug, Deserialize)]
+struct Respawned {
+    #[serde(default)]
+    block_ids: Vec<BlockId>,
+    #[serde(default)]
+    split_error: Option<String>,
+    #[serde(default)]
+    close_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -693,10 +719,7 @@ impl RexBackend {
     /// Fails every call on a server whose API this backend does not speak,
     /// before a changed response shape surfaces as a parse error.
     fn ensure_supported(&self) -> CallResult<()> {
-        let key = self
-            .server
-            .as_deref()
-            .map(|server| canonical_unix_endpoint(server).unwrap_or_else(|| server.to_string()));
+        let key = self.verdict_key();
         let mut verdicts = SERVER_VERDICTS.lock().unwrap();
         let verdict = match verdicts.get(&key) {
             Some(verdict) => verdict.clone(),
@@ -710,6 +733,40 @@ impl RexBackend {
         verdict.map_err(CallError::Unsupported)
     }
 
+    fn verdict_key(&self) -> Option<String> {
+        self.server
+            .as_deref()
+            .map(|server| canonical_unix_endpoint(server).unwrap_or_else(|| server.to_string()))
+    }
+
+    /// Keeps the verdict on a `server.version` answer read some other way,
+    /// so later calls skip their own check.
+    fn record_verdict(&self, version: &ServerVersion) -> CallResult<()> {
+        let verdict = version.check();
+        SERVER_VERDICTS
+            .lock()
+            .unwrap()
+            .insert(self.verdict_key(), verdict.clone());
+        verdict.map_err(CallError::Unsupported)
+    }
+
+    /// Runs Lua `script` with `args` in one `rex do`, on a supported server.
+    fn run_script(&self, name: &str, script: &str, args: &Value) -> CallResult<String> {
+        self.ensure_supported()?;
+        self.exec_script(name, script, args)
+    }
+
+    /// Like `run_script` without the version check; a failure names the
+    /// script `name` instead of quoting it.
+    fn exec_script(&self, name: &str, script: &str, args: &Value) -> CallResult<String> {
+        let output = self.spawn(
+            &["do", "-e", script, "--args", "-", "--json"],
+            Some(&args.to_string()),
+            None,
+        )?;
+        Self::answer(&["do", name], output)
+    }
+
     fn exec(&self, args: &[&str], stdin: Option<&str>) -> CallResult<String> {
         self.exec_within(args, stdin, None)
     }
@@ -720,6 +777,28 @@ impl RexBackend {
         stdin: Option<&str>,
         timeout: Option<Duration>,
     ) -> CallResult<String> {
+        let output = self.spawn(args, stdin, timeout)?;
+        Self::answer(args, output)
+    }
+
+    /// Stdout of a successful call; the error a failed one names as `args`.
+    fn answer(args: &[&str], output: std::process::Output) -> CallResult<String> {
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(CallError::from_stderr(
+                args,
+                &String::from_utf8_lossy(&output.stderr),
+            ))
+        }
+    }
+
+    fn spawn(
+        &self,
+        args: &[&str],
+        stdin: Option<&str>,
+        timeout: Option<Duration>,
+    ) -> CallResult<std::process::Output> {
         let program = &self.program;
         let mut command = Command::new(program);
         for var in Self::INHERITED_SCOPE_VARS {
@@ -766,19 +845,10 @@ impl RexBackend {
                 thread::sleep(Duration::from_millis(5));
             }
         }
-        let output = child
+        child
             .wait_with_output()
             .context("Failed to wait for rex")
-            .map_err(CallError::Failed)?;
-
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-        } else {
-            Err(CallError::from_stderr(
-                args,
-                &String::from_utf8_lossy(&output.stderr),
-            ))
-        }
+            .map_err(CallError::Failed)
     }
 
     fn block_layout(&self, cwd: &Path, script: Option<&str>) -> Result<Value> {
@@ -1748,24 +1818,34 @@ impl Multiplexer for RexBackend {
         })?;
         let old = BlockId::parse(pane_id)?;
         let session = self.require_session_of(&old)?;
-        let split: CreatedSplit = self
-            .api(
-                "session.new_split",
-                json!({
+        let output = self
+            .run_script(
+                "respawn",
+                RESPAWN,
+                &json!({
                     "session_id": session.as_str(),
-                    "anchor_id": old.as_str(),
-                    "direction": "horizontal",
-                    "side": "after",
+                    "old": old.as_str(),
                     "layout": self.respawn_layout(cwd, cmd)?,
                 }),
             )
+            .map_err(anyhow::Error::from)
             .context("Failed to start the replacement Rex block")?;
-        let new = self.cache_first_block(split.block_ids, session.clone())?;
-        found(self.api::<Value>(
-            "block.close",
-            json!({ "session_id": session.as_str(), "block_id": old.as_str() }),
-        ))?;
+        let respawned: Respawned = Self::parse("respawn", &output)?;
+        if let Some(error) = respawned.split_error {
+            bail!("Failed to start the replacement Rex block: {error}");
+        }
+        let new = self.cache_first_block(respawned.block_ids, session)?;
+        if let Some(error) = respawned.close_error {
+            found(Err::<(), _>(CallError::from_stderr(
+                &["block.close"],
+                &error,
+            )))?;
+        }
         Ok(new.0)
+    }
+
+    fn run_in_shell(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.send_text_fragment(pane_id, &format!("{command}\r"))
     }
 
     fn set_pane_name(&self, pane_id: &str, name: &str) -> Result<()> {
@@ -2358,6 +2438,26 @@ mod tests {
                 .map(str::to_string)
                 .collect()
         }
+    }
+
+    #[test]
+    fn a_shell_command_goes_in_one_write_and_keys_for_an_agent_in_two() {
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let fake = FakeRex::new(&[("write", "{}")]).in_pane("session:s", block);
+        fake.rex.run_in_shell(block, "echo hi").unwrap();
+        let writes = fake.calls("write");
+        let [write] = &writes[..] else {
+            panic!("{writes:?}")
+        };
+        // The fake logs with `echo`, which may turn the escaped `\r` into a CR.
+        assert!(
+            write.ends_with(r#"{"data":"echo hi\r"}"#)
+                || write.ends_with("{\"data\":\"echo hi\r\"}"),
+            "{write:?}"
+        );
+        // An agent may take text and Enter that arrive together as a paste.
+        fake.rex.send_keys(block, "do it").unwrap();
+        assert_eq!(fake.calls("write").len(), 3);
     }
 
     #[test]
