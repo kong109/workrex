@@ -231,7 +231,7 @@ fn changes_nothing(args: &[&str]) -> bool {
 }
 
 /// Session reads a command can reuse. `writes` counts the writes that have
-/// returned, so a read that overlapped one is not stored.
+/// returned and each forget, so a read that overlapped one is not stored.
 #[derive(Debug, Default)]
 struct Reads {
     writes: u64,
@@ -774,11 +774,17 @@ impl RexBackend {
     ) -> CallResult<String> {
         let result = self.spawn(args, stdin, timeout);
         if !changes_nothing(args) {
-            let mut reads = self.reads.lock().unwrap();
-            reads.writes += 1;
-            reads.answers.clear();
+            self.forget_reads();
         }
         result
+    }
+
+    /// Drops every reused read, and keeps a read already under way from
+    /// being stored.
+    fn forget_reads(&self) {
+        let mut reads = self.reads.lock().unwrap();
+        reads.writes += 1;
+        reads.answers.clear();
     }
 
     fn spawn(
@@ -2011,6 +2017,14 @@ impl Multiplexer for RexBackend {
         self.live_pane(&view, window, &block)
     }
 
+    /// Runs only for a pane the batch read missed. A reused view would
+    /// repeat the batch's answer, and a miss prunes the agent.
+    fn validate_agent_alive(&self, state: &crate::state::AgentState) -> Result<bool> {
+        self.forget_reads();
+        let live_pane = self.get_live_pane_info(&state.pane_key.pane_id)?;
+        Ok(super::pane_runs_agent(live_pane, state))
+    }
+
     fn get_all_live_pane_info(&self) -> Result<HashMap<String, LivePaneInfo>> {
         let views = self.views()?;
         let blocks: Vec<(&SessionView, &WindowView, &BlockId)> = views
@@ -3128,6 +3142,36 @@ mod tests {
                 .unwrap();
             assert_eq!(view.label, label);
         }
+    }
+
+    /// reconcile looks again at each agent whose pane its batch read missed,
+    /// and prunes the agent when the second look also misses it. A pane
+    /// made after the batch, or a window that moved between two sessions
+    /// while the batch read them, must show on the second look.
+    #[test]
+    fn a_second_look_at_a_pane_the_batch_missed_reads_afresh() {
+        let session = "session:01a19e60-6410-7e09-a3ee-f675512a3a06";
+        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
+        let fake = FakeRex::new(&[
+            ("session.list", &session_list(&[(session, "fixture")])),
+            ("session.view", "$cat \"$dir/view\""),
+            ("target.resolve", RESOLVE),
+            (" process ", PROCESS),
+            (" title ", r#"{"title":""}"#),
+        ])
+        .reusing();
+        fake.write("view", &view_json(session, "fixture", &[]));
+        assert!(fake.rex.get_all_live_pane_info().unwrap().is_empty());
+        fake.write("view", VIEW);
+        let agent: crate::state::AgentState = serde_json::from_value(json!({
+            "pane_key": { "backend": "rex", "instance": "unix:///s.sock", "pane_id": block },
+            "workdir": "/private/tmp",
+            "pane_pid": 85152,
+            "command": "sleep",
+            "updated_ts": 0,
+        }))
+        .unwrap();
+        assert!(fake.rex.validate_agent_alive(&agent).unwrap());
     }
 
     #[test]
