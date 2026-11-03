@@ -667,24 +667,62 @@ fn a_pruning_reader_drops_an_adopted_record_once_its_pane_leaves_the_worktree() 
         fs::create_dir(worktree.join("sub")).unwrap();
         let adopted = adopted_in(&worktree, worktree.clone());
         store_record(&store, &adopted);
-        let pane = adopted.pane_key.pane_id;
-        let mux = FakeMux {
-            live: HashMap::from([(
-                pane.clone(),
-                live(pane_dir(&repo, &worktree).to_str().unwrap()),
-            )]),
-            reported: HashMap::from([(
-                pane,
-                ReportedStatus::Agent {
-                    status: AgentStatus::Done,
-                    since: 200,
-                },
-            )]),
-            during_query: Mutex::new(None),
-        };
 
-        store.load_all_reconciled_agents(&mux).unwrap();
+        prune_while_reporting_in(&store, &adopted, &pane_dir(&repo, &worktree));
 
         assert_eq!(last_done_status(&store), expected, "{case}");
     }
+}
+
+#[test]
+fn a_pruning_reader_keeps_an_adopted_record_while_its_pane_moves_within_the_worktree() {
+    let moves: [(&str, PaneDir); 2] = [
+        ("to the worktree root", |_, worktree| worktree.to_path_buf()),
+        ("to another subdirectory", |_, worktree| {
+            worktree.join("other")
+        }),
+    ];
+    for (case, moved) in moves {
+        let (dir, store) = temp_store();
+        let (repo, worktree) = linked_worktree(dir.path());
+        fs::create_dir(worktree.join("sub")).unwrap();
+        fs::create_dir(worktree.join("other")).unwrap();
+        let adopted = adopted_in(&worktree, worktree.join("sub"));
+        store_record(&store, &adopted);
+
+        prune_while_reporting_in(&store, &adopted, &moved(&repo, &worktree));
+
+        assert_eq!(last_done_status(&store), Some(AgentStatus::Done), "{case}");
+    }
+}
+
+#[test]
+fn a_pane_in_the_main_worktree_is_not_adopted() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, worktree) = linked_worktree(dir.path());
+    fs::create_dir(repo.join("src")).unwrap();
+
+    let worktrees = linked_worktrees_in(Some(&repo));
+
+    assert_eq!(containing(&worktrees, &repo), None);
+    assert_eq!(containing(&worktrees, &repo.join("src")), None);
+    assert_eq!(containing(&worktrees, &worktree), Some(&worktree));
+}
+
+/// Run a pruning reader while the adopted agent's pane, in `pane_dir`, still
+/// reports the status it was adopted with.
+fn prune_while_reporting_in(store: &StateStore, adopted: &ReportedRecord, pane_dir: &Path) {
+    let pane = adopted.pane_key.pane_id.clone();
+    let mux = FakeMux {
+        live: HashMap::from([(pane.clone(), live(pane_dir.to_str().unwrap()))]),
+        reported: HashMap::from([(
+            pane,
+            ReportedStatus::Agent {
+                status: adopted.status,
+                since: adopted.since,
+            },
+        )]),
+        during_query: Mutex::new(None),
+    };
+    store.load_all_reconciled_agents(&mux).unwrap();
 }
