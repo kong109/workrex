@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::{Config, SidebarGroupBy, SidebarPosition};
-use crate::multiplexer::rex::RexBackend;
+use crate::multiplexer::rex::{AppRefused, RexBackend};
 use crate::multiplexer::{
     Appearance, Change, DaemonIo, HostPane, Multiplexer, Nav, Reach, SidebarHost, SidebarRequest,
 };
@@ -340,7 +340,13 @@ impl<'a> Requests<'a> {
                 Nav::Jump(n) => anyhow!("agent {} out of range (1-{})", n, panes.len()),
                 _ => anyhow!("no matching agents found"),
             })?;
-        self.rex.switch_to_pane(panes[target], None)?;
+        if let Err(error) = self.rex.switch_to_pane(panes[target], None) {
+            // The backend has already printed how to fix a refusal.
+            if error.is::<AppRefused>() {
+                std::process::exit(1);
+            }
+            return Err(error);
+        }
         self.signal(libc::SIGUSR1);
         Ok(())
     }

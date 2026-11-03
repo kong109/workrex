@@ -558,6 +558,16 @@ def test_a_refused_jump_shows_the_fix_in_the_sidebar_until_a_key(rex):
         lambda: "Remote Control" not in capture(env, sidebar), timeout=2
     ), capture(env, sidebar)
 
+    jump = subprocess.run(
+        [str(env.workmux), "sidebar", "jump", "1"],
+        env=dict(env.env, REX_SESSION=env.session_id, REX_BLOCK=env.runner_block_id),
+        cwd=env.tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert jump.returncode == 1
+    assert jump.stderr.count(REMOTE_CONTROL_FIX) == 1, jump.stderr
+
 
 def test_an_agent_that_exits_leaves_the_running_sidebar(rex):
     env = rex

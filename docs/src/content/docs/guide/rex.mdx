@@ -63,7 +63,7 @@ workmux identifies the server by its address, which stays the same across restar
 
 - **New windows.** The sidebar daemon follows `rex events`, and adds a sidebar to a new window as soon as Rex reports it. A sidebar you close in one window stays closed there until the next `workmux sidebar on`.
 - **Width.** The daemon keeps each sidebar at the configured `sidebar.width`. Without one, dragging a sidebar border saves the new width and applies it to every other sidebar. A `--width` given to `sidebar on` holds until the sidebar is turned off.
-- **Jumps.** Jumping to an agent from the sidebar moves the app, like the dashboard. If Rex.app refuses the jump, the sidebar shows `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings.` above its list until you press a key, and for at least 5 seconds.
+- **Jumps.** Jumping to an agent from the sidebar moves the app, like the dashboard. If Rex.app refuses the jump, the sidebar shows `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings.` above its list until you press a key, and for at least 5 seconds. `workmux sidebar next`, `prev` and `jump` print it once and exit with status 1.
 - **Position.** The sidebar opens on the left. `--position top` and `--height` need tmux.
 - **State.** Rex has no window options, so sidebar preferences are kept in files under `~/.local/state/workmux/sidebar/`, one set per server.
 - **Daemon.** Rex has no hooks to restart the daemon. If it dies, the next `workmux sidebar` command or sidebar start brings it back. If its Rex server stops, the daemon exits about 15 seconds later.
