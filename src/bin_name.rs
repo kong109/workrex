@@ -595,9 +595,4 @@ mod tests {
         assert_eq!(pin_version("workmux-0.1.278"), None);
         assert_eq!(pin_version("workmux-dev-ba7816bf8f01"), None);
     }
-
-    #[test]
-    fn update_cache_is_not_shared_with_upstream() {
-        assert_eq!(UPDATE_CACHE_FILE, "workrex-update_check.json");
-    }
 }

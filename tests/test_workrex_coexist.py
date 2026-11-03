@@ -4,6 +4,7 @@ import json
 import re
 import shlex
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -287,3 +288,38 @@ def test_skills_taken_back_after_upstream_setup_leave_nothing_once_both_uninstal
     for skills_dir in SKILL_DIRS:
         assert not (home / skills_dir).exists(), list((home / skills_dir).rglob("*"))
     assert not own_state.exists()
+
+
+def run_update_check(env: MuxEnvironment, exe: Path) -> None:
+    """Run the background update check against a fake GitHub that reports v0.1.300."""
+    fake_bin = env.home_path / "fake-bin"
+    fake_bin.mkdir(exist_ok=True)
+    curl = fake_bin / "curl"
+    curl.write_text('#!/bin/sh\necho \'{"tag_name": "v0.1.300"}\'\n')
+    curl.chmod(0o755)
+    subprocess.run(
+        [str(exe), "_check-update"],
+        env=env.env
+        | {
+            "PATH": f"{fake_bin}:{env.env['PATH']}",
+            "XDG_CACHE_HOME": str(env.home_path / ".cache"),
+        },
+        check=True,
+        timeout=30,
+    )
+
+
+def test_update_check_keeps_its_own_cache_beside_upstreams(
+    mux_server: MuxEnvironment, workmux_exe_path: Path
+):
+    cache = mux_server.home_path / ".cache/workmux"
+    cache.mkdir(parents=True)
+    upstream = cache / "update_check.json"
+    upstream.write_text('{"latest_version": "9.9.9", "last_checked": 1}')
+    before = upstream.read_bytes()
+
+    run_update_check(mux_server, workmux_exe_path)
+
+    ours = json.loads((cache / f"{BIN}-update_check.json").read_text())
+    assert ours["latest_version"] == "0.1.300"
+    assert upstream.read_bytes() == before
