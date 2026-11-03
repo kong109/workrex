@@ -21,7 +21,7 @@ use super::super::types::CreateSessionParams;
 use super::super::util;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::{ClientInfo, RexBackend, SessionId, SessionSummary, SessionView};
+use super::{ClientInfo, RexBackend, SessionId, SessionSummary, SessionView, WindowId};
 
 /// A client connected to the Rex server, such as Rex.app or the rex CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -141,17 +141,34 @@ fn select_then_destroy(select: Option<String>, destroy: String) -> String {
     }
 }
 
-fn select_args(app: &ClientId, session: &SessionId) -> Value {
+fn select_args(app: &ClientId, session: &SessionId, window: Option<&WindowId>) -> Value {
+    let mut target = json!({ "session_id": session.as_str() });
+    if let Some(window) = window {
+        target["window_id"] = json!(window.as_str());
+    }
     json!({
         "client_id": app.as_str(),
         "action": "session.select",
-        "args": { "session_id": session.as_str() },
+        "args": target,
         "origin": "api",
         "timeout_ms": SELECT_TIMEOUT_MS,
     })
 }
 
+/// Whether `name` is the session's Rex ID or its workmux name. Deferred
+/// cleanup waits on the ID, and the label may have been renamed since.
+fn names_session(session: &SessionSummary, name: &str) -> bool {
+    session.session_id.as_str() == name || session.label == name
+}
+
 impl RexBackend {
+    pub(super) fn session_named(&self, name: &str) -> Result<bool> {
+        Ok(self
+            .sessions()?
+            .iter()
+            .any(|session| names_session(session, name)))
+    }
+
     fn server_key(&self) -> String {
         self.resolve_instance_id()
             .unwrap_or_else(|_| "default".to_string())
@@ -269,19 +286,30 @@ impl RexBackend {
         Ok(app_clients(self.api("client.list", args)?))
     }
 
-    fn perform_select(&self, app: &ClientId, session: &SessionId) -> Result<()> {
-        self.api::<Value>("client.perform", select_args(app, session))?;
+    fn perform_select(
+        &self,
+        app: &ClientId,
+        session: &SessionId,
+        window: Option<&WindowId>,
+    ) -> Result<()> {
+        self.api::<Value>("client.perform", select_args(app, session, window))?;
         Ok(())
     }
 
-    /// Ask the app attached to the caller's session to show `session`, trying
-    /// the most recently connected app first. With no app connected there is
+    /// Ask the app attached to the caller's session to show `session`, on
+    /// `window` when given, trying the most recently connected app first. Rex.app
+    /// follows only this request: `session.focus_window` moves the session's
+    /// active window but not the tab the app shows. With no app connected there is
     /// nothing to switch. When every app declines, print the fix once and go on.
-    pub(super) fn select_on_app(&self, session: &SessionId) -> Result<()> {
+    pub(super) fn select_on_app(
+        &self,
+        session: &SessionId,
+        window: Option<&WindowId>,
+    ) -> Result<()> {
         let apps = self.app_clients_for(Self::env_session().as_ref())?;
         let mut declined = None;
         for app in &apps {
-            match self.perform_select(app, session) {
+            match self.perform_select(app, session, window) {
                 Ok(()) => return Ok(()),
                 Err(error) => declined = Some(error),
             }
@@ -295,6 +323,17 @@ impl RexBackend {
             );
         }
         Ok(())
+    }
+
+    /// A shell command that asks the caller's app to show `session`, or `true`
+    /// when no app is connected.
+    pub(super) fn shell_select_on_app_cmd(&self, session: &SessionId) -> Result<String> {
+        Ok(
+            match self.app_clients_for(Self::env_session().as_ref())?.first() {
+                Some(app) => self.shell_api_cmd("client.perform", select_args(app, session, None)),
+                None => "true".to_string(),
+            },
+        )
     }
 
     /// The session the app goes to before `closing` closes: the preferred
@@ -347,7 +386,7 @@ impl RexBackend {
     pub(super) fn close_sessions_to(&self, full_name: &str, preferred: Option<&str>) -> Result<()> {
         for session in self.sessions_labeled(full_name)? {
             if let Some((app, destination)) = self.relocation(&session, preferred)?
-                && let Err(error) = self.perform_select(&app, &destination)
+                && let Err(error) = self.perform_select(&app, &destination, None)
             {
                 tracing::debug!(error = %error, "rex:relocation select failed");
             }
@@ -370,7 +409,7 @@ impl RexBackend {
         let select = self
             .relocation(session, preferred)?
             .map(|(app, destination)| {
-                self.shell_api_cmd("client.perform", select_args(&app, &destination))
+                self.shell_api_cmd("client.perform", select_args(&app, &destination, None))
             });
         // The script outlives this process, so forget the session now.
         self.forget_session(session)?;
@@ -394,6 +433,31 @@ impl RexBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selecting_a_window_names_it_so_the_app_shows_that_tab() {
+        let app = ClientId("client:app".into());
+        let session = SessionId("session:1".into());
+        let window = WindowId("window:2".into());
+        assert_eq!(
+            select_args(&app, &session, Some(&window))["args"],
+            json!({"session_id": "session:1", "window_id": "window:2"})
+        );
+        assert_eq!(
+            select_args(&app, &session, None)["args"],
+            json!({"session_id": "session:1"})
+        );
+    }
+
+    #[test]
+    fn a_session_is_found_by_id_after_its_label_changed() {
+        let session: SessionSummary =
+            serde_json::from_value(json!({"session_id": "session:1", "label": "write-date-file"}))
+                .unwrap();
+        assert!(names_session(&session, "session:1"));
+        assert!(names_session(&session, "write-date-file"));
+        assert!(!names_session(&session, "session:2"));
+    }
 
     fn apps(fixture: &str) -> Vec<String> {
         app_clients(serde_json::from_str(fixture).unwrap())

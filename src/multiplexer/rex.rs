@@ -732,12 +732,7 @@ impl RexBackend {
     }
 
     fn select_session(&self, session: &SessionId) -> Result<()> {
-        self.select_on_app(session)
-    }
-
-    fn shell_select_session_cmd(&self, session: &SessionId) -> String {
-        let selector = format!("session_id={}", session.as_str());
-        self.shell_rex_cmd(&["do", "session.select", &selector])
+        self.select_on_app(session, None)
     }
 
     fn first_session_labeled(&self, label: &str) -> Result<SessionId> {
@@ -885,7 +880,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn session_exists(&self, full_name: &str) -> Result<bool> {
-        Ok(!self.sessions_labeled(full_name)?.is_empty())
+        self.session_named(full_name)
     }
 
     fn kill_session(&self, full_name: &str) -> Result<()> {
@@ -894,6 +889,10 @@ impl Multiplexer for RexBackend {
 
     fn kill_session_to(&self, full_name: &str, destination: Option<&str>) -> Result<()> {
         self.close_sessions_to(full_name, destination)
+    }
+
+    fn supports_session_mode(&self) -> bool {
+        true
     }
 
     fn session_close_handles_navigation(&self) -> bool {
@@ -1012,7 +1011,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn shell_switch_session_cmd(&self, full_name: &str) -> Result<String> {
-        Ok(self.shell_select_session_cmd(&self.first_session_labeled(full_name)?))
+        self.shell_select_on_app_cmd(&self.first_session_labeled(full_name)?)
     }
 
     fn shell_kill_session_cmd(&self, full_name: &str) -> Result<String> {
@@ -1026,7 +1025,8 @@ impl Multiplexer for RexBackend {
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("Window '{full_name}' not found"))?;
-        self.focus_window(&session, &window)
+        self.focus_window(&session, &window)?;
+        self.select_on_app(&session, Some(&window))
     }
 
     fn select_window_target(&self, target: &WindowTarget) -> Result<()> {
@@ -1035,7 +1035,8 @@ impl Multiplexer for RexBackend {
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("Window '{}' not found", target.full_name))?;
-        self.focus_window(&session, &window)
+        self.focus_window(&session, &window)?;
+        self.select_on_app(&session, Some(&window))
     }
 
     fn window_target_exists(&self, target: &WindowTarget) -> Result<bool> {
