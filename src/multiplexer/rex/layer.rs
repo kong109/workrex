@@ -23,26 +23,22 @@ pub(super) fn origin_block() -> Option<BlockId> {
         .and_then(|id| BlockId::parse(&id).ok())
 }
 
-/// The pane the user is working in. While the dashboard has focus in its
-/// floating layer, that is the block it was opened over, as a tmux popup
-/// reports the pane beneath it.
+/// The pane the user is working in: the caller's pane while it is alive,
+/// else the block the server has focused. The dashboard in its floating
+/// layer reports the block it was opened over, as a tmux popup reports the
+/// pane beneath it, and no pane when it does not know that block.
 pub(super) fn active_block(
     view: &SessionView,
     me: Option<&BlockId>,
     origin: Option<BlockId>,
 ) -> Option<BlockId> {
-    let window = view.active_window()?;
-    let focused = window.focused_block_id.as_ref()?;
-    if me != Some(focused) {
-        return Some(focused.clone());
-    }
-    if origin.is_some() {
-        return origin;
-    }
+    let Some((me, window)) = me.and_then(|me| Some((me, view.window_of(me)?))) else {
+        return view.active_window()?.focused_block_id.clone();
+    };
     let floating = window.layers.iter().any(|layer| {
-        layer.kind == LayerKind::Floating && layer.blocks.iter().any(|b| &b.block_id == focused)
+        layer.kind == LayerKind::Floating && layer.blocks.iter().any(|b| &b.block_id == me)
     });
-    (!floating).then(|| focused.clone())
+    if floating { origin } else { Some(me.clone()) }
 }
 
 impl RexBackend {
@@ -369,11 +365,11 @@ esac
     }
 
     #[test]
-    fn another_program_sees_the_focused_block() {
+    fn a_program_in_a_pane_sees_its_own_pane() {
         let view = layer_view();
         assert_eq!(
-            active_block(&view, Some(&block(SHELL)), Some(block(SHELL))),
-            Some(block(DASHBOARD))
+            active_block(&view, Some(&block(SHELL)), None),
+            Some(block(SHELL))
         );
         assert_eq!(active_block(&view, None, None), Some(block(DASHBOARD)));
     }
