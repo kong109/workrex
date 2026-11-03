@@ -206,6 +206,8 @@ static SERVER_VERDICTS: LazyLock<Mutex<HashMap<Option<String>, Verdict>>> =
 
 /// How long a command reuses a session list or view it already fetched. A
 /// loop that polls for a change made outside workmux sees it within this time.
+/// `WORKMUX_REX_READ_REUSE_MS` overrides it, so a test can count calls that
+/// load cannot change.
 const READ_REUSE: Duration = Duration::from_millis(250);
 
 const READ_ONLY_API: [&str; 5] = [
@@ -686,7 +688,10 @@ impl RexBackend {
         Self {
             program,
             reads: Mutex::default(),
-            reuse: READ_REUSE,
+            reuse: std::env::var("WORKMUX_REX_READ_REUSE_MS")
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .map_or(READ_REUSE, Duration::from_millis),
             server,
             caller: Caller::from_env(),
             endpoint: OnceLock::new(),
@@ -3048,5 +3053,13 @@ mod tests {
             writer.join().unwrap();
         });
         assert_eq!(fake.view().trim(), "new");
+    }
+
+    #[test]
+    fn outside_changes_show_within_a_quarter_second() {
+        assert_eq!(
+            RexBackend::with_server(None).reuse,
+            Duration::from_millis(250)
+        );
     }
 }

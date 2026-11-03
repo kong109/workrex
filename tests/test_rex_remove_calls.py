@@ -15,12 +15,13 @@ from .conftest import (
 )
 from .rex_env import RexEnvironment
 
-# At fix7, `rm` made 11 calls: server.version, then session.view twice
-# (git work between them outlasts the reuse window), session.list,
-# target.resolve, process and title of the caller's pane, close_window, and
-# session.view, session.list and process to confirm the window closed.
-# Before reads were reused it made 23: 13 session views and 4 session lists.
-MAX_REMOVE_CALLS = 11
+# `rm` makes 11 calls: server.version, session.view (one per backend, and
+# `rm` builds two), session.list, target.resolve, process and title of the
+# caller's pane, close_window, and session.view, session.list and process to
+# confirm the window closed. The test sets a reuse window longer than the
+# command, so machine load cannot expire a read and add a call. Before reads
+# were reused, `rm` made 23.
+REMOVE_CALLS = 11
 
 
 def test_remove_reuses_repeated_session_reads(
@@ -49,8 +50,11 @@ def test_remove_reuses_repeated_session_reads(
         workmux_exe_path,
         repo_path,
         f"remove --force {branch}",
-        pre_run_env={"REX_BIN_DIR": str(shim_dir)},
+        pre_run_env={
+            "REX_BIN_DIR": str(shim_dir),
+            "WORKMUX_REX_READ_REUSE_MS": "600000",
+        },
     )
     assert poll_until(lambda: get_window_name(branch) not in env.list_windows())
     calls = log.read_text().splitlines()
-    assert len(calls) <= MAX_REMOVE_CALLS, "\n".join(calls)
+    assert len(calls) == REMOVE_CALLS, "\n".join(calls)
