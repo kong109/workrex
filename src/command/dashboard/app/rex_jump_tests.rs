@@ -152,6 +152,38 @@ fn a_refused_jump_fix_stays_until_a_key_and_five_seconds() {
     );
 }
 
+/// Feeds the dashboard one key press, the way its event loop does.
+fn press_a_key(app: &mut App) {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let key = Event::Key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+    crate::command::dashboard::handle_terminal_event(app, key, &mut Instant::now());
+}
+
+#[test]
+fn a_key_from_the_event_loop_releases_the_refused_jump_fix() {
+    with_rex_app(
+        "command::dashboard::app::rex_jump_tests::a_key_from_the_event_loop_releases_the_refused_jump_fix",
+        true,
+        |app, _| {
+            let shown = |app: &App| app.status_message.as_ref().map(|(text, _)| text.clone());
+            let fix = Some(AppRefused.to_string());
+
+            app.switch_to_pane_and_track("block:agent");
+            age_status(app, Duration::from_secs(2));
+            press_a_key(app);
+            assert_eq!(shown(app), fix, "a key came before five seconds");
+            age_status(app, Duration::from_secs(5));
+            app.expire_status();
+            assert_eq!(shown(app), None, "the key was noted");
+
+            app.switch_to_pane_and_track("block:agent");
+            age_status(app, Duration::from_secs(5));
+            press_a_key(app);
+            assert_eq!(shown(app), None, "a key after five seconds clears it");
+        },
+    );
+}
+
 #[test]
 fn enter_on_a_session_worktree_without_an_agent_moves_the_app_there() {
     with_rex_app(
