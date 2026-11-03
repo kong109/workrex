@@ -299,8 +299,8 @@ fn store_record(store: &StateStore, record: &ReportedRecord) {
 
 fn last_done_status(store: &StateStore) -> Option<AgentStatus> {
     let merged = with_reported(store, store.list_all_agents().unwrap()).unwrap();
-    assert_eq!(merged.len(), 1);
-    merged[0].status
+    assert!(merged.len() <= 1);
+    merged.first().and_then(|agent| agent.status)
 }
 
 #[test]
@@ -330,14 +330,15 @@ fn a_record_applies_only_while_the_hook_has_the_status_it_was_merged_against() {
 
 #[test]
 fn a_record_merged_against_a_hook_that_is_gone_is_not_read() {
-    let (_dir, store) = temp_store();
+    let (dir, store) = temp_store();
     let seen = hooked("block:a", AgentStatus::Working, 100);
     store.upsert_agent(&seen).unwrap();
     store_record(
         &store,
         &record(&seen, AgentStatus::Done, 200, Some(HookVersion::of(&seen))),
     );
-    let adopted = hooked("block:b", AgentStatus::Done, 200);
+    let mut adopted = hooked("block:b", AgentStatus::Done, 200);
+    adopted.workdir = dir.path().to_path_buf();
     store_record(&store, &record(&adopted, AgentStatus::Done, 200, None));
     store.delete_agent(&seen.pane_key).unwrap();
 
@@ -347,6 +348,19 @@ fn a_record_merged_against_a_hook_that_is_gone_is_not_read() {
         .map(|agent| agent.pane_key.pane_id.as_str())
         .collect();
     assert_eq!(panes, ["block:b"]);
+}
+
+#[test]
+fn an_adopted_record_is_not_read_once_its_worktree_is_gone() {
+    let (_dir, store) = temp_store();
+    let worktree = tempfile::tempdir().unwrap();
+    let mut adopted = hooked("block:b", AgentStatus::Done, 200);
+    adopted.workdir = worktree.path().to_path_buf();
+    store_record(&store, &record(&adopted, AgentStatus::Done, 200, None));
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
+
+    worktree.close().unwrap();
+    assert_eq!(last_done_status(&store), None);
 }
 
 #[test]

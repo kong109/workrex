@@ -222,7 +222,8 @@ impl<'a> Reports<'a> {
 /// A record holds the result of a live merge against one hook status, so it
 /// applies only while the hook still has that status. Once the hook changes,
 /// the hook stands until a pruning reader merges the live report again and
-/// rewrites the record.
+/// rewrites the record. An adopted record applies only while its worktree
+/// still exists, since adoption required it.
 pub(crate) fn with_reported(
     store: &StateStore,
     agents: Vec<AgentState>,
@@ -249,7 +250,7 @@ pub(crate) fn with_reported(
     merged.extend(
         records
             .into_values()
-            .filter(|record| record.hook_seen.is_none())
+            .filter(|record| record.hook_seen.is_none() && record.workdir.is_dir())
             .map(|record| AgentState {
                 workdir: record.workdir,
                 status: Some(record.status),
