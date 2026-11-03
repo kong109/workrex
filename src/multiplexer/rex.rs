@@ -3058,6 +3058,79 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_write_still_drops_the_reads_before_it() {
+        let fake = FakeRex::new(&[
+            ("session.view", "$cat \"$dir/state\""),
+            (
+                "session.close_window",
+                "$echo new > \"$dir/state\"; echo 'Error: boom' >&2; exit 1",
+            ),
+        ])
+        .reusing();
+        fake.write("state", "old");
+        assert_eq!(fake.view(), "old");
+        assert!(fake.rex.run(&CLOSE, Some("{}")).is_err());
+        assert_eq!(fake.view().trim(), "new");
+    }
+
+    #[test]
+    fn a_timed_out_write_still_drops_the_reads_before_it() {
+        let fake = FakeRex::new(&[
+            ("session.view", "{}"),
+            ("client.perform", "$while :; do sleep 0.01; done"),
+        ])
+        .reusing();
+        fake.view();
+        let perform = ["api", "call", "client.perform", "-"];
+        let result = fake
+            .rex
+            .exec_within(&perform, Some("{}"), Some(Duration::from_millis(100)));
+        assert!(result.is_err());
+        fake.view();
+        assert_eq!(fake.calls("session.view").len(), 2);
+    }
+
+    /// A read that takes most of the reuse window expires a full window
+    /// after it started, not after it returned.
+    #[test]
+    fn a_read_is_reused_for_one_window_from_its_start() {
+        let mut fake = FakeRex::new(&[(
+            "session.view",
+            "$touch \"$dir/started\"; \
+             while [ ! -e \"$dir/release\" ]; do sleep 0.01; done; echo '{}'",
+        )]);
+        fake.rex.reuse = Duration::from_secs(1);
+        thread::scope(|scope| {
+            let reader = scope.spawn(|| fake.view());
+            fake.wait_for("started");
+            let started = Instant::now();
+            thread::sleep(Duration::from_millis(800));
+            fake.write("release", "");
+            reader.join().unwrap();
+            let expired = started + Duration::from_millis(1100);
+            thread::sleep(expired.saturating_duration_since(Instant::now()));
+        });
+        fake.view();
+        assert_eq!(fake.calls("session.view").len(), 2);
+    }
+
+    #[test]
+    fn each_session_has_its_own_view() {
+        let fake = FakeRex::new(&[
+            ("session.view*session:a", &view_json("session:a", "a", &[])),
+            ("session.view*session:b", &view_json("session:b", "b", &[])),
+        ])
+        .reusing();
+        for label in ["a", "b"] {
+            let view = fake
+                .rex
+                .view(&SessionId(format!("session:{label}")))
+                .unwrap();
+            assert_eq!(view.label, label);
+        }
+    }
+
+    #[test]
     fn outside_changes_show_within_a_quarter_second() {
         assert_eq!(
             RexBackend::with_server(None).reuse,
