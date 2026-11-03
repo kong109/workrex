@@ -9,6 +9,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -404,38 +405,43 @@ def test_a_closed_sidebar_stays_closed_when_the_event_stream_restarts(rex):
     assert sidebar_of(windows(env, env.session_id)[closed]) is not None
 
 
-def test_agent_status_reaches_the_sidebar_rows(rex):
-    env = rex
-    env.mux_command(["send", "-b", env.runner_block_id, "claude\n"])
+def start_agent(env: SidebarRex) -> None:
+    block = env.runner_block_id
+    assert block is not None
+    env.mux_command(["send", "-b", block, "claude\n"])
     assert poll_until(
-        lambda: (env.block_call(env.runner_block_id, "process") or {})
+        lambda: (env.block_call(block, "process") or {})
         .get("foreground", {})
         .get("name")
         == "sleep",
         timeout=5,
     )
-    cli(env, "on")
-    sidebar = placed_sidebar(next(iter(windows(env, env.session_id).values())))
-    status_env = dict(
-        env.env, REX_SESSION=env.session_id, REX_BLOCK=env.runner_block_id
+
+
+def set_status(env: SidebarRex, status: str) -> None:
+    assert env.session_id is not None and env.runner_block_id is not None
+    subprocess.run(
+        [str(env.workmux), "set-window-status", status],
+        env=dict(env.env, REX_SESSION=env.session_id, REX_BLOCK=env.runner_block_id),
+        cwd=env.tmp_path,
+        check=True,
+        capture_output=True,
     )
 
-    def set_status(status: str) -> None:
-        subprocess.run(
-            [str(env.workmux), "set-window-status", status],
-            env=status_env,
-            cwd=env.tmp_path,
-            check=True,
-            capture_output=True,
-        )
 
-    set_status("working")
+def test_agent_status_reaches_the_sidebar_rows(rex):
+    env = rex
+    start_agent(env)
+    cli(env, "on")
+    sidebar = placed_sidebar(next(iter(windows(env, env.session_id).values())))
+
+    set_status(env, "working")
     assert poll_until(
         lambda: SPINNER.search(capture(env, sidebar["block_id"])) is not None,
         timeout=2.5,
     ), capture(env, sidebar["block_id"])
 
-    set_status("waiting")
+    set_status(env, "waiting")
     assert poll_until(
         lambda: SPINNER.search(capture(env, sidebar["block_id"])) is None,
         timeout=2.5,
@@ -458,3 +464,96 @@ def test_quitting_from_the_sidebar_turns_it_off(rex):
         ),
         timeout=3,
     )
+
+
+REMOTE_CONTROL_FIX = (
+    "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings."
+)
+
+# A `rex` that reports one Rex.app client, which owns every block and shows
+# the test session, and answers its `client.perform` the way Rex.app does with
+# Remote Control off. Every other call goes to the real `rex`.
+REFUSING_APP_REX = r"""#!{python} -I
+import json, os, subprocess, sys
+
+real, app, session = {real!r}, "client:fake-app", {session!r}
+args = sys.argv[1:]
+if "client.perform" in args:
+    sys.stderr.write(
+        'Error: stream response "control-1" failed: Rex.app is not accepting '
+        "actions. Turn on Remote Control in its Settings under Rex Server. "
+        "(status=403 code=refused)\n"
+    )
+    sys.exit(1)
+if "client.list" not in args and "size" not in args:
+    os.execv(real, [real, *args])
+stdin = sys.stdin.read() if args[-1:] == ["-"] else None
+done = subprocess.run([real, *args], input=stdin, capture_output=True, text=True)
+if done.returncode:
+    sys.stderr.write(done.stderr)
+    sys.exit(done.returncode)
+reply = json.loads(done.stdout)
+if "client.list" in args:
+    reply.setdefault("clients", []).append(
+        {{
+            "client_id": app,
+            "info": {{"kind": "app"}},
+            "connection_state": "connected",
+            "session_ids": [session],
+        }}
+    )
+else:
+    reply["owner"] = app
+print(json.dumps(reply))
+"""
+
+
+def refusing_app(env: SidebarRex) -> None:
+    shim = env.tmp_path / "rex-shim"
+    shim.mkdir()
+    rex = shim / "rex"
+    rex.write_text(
+        REFUSING_APP_REX.format(
+            python=sys.executable, real=env.rex, session=env.session_id
+        )
+    )
+    rex.chmod(0o755)
+    env.env["REX_BIN_DIR"] = str(shim)
+
+
+def wrapped_text(screen: str) -> str:
+    return " ".join(line.strip() for line in screen.splitlines() if line.strip())
+
+
+def test_a_refused_jump_shows_the_fix_in_the_sidebar_until_a_key(rex):
+    env = rex
+    refusing_app(env)
+    start_agent(env)
+    set_status(env, "waiting")
+    cli(env, "on")
+    window = next(iter(windows(env, env.session_id).values()))
+    sidebar = placed_sidebar(window)["block_id"]
+    assert poll_until(lambda: "· main" in capture(env, sidebar), timeout=3), capture(
+        env, sidebar
+    )
+
+    env.mux_command(["send-key", "-b", sidebar, "enter"])
+    assert poll_until(
+        lambda: REMOTE_CONTROL_FIX in wrapped_text(capture(env, sidebar)), timeout=5
+    ), capture(env, sidebar)
+    shown = time.monotonic()
+
+    env.mux_command(["send-key", "-b", sidebar, "j"])
+    time.sleep(0.5)
+    assert REMOTE_CONTROL_FIX in wrapped_text(capture(env, sidebar)), (
+        "a key inside 5 s cleared the fix"
+    )
+    time.sleep(max(0.0, 5.2 - (time.monotonic() - shown)))
+    assert REMOTE_CONTROL_FIX in wrapped_text(capture(env, sidebar)), (
+        "the fix went without a key"
+    )
+
+    env.mux_command(["send-key", "-b", sidebar, "k"])
+    assert poll_until(
+        lambda: "Remote Control" not in capture(env, sidebar), timeout=2
+    ), capture(env, sidebar)

@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use tracing::warn;
 
+use crate::multiplexer::rex::AppRefused;
 use crate::multiplexer::{AgentPane, Multiplexer, SidebarRequest};
 
 use crate::ui::theme::ThemePalette;
@@ -205,6 +206,16 @@ pub struct TemplateStrings {
     pub group_header: String,
 }
 
+const NOTICE_MIN: Duration = Duration::from_secs(5);
+
+/// A message that stays until a key is pressed and `NOTICE_MIN` has passed,
+/// so the user sees it however soon the next redraw comes.
+pub struct HeldNotice {
+    pub text: String,
+    set_at: Instant,
+    key_pressed: bool,
+}
+
 /// Latest sidebar template parsing failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateError {
@@ -341,6 +352,8 @@ pub struct SidebarApp {
     pub templates: ParsedTemplates,
     /// Most recent template parse failure, shown in the sidebar until fixed.
     pub template_error: Option<TemplateError>,
+    /// Why the last action failed, such as a jump Rex.app refused.
+    pub notice: Option<HeldNotice>,
     /// Per-agent icon and color overrides, parsed once at config load.
     pub agent_icons: ResolvedAgentIcons,
     /// Cached tile row heights, including separators, for hit testing.
@@ -435,6 +448,7 @@ impl SidebarApp {
                 group_header: parse_line(DEFAULT_GROUP_HEADER_TEMPLATE).unwrap(),
             },
             template_error: Some(template_error),
+            notice: None,
             agent_icons: ResolvedAgentIcons::default(),
             tile_heights: Vec::new(),
             horizontal_hitboxes: Vec::new(),
@@ -533,6 +547,7 @@ impl SidebarApp {
             sleeping_pane_ids: std::collections::HashSet::new(),
             templates,
             template_error,
+            notice: None,
             agent_icons,
             tile_heights: Vec::new(),
             horizontal_hitboxes: Vec::new(),
@@ -556,6 +571,7 @@ impl SidebarApp {
     /// Apply a snapshot received from the daemon.
     pub fn apply_snapshot(&mut self, snapshot: SidebarSnapshot) {
         self.has_loaded_snapshot = true;
+        self.expire_notice();
 
         // Compute host agent index from the new snapshot first so that a
         // config_version bump anchors the reload to the *current* host path,
@@ -825,6 +841,31 @@ impl SidebarApp {
 
     pub fn host_window_active(&self) -> bool {
         self.host_window_active
+    }
+
+    pub(super) fn hold_notice(&mut self, text: String) {
+        self.notice = Some(HeldNotice {
+            text,
+            set_at: Instant::now(),
+            key_pressed: false,
+        });
+    }
+
+    pub fn note_keypress(&mut self) {
+        if let Some(notice) = &mut self.notice {
+            notice.key_pressed = true;
+        }
+        self.expire_notice();
+    }
+
+    fn expire_notice(&mut self) {
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.key_pressed && notice.set_at.elapsed() >= NOTICE_MIN)
+        {
+            self.notice = None;
+        }
     }
 
     pub fn tick(&mut self) {
@@ -1386,8 +1427,13 @@ impl SidebarApp {
         });
     }
 
-    fn focus_pane(&self, pane_id: &str) {
-        let _ = self.mux.switch_to_pane(pane_id, None);
+    fn focus_pane(&mut self, pane_id: &str) {
+        // The TUI's raw mode keeps the backend from printing the fix.
+        if let Err(error) = self.mux.switch_to_pane(pane_id, None)
+            && error.is::<AppRefused>()
+        {
+            self.hold_notice(error.to_string());
+        }
         // Signal daemon directly to bypass tmux hook round-trip latency.
         super::daemon_ctrl::signal_daemon_for(self.mux.as_ref());
     }
@@ -2091,6 +2137,31 @@ fn parse_host_identity(output: &str) -> Option<HostIdentity> {
 mod tests {
     use super::*;
     use crate::config::{AgentIconConfig, AgentIconDetails, CustomThemeColors, ThemeScheme};
+
+    #[test]
+    fn a_notice_stays_until_a_key_is_pressed_and_five_seconds_pass() {
+        let mut app = SidebarApp::test_with_template_error(TemplateError {
+            location: String::new(),
+            message: String::new(),
+        });
+        let shown_for = |app: &mut SidebarApp, age: u64| {
+            app.notice.as_mut().unwrap().set_at = Instant::now() - Duration::from_secs(age);
+        };
+
+        app.hold_notice("refused".to_string());
+        app.note_keypress();
+        assert!(app.notice.is_some(), "a key inside 5 s");
+        shown_for(&mut app, 5);
+        app.expire_notice();
+        assert!(app.notice.is_none(), "5 s after a key");
+
+        app.hold_notice("refused".to_string());
+        shown_for(&mut app, 60);
+        app.expire_notice();
+        assert!(app.notice.is_some(), "no key yet");
+        app.note_keypress();
+        assert!(app.notice.is_none(), "a key after 5 s");
+    }
 
     #[test]
     fn theme_reload_uses_detected_mode_after_explicit_mode_is_removed() {

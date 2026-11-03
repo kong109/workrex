@@ -386,6 +386,7 @@ fn handle_key_press(
     code: KeyCode,
     modifiers: crossterm::event::KeyModifiers,
 ) {
+    app.note_keypress();
     if app.pending_exit {
         if code == KeyCode::Char('y') {
             app.quit_reason = Some("confirmed user exit".to_string());
