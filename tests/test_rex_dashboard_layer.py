@@ -405,3 +405,17 @@ def test_unanswered_jump_within_the_tab_lands_and_closes(silent: RexServer):
     wait_until(lambda: not floating_layers(silent.window(session)))
 
     assert silent.focused(session) == agent
+
+
+def test_a_jump_from_the_layer_remembers_the_block_beneath_it(rex: RexServer):
+    # The dashboard's own block sits in the window's floating layer and is
+    # gone once the layer closes, so last-agent must not get it.
+    session, shell, agent = rex.split_session(agent_command(rex))
+    dashboard = open_dashboard_over(rex, session, shell)
+
+    rex.cli("send-key", "-b", dashboard, "Enter")
+    wait_until(lambda: not floating_layers(rex.window(session)))
+
+    assert rex.focused(session) == agent
+    settings = Path(rex.env["XDG_STATE_HOME"]) / "workmux/settings.json"
+    assert json.loads(settings.read_text())["last_pane_id"] == shell
