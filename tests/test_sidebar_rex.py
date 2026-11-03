@@ -213,6 +213,17 @@ def gets_sidebars(env: SidebarRex, session_id: str) -> bool:
     )
 
 
+def layouts(env: SidebarRex, session_id: str) -> dict:
+    return {
+        window.get("label"): [
+            block.get("label")
+            for layer in window["layers"]
+            for block in layer["blocks"]
+        ]
+        for window in windows(env, session_id).values()
+    }
+
+
 def test_a_new_session_gets_sidebars_without_a_window_event(rex):
     # Rex reports a new session with session_created alone: its first
     # window gets no window_created.
@@ -221,7 +232,7 @@ def test_a_new_session_gets_sidebars_without_a_window_event(rex):
     env.mux_command(["new", "fresh", "--", "sh", "-c", "sleep 100000"])
     session_id = session_labeled(env, "fresh")
     assert session_id is not None
-    assert gets_sidebars(env, session_id), view(env, session_id)
+    assert gets_sidebars(env, session_id), layouts(env, session_id)
 
 
 @pytest.mark.parametrize("mode", ["session", "window"])
@@ -232,7 +243,9 @@ def test_add_gets_a_sidebar_in_either_mode(rex, _template_git_repo, mode):
     shutil.copy(_template_git_repo / ".gitignore", repo / ".gitignore")
     (env.home_path / ".config" / "workmux").mkdir(parents=True, exist_ok=True)
     (env.home_path / ".config" / "workmux" / "config.yaml").write_text("{}\n")
-    write_workmux_config(repo)
+    # One pane: a split that lands between the daemon's read and its
+    # placement nests the sidebar, in either mode.
+    write_workmux_config(repo, panes=[{"focus": True}])
     cli(env, "on")
     branch = f"feat-{mode}"
     args = "--background" if mode == "session" else "--mode window --background"
@@ -242,9 +255,9 @@ def test_add_gets_a_sidebar_in_either_mode(rex, _template_git_repo, mode):
     if mode == "session":
         session_id = session_labeled(env, get_session_name(branch))
         assert session_id is not None
-        assert gets_sidebars(env, session_id), view(env, session_id)
+        assert gets_sidebars(env, session_id), layouts(env, session_id)
     else:
-        assert gets_sidebars(env, env.session_id), view(env, env.session_id)
+        assert gets_sidebars(env, env.session_id), layouts(env, env.session_id)
         labels = [w.get("label") for w in windows(env, env.session_id).values()]
         assert get_window_name(branch) in labels
 
