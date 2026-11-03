@@ -733,6 +733,15 @@ impl RexBackend {
         verdict.map_err(CallError::Unsupported)
     }
 
+    /// Why this server's API is unsupported, once a call has found it so.
+    pub fn unsupported(&self) -> Option<String> {
+        SERVER_VERDICTS
+            .lock()
+            .unwrap()
+            .get(&self.verdict_key())
+            .and_then(|verdict| verdict.clone().err())
+    }
+
     fn verdict_key(&self) -> Option<String> {
         self.server
             .as_deref()

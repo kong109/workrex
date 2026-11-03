@@ -259,13 +259,15 @@ impl RexHost {
 
     fn open_with(mux: RexBackend, root: &NodeRoot, for_start: bool) -> Result<Self> {
         let opened = mux.open_server(for_start).map_err(|err| {
-            refuse(
-                code::REX_UNAVAILABLE,
-                format!(
+            let message = match mux.unsupported() {
+                // It answered, so starting it again would not help.
+                Some(why) => format!("the node's Rex server runs {why}; update Rex on the node"),
+                None => format!(
                     "the node's Rex server does not answer ({err:#}); start it with \
                      `rex server run --tailscale` on the node"
                 ),
-            )
+            };
+            refuse(code::REX_UNAVAILABLE, message)
         })?;
         let status = opened.status;
         let host_label = match status.tailnet_name() {
@@ -811,8 +813,12 @@ mod tests {
 
         let old = Fake::new(&[("server.status", &opened(3, true, Some(&[])))]);
         let message = err(&old);
-        assert!(message.contains("does not answer"), "{message}");
-        assert!(message.contains("unsupported Rex t"), "{message}");
+        assert!(
+            message.contains("runs unsupported Rex t")
+                && message.ends_with("update Rex on the node"),
+            "{message}"
+        );
+        assert!(!message.contains("does not answer"), "{message}");
         // The verdict holds for the process: no call reaches the server.
         assert!(old.rex().mux.hosted_sessions().is_err());
         assert_eq!(old.steps(), ["do open"]);
@@ -826,11 +832,45 @@ mod tests {
             ),
         ]);
         let message = err(&older);
-        assert!(message.contains("unsupported Rex t"), "{message}");
+        assert!(message.contains("runs unsupported Rex t"), "{message}");
+        assert!(!message.contains("does not answer"), "{message}");
 
         let off = Fake::new(&[("server.status", &opened(9, false, Some(&[])))]);
         let message = err(&off);
         assert!(message.contains("not on the tailnet"), "{message}");
+    }
+
+    /// An unsupported server's answer may differ in any part, so the open
+    /// names the version before it parses the rest.
+    fn open_unsupported(status: serde_json::Value, sessions: serde_json::Value) -> String {
+        let reply = serde_json::json!({
+            "version": { "rex_version": "t", "api_revision": 3 },
+            "status": status,
+            "sessions": sessions,
+        });
+        let fake = Fake::new(&[("server.status", &reply.to_string())]);
+        format!("{:#}", fake.open(true).err().expect("open fails"))
+    }
+
+    fn running_status() -> serde_json::Value {
+        serde_json::json!({ "instance_id": "instance-1",
+            "tailscale": { "state": "running", "dns_name": "rex.example.ts.net" } })
+    }
+
+    #[test]
+    fn an_unsupported_server_is_named_before_its_sessions_are_parsed() {
+        let sessions = serde_json::json!({ "session:a": { "label": "a changed shape" } });
+        let message = open_unsupported(running_status(), sessions);
+        assert!(message.contains("runs unsupported Rex t"), "{message}");
+        assert!(!message.contains("does not answer"), "{message}");
+    }
+
+    #[test]
+    fn an_unsupported_server_is_named_before_its_status_is_parsed() {
+        let status = serde_json::json!(["running", "rex.example.ts.net"]);
+        let message = open_unsupported(status, serde_json::json!({}));
+        assert!(message.contains("runs unsupported Rex t"), "{message}");
+        assert!(!message.contains("does not answer"), "{message}");
     }
 
     #[test]

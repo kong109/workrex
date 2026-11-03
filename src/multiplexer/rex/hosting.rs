@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value, json};
 
 use super::super::{LivePaneInfo, Multiplexer};
 use super::{
@@ -88,20 +89,44 @@ end
 return out
 "#;
 
-#[derive(Debug, Deserialize)]
-struct OpenRead {
-    #[serde(default)]
-    version: Option<Value>,
-    #[serde(default)]
-    version_error: Option<String>,
-    #[serde(default)]
-    status: Option<Value>,
-    #[serde(default)]
-    status_error: Option<String>,
-    #[serde(default)]
-    sessions: Option<HashMap<String, String>>,
-    #[serde(default)]
-    sessions_error: Option<String>,
+/// The answer `OPEN` gave for `part`. Each part is parsed only when taken,
+/// so a part whose shape changed cannot fail the parts taken before it.
+fn take_part<T: DeserializeOwned>(
+    read: &mut Map<String, Value>,
+    part: &str,
+    call: &str,
+) -> Result<Option<T>> {
+    match read.remove(part).filter(|answer| !answer.is_null()) {
+        Some(answer) => serde_json::from_value(answer)
+            .map(Some)
+            .with_context(|| format!("Failed to parse rex {call} output")),
+        None => Ok(None),
+    }
+}
+
+/// The error `OPEN` recorded for `part`, as Rex worded it.
+fn part_error(read: &Map<String, Value>, part: &str) -> Option<String> {
+    read.get(&format!("{part}_error"))
+        .filter(|error| !error.is_null())
+        .map(|error| match error.as_str() {
+            Some(text) => text.to_string(),
+            None => error.to_string(),
+        })
+}
+
+/// Part `part` of the `OPEN` answer, or the error Rex gave for `call`.
+fn required_part<T: DeserializeOwned>(
+    read: &mut Map<String, Value>,
+    part: &str,
+    call: &str,
+) -> Result<T> {
+    match take_part(read, part, call)? {
+        Some(answer) => Ok(answer),
+        None => bail!(
+            "rex {call} failed: {}",
+            part_error(read, part).as_deref().unwrap_or("no answer")
+        ),
+    }
 }
 
 /// A Rex server a node is about to use.
@@ -268,8 +293,10 @@ fn pick_app(clients: &ClientList, wanted: Option<&str>, server: &str) -> Result<
 
 impl RexBackend {
     /// Check the server's API version and read its status, and its sessions
-    /// with `list_sessions`, with one `rex` process. The version is checked
-    /// before any other answer is parsed, and later calls reuse the verdict.
+    /// with `list_sessions`, with one `rex` process. The verdict on the
+    /// version is recorded before the status or sessions are parsed, so an
+    /// unsupported server whose answers changed shape is named as such, and
+    /// later calls reuse the verdict.
     pub fn open_server(&self, list_sessions: bool) -> Result<OpenedServer> {
         let output = match self.exec_script("open", OPEN, &json!({ "sessions": list_sessions })) {
             Ok(output) => output,
@@ -281,33 +308,20 @@ impl RexBackend {
                 return Err(err.into());
             }
         };
-        let read: OpenRead = Self::parse("open", &output)?;
-        let version = read.version.ok_or_else(|| {
-            anyhow!(
-                "rex server.version failed: {}",
-                read.version_error.as_deref().unwrap_or("no answer")
-            )
-        })?;
-        let version: ServerVersion =
-            serde_json::from_value(version).context("Failed to parse rex server.version output")?;
+        let mut read: Map<String, Value> = Self::parse("open", &output)?;
+        let version: ServerVersion = required_part(&mut read, "version", "server.version")?;
         self.record_verdict(&version)?;
-        let status = read.status.ok_or_else(|| {
-            anyhow!(
-                "rex server.status failed: {}",
-                read.status_error.as_deref().unwrap_or("no answer")
-            )
-        })?;
-        let status =
-            serde_json::from_value(status).context("Failed to parse rex server.status output")?;
-        if let Some(err) = &read.sessions_error {
+        let status = required_part(&mut read, "status", "server.status")?;
+        if let Some(err) = part_error(&read, "sessions") {
             tracing::warn!("failed to list Rex sessions: {err}");
         }
-        let sessions = read.sessions.map(|sessions| {
-            sessions
-                .into_iter()
-                .map(|(id, label)| HostedSession { id, label })
-                .collect()
-        });
+        let sessions = take_part::<HashMap<String, String>>(&mut read, "sessions", "session.list")?
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .map(|(id, label)| HostedSession { id, label })
+                    .collect()
+            });
         Ok(OpenedServer { status, sessions })
     }
 
