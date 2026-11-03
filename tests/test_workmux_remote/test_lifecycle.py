@@ -25,7 +25,15 @@ from ..conftest import (
     wait_for_pane_output,
     write_workmux_config,
 )
-from .conftest import LOOPBACK, Node, commit_project, git, local_records, wm
+from .conftest import (
+    LOOPBACK,
+    Node,
+    commit_project,
+    git,
+    local_records,
+    wm,
+    write_script,
+)
 
 pytestmark = pytest.mark.tmux_only
 
@@ -541,16 +549,21 @@ def test_setup_token_reaches_claude_panes_on_the_host(
         "exec sh\n"
     )
     (mux_server.fake_bin_dir / "claude").chmod(0o755)
+    shell = write_script(
+        mux_server.home_path / "login-shell",
+        f'export PATH={mux_server.fake_bin_dir}:/usr/bin:/bin\nshift\nexec /bin/sh "$@"\n',
+    )
     login = subprocess.run(
         [str(workmux_exe_path), "remote", "login", "lo", "claude", "--setup-token"],
         cwd=mux_repo_path,
-        env={**mux_server.env, **LOOPBACK},
+        env={**mux_server.env, **LOOPBACK, "SHELL": str(shell)},
         input=f"{token}\n",
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert login.returncode == 0, login.stderr
+    assert "fake setup-token flow" in login.stdout
     assert (node.root / "secrets" / "node.json").stat().st_mode & 0o777 == 0o600
 
     repo = mux_repo_path
