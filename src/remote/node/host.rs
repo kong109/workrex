@@ -458,7 +458,6 @@ mod tests {
 
     const TAG: &str = "wr0000beef.";
     const CREATED: &str = r#"{"session_id":"session:new","initial_windows":[{"window_id":"window:w","block_ids":["block:b0"],"revision":1}]}"#;
-    const VIEW: &str = include_str!("../../multiplexer/testdata/rex_session_view.json");
     const RUNNING: &str = include_str!("../../multiplexer/testdata/rex_process.json");
     const EXITED: &str = include_str!("../../multiplexer/testdata/rex_process_exited.json");
 
