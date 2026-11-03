@@ -62,7 +62,7 @@ If the server is already gone, `workmux remove --force <handle>` forgets its wor
 
 ## Known limitations
 
-- Remote agents need tmux in window mode. Session mode, `windows:` configs and other multiplexers aren't supported for them.
+- Remote agents need the tmux or Rex backend. Under tmux each one gets a window. Under Rex each one gets a session of its own, named like its window, or a window next to the current one when `mode: window` is set. An explicit session mode (`mode: session` or `--mode session`), `windows:` configs and other multiplexers aren't supported for them.
 - Servers run Linux and use Docker for sandboxing; Podman, Lima and Apple Container aren't available there.
 - The dashboard can't create remote agents; use `workmux add --remote`.
 - Agents on a server can't push, read the local machine's clipboard or run host commands.
