@@ -1065,20 +1065,32 @@ mod tests {
         ((0..width).map(|x| buffer[(x, 0)].symbol()).collect(), drawn)
     }
 
-    #[test]
-    fn a_long_status_message_ends_at_a_word() {
-        let msg = "Rex.app did not switch: Remote Control is off. \
-                   Turn it on in Rex Settings so workmux can switch the app.";
-        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+    fn render_footer(msg: &str, width: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
         terminal
             .draw(|f| render_status(f, msg, &palette(), f.area()))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        let line: String = (0..80).map(|x| buffer[(x, 0)].symbol()).collect();
+        (0..width).map(|x| buffer[(x, 0)].symbol()).collect()
+    }
 
+    #[test]
+    fn a_long_status_message_ends_at_a_word() {
+        let msg = "Rex.app did not switch: Remote Control is off. \
+                   Turn it on in Rex Settings so workmux can switch the app.";
         assert_eq!(
-            line.trim_end(),
+            render_footer(msg, 80).trim_end(),
             "  Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so…"
+        );
+    }
+
+    #[test]
+    fn a_status_message_leaves_room_for_its_indent() {
+        let msg = "Peek works only for agents in this tab";
+        assert_eq!(msg.len(), 38);
+        assert_eq!(
+            render_footer(msg, 39),
+            "  Peek works only for agents in this…  "
         );
     }
 
