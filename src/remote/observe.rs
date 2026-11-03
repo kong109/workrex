@@ -11,7 +11,7 @@
 //! newer one starts; each generation elects its own observer and keeps its
 //! own file, and no build reads what another generation writes as current.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -155,17 +155,41 @@ fn save(name: &str, observation: &Observation) -> Result<()> {
     crate::util::write_atomic(&path, &serde_json::to_vec(observation)?)
 }
 
+/// The remotes this process observes, with when it started (laptop clock).
+static STARTED: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+
+fn started() -> std::sync::MutexGuard<'static, HashMap<String, u64>> {
+    STARTED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
+/// Whether this process started observing remote `name` within the last
+/// [`STALE_AFTER`] and has not heard from it since: the last observation is
+/// from before the view opened, so its age says nothing about the remote.
+pub fn connecting(name: &str, observation: Option<&Observation>, now: u64) -> bool {
+    let since = started().get(name).copied();
+    awaiting_first_answer(since, observation, now)
+}
+
+fn awaiting_first_answer(since: Option<u64>, observation: Option<&Observation>, now: u64) -> bool {
+    let Some(since) = since else {
+        return false;
+    };
+    let answered = observation
+        .and_then(|o| o.last_seen)
+        .is_some_and(|seen| seen >= since);
+    !answered && now.saturating_sub(since) <= STALE_AFTER.as_secs()
+}
+
 /// Keep the observations of `names` current from background threads of
 /// this process, for as long as it runs. Remotes this process already
 /// observes, and names not in `config`, are skipped.
 pub fn spawn(config: &Config, names: &[String]) {
-    static STARTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let mut started = STARTED
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let mut started = started();
     for name in names {
-        if started.contains(name) {
+        if started.contains_key(name) {
             continue;
         }
         let spec = match RemoteSpec::resolve(config, name) {
@@ -175,7 +199,7 @@ pub fn spawn(config: &Config, names: &[String]) {
                 continue;
             }
         };
-        started.insert(name.clone());
+        started.insert(name.clone(), now());
         // Elect now, so that on return the file is either kept current by
         // another process or marked as not current.
         let lock = take_lock(name).unwrap_or_else(|err| {
@@ -418,6 +442,30 @@ mod tests {
                 rex: None,
             }],
         })
+    }
+
+    #[test]
+    fn a_view_is_connecting_until_its_remote_first_answers() {
+        // The last observation is two minutes older than the view.
+        let mut observation = Observation {
+            connected: false,
+            last_seen: Some(880),
+            ..Default::default()
+        };
+        assert!(awaiting_first_answer(Some(1000), Some(&observation), 1002));
+        assert!(awaiting_first_answer(Some(1000), None, 1002));
+        // Quiet past the deadline: disconnected after all.
+        assert!(!awaiting_first_answer(
+            Some(1000),
+            Some(&observation),
+            1001 + STALE_AFTER.as_secs()
+        ));
+        // An answer after the view started, even one since lost.
+        observation.apply(snapshot(1001, AgentStatus::Working), 1003);
+        observation.connected = false;
+        assert!(!awaiting_first_answer(Some(1000), Some(&observation), 1004));
+        // A process that observes nothing says nothing.
+        assert!(!awaiting_first_answer(None, None, 1002));
     }
 
     #[test]

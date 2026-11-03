@@ -72,6 +72,7 @@ pub fn rows(
             status.base_branch = base;
             status
         });
+        let connected = observation.is_some_and(|o| o.is_connected(now));
         let remote = |pane: usize, attached: bool| RemoteAgent {
             at: RemoteRef {
                 remote: record.remote.clone(),
@@ -83,7 +84,8 @@ pub fn rows(
             project_root: record.project_root.clone(),
             host: hosts.get(&record.remote).cloned().unwrap_or_default(),
             attached,
-            connected: observation.is_some_and(|o| o.is_connected(now)),
+            connected,
+            connecting: !connected && observe::connecting(&record.remote, observation, now),
             last_seen: observation.and_then(|o| o.last_seen),
             git: git.clone(),
             ended: observed.and_then(|o| o.ended),
@@ -259,6 +261,9 @@ pub fn connectivity(remote: &RemoteAgent, now: u64) -> Option<String> {
             }
         });
     }
+    if remote.connecting {
+        return Some("connecting".to_string());
+    }
     Some(match remote.last_seen {
         Some(seen) => format!(
             "disconnected · seen {} ago",
@@ -273,6 +278,8 @@ pub fn connectivity(remote: &RemoteAgent, now: u64) -> Option<String> {
 pub fn row_title(remote: &RemoteAgent, now: u64, title: Option<&str>) -> Option<String> {
     let state = if remote.connected {
         remote.ended?.label().to_string()
+    } else if remote.connecting {
+        "connecting".to_string()
     } else {
         match remote.last_seen {
             Some(seen) => format!(
@@ -671,6 +678,15 @@ mod tests {
             row_title(&remote, 5, Some("")).as_deref(),
             Some("disconnected")
         );
+        // Until a view's new observer hears from the remote.
+        remote.last_seen = Some(1000);
+        remote.connecting = true;
+        assert_eq!(
+            row_title(&remote, 1120, Some("Fixing")).as_deref(),
+            Some("connecting · Fixing")
+        );
+        assert_eq!(connectivity(&remote, 1120).as_deref(), Some("connecting"));
+        remote.connecting = false;
         remote.connected = true;
         assert_eq!(row_title(&remote, 5, Some("Fixing")), None);
         remote.ended = Some(EndReason::HostReboot);
