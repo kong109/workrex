@@ -18,6 +18,7 @@ from .conftest import (
     write_workmux_config,
 )
 from .rex_env import RexEnvironment
+from .test_sidebar_rex import SIDEBAR_LABEL, SPINNER
 
 FAKE_AGENT = textwrap.dedent(
     """
@@ -377,3 +378,54 @@ def test_a_reporting_pane_in_the_main_worktree_is_not_adopted(
     )
     report(rex, block, "state=working:app=fake")
     assert agent_status(rex, workmux_exe_path, repo_path, block) is None
+
+
+# The sidebar draws a working agent as a spinner, not an icon.
+WORKING = "spinner"
+
+
+def sidebar_blocks(env) -> list[str]:
+    return [
+        block["block_id"]
+        for view in env.views()
+        for window in view.get("windows", [])
+        for layer in window.get("layers", [])
+        for block in layer.get("blocks", [])
+        if block.get("label") == SIDEBAR_LABEL
+    ]
+
+
+def test_the_sidebar_follows_each_status_the_agent_reports(
+    rex, workmux_exe_path, repo_path
+):
+    env = rex
+    short_tmp = env.socket_dir / "t"
+    short_tmp.mkdir()
+    env.env["TMPDIR"] = str(short_tmp)
+    block = start_fake_agent(env, workmux_exe_path, repo_path, "side-osc")
+    report(env, block, "state=working:app=fake")
+
+    result = workmux(env, workmux_exe_path, repo_path, "sidebar", "on")
+    assert result.returncode == 0, result.stderr
+    try:
+        assert poll_until(lambda: bool(sidebar_blocks(env)), timeout=10), env.views()
+        sidebar = sidebar_blocks(env)[0]
+
+        def shows(icon: str) -> bool:
+            text = env.capture_pane(sidebar) or ""
+            return bool(SPINNER.search(text)) if icon == WORKING else icon in text
+
+        assert poll_until(lambda: shows(WORKING), timeout=10), env.capture_pane(sidebar)
+        # Each report is a program_status event the daemon reads again on.
+        for body, icon in [
+            ("state=blocked:kind=permission:app=fake", "💬"),
+            ("state=done:app=fake", "✅"),
+            ("state=working:app=fake", WORKING),
+        ]:
+            report(env, block, body)
+            assert poll_until(lambda: shows(icon), timeout=10), (
+                body,
+                env.capture_pane(sidebar),
+            )
+    finally:
+        workmux(env, workmux_exe_path, repo_path, "sidebar", "off")

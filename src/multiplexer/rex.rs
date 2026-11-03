@@ -2516,6 +2516,30 @@ mod tests {
         assert!(fake.calls("write").is_empty());
     }
 
+    #[test]
+    fn a_backend_that_never_scans_reads_each_new_program_status() {
+        let fake = FakeRex::new(&[
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", PROCESS),
+        ]);
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let status = |state: &str| {
+            json!({ "records": [{ "state": state, "updated_at": "2026-11-03T08:00:00Z" }] })
+                .to_string()
+        };
+        let shown = |rex: &RexBackend| match rex.reported_status(block) {
+            Some(ReportedStatus::Agent { status, .. }) => Some(status),
+            _ => None,
+        };
+
+        fake.write("status", &status("working"));
+        assert_eq!(shown(&fake.rex), Some(AgentStatus::Working));
+        fake.write("status", &status("blocked"));
+        assert_eq!(shown(&fake.rex), Some(AgentStatus::Waiting));
+        fake.write("status", &status("done"));
+        assert_eq!(shown(&fake.rex), Some(AgentStatus::Done));
+    }
+
     const APP: &str = "client:app-1";
     const CALLER_SESSION: &str = "session:b";
     const CALLER_BLOCK: &str = "block:caller";

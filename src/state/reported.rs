@@ -82,6 +82,8 @@ pub(crate) struct Reports<'a> {
     instance: &'a str,
     hooked: HashSet<String>,
     shown: Vec<ReportedRecord>,
+    /// Each pane's report, asked once per pass.
+    asked: HashMap<String, Option<ReportedStatus>>,
 }
 
 impl<'a> Reports<'a> {
@@ -91,13 +93,22 @@ impl<'a> Reports<'a> {
             instance,
             hooked: HashSet::new(),
             shown: Vec::new(),
+            asked: HashMap::new(),
         }
+    }
+
+    fn reported_status(&mut self, pane_id: &str) -> Option<ReportedStatus> {
+        let mux = self.mux;
+        *self
+            .asked
+            .entry(pane_id.to_string())
+            .or_insert_with(|| mux.reported_status(pane_id))
     }
 
     /// Merge what the live pane of a hook-registered agent reports into it.
     pub(crate) fn overlay(&mut self, state: &mut AgentState) {
         self.hooked.insert(state.pane_key.pane_id.clone());
-        let Some(reported) = self.mux.reported_status(&state.pane_key.pane_id) else {
+        let Some(reported) = self.reported_status(&state.pane_key.pane_id) else {
             return;
         };
         let hook_seen = HookVersion::of(state);
@@ -116,14 +127,15 @@ impl<'a> Reports<'a> {
         live_panes: &HashMap<String, LivePaneInfo>,
         boot_id: Option<&str>,
     ) -> Vec<AgentPane> {
-        let mut candidates: Vec<_> = live_panes
-            .iter()
-            .filter(|(pane_id, _)| !self.hooked.contains(pane_id.as_str()))
-            .filter_map(|(pane_id, live)| match self.mux.reported_status(pane_id)? {
-                ReportedStatus::Agent { status, since } => Some((pane_id, live, status, since)),
-                ReportedStatus::Idle => None,
-            })
-            .collect();
+        let mut candidates = Vec::new();
+        for (pane_id, live) in live_panes {
+            if self.hooked.contains(pane_id.as_str()) {
+                continue;
+            }
+            if let Some(ReportedStatus::Agent { status, since }) = self.reported_status(pane_id) {
+                candidates.push((pane_id, live, status, since));
+            }
+        }
         if candidates.is_empty() {
             return Vec::new();
         }
@@ -184,7 +196,7 @@ impl<'a> Reports<'a> {
     /// drop the records of panes that are gone or report nothing now, and
     /// of adopted panes that left the worktree they were adopted in.
     pub(crate) fn persist(
-        self,
+        mut self,
         store: &StateStore,
         live_panes: &HashMap<String, LivePaneInfo>,
     ) -> Result<()> {
@@ -200,7 +212,7 @@ impl<'a> Reports<'a> {
                 continue;
             };
             let still_reporting = matches!(
-                self.mux.reported_status(&key.pane_id),
+                self.reported_status(&key.pane_id),
                 Some(ReportedStatus::Agent { .. })
             );
             let left_worktree = existing.hook_seen.is_none()

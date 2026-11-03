@@ -151,6 +151,27 @@ fn label_with_icon(name: &str, icon: Option<&str>) -> String {
 /// A `program_status` call made beside the block's `process` call.
 pub(super) struct ProgramStatusCall(Result<Option<ProgramStatusReport>>);
 
+impl ProgramStatusCall {
+    /// What `block` reported, given its foreground process, or `None` when
+    /// the call failed. A block that closed reports nothing.
+    fn reported(
+        self,
+        block: &BlockId,
+        foreground: Option<&ProcessEntry>,
+    ) -> Option<Option<ReportedStatus>> {
+        match self.0 {
+            Ok(report) => {
+                let foreground = foreground.map(|fg| (fg.pid, fg.name.as_str()));
+                Some(report.and_then(|report| report.owned_by_foreground(foreground).reported()))
+            }
+            Err(error) => {
+                warn!(block = block.as_str(), %error, "rex: program_status failed");
+                None
+            }
+        }
+    }
+}
+
 impl RexBackend {
     pub(super) fn query_program_status(&self, block: &BlockId) -> ProgramStatusCall {
         ProgramStatusCall(found(self.block_call::<ProgramStatusReport>(
@@ -168,20 +189,17 @@ impl RexBackend {
         call: ProgramStatusCall,
         foreground: Option<&ProcessEntry>,
     ) {
-        match call.0 {
-            Ok(report) => {
-                let foreground = foreground.map(|fg| (fg.pid, fg.name.as_str()));
-                let reported =
-                    report.and_then(|report| report.owned_by_foreground(foreground).reported());
-                self.program_status
-                    .lock()
-                    .expect("rex program status cache poisoned")
-                    .insert(block.clone(), reported);
-            }
-            Err(error) => warn!(block = block.as_str(), %error, "rex: program_status failed"),
+        if let Some(reported) = call.reported(block, foreground) {
+            self.program_status
+                .lock()
+                .expect("rex program status cache poisoned")
+                .insert(block.clone(), reported);
         }
     }
 
+    /// What the pane scan cached for `pane_id`, or else a fresh answer that
+    /// is not cached: nothing would refresh it in a backend that never scans,
+    /// such as the sidebar daemon's, which reads again on each status event.
     pub(super) fn program_status_of(&self, pane_id: &str) -> Option<ReportedStatus> {
         let block = BlockId::parse(pane_id).ok()?;
         let cached = |backend: &Self| {
@@ -199,9 +217,9 @@ impl RexBackend {
             .ok()
             .flatten()
             .filter(|process| !process.has_exited())?;
-        let call = self.query_program_status(&block);
-        self.observe_program_status(&block, call, process.foreground.as_ref());
-        cached(self).flatten()
+        self.query_program_status(&block)
+            .reported(&block, process.foreground.as_ref())
+            .flatten()
     }
 
     /// Show `icon` in front of the label of the window holding `pane_id`, or
