@@ -3335,6 +3335,22 @@ mod tests {
     }
 
     #[test]
+    fn a_script_drops_the_reads_before_it() {
+        let fake = FakeRex::new(&[
+            ("session.view", "{}"),
+            ("server.version", r#"{"rex_version":"t","api_revision":8}"#),
+            ("", "{}"),
+        ])
+        .reusing();
+        fake.view();
+        fake.rex
+            .exec_script("probe", "return {}", &serde_json::json!({}))
+            .unwrap();
+        fake.view();
+        assert_eq!(fake.calls("session.view").len(), 2);
+    }
+
+    #[test]
     fn a_read_that_spans_a_write_is_not_reused() {
         let fake = FakeRex::new(&[
             (
