@@ -333,12 +333,12 @@ impl ClientList {
     }
 }
 
-/// The one rule for which app a jump may switch: `owner` holds the caller's
-/// block and is a connected app attached to the caller's session. The app
-/// keeps its claim on a block after it moves to another session, and Rex
-/// reports no session an app shows now, so this says the app showed the
-/// caller's pane last, not that it shows it now. Only an explicit jump asks
-/// it; `add` and `open` never switch the app.
+/// Whether `owner`, the client that holds the caller's block, is a connected
+/// app attached to the caller's session. That is the one rule for which app a
+/// jump may switch. Rex reports no session an app shows now, and an app keeps
+/// its claim on a block after it moves on, so a true answer means the app
+/// showed the caller's pane last, which is the closest Rex gets to "shows the
+/// caller". Only an explicit jump asks; `add` and `open` never switch the app.
 fn shows_caller(clients: &ClientList, owner: &ClientId, caller_session: &SessionId) -> bool {
     clients.is_app_attached_to(owner, caller_session)
 }
@@ -584,15 +584,11 @@ pub(crate) enum AppSwitch {
 impl AppSwitch {
     /// Prints the fix once per process, and never under a full-screen
     /// display such as the dashboard, which would swallow it.
-    fn hint_if_refused(self) {
+    fn hint_if_refused(self, printed: &AtomicBool, out: &mut impl Write) {
         if self == AppSwitch::Refused
             && !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false)
         {
-            print_once(
-                &REMOTE_CONTROL_HINT,
-                &mut std::io::stderr(),
-                REMOTE_CONTROL_FIX,
-            );
+            print_once(printed, out, REMOTE_CONTROL_FIX);
         }
     }
 }
@@ -603,6 +599,19 @@ const APP_SELECT_TIMEOUT: Duration = Duration::from_secs(1);
 
 const REMOTE_CONTROL_FIX: &str = "Rex.app did not switch: Remote Control is off. \
      Turn it on in Rex Settings so workmux can switch the app.";
+
+/// The error a jump returns when Rex.app refused it. The backend has already
+/// told the user how to fix it, so callers stay quiet.
+#[derive(Debug)]
+pub struct AppRefused;
+
+impl std::fmt::Display for AppRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(REMOTE_CONTROL_FIX)
+    }
+}
+
+impl std::error::Error for AppRefused {}
 
 /// Printed once per process, so a loop over panes repeats no hint.
 static REMOTE_CONTROL_HINT: AtomicBool = AtomicBool::new(false);
@@ -1100,6 +1109,26 @@ impl RexBackend {
         }
     }
 
+    /// Shows `pane_id` on the app and focuses it, writing the Remote Control
+    /// fix to `hint` once per `printed` if the app refuses.
+    fn jump_to_pane(
+        &self,
+        pane_id: &str,
+        printed: &AtomicBool,
+        hint: &mut impl Write,
+    ) -> Result<()> {
+        let block = BlockId::parse(pane_id)?;
+        let target = self
+            .resolve("block", block.as_str())?
+            .ok_or_else(|| anyhow!("Rex block {pane_id} not found"))?;
+        let switch = self.show_on_app(&target.session_id, target.window_id.as_ref());
+        switch.hint_if_refused(printed, hint);
+        if switch == AppSwitch::Refused {
+            return Err(AppRefused.into());
+        }
+        self.select_pane(pane_id)
+    }
+
     fn records_dir(&self) -> Result<PathBuf> {
         let instance = self.resolve_instance_id()?;
         Ok(crate::state::store::get_state_dir()?
@@ -1257,12 +1286,16 @@ impl Multiplexer for RexBackend {
         self.caller.block.as_ref().map(|block| block.0.clone())
     }
 
+    /// The caller's pane while it is alive, else the pane the server has
+    /// focused. `add` focuses its new window on the server without moving
+    /// the app, so the server's focus is often a pane the user never saw.
     fn active_pane_id(&self) -> Option<String> {
         let view = self.current_or_only_view().ok()?;
-        view.active_window()?
-            .focused_block_id
-            .as_ref()
-            .map(|block| block.as_str().to_string())
+        let block = match &self.caller.block {
+            Some(caller) if view.window_of(caller).is_some() => caller,
+            _ => view.active_window()?.focused_block_id.as_ref()?,
+        };
+        Some(block.as_str().to_string())
     }
 
     fn get_client_active_pane_path(&self) -> Result<PathBuf> {
@@ -1662,16 +1695,7 @@ impl Multiplexer for RexBackend {
     /// owns it. A refused jump fails, so the dashboard stays open, and only
     /// a command outside a full-screen display prints the fix.
     fn switch_to_pane(&self, pane_id: &str, _window_hint: Option<&str>) -> Result<()> {
-        let block = BlockId::parse(pane_id)?;
-        let target = self
-            .resolve("block", block.as_str())?
-            .ok_or_else(|| anyhow!("Rex block {pane_id} not found"))?;
-        let switch = self.show_on_app(&target.session_id, target.window_id.as_ref());
-        switch.hint_if_refused();
-        if switch == AppSwitch::Refused {
-            return Err(anyhow!(REMOTE_CONTROL_FIX));
-        }
-        self.select_pane(pane_id)
+        self.jump_to_pane(pane_id, &REMOTE_CONTROL_HINT, &mut std::io::stderr())
     }
 
     fn kill_pane(&self, pane_id: &str) -> Result<()> {
@@ -2371,6 +2395,42 @@ mod tests {
         .unwrap();
     }
 
+    /// Session B after `add`: the caller's pane in `main`, and the server
+    /// focus on the new agent pane in `wm-feat`.
+    fn after_add_fake() -> FakeRex {
+        let window = |id: &str, label: &str, block: &str| {
+            json!({
+                "window_id": id,
+                "label": label,
+                "focused_block_id": block,
+                "layers": [{ "kind": "tiled", "blocks": [{ "block_id": block }] }],
+            })
+        };
+        let view = json!({
+            "session_id": "session:b",
+            "label": "b",
+            "active_window_id": "window:feat",
+            "windows": [
+                window("window:main", "main", CALLER_BLOCK),
+                window("window:feat", "wm-feat", "block:agent"),
+            ],
+        })
+        .to_string();
+        FakeRex::new(&[("session.view", &view)])
+    }
+
+    #[test]
+    fn the_active_pane_is_the_callers_not_the_servers_focus() {
+        let fake = after_add_fake().in_pane(CALLER_SESSION, CALLER_BLOCK);
+        assert_eq!(fake.rex.active_pane_id().as_deref(), Some(CALLER_BLOCK));
+    }
+
+    #[test]
+    fn the_active_pane_falls_back_to_the_servers_focus() {
+        let fake = after_add_fake().in_pane(CALLER_SESSION, "block:closed");
+        assert_eq!(fake.rex.active_pane_id().as_deref(), Some("block:agent"));
+    }
+
     #[test]
     fn add_and_open_leave_the_app_alone() {
         // The app owns the caller's pane and is attached to its session, as
@@ -2410,6 +2470,7 @@ mod tests {
             "!Error: Remote Control is off for this client (code=refused)",
         );
         let error = fake.rex.switch_to_pane("block:agent", None).unwrap_err();
+        assert!(error.is::<AppRefused>());
         assert_eq!(error.to_string(), REMOTE_CONTROL_FIX);
         assert_eq!(fake.calls("session.select").len(), 1);
         assert!(fake.calls("session.focus_block").is_empty());
@@ -2438,6 +2499,27 @@ mod tests {
             "{waited:?}"
         );
         assert_eq!(fake.calls("session.focus_block").len(), 1);
+    }
+
+    #[test]
+    fn only_a_refused_jump_prints_the_fix() {
+        for (select, expected) in [
+            ("{}", String::new()),
+            (
+                "!Error: the client did not answer (code=timeout)",
+                String::new(),
+            ),
+            (
+                "!Error: Remote Control is off for this client (code=refused)",
+                format!("{REMOTE_CONTROL_FIX}\n"),
+            ),
+        ] {
+            let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], select);
+            let printed = AtomicBool::new(false);
+            let mut out = Vec::new();
+            let _ = fake.rex.jump_to_pane("block:agent", &printed, &mut out);
+            assert_eq!(String::from_utf8(out).unwrap(), expected, "{select}");
+        }
     }
 
     #[test]
