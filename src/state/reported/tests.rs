@@ -568,3 +568,80 @@ fn a_hook_status_change_within_the_merged_second_keeps_the_hook_status() {
 
     assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
 }
+
+/// Where an adopted agent's pane is now, given the repository and the
+/// worktree it was adopted in.
+type PaneDir = fn(&Path, &Path) -> PathBuf;
+
+#[test]
+fn a_pruning_reader_drops_an_adopted_record_once_its_pane_leaves_the_worktree() {
+    let done = Some(AgentStatus::Done);
+    let cases: [(&str, PaneDir, Option<AgentStatus>); 8] = [
+        ("worktree root", |_, worktree| worktree.to_path_buf(), done),
+        ("subdirectory", |_, worktree| worktree.join("sub"), done),
+        (
+            "trailing slash",
+            |_, worktree| PathBuf::from(format!("{}/", worktree.display())),
+            done,
+        ),
+        (
+            "through a symlink",
+            |_, worktree| {
+                let alias = worktree.with_file_name("alias");
+                std::os::unix::fs::symlink(worktree, &alias).unwrap();
+                alias.join("sub")
+            },
+            done,
+        ),
+        (
+            "deleted subdirectory",
+            |_, worktree| {
+                let sub = worktree.join("sub");
+                fs::remove_dir(&sub).unwrap();
+                sub
+            },
+            done,
+        ),
+        (
+            "parent directory",
+            |_, worktree| worktree.parent().unwrap().to_path_buf(),
+            None,
+        ),
+        ("main worktree", |repo, _| repo.to_path_buf(), None),
+        (
+            "sibling sharing the name as a prefix",
+            |_, worktree| {
+                let sibling = worktree.with_file_name("wt2");
+                fs::create_dir(&sibling).unwrap();
+                sibling
+            },
+            None,
+        ),
+    ];
+    for (case, pane_dir, expected) in cases {
+        let (dir, store) = temp_store();
+        let (repo, worktree) = linked_worktree(dir.path());
+        fs::create_dir(worktree.join("sub")).unwrap();
+        let adopted = adopted_in(&worktree, worktree.clone());
+        store_record(&store, &adopted);
+        let pane = adopted.pane_key.pane_id;
+        let mux = FakeMux {
+            live: HashMap::from([(
+                pane.clone(),
+                live(pane_dir(&repo, &worktree).to_str().unwrap()),
+            )]),
+            reported: HashMap::from([(
+                pane,
+                ReportedStatus::Agent {
+                    status: AgentStatus::Done,
+                    since: 200,
+                },
+            )]),
+            during_query: Mutex::new(None),
+        };
+
+        store.load_all_reconciled_agents(&mux).unwrap();
+
+        assert_eq!(last_done_status(&store), expected, "{case}");
+    }
+}

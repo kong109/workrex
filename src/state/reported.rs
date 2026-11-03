@@ -181,7 +181,8 @@ impl<'a> Reports<'a> {
     }
 
     /// Save what this pass saw for readers that skip the live query, and
-    /// drop the records of panes that are gone or report nothing now.
+    /// drop the records of panes that are gone or report nothing now, and
+    /// of adopted panes that left the worktree they were adopted in.
     pub(crate) fn persist(
         self,
         store: &StateStore,
@@ -194,12 +195,20 @@ impl<'a> Reports<'a> {
             if key.backend != backend || key.instance != self.instance {
                 continue;
             }
-            let still_reporting = live_panes.contains_key(&key.pane_id)
-                && matches!(
-                    self.mux.reported_status(&key.pane_id),
-                    Some(ReportedStatus::Agent { .. })
-                );
-            if !still_reporting {
+            let Some(live) = live_panes.get(&key.pane_id) else {
+                remove(&path)?;
+                continue;
+            };
+            let still_reporting = matches!(
+                self.mux.reported_status(&key.pane_id),
+                Some(ReportedStatus::Agent { .. })
+            );
+            let left_worktree = existing.hook_seen.is_none()
+                && existing
+                    .worktree
+                    .as_deref()
+                    .is_some_and(|worktree| !resolved(&live.working_dir).starts_with(worktree));
+            if !still_reporting || left_worktree {
                 remove(&path)?;
             }
         }
@@ -230,7 +239,7 @@ impl<'a> Reports<'a> {
 /// rewrites the record. An adopted record, which has no hook state, is read
 /// only while the worktree that adoption found its pane in is still a linked
 /// worktree, with its `.git` file and its repository's entry for it naming
-/// each other.
+/// each other. A pruning reader drops it once the pane leaves that worktree.
 pub(crate) fn with_reported(
     store: &StateStore,
     agents: Vec<AgentState>,
