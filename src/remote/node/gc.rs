@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use super::execution::{sessions, tmux, tmux_socket};
 use super::host::{RexHost, hosted_marker};
-use super::{NodeRoot, Workspace, git};
+use super::{Execution, NodeRoot, Workspace, git};
 use crate::multiplexer::rex::HostedSession;
 use crate::remote::protocol::{RemoveRequest, session_name};
 
@@ -106,10 +106,10 @@ fn survey(
 ) -> Result<(Vec<Finding>, Vec<String>, Vec<String>)> {
     let socket = tmux_socket(root)?;
     let sessions = sessions(&socket);
-    let rex = rex_sessions(root);
+    let workspaces = root.workspaces();
+    let rex = rex_sessions(root, &workspaces);
     let containers = containers(root)?;
     let supervisors = supervisors(root);
-    let workspaces = root.workspaces();
 
     let ids: HashSet<&str> = workspaces
         .iter()
@@ -407,14 +407,19 @@ fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
 }
 
-/// This root's sessions on the node's Rex server, labels untagged; none
-/// when the root never hosted on Rex, and `None` when the server does not
-/// answer, so nothing is taken for an orphan or for dead.
-fn rex_sessions(root: &NodeRoot) -> Option<Vec<HostedSession>> {
+/// This root's sessions on the node's Rex server, named as by
+/// [`RexHost::sessions`]; none when the root never hosted on Rex, and `None`
+/// when the server does not answer, so nothing is taken for an orphan or for
+/// dead.
+fn rex_sessions(root: &NodeRoot, workspaces: &[Workspace]) -> Option<Vec<HostedSession>> {
     if !hosted_marker(root).exists() {
         return Some(Vec::new());
     }
-    let sessions = RexHost::open(root, false).and_then(|host| host.sessions());
+    let executions: Vec<&Execution> = workspaces
+        .iter()
+        .filter_map(|ws| ws.execution.as_ref())
+        .collect();
+    let sessions = RexHost::open(root, false).and_then(|host| host.sessions(&executions));
     match sessions {
         Ok(sessions) => Some(sessions),
         Err(err) => {
@@ -766,7 +771,7 @@ mod tests {
         let root = NodeRoot {
             path: dir.path().to_path_buf(),
         };
-        assert_eq!(rex_sessions(&root), Some(Vec::new()));
+        assert_eq!(rex_sessions(&root, &[]), Some(Vec::new()));
     }
 
     #[test]

@@ -5,12 +5,14 @@ sessions. Runs with WORKREX_TEST_NODE_TERMINAL=rex on the Rex backend,
 whose isolated server stands in for the node's."""
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 
-from ..conftest import get_window_name
+from ..conftest import get_window_name, poll_until
 from ..rex_env import RexEnvironment
+from ..support.bin_name import hook_bin
 from .conftest import (
     NODE_TERMINAL,
     Node,
@@ -147,3 +149,70 @@ def test_rex_hosted_agent_gets_the_node_environment(
     node.wait_for_agent(env, "feat", "AGENT-UP only:from-node")
     node.wait_for_agent(env, "feat", "NODE-PATH")
     wm(env, workmux_exe_path, mux_repo_path, "remove --force feat")
+
+
+def test_a_renamed_hosted_session_is_still_found_by_id(
+    mux_server, workmux_exe_path: Path, mux_repo_path: Path, node: Node, tmp_path: Path
+):
+    """Rex's Claude Code hook renames the agent's session at its first
+    request. The node finds the session by the id it recorded, so the agent
+    stays listed, gc keeps a spawned workspace whose agent runs there, and
+    remove destroys the session."""
+    env, exe, repo = mux_server, workmux_exe_path, mux_repo_path
+    claude = write_script(
+        tmp_path / "claude",
+        f"{hook_bin()} set-window-status working </dev/null\n"
+        "echo AGENT-UP\n"
+        # The status record is tied to the block's foreground program.
+        "while read -r line; do :; done\n",
+    )
+    commit_project(
+        repo,
+        {"nerdfont": False, "agent": str(claude), "panes": [{"command": "<agent>"}]},
+    )
+    added = wm(env, exe, repo, "add feat --remote lo")
+    assert "Successfully created remote workspace" in added.stdout, added.stderr
+    node.wait_for_agent(env, "feat", "AGENT-UP")
+    [record] = local_records(env)
+    [session] = record["execution"]["rex"]["sessions"].values()
+
+    def statuses() -> list:
+        rows = json.loads(wm(env, exe, repo, "list --json").stdout)
+        return next(row["agent_statuses"] for row in rows if row.get("remote"))
+
+    assert poll_until(lambda: statuses() == ["working"], timeout=20), statuses()
+    rex_of(node).api(
+        "session.set_label", {"session_id": session, "label": "Fix the login bug"}
+    )
+    assert node.sessions() == []
+    assert statuses() == ["working"]
+
+    # gc goes by whether the agent runs only for a workspace an agent
+    # spawned that the laptop has not adopted: here, one it forgot.
+    records_dir = env.home_path / ".local/state/workmux/remote/lo/workspaces"
+    local = records_dir / f"{record['ws_id']}.json"
+    saved = local.read_text()
+    local.unlink()
+    tombstone = records_dir.parent / "forgotten" / record["ws_id"]
+    tombstone.parent.mkdir(exist_ok=True)
+    tombstone.write_text(str(int(time.time())))
+    on_node = node.root / "state" / "workspaces" / f"{record['ws_id']}.json"
+    ws = json.loads(on_node.read_text())
+    ws["origin"] = {
+        "parent": "w000000000000",
+        "base_label": "main",
+        "background": True,
+        "spawned_at": int(time.time()) - 3600,
+        "layout": [],
+    }
+    on_node.write_text(json.dumps(ws))
+    gc = wm(env, exe, repo, "remote gc lo --dry-run")
+    assert "Keeping workspace 'feat'" in gc.stdout, gc.stdout
+    assert "Nothing to clean up on 'lo'" in gc.stdout, gc.stdout
+
+    tombstone.unlink()
+    local.write_text(saved)
+    removed = wm(env, exe, repo, "remove --force feat")
+    assert "Removed remote workspace 'feat'" in removed.stdout, removed.stderr
+    live = [s["session_id"] for s in rex_of(node).api("session.list")["sessions"]]
+    assert session not in live, live

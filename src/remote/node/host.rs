@@ -292,15 +292,34 @@ impl RexHost {
         label.strip_prefix(&self.tag)
     }
 
-    /// This root's sessions, labels untagged.
-    pub fn sessions(&self) -> Result<Vec<HostedSession>> {
+    /// This root's sessions, each named as its tmux session would be. A
+    /// session one of `executions` recorded keeps that name after Rex
+    /// renames it; any other is named by its label without the tag.
+    pub fn sessions(&self, executions: &[&Execution]) -> Result<Vec<HostedSession>> {
+        let recorded: HashMap<&str, String> = executions
+            .iter()
+            .filter_map(|execution| {
+                let placement = execution.rex.as_ref()?;
+                (placement.instance_id == self.instance_id).then_some((execution, placement))
+            })
+            .flat_map(|(execution, placement)| {
+                placement
+                    .sessions
+                    .iter()
+                    .map(|(index, id)| (id.as_str(), session_name(&execution.ex_id, *index)))
+            })
+            .collect();
         Ok(self
             .mux
             .hosted_sessions()?
             .into_iter()
             .filter_map(|session| {
+                let label = match recorded.get(session.id.as_str()) {
+                    Some(name) => name.clone(),
+                    None => self.untagged(&session.label)?.to_string(),
+                };
                 Some(HostedSession {
-                    label: self.untagged(&session.label)?.to_string(),
+                    label,
                     id: session.id,
                 })
             })
@@ -557,6 +576,31 @@ mod tests {
             assert!(call.starts_with("--autostart=false -S unix://"), "{call}");
             assert!(!call.contains("s3cr3t"), "{call}");
         }
+    }
+
+    #[test]
+    fn a_session_rex_renamed_keeps_the_name_its_execution_recorded() {
+        let list = serde_json::json!({ "sessions": [
+            { "session_id": "session:renamed", "label": "Fix the login bug" },
+            { "session_id": "session:tagged", "label": format!("{TAG}x999999999999-0") },
+            { "session_id": "session:notes", "label": "notes" },
+        ]});
+        let fake = Fake::new(&[("session.list", &list.to_string())]);
+        let current = execution(&[(0, "session:renamed")], "instance-1");
+        // An id recorded on an earlier run of the server names nothing now.
+        let mut earlier = execution(&[(0, "session:notes")], "instance-0");
+        earlier.ex_id = "x111111111111".into();
+        let named = |id: &str, label: &str| HostedSession {
+            id: id.into(),
+            label: label.into(),
+        };
+        assert_eq!(
+            fake.rex().sessions(&[&current, &earlier]).unwrap(),
+            [
+                named("session:renamed", "x0123456789ab-0"),
+                named("session:tagged", "x999999999999-0"),
+            ]
+        );
     }
 
     #[test]
