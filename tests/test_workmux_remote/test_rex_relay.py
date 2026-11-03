@@ -117,12 +117,19 @@ def test_rex_sibling_opens_in_the_parent_session(
     setup_agent_project(repo, tmp_path / "fake-agent")
     session = get_window_name("feat")
     sibling = get_window_name("sib")
+    observer = get_window_name("other")
+
+    # The first relay becomes the remote's observer, so the sibling is
+    # adopted from the other session, not from the parent's.
+    added = wm(env, workmux_exe_path, repo, "add other --remote lo")
+    assert "Successfully created remote workspace" in added.stdout, added.stderr
+    wait_for_pane_output(env, observer, "FAKE-AGENT-READY", timeout=20)
 
     added = wm(env, workmux_exe_path, repo, "add feat --remote lo")
     assert "Successfully created remote workspace" in added.stdout, added.stderr
-    [record] = local_records(env)
+    [record] = [r for r in local_records(env) if r["branch"] == "feat"]
     ex_id = record["execution"]["ex_id"]
-    [parent] = node.workspaces()
+    [parent] = [ws for ws in node.workspaces() if ws["branch"] == "feat"]
     wait_for_pane_output(env, session, "FAKE-AGENT-READY", timeout=20)
 
     tell(Path(parent["worktree_path"]), "spawn sib -b -p sibling-task")
@@ -140,6 +147,7 @@ def test_rex_sibling_opens_in_the_parent_session(
         lambda: env.list_windows_in_session(session) == [session, sibling],
         timeout=20,
     ), env.list_windows_in_session(session)
+    assert env.list_windows_in_session(observer) == [observer]
     [adopted] = [r for r in local_records(env) if r["branch"] == "sib"]
     assert adopted["window_session"] == session
     wait_for_pane_output(env, sibling, "FAKE-AGENT-READY", timeout=20)
@@ -147,7 +155,8 @@ def test_rex_sibling_opens_in_the_parent_session(
     removed = wm(env, workmux_exe_path, repo, "remove --force sib")
     assert "Removed remote workspace 'sib'" in removed.stdout, removed.stderr
     assert env.list_windows_in_session(session) == [session]
-    removed = wm(env, workmux_exe_path, repo, "remove --force feat")
-    assert "Removed remote workspace 'feat'" in removed.stdout, removed.stderr
-    assert poll_until(lambda: session not in env.list_sessions(), timeout=5)
+    for handle, window in [("feat", session), ("other", observer)]:
+        removed = wm(env, workmux_exe_path, repo, f"remove --force {handle}")
+        assert f"Removed remote workspace '{handle}'" in removed.stdout, removed.stderr
+        assert poll_until(lambda: window not in env.list_sessions(), timeout=5)
     assert node.sessions() == []
