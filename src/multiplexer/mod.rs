@@ -1070,20 +1070,28 @@ pub trait Multiplexer: Send + Sync {
     /// and command matching). Default implementation queries the pane individually.
     fn validate_agent_alive(&self, state: &crate::state::AgentState) -> Result<bool> {
         let live_pane = self.get_live_pane_info(&state.pane_key.pane_id)?;
+        Ok(pane_runs_agent(live_pane, state))
+    }
+}
 
-        match live_pane {
-            None => Ok(false), // Pane no longer exists
-            Some(ref live) if live.pid.is_some_and(|pid| pid != state.pane_pid) => Ok(false), // PID mismatch
-            Some(ref live)
-                if live
-                    .current_command
-                    .as_ref()
-                    .is_some_and(|cmd| *cmd != state.command) =>
-            {
-                Ok(false) // Command changed
-            }
-            Some(_) => Ok(true), // Valid
+/// Whether a pane, as `get_live_pane_info` found it, still runs the agent
+/// `state` recorded.
+pub(crate) fn pane_runs_agent(
+    live_pane: Option<LivePaneInfo>,
+    state: &crate::state::AgentState,
+) -> bool {
+    match live_pane {
+        None => false, // Pane no longer exists
+        Some(ref live) if live.pid.is_some_and(|pid| pid != state.pane_pid) => false, // PID mismatch
+        Some(ref live)
+            if live
+                .current_command
+                .as_ref()
+                .is_some_and(|cmd| *cmd != state.command) =>
+        {
+            false // Command changed
         }
+        Some(_) => true, // Valid
     }
 }
 
