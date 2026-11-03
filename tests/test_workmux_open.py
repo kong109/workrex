@@ -1287,6 +1287,7 @@ def test_open_target_name_session_owner_can_switch_existing_target(
     assert "no current client" in result.stderr
 
 
+@pytest.mark.tmux_only
 def test_open_rejects_parent_session_in_session_mode(
     mux_server: MuxEnvironment, workmux_exe_path: Path, repo_path: Path
 ):

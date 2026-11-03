@@ -1,0 +1,16 @@
+{
+  "sessions": [
+    {
+      "session_id": "session:01a19e59-43d8-7046-81cd-8b580d151d51",
+      "label": "probe"
+    },
+    {
+      "session_id": "session:01a19e59-e531-7101-928d-cbf076eadf58",
+      "label": "probe2"
+    },
+    {
+      "session_id": "session:01a19e60-6410-7e09-a3ee-f675512a3a06",
+      "label": "fixture"
+    }
+  ]
+}

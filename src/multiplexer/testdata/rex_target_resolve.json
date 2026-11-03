@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "query": "block:01a19e60-6442-727c-b026-9bb98fffd538",
+      "status": "resolved",
+      "target": {
+        "kind": "block",
+        "session_id": "session:01a19e60-6410-7e09-a3ee-f675512a3a06",
+        "window_id": "window:01a19e60-645f-7b81-a5b3-80f93f61518c",
+        "block_id": "block:01a19e60-6442-727c-b026-9bb98fffd538",
+        "label": "shell",
+        "where": "window 2 of fixture"
+      }
+    },
+    {
+      "query": "block:00000000-0000-0000-0000-000000000000",
+      "status": "not_found"
+    }
+  ]
+}

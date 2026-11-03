@@ -702,6 +702,7 @@ class TestExistingBranch:
         assert worktree_path.is_dir()
         assert_window_exists(env, get_window_name(branch_name))
 
+    @pytest.mark.tmux_only
     def test_add_open_if_exists_preserves_stored_mode_without_override(
         self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path
     ):
@@ -738,6 +739,7 @@ class TestExistingBranch:
         assert_session_exists(env, session_name)
         assert_window_not_exists(env, window_name)
 
+    @pytest.mark.tmux_only
     def test_add_open_if_exists_respects_session_mode_override(
         self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path
     ):
@@ -771,6 +773,7 @@ class TestExistingBranch:
         assert_session_exists(env, session_name)
         assert_window_not_exists(env, window_name)
 
+    @pytest.mark.tmux_only
     def test_add_mode_window_overrides_session_config(
         self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path
     ):
