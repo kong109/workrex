@@ -606,17 +606,18 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let registry = state.path().join("rex-sessions.json");
         let seen = state.path().join("seen");
-        // The first move snapshots the registry as a close killed right
-        // after it would leave it.
+        // The move to the front snapshots the registry as a close killed
+        // right after it would leave it.
         let mut fake = FakeRex::new(&[
             (
-                "session move",
+                "session move session:home --index 1",
                 &format!(
-                    "$[ -e '{seen}' ] || cp '{}' '{seen}'; echo '{{}}'",
+                    "$cp '{}' '{}' 2>/dev/null; echo '{{}}'",
                     registry.display(),
-                    seen = seen.display()
+                    seen.display()
                 ),
             ),
+            ("session move", "{}"),
             ("session.destroy", "{}"),
             (
                 "session.list",
