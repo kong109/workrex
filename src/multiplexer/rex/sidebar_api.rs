@@ -138,9 +138,14 @@ pub(crate) struct OwnBlock {
 }
 
 impl RexBackend {
-    /// A backend for another thread that talks to the same server.
+    /// A backend for another thread that runs the same `rex` against the
+    /// same server, and shares none of this one's reads.
     pub(crate) fn detached(&self) -> RexBackend {
-        RexBackend::with_server(self.server.clone())
+        RexBackend {
+            program: self.program.clone(),
+            reuse: self.reuse,
+            ..RexBackend::with_server(self.server.clone())
+        }
     }
 
     /// A backend for the daemon's thread. The daemon reads a session because

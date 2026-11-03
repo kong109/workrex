@@ -71,11 +71,7 @@ impl SidebarHost for RexBackend {
     fn attach_daemon(&self) -> Result<Box<dyn DaemonIo>> {
         let instance = self.resolve_instance_id()?;
         let files = Files::for_instance(&instance)?;
-        let plane = Plane::new(
-            self.detached_for_events(),
-            files.clone(),
-            Config::load(None)?,
-        )?;
+        let plane = daemon_plane(self, files.clone(), Config::load(None)?)?;
         let observed = Arc::new(Observed::default());
         // The first tick must see the server, or the daemon would treat
         // every agent's pane as gone.
@@ -84,6 +80,12 @@ impl SidebarHost for RexBackend {
         control::spawn(plane, observed.clone(), daemon::socket_path(&instance));
         Ok(Box::new(RexDaemonIo { observed, files }))
     }
+}
+
+/// The daemon reads a session because an event says it changed, so its
+/// backend never answers with a read from before the change.
+fn daemon_plane(rex: &RexBackend, files: Files, config: Config) -> Result<Plane> {
+    Plane::new(rex.detached_for_events(), files, config)
 }
 
 struct Requests<'a> {
@@ -482,5 +484,46 @@ fn width_text(width: &crate::config::SidebarWidth) -> String {
     match width {
         crate::config::SidebarWidth::Absolute(cols) => cols.to_string(),
         crate::config::SidebarWidth::Percent(percent) => format!("{percent}%"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BEFORE_SIDEBAR: &str =
+        include_str!("../../../multiplexer/testdata/rex_sidebar_view_before.json");
+    const WITH_SIDEBAR: &str = include_str!("../../../multiplexer/testdata/rex_sidebar_view.json");
+    const SESSION: &str = "session:01a19e92-e5aa-7c77-a9b2-9042bbdbf620";
+    const SIDEBAR: &str = "block:01a19e93-b76d-7c44-9a83-651cbd8da21e";
+
+    /// Another process places a sidebar between two of the daemon's reads of
+    /// a session, the second read coming at once, as an event's would.
+    #[test]
+    fn the_daemon_sees_a_change_made_right_after_its_last_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let view = dir.path().join("view");
+        std::fs::write(&view, BEFORE_SIDEBAR).unwrap();
+        let rex = RexBackend::scripted(
+            dir.path(),
+            format!(
+                "cat > /dev/null\ncase \"$*\" in\n\
+                 \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
+                 \x20 *session.view*) cat '{}';;\n\
+                 \x20 *) exit 1;;\nesac\n",
+                view.display()
+            ),
+        )
+        .reusing_reads_for(Duration::from_secs(3600));
+        let files = Files::at(dir.path().join("state"), "test");
+        let plane = daemon_plane(&rex, files, Config::default()).unwrap();
+        let blocks = || -> Vec<String> {
+            let view = plane.rex.sidebar_view(SESSION).unwrap().unwrap();
+            view.windows[0].block_ids().map(str::to_string).collect()
+        };
+
+        assert!(!blocks().iter().any(|block| block == SIDEBAR));
+        std::fs::write(&view, WITH_SIDEBAR).unwrap();
+        assert!(blocks().iter().any(|block| block == SIDEBAR));
     }
 }

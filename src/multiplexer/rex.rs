@@ -2336,6 +2336,27 @@ mod tests {
         Ok(())
     }
 
+    impl RexBackend {
+        /// A backend whose `rex` is the shell script `body`, written to
+        /// `dir`, with its server address in `dir`.
+        pub(crate) fn scripted(dir: &Path, body: String) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let program = dir.join("rex");
+            write_script(&program, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            RexBackend {
+                program: program.display().to_string(),
+                caller: Caller::default(),
+                ..RexBackend::for_server(&format!("unix://{}/s.sock", dir.display()))
+            }
+        }
+
+        pub(crate) fn reusing_reads_for(mut self, reuse: Duration) -> Self {
+            self.reuse = reuse;
+            self
+        }
+    }
+
     #[test]
     fn an_unsupported_server_fails_every_call_after_one_version_query() {
         use std::os::unix::fs::PermissionsExt;
@@ -2418,7 +2439,6 @@ mod tests {
 
     impl FakeRex {
         fn new(cases: &[(&str, &str)]) -> Self {
-            use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             let mut arms = String::new();
             for (index, (pattern, reply)) in cases.iter().enumerate() {
@@ -2438,25 +2458,17 @@ mod tests {
                 let pattern = pattern.replace(' ', "?");
                 arms.push_str(&format!("  *{pattern}*) {arm};;\n"));
             }
-            let program = dir.path().join("rex");
-            write_script(
-                &program,
+            let rex = RexBackend::scripted(
+                dir.path(),
                 format!(
-                    "#!/bin/sh\ndir=$(dirname \"$0\")\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
+                    "dir=$(dirname \"$0\")\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
                      case \"$call\" in\n\
                      {arms}\
                      \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
                      \x20 *) echo \"unexpected: $call\" >&2; exit 1;;\nesac\n",
                     log = dir.path().join("calls").display(),
                 ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let rex = RexBackend {
-                program: program.display().to_string(),
-                caller: Caller::default(),
-                ..RexBackend::for_server(&format!("unix://{}/s.sock", dir.path().display()))
-            };
+            );
             Self { dir, rex }
         }
 
