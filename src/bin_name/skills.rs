@@ -98,7 +98,12 @@ pub fn remove(path: &Path) -> Result<bool> {
     let removed = match &entry.replaced {
         Some(previous) => fs::write(path, previous).map(|()| true)?,
         None if upstream_uses(dir, &entry.sha256) => false,
-        None => fs::remove_dir_all(dir).map(|()| true)?,
+        None => {
+            fs::remove_file(path)?;
+            // Files the user keeps beside the skill stay, and so does their directory.
+            let _ = fs::remove_dir(dir);
+            true
+        }
     };
     manifest.files.remove(path);
     save(&manifest_path, &manifest)?;
@@ -153,6 +158,16 @@ pub(crate) mod tests {
         assert!(!remove(&theirs).unwrap());
 
         assert!(!ours.parent().unwrap().exists());
+        let notes = tmp.path().join("notes/SKILL.md");
+        fs::create_dir_all(notes.parent().unwrap()).unwrap();
+        fs::write(notes.with_file_name("mine.md"), "user notes").unwrap();
+        write(&notes, "bundled", None).unwrap();
+        assert!(remove(&notes).unwrap());
+        assert!(!notes.exists());
+        assert_eq!(
+            fs::read_to_string(notes.with_file_name("mine.md")).unwrap(),
+            "user notes"
+        );
         assert_eq!(fs::read_to_string(&edited).unwrap(), "user edit");
         assert_eq!(fs::read_to_string(&replaced).unwrap(), "upstream");
         assert_eq!(fs::read_to_string(&theirs).unwrap(), "bundled");
