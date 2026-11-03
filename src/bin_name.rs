@@ -60,8 +60,11 @@ pub fn overlay_dockerfile(image: &str) -> String {
 /// root keeps each binary's pins, state and gc out of the other's.
 pub const NODE_ROOT: &str = concat!("~/.", env!("CARGO_BIN_NAME"), "-node");
 
-/// File name of the update-check cache, beside upstream's `update_check.json`.
-pub const UPDATE_CACHE_FILE: &str = concat!(env!("CARGO_BIN_NAME"), "-update_check.json");
+/// This binary's update-check cache, beside upstream's `update_check.json` in
+/// the cache dir they share.
+pub fn update_cache_file() -> Result<PathBuf> {
+    Ok(crate::xdg::cache_dir()?.join(format!("{BIN}-update_check.json")))
+}
 
 /// This binary's own state directory. Upstream's uninstall deletes the shared one.
 pub fn state_dir() -> Result<PathBuf> {
@@ -87,14 +90,14 @@ pub fn pin_version(name: &str) -> Option<&str> {
 /// searching; processes the binary starts later have other pids.
 const GUEST_SHIM: &str = concat!(
     "#!/bin/sh\nset -f\nIFS=:\n",
-    "[ \"$WORKREX_SHIM_PID\" = $$ ] || for dir in $PATH; do\n",
-    "  [ ! \"$dir/",
+    // The extra colon keeps a trailing empty entry, which is the current directory.
+    "entries=$PATH:\n",
+    "[ \"$WORKREX_SHIM_PID\" = $$ ] || for dir in $entries; do\n",
+    "  bin=${dir:-.}/",
     env!("CARGO_BIN_NAME"),
-    "\" -ef \"$0\" ] && [ -x \"$dir/",
-    env!("CARGO_BIN_NAME"),
-    "\" ] && WORKREX_SHIM_PID=$$ && export WORKREX_SHIM_PID && exec \"$dir/",
-    env!("CARGO_BIN_NAME"),
-    "\" \"$@\"\ndone\nexec workmux \"$@\"\n"
+    "\n  [ ! \"$bin\" -ef \"$0\" ] && [ -f \"$bin\" ] && [ -x \"$bin\" ] && ",
+    "WORKREX_SHIM_PID=$$ && export WORKREX_SHIM_PID && exec \"$bin\" \"$@\"\n",
+    "done\nexec workmux \"$@\"\n"
 );
 
 /// Write the [`GUEST_SHIM`] into a sandbox shim directory.
@@ -434,32 +437,49 @@ mod tests {
 
     #[test]
     fn sandbox_guest_hooks_reach_a_guest_binary() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let shims = crate::sandbox::shims::create_shim_directory(tmp.path(), &[]).unwrap();
         let fake = |dir: &str, name: &str| {
             let dir = tmp.path().join(dir);
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join(name);
-            std::fs::write(&path, format!("#!/bin/sh\necho {name} \"$@\"\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::test_support::write_script(&path, &format!("#!/bin/sh\necho {name} \"$@\"\n"));
             dir
         };
         let image = fake("image", "workmux");
-        let hook = |path: String| {
+        let hook_in = |cwd: &Path, path: String| {
             let out = std::process::Command::new(shims.join(BIN))
                 .args(["set-window-status", "done"])
                 .env("PATH", path)
+                .current_dir(cwd)
                 .output()
                 .unwrap();
             String::from_utf8(out.stdout).unwrap()
         };
+        let hook = |path: String| hook_in(tmp.path(), path);
         // No /usr/bin: guest images need not ship coreutils.
         let path = format!("{}:{}", shims.display(), image.display());
         assert_eq!(hook(path.clone()), "workmux set-window-status done\n");
         let dev = fake("dev", BIN);
         assert_eq!(
             hook(format!("{path}:{}", dev.display())),
+            format!("{BIN} set-window-status done\n")
+        );
+        // An empty PATH entry, inner or trailing, is the current directory.
+        for empty in [
+            format!("{}::{}", shims.display(), image.display()),
+            format!("{path}:"),
+        ] {
+            assert_eq!(
+                hook_in(&dev, empty),
+                format!("{BIN} set-window-status done\n")
+            );
+        }
+        // A directory named like the binary is not one.
+        let checkout = tmp.path().join("checkout");
+        std::fs::create_dir_all(checkout.join(BIN)).unwrap();
+        assert_eq!(
+            hook(format!("{}:{path}:{}", checkout.display(), dev.display())),
             format!("{BIN} set-window-status done\n")
         );
         // Another path to the shim itself is skipped, not taken for a real binary.
@@ -472,19 +492,48 @@ mod tests {
     }
 
     #[test]
+    fn guest_shim_lets_a_process_the_binary_starts_reach_it_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shims = crate::sandbox::shims::create_shim_directory(tmp.path(), &[]).unwrap();
+        let dev = tmp.path().join("dev");
+        let image = tmp.path().join("image");
+        for (dir, name, script) in [
+            (
+                &dev,
+                BIN,
+                format!("echo {BIN} \"$@\"\n[ \"$1\" = child ] || {BIN} child"),
+            ),
+            (&image, "workmux", "echo workmux \"$@\"".to_string()),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+            crate::test_support::write_script(&dir.join(name), &format!("#!/bin/sh\n{script}\n"));
+        }
+        // The child inherits the sentinel, but runs the shim under another pid.
+        let out = std::process::Command::new(shims.join(BIN))
+            .arg("parent")
+            .env(
+                "PATH",
+                format!("{}:{}:{}", shims.display(), dev.display(), image.display()),
+            )
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            format!("{BIN} parent\n{BIN} child\n")
+        );
+    }
+
+    #[test]
     fn guest_shim_reached_again_through_a_copy_falls_back_instead_of_looping() {
-        use std::os::unix::fs::PermissionsExt;
         use std::time::{Duration, Instant};
         let tmp = tempfile::tempdir().unwrap();
         let shims = crate::sandbox::shims::create_shim_directory(tmp.path(), &[]).unwrap();
         let image = tmp.path().join("image");
         std::fs::create_dir_all(&image).unwrap();
-        std::fs::write(image.join("workmux"), "#!/bin/sh\necho workmux \"$@\"\n").unwrap();
-        std::fs::set_permissions(
-            image.join("workmux"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        crate::test_support::write_script(
+            &image.join("workmux"),
+            "#!/bin/sh\necho workmux \"$@\"\n",
+        );
         let copy = tmp.path().join("copy");
         std::fs::create_dir_all(&copy).unwrap();
         std::fs::copy(shims.join(BIN), copy.join(BIN)).unwrap();
@@ -540,10 +589,5 @@ mod tests {
         assert_eq!(pin_version("workrex-0.1.278"), Some("0.1.278"));
         assert_eq!(pin_version("workmux-0.1.278"), None);
         assert_eq!(pin_version("workmux-dev-ba7816bf8f01"), None);
-    }
-
-    #[test]
-    fn update_cache_is_not_shared_with_upstream() {
-        assert_eq!(UPDATE_CACHE_FILE, "workrex-update_check.json");
     }
 }

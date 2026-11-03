@@ -494,6 +494,7 @@ pub fn render_sidebar(f: &mut Frame, app: &mut SidebarApp) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let inner = render_template_error(f, app, inner);
+    let inner = render_notice(f, app, inner);
 
     // A named view footer already includes the session filter.
     let footer = if app.view_name.is_none() && app.filter_mode == SidebarFilterMode::Session {
@@ -739,11 +740,22 @@ fn render_template_error(f: &mut Frame, app: &SidebarApp, area: Rect) -> Rect {
     let Some(error) = &app.template_error else {
         return area;
     };
+    render_warning(f, app, error.display_message(), area)
+}
+
+fn render_notice(f: &mut Frame, app: &SidebarApp, area: Rect) -> Rect {
+    let Some(notice) = &app.notice else {
+        return area;
+    };
+    render_warning(f, app, notice.text.clone(), area)
+}
+
+/// Draws `message` wrapped across the top of `area` and returns the rest.
+fn render_warning(f: &mut Frame, app: &SidebarApp, message: String, area: Rect) -> Rect {
     if area.height == 0 {
         return area;
     }
 
-    let message = error.display_message();
     let warning_height =
         wrapped_line_count(&message, area.width as usize).min(area.height as usize) as u16;
     let chunks = Layout::default()
@@ -783,6 +795,7 @@ fn render_horizontal_bar(f: &mut Frame, app: &mut SidebarApp, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let inner = render_template_error(f, app, inner);
+    let inner = render_notice(f, app, inner);
     app.list_area = inner;
     app.horizontal_hitboxes.clear();
 
@@ -2578,6 +2591,29 @@ mod tests {
         let grouped = text(&terminal);
         assert!(grouped.contains("fold group"));
         assert!(grouped.contains("fold unfold"));
+    }
+
+    #[test]
+    fn a_notice_wraps_to_the_sidebar_width_above_the_list() {
+        let mut app = SidebarApp::test_with_template_error(TemplateError {
+            location: String::new(),
+            message: String::new(),
+        });
+        app.template_error = None;
+        app.filter_mode = super::SidebarFilterMode::None;
+        let fix = crate::multiplexer::rex::AppRefused.to_string();
+        app.hold_notice(fix.clone());
+
+        let lines = rendered(&mut app, 25, 10);
+
+        let notice: Vec<&str> = lines
+            .iter()
+            .map(|line| line.trim())
+            .take_while(|line| !line.is_empty())
+            .collect();
+        assert!(notice.len() > 1, "{lines:?}");
+        assert_eq!(notice.join(" "), fix, "{lines:?}");
+        assert_eq!(app.list_area.y, notice.len() as u16);
     }
 
     #[test]

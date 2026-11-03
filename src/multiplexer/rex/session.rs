@@ -11,13 +11,23 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::super::Multiplexer;
 use super::super::types::CreateSessionParams;
 use super::super::util;
+use crate::bin_name::BIN;
 
 use super::super::agent::shell_quote;
-use super::{RexBackend, SessionId, SessionSummary, SessionView, found};
+use super::{CallError, RexBackend, SessionId, SessionSummary, SessionView, found};
+
+const SESSION_MOVE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long after a move timed out it may still land. Killing the rex CLI
+/// does not cancel the move, and Rex applies it once the server catches up.
+/// 10 s is Rex's own request timeout, the longest a close waited for a move
+/// before the 2 s bound, so a late move is healed at least as long as then.
+const LATE_MOVE_WINDOW: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ServerRecords {
@@ -37,6 +47,24 @@ struct Restore {
     destination: String,
     /// The session order without the closing session.
     order: Vec<String>,
+    /// When a move for this record last timed out, in Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timed_out_at: Option<u64>,
+}
+
+/// How a `rex session move` ended. A move that timed out may still land.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Moved {
+    Done,
+    Gone,
+    Failed,
+    TimedOut,
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
 }
 
 impl Restore {
@@ -54,6 +82,46 @@ impl Restore {
             .rev()
             .map(|id| ["--after", id.as_str()]);
         successors.chain(predecessors).collect()
+    }
+
+    /// Whether the destination already sits where [`Restore::places`] would
+    /// put it, next to its nearest live neighbor.
+    fn is_in_place(&self, live: &[SessionId]) -> bool {
+        let position = |id: &str| live.iter().position(|session| session.as_str() == id);
+        let Some(at) = position(&self.destination) else {
+            return true;
+        };
+        self.places()
+            .into_iter()
+            .find_map(|[how, neighbor]| {
+                let next_to = position(neighbor)?;
+                Some(if how == "--before" {
+                    next_to == at + 1
+                } else {
+                    at == next_to + 1
+                })
+            })
+            .unwrap_or(true)
+    }
+
+    fn may_still_land(&self) -> bool {
+        self.timed_out_at
+            .is_some_and(|at| unix_millis() < at + LATE_MOVE_WINDOW.as_millis() as u64)
+    }
+
+    /// The record after a move for it ended as `moved`, or `None` once the
+    /// order is back. A record whose move timed out is never cleared here:
+    /// a close past [`LATE_MOVE_WINDOW`] clears it on finding the
+    /// destination in place.
+    fn after(mut self, moved: Moved) -> Option<Self> {
+        match moved {
+            Moved::Done if self.timed_out_at.is_none() => None,
+            Moved::TimedOut => {
+                self.timed_out_at = Some(unix_millis());
+                Some(self)
+            }
+            _ => Some(self),
+        }
     }
 }
 
@@ -148,7 +216,7 @@ fn pick_destination(
 
 /// Names the worktree, not the Rex session: an agent renames its session.
 pub(super) fn new_session_hint(worktree: &str) -> String {
-    format!("Rex.app stays put: to see {worktree}, press Enter on its row in workmux dashboard.")
+    format!("Rex.app stays put: to see {worktree}, press Enter on its row in {BIN} dashboard.")
 }
 
 fn session_ids(sessions: &[SessionSummary]) -> Vec<SessionId> {
@@ -304,25 +372,47 @@ impl RexBackend {
             pick_destination(&sessions, closing, preferred, origin).map(|destination| Restore {
                 destination: destination.as_str().to_string(),
                 order,
+                timed_out_at: None,
             }),
         )
     }
 
     /// `rex session move` attaches to the session it moves, which
-    /// `session.move` requires.
-    fn move_session(&self, session: &str, place: [&str; 2]) -> bool {
-        let moved = self.run(&["session", "move", session, place[0], place[1]], None);
+    /// `session.move` requires. A hung server would otherwise hold the
+    /// registry lock, and every close and add behind it, for Rex's 10 s
+    /// default per move.
+    fn move_session(&self, session: &str, place: [&str; 2]) -> Moved {
+        let args = ["session", "move", session, place[0], place[1]];
+        // From the move itself: the version check before it waits on a
+        // process-wide lock, and that wait is not the move's.
+        let mut started = Instant::now();
+        let moved = self.ensure_supported().and_then(|()| {
+            started = Instant::now();
+            self.exec_within(&args, None, Some(SESSION_MOVE_TIMEOUT), &args)
+        });
         if let Err(error) = &moved {
             tracing::debug!(error = %error, "rex: session move failed");
         }
-        moved.is_ok()
+        match moved {
+            Ok(_) => Moved::Done,
+            Err(CallError::NotFound(_)) => Moved::Gone,
+            // exec_within kills a CLI still running at the bound.
+            Err(_) if started.elapsed() >= SESSION_MOVE_TIMEOUT => Moved::TimedOut,
+            Err(_) => Moved::Failed,
+        }
     }
 
-    fn put_back(&self, restore: &Restore) {
-        restore
-            .places()
-            .into_iter()
-            .any(|place| self.move_session(&restore.destination, place));
+    /// How the first move that did not find its neighbor gone ended, or
+    /// Done when every neighbor is gone. Anything but Done leaves the order
+    /// recorded for the next close.
+    fn put_back(&self, restore: &Restore) -> Moved {
+        for place in restore.places() {
+            match self.move_session(&restore.destination, place) {
+                Moved::Gone => {}
+                moved => return moved,
+            }
+        }
+        Moved::Done
     }
 
     /// The whole close runs under the registry lock, so two closes, or a
@@ -336,28 +426,53 @@ impl RexBackend {
         preferred: Option<&str>,
     ) -> Result<()> {
         let mut locked = self.lock_records()?;
-        if let Some(left) = locked.records().restore.take() {
-            self.put_back(&left);
+        // The lock orders this close after every earlier one, and a late
+        // move lands behind the backend, so a list reused from before the
+        // lock would show an order that no longer holds.
+        self.forget_reads();
+        if let Some(left) = locked.records().restore.clone() {
+            let settled = left.timed_out_at.is_some()
+                && !left.may_still_land()
+                && self
+                    .raw_sessions()
+                    .is_ok_and(|live| left.is_in_place(&session_ids(&live)));
+            let kept = if settled {
+                None
+            } else {
+                let moved = self.put_back(&left);
+                left.after(moved)
+            };
+            locked.records().restore = kept;
             locked.save()?;
         }
         let Some(session) = find()? else {
             return Ok(());
         };
-        let restore = self.plan_restore(&session, preferred, &locked.records().origins)?;
+        // While a record is kept, after a failed put back or a move that may
+        // still land, the close makes no new moves.
+        let restore = match locked.records().restore {
+            Some(_) => None,
+            None => self.plan_restore(&session, preferred, &locked.records().origins)?,
+        };
         if let Some(restore) = &restore {
             locked.records().restore = Some(restore.clone());
             locked.save()?;
-            self.move_session(&restore.destination, ["--index", "1"]);
         }
+        let to_front = restore
+            .as_ref()
+            .map(|restore| self.move_session(&restore.destination, ["--index", "1"]));
         let destroyed = self.destroy_session(&session);
-        if let Some(restore) = &restore {
-            self.put_back(restore);
-        }
+        let put_back = match (&restore, to_front) {
+            (Some(restore), Some(Moved::Done)) => Some(self.put_back(restore)),
+            _ => None,
+        };
         // Closing prunes rather than forgetting the closing session itself,
         // so a close that never ran leaves its record intact.
         let live = self.raw_sessions();
         let records = locked.records();
-        records.restore = None;
+        if let Some(moved) = put_back.or(to_front) {
+            records.restore = records.restore.take().and_then(|left| left.after(moved));
+        }
         if let Ok(live) = &live {
             records.retain_live(&session_ids(live));
         }
@@ -391,7 +506,8 @@ impl RexBackend {
         session: &SessionId,
         preferred: Option<&str>,
     ) -> Result<String> {
-        let exe = std::env::current_exe().context("Failed to locate the workmux executable")?;
+        let exe = std::env::current_exe()
+            .context(crate::rebrand!("Failed to locate the workmux executable"))?;
         let mut words = vec!["env".to_string()];
         for var in Self::INHERITED_SCOPE_VARS {
             words.extend(["-u".to_string(), var.to_string()]);
@@ -520,7 +636,10 @@ mod tests {
         assert!(steps[1].contains("session.destroy"), "{steps:#?}");
         // Back next to its neighbor, not to an index a concurrent change can shift.
         assert_eq!(steps[2], "session move session:home --after session:first");
-        assert!(fake.calls(" do ").is_empty(), "no app is asked to move");
+        assert!(
+            fake.calls("client.perform").is_empty(),
+            "no app is asked to move"
+        );
         assert!(fake.calls("client.list").is_empty());
         assert_eq!(fake.rex.records().restore, None);
     }
@@ -637,6 +756,7 @@ mod tests {
             Some(Restore {
                 destination: "session:home".into(),
                 order: vec!["session:first".into(), "session:home".into()],
+                timed_out_at: None,
             })
         );
         assert_eq!(fake.rex.records().restore, None);
@@ -654,6 +774,7 @@ mod tests {
                         "session:home".into(),
                         "session:first".into(),
                     ],
+                    timed_out_at: None,
                 });
                 Ok(())
             })
@@ -671,6 +792,7 @@ mod tests {
         let restore = Restore {
             destination: "d".into(),
             order: ["a", "b", "d", "e", "f"].map(String::from).to_vec(),
+            timed_out_at: None,
         };
         assert_eq!(
             restore.places(),
@@ -682,11 +804,134 @@ mod tests {
             ]
         );
         let fake = FakeRex::new(&[
-            ("session move d --before e", "!Error: session e not found"),
+            (
+                "session move d --before e",
+                "!Error: session target \"e\" not found",
+            ),
             ("session move d --before f", "{}"),
         ]);
-        fake.rex.put_back(&restore);
+        assert_eq!(fake.rex.put_back(&restore), Moved::Done);
         assert_eq!(fake.calls("session move").len(), 2);
+    }
+
+    #[test]
+    fn the_destination_is_in_place_next_to_its_nearest_live_neighbor() {
+        let restore = Restore {
+            destination: "d".into(),
+            order: ["a", "b", "d", "e", "f"].map(String::from).to_vec(),
+            timed_out_at: None,
+        };
+        let in_place = |live: &[&str]| {
+            let live: Vec<SessionId> = live.iter().map(|id| SessionId((*id).into())).collect();
+            restore.is_in_place(&live)
+        };
+        assert!(in_place(&["a", "b", "d", "e", "f"]));
+        assert!(!in_place(&["d", "a", "b", "e", "f"]));
+        assert!(in_place(&["a", "b", "d", "f"]), "e is gone");
+        assert!(!in_place(&["d", "a", "b", "f"]));
+        assert!(in_place(&["x", "b", "d"]), "only b is left");
+        assert!(in_place(&["a", "b"]), "d itself is gone");
+    }
+
+    #[test]
+    fn put_back_stops_at_a_failure_that_is_not_a_gone_neighbor() {
+        let restore = Restore {
+            destination: "d".into(),
+            order: ["a", "b", "d", "e", "f"].map(String::from).to_vec(),
+            timed_out_at: None,
+        };
+        let fake = FakeRex::new(&[("session move", "!Error: request timed out")]);
+        assert_eq!(fake.rex.put_back(&restore), Moved::Failed);
+        assert_eq!(fake.calls("session move").len(), 1);
+    }
+
+    #[test]
+    fn a_failed_move_to_the_front_skips_the_move_back_and_keeps_the_order() {
+        let fake = FakeRex::new(&[
+            ("session move", "!Error: request timed out"),
+            ("session.destroy", "{}"),
+            (
+                "session.list",
+                &session_list(&[
+                    ("session:first", "first"),
+                    (CALLER_SESSION, "wm-a"),
+                    ("session:home", "home"),
+                ]),
+            ),
+        ]);
+        fake.rex.close_session_to("wm-a", Some("home")).unwrap();
+        let steps = steps(&fake);
+        assert_eq!(steps.len(), 2, "{steps:#?}");
+        assert_eq!(steps[0], "session move session:home --index 1");
+        assert!(steps[1].contains("session.destroy"), "{steps:#?}");
+        assert_eq!(
+            fake.rex.records().restore,
+            Some(Restore {
+                destination: "session:home".into(),
+                order: vec!["session:first".into(), "session:home".into()],
+                timed_out_at: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_close_after_a_failed_put_back_only_destroys() {
+        let fake = FakeRex::new(&[
+            ("session move", "!Error: request timed out"),
+            ("session.destroy", "{}"),
+            (
+                "session.list",
+                &session_list(&[
+                    ("session:first", "first"),
+                    (CALLER_SESSION, "wm-a"),
+                    ("session:home", "home"),
+                ]),
+            ),
+        ]);
+        let left = Restore {
+            destination: "session:home".into(),
+            order: vec!["session:first".into(), "session:home".into()],
+            timed_out_at: None,
+        };
+        fake.rex
+            .update_records(|records| {
+                records.restore = Some(left.clone());
+                Ok(())
+            })
+            .unwrap();
+        fake.rex.close_session_to("wm-a", Some("home")).unwrap();
+        let steps = steps(&fake);
+        assert_eq!(steps.len(), 2, "{steps:#?}");
+        assert_eq!(steps[0], "session move session:home --after session:first");
+        assert!(steps[1].contains("session.destroy"), "{steps:#?}");
+        assert_eq!(fake.rex.records().restore, Some(left));
+    }
+
+    #[test]
+    fn a_hung_move_gives_up_after_the_timeout() {
+        let fake = FakeRex::new(&[("session move", "$sleep 10; echo '{}'")]);
+        let started = std::time::Instant::now();
+        let moved = fake.rex.move_session("d", ["--index", "1"]);
+        let waited = started.elapsed();
+        assert_eq!(moved, Moved::TimedOut);
+        assert!(
+            waited >= SESSION_MOVE_TIMEOUT && waited < Duration::from_secs(8),
+            "{waited:?}"
+        );
+    }
+
+    /// The version check before a move can wait past the move's bound on a
+    /// slow server. A move that then fails at once did not time out.
+    #[test]
+    fn a_slow_version_check_does_not_count_against_the_move() {
+        let fake = FakeRex::new(&[
+            (
+                "server.version",
+                r#"$sleep 2.5; echo '{"rex_version":"t","api_revision":8}'"#,
+            ),
+            ("session move", "!boom"),
+        ]);
+        assert_eq!(fake.rex.move_session("d", ["--index", "1"]), Moved::Failed);
     }
 
     #[test]
@@ -851,5 +1096,271 @@ mod tests {
             .insert("session:a".into(), "session:home".into());
         records.retain_live(&live);
         assert_eq!(records.origins.get("session:a").unwrap(), "session:home");
+    }
+
+    /// A server that keeps a session order in `order`, one `id label` line
+    /// per session. While `stall` exists, an `--index` move gives no answer
+    /// and does not land.
+    const ORDER_MODEL: &str = r#"d=$(dirname "$0"); cmd=$1; shift
+case $cmd in
+list)
+  printf '{"sessions":['; sep=
+  while read -r id label; do printf '%s{"session_id":"%s","label":"%s"}' "$sep" "$id" "$label"; sep=,; done < "$d/order"
+  echo ']}';;
+destroy)
+  id=$(echo "$1" | sed 's/.*"session_id":"\([^"]*\)".*/\1/')
+  grep -v "^$id " "$d/order" > "$d/order.new"; mv "$d/order.new" "$d/order"; echo '{}';;
+move)
+  while [ "$1" != move ]; do shift; done
+  id=$2 how=$3 at=$4
+  [ "$how" = --index ] && [ -e "$d/stall" ] && exec sleep 10
+  [ "$how" = --index ] || grep -q "^$at " "$d/order" || { echo "Error: session target \"$at\" not found" >&2; exit 1; }
+  line=$(grep "^$id " "$d/order"); grep -v "^$id " "$d/order" > "$d/rest"
+  { [ "$how" = --index ] && echo "$line"
+    while read -r l; do
+      [ "$how" = --before ] && [ "${l%% *}" = "$at" ] && echo "$line"
+      echo "$l"
+      [ "$how" = --after ] && [ "${l%% *}" = "$at" ] && echo "$line"
+    done < "$d/rest"; } > "$d/order.new"
+  mv "$d/order.new" "$d/order"; echo '{}';;
+esac
+"#;
+
+    fn ordered_fake(order: &[(&str, &str)]) -> FakeRex {
+        let model = |args: &str| format!("$exec sh \"$(dirname \"$0\")/order.sh\" {args}");
+        let fake = FakeRex::new(&[
+            ("session move", &model("move \"$@\"")),
+            ("session.destroy", &model("destroy \"$call\"")),
+            ("session.list", &model("list")),
+        ]);
+        std::fs::write(fake.dir.path().join("order.sh"), ORDER_MODEL).unwrap();
+        let lines: String = order
+            .iter()
+            .map(|(id, label)| format!("{id} {label}\n"))
+            .collect();
+        std::fs::write(fake.dir.path().join("order"), lines).unwrap();
+        fake
+    }
+
+    /// The fake's backend afresh, for after the test changes the order
+    /// behind it: a backend may answer a list with one it read before.
+    fn reopen(fake: &mut FakeRex) {
+        fake.rex = RexBackend {
+            program: fake.rex.program.clone(),
+            caller: Default::default(),
+            registry: fake.rex.registry.clone(),
+            ..RexBackend::for_server(fake.rex.server.as_deref().unwrap())
+        };
+    }
+
+    fn labels(fake: &FakeRex) -> Vec<String> {
+        fake.rex
+            .raw_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|session| session.label)
+            .collect()
+    }
+
+    #[test]
+    fn a_timed_out_move_that_lands_late_is_put_back_by_a_later_close() {
+        let mut fake = ordered_fake(&[
+            ("session:first", "first"),
+            ("session:home", "home"),
+            ("session:t", "wm-t"),
+            ("session:u", "wm-u"),
+            ("session:v", "wm-v"),
+        ]);
+        let dir = fake.dir.path().to_path_buf();
+        std::fs::write(dir.join("stall"), "").unwrap();
+        fake.rex.close_session_to("wm-t", Some("home")).unwrap();
+        fake.rex.close_session_to("wm-u", Some("home")).unwrap();
+        assert_eq!(labels(&fake), ["first", "home", "wm-v"]);
+
+        std::fs::remove_file(dir.join("stall")).unwrap();
+        let landed = std::process::Command::new("sh")
+            .arg(dir.join("order.sh"))
+            .args(["move", "session", "move", "session:home", "--index", "1"])
+            .output()
+            .unwrap();
+        assert!(landed.status.success(), "{landed:?}");
+        reopen(&mut fake);
+        assert_eq!(
+            labels(&fake),
+            ["home", "first", "wm-v"],
+            "the late move landed"
+        );
+
+        fake.rex.close_session_to("wm-v", Some("home")).unwrap();
+        assert_eq!(labels(&fake), ["first", "home"]);
+        assert!(
+            fake.rex.records().restore.is_some(),
+            "kept for a later landing"
+        );
+
+        std::fs::write(
+            dir.join("order"),
+            "session:home home\nsession:first first\n",
+        )
+        .unwrap();
+        reopen(&mut fake);
+        // Before each close, so a put back that a loaded machine stretches
+        // past the bound, which stamps the record again, cannot pull the
+        // next close back inside the window.
+        let past_the_window = || {
+            fake.rex
+                .update_records(|records| {
+                    let left = records.restore.as_mut().unwrap();
+                    left.timed_out_at = left.timed_out_at.map(|at| at - 11_000);
+                    Ok(())
+                })
+                .unwrap()
+        };
+        past_the_window();
+        fake.rex
+            .close_session_with_id("session:gone", None)
+            .unwrap();
+        assert_eq!(labels(&fake), ["first", "home"], "put back past the window");
+        assert!(
+            fake.rex.records().restore.is_some(),
+            "kept until found in place"
+        );
+        let moves = fake.calls("session move").len();
+        past_the_window();
+        fake.rex
+            .close_session_with_id("session:gone", None)
+            .unwrap();
+        assert_eq!(fake.calls("session move").len(), moves);
+        assert_eq!(
+            fake.rex.records().restore,
+            None,
+            "found in place, so cleared"
+        );
+    }
+
+    /// Inside the late-move window a close keeps the record even when it
+    /// finds the destination in place, because the timed-out move can still
+    /// land, and the close after the landing must put the order back.
+    #[test]
+    fn a_close_inside_the_window_keeps_the_record_for_a_later_landing() {
+        let mut fake = ordered_fake(&[
+            ("session:first", "first"),
+            ("session:home", "home"),
+            ("session:t", "wm-t"),
+            ("session:u", "wm-u"),
+            ("session:v", "wm-v"),
+        ]);
+        let dir = fake.dir.path().to_path_buf();
+        std::fs::write(dir.join("stall"), "").unwrap();
+        fake.rex.close_session_to("wm-t", Some("home")).unwrap();
+        fake.rex.close_session_to("wm-u", Some("home")).unwrap();
+        std::fs::remove_file(dir.join("stall")).unwrap();
+        assert_eq!(labels(&fake), ["first", "home", "wm-v"]);
+
+        fake.rex
+            .close_session_with_id("session:gone", None)
+            .unwrap();
+        assert!(
+            fake.rex.records().restore.is_some(),
+            "in place, but the move may still land"
+        );
+
+        let landed = std::process::Command::new("sh")
+            .arg(dir.join("order.sh"))
+            .args(["move", "session", "move", "session:home", "--index", "1"])
+            .output()
+            .unwrap();
+        assert!(landed.status.success(), "{landed:?}");
+        reopen(&mut fake);
+        fake.rex
+            .close_session_with_id("session:gone", None)
+            .unwrap();
+        assert_eq!(labels(&fake), ["first", "home", "wm-v"], "put back");
+    }
+
+    /// The dashboard keeps one backend for its whole run, and its poll
+    /// lists the sessions shortly before the user closes one. A move that
+    /// lands after that list is still put back.
+    #[test]
+    fn a_late_landing_after_a_read_on_the_same_backend_is_put_back() {
+        let mut fake = ordered_fake(&[
+            ("session:first", "first"),
+            ("session:home", "home"),
+            ("session:v", "wm-v"),
+        ])
+        .reusing();
+        fake.rex
+            .update_records(|records| {
+                records.restore = Some(Restore {
+                    destination: "session:home".to_string(),
+                    order: vec![
+                        "session:first".to_string(),
+                        "session:home".to_string(),
+                        "session:v".to_string(),
+                    ],
+                    timed_out_at: Some(unix_millis() - 11_000),
+                });
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(labels(&fake), ["first", "home", "wm-v"], "the poll's read");
+        let landed = std::process::Command::new("sh")
+            .arg(fake.dir.path().join("order.sh"))
+            .args(["move", "session", "move", "session:home", "--index", "1"])
+            .output()
+            .unwrap();
+        assert!(landed.status.success(), "{landed:?}");
+
+        fake.rex
+            .close_session_with_id("session:gone", None)
+            .unwrap();
+        reopen(&mut fake);
+        assert_eq!(
+            labels(&fake),
+            ["first", "home", "wm-v"],
+            "the late landing was put back"
+        );
+    }
+
+    /// Another process's close has put `home` first for its destroy when
+    /// the dashboard's poll lists the sessions. That close then puts `home`
+    /// back, and the dashboard's own close, which waited on the registry
+    /// lock, must plan from the order it left.
+    #[test]
+    fn a_close_after_another_close_keeps_its_put_back() {
+        let mut fake = ordered_fake(&[
+            ("session:first", "first"),
+            ("session:home", "home"),
+            ("session:v", "wm-v"),
+            ("session:w", "wm-w"),
+        ])
+        .reusing();
+        let order = |args: &[&str]| {
+            let out = std::process::Command::new("sh")
+                .arg(fake.dir.path().join("order.sh"))
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+        };
+        order(&["move", "session", "move", "session:home", "--index", "1"]);
+        assert_eq!(
+            labels(&fake),
+            ["home", "first", "wm-v", "wm-w"],
+            "the poll's read"
+        );
+        order(&["destroy", r#"{"session_id":"session:w"}"#]);
+        order(&[
+            "move",
+            "session",
+            "move",
+            "session:home",
+            "--after",
+            "session:first",
+        ]);
+
+        fake.rex.close_session_to("wm-v", Some("home")).unwrap();
+        reopen(&mut fake);
+        assert_eq!(labels(&fake), ["first", "home"]);
     }
 }

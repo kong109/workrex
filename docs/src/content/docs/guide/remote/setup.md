@@ -51,12 +51,13 @@ A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside
    sudo loginctl enable-linger cicero
    ```
 
-   In the editor that `systemctl edit` opens, add this drop-in. The empty `ListenStream=` line clears the default port 22. Without it, the socket listens on port 22 and port 2222.
+   In the editor that `systemctl edit` opens, add this drop-in. The empty `ListenStream=` line clears the default port 22. Without it, the socket listens on port 22 and port 2222. Give both addresses: Ubuntu's `ssh.socket` sets `BindIPv6Only=ipv6-only`, so a bare `ListenStream=2222` accepts IPv6 connections only.
 
    ```ini
    [Socket]
    ListenStream=
-   ListenStream=2222
+   ListenStream=0.0.0.0:2222
+   ListenStream=[::]:2222
    ```
 
    With WSL's mirrored networking, port 2222 in WSL is port 2222 on Windows. Otherwise forward it from Windows to WSL, or reach the distro through [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh) running inside it.
@@ -79,7 +80,7 @@ A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside
        host: winbox-wsl-ssh
    ```
 
-`workmux remote doctor winbox` names the WSL fix when the connection fails: Windows OpenSSH answering on the configured port, or nothing answering because the distro or its `ssh.socket` is down. It also names the systemd fix when linger can't be checked.
+`workmux remote doctor winbox` names the WSL fix when the connection fails: Windows OpenSSH answering on the configured port, or nothing answering because the distro or its `ssh.socket` is down. It also names the systemd fix when systemd is not running in the distro, and `loginctl enable-linger` when systemd runs but linger is off.
 
 Remote agents run under the tmux and Rex backends. Under Rex, where workmux defaults to sessions, each remote agent's relay window opens in a Rex session of its own, and closing the window closes the session.
 

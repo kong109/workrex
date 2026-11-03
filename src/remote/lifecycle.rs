@@ -932,8 +932,10 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
         }
     };
     super::homecoming::finish_pending(&node, &record.ws_id);
-    // Observing adopts siblings, which may open this window meanwhile.
+    // Observing adopts siblings, which may open this window meanwhile,
+    // through a backend of its own, so this one's earlier reads predate it.
     super::observe::adopt_on(&node);
+    mux.forget_reads();
     if !window && window_target(mux, &record)?.is_some() {
         return switch(&record);
     }
@@ -1387,11 +1389,13 @@ pub(crate) fn close_relay(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
 }
 
 /// tmux ends a session with its last window; Rex keeps it, empty. The
-/// relay's window may also have closed itself when its remote session ended.
-fn drop_emptied_session(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
+/// relay's window may also have closed itself when its remote session ended,
+/// after this process last read the session.
+pub(crate) fn drop_emptied_session(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
     let Some(session) = record.window_session.as_deref() else {
         return;
     };
+    mux.forget_reads();
     let emptied = mux.session_exists(session).unwrap_or(false)
         && mux
             .get_window_names_in_session(session)
