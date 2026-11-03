@@ -665,6 +665,29 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_reads_connecting_until_it_answers_the_view() {
+        let mut watched = record();
+        watched.remote = "box-connecting".into();
+        observe::observing_since("box-connecting", 1000);
+        // The last observation is two minutes older than the view.
+        let observations = HashMap::from([(
+            "box-connecting".to_string(),
+            Observation {
+                last_seen: Some(880),
+                ..Default::default()
+            },
+        )]);
+        let rows_now = rows(&[watched], &[], &observations, &hosts(), 1002);
+        let remote = rows_now[0].remote.as_ref().unwrap();
+        assert!(remote.connecting && !remote.connected);
+        assert_eq!(connectivity(remote, 1002).as_deref(), Some("connecting"));
+
+        // A remote no view of this process observes is just disconnected.
+        let unwatched = rows(&[record()], &[], &observations, &hosts(), 1002);
+        assert!(!unwatched[0].remote.as_ref().unwrap().connecting);
+    }
+
+    #[test]
     fn rows_keep_the_title_beside_connectivity() {
         let rows = rows(&[record()], &[], &HashMap::new(), &hosts(), 5);
         let mut remote = rows[0].remote.clone().unwrap();

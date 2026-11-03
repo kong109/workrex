@@ -183,6 +183,13 @@ fn awaiting_first_answer(since: Option<u64>, observation: Option<&Observation>, 
     !answered && now.saturating_sub(since) <= STALE_AFTER.as_secs()
 }
 
+/// Mark remote `name` as observed by this process since `at`, as
+/// [`spawn`] does, without starting an observer.
+#[cfg(test)]
+pub(crate) fn observing_since(name: &str, at: u64) {
+    started().insert(name.to_string(), at);
+}
+
 /// Keep the observations of `names` current from background threads of
 /// this process, for as long as it runs. Remotes this process already
 /// observes, and names not in `config`, are skipped.
