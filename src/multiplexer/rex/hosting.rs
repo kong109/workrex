@@ -432,18 +432,15 @@ impl RexBackend {
         let clients: ClientList = self.api("client.list", json!({}))?;
         let app = pick_app(&clients, client, server)?;
         let session = format!("session_id={id}");
-        self.exec_within(
-            &["-C", &app, "do", "session.select", &session],
-            None,
-            Some(REMOTE_SELECT_TIMEOUT),
-        )
-        .map_err(|err| {
-            if err.to_string().contains("(code=refused)") {
-                anyhow!(super::REMOTE_CONTROL_FIX)
-            } else {
-                anyhow!("Rex.app did not show the session: {err}")
-            }
-        })?;
+        let select = ["-C", &app, "do", "session.select", &session];
+        self.exec_within(&select, None, Some(REMOTE_SELECT_TIMEOUT), &select)
+            .map_err(|err| {
+                if err.to_string().contains("(code=refused)") {
+                    anyhow!(super::REMOTE_CONTROL_FIX)
+                } else {
+                    anyhow!("Rex.app did not show the session: {err}")
+                }
+            })?;
         Ok(())
     }
 }

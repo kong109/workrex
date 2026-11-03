@@ -768,26 +768,30 @@ impl RexBackend {
     /// Like `run_script` without the version check; a failure names the
     /// script `name` instead of quoting it.
     fn exec_script(&self, name: &str, script: &str, args: &Value) -> CallResult<String> {
-        let output = self.spawn(
+        self.exec_within(
             &["do", "-e", script, "--args", "-", "--json"],
             Some(&args.to_string()),
             None,
-        )?;
-        Self::answer(&["do", name], output)
+            &["do", name],
+        )
     }
 
     fn exec(&self, args: &[&str], stdin: Option<&str>) -> CallResult<String> {
-        self.exec_within(args, stdin, None)
+        self.exec_within(args, stdin, None, args)
     }
 
+    /// Every `rex` process a backend runs goes through here. A failure is
+    /// named `name`: the arguments, or a short name for ones that quote a
+    /// script.
     fn exec_within(
         &self,
         args: &[&str],
         stdin: Option<&str>,
         timeout: Option<Duration>,
+        name: &[&str],
     ) -> CallResult<String> {
-        let output = self.spawn(args, stdin, timeout)?;
-        Self::answer(args, output)
+        self.spawn(args, stdin, timeout)
+            .and_then(|output| Self::answer(name, output))
     }
 
     /// Stdout of a successful call; the error a failed one names as `args`.
@@ -1196,7 +1200,7 @@ impl RexBackend {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let switched = self
             .ensure_supported()
-            .and_then(|()| self.exec_within(&args, None, Some(APP_SELECT_TIMEOUT)));
+            .and_then(|()| self.exec_within(&args, None, Some(APP_SELECT_TIMEOUT), &args));
         match switched {
             Ok(_) => AppSwitch::Shown,
             Err(error) if error.to_string().contains("(code=refused)") => AppSwitch::Refused,
