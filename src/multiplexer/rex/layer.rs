@@ -8,6 +8,19 @@ const REMOTE_CONTROL_HINT: &str = "Turn on Remote Control in Rex Settings to jum
 const NO_ANSWER_HINT: &str = "Rex.app did not respond; jump not made";
 const PEEK_HINT: &str = "Peek works only for agents in this tab";
 
+/// A failed layer jump or peek whose text is written for the dashboard's
+/// footer. Other errors are not, so the dashboard keeps them out of it.
+#[derive(Debug)]
+pub struct LayerHint(&'static str);
+
+impl std::fmt::Display for LayerHint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for LayerHint {}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum LayerKind {
@@ -66,7 +79,7 @@ impl RexBackend {
         if let Some(hint) = hint
             && !self.in_layer_tab(&target)?
         {
-            return Err(anyhow!(hint));
+            return Err(LayerHint(hint).into());
         }
         self.select_pane(block.as_str())
     }
@@ -79,7 +92,7 @@ impl RexBackend {
         if self.in_layer_tab(&self.target_of(block)?)? {
             Ok(())
         } else {
-            Err(anyhow!(PEEK_HINT))
+            Err(LayerHint(PEEK_HINT).into())
         }
     }
 
@@ -301,6 +314,7 @@ esac
             .unwrap_err();
 
         assert_eq!(err.to_string(), REMOTE_CONTROL_HINT);
+        assert!(err.is::<LayerHint>(), "{err:?}");
         let calls = rex.calls();
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert!(calls[0].ends_with(&select_call()), "{calls:?}");
@@ -329,6 +343,7 @@ esac
             .unwrap_err();
 
         assert_eq!(err.to_string(), REMOTE_CONTROL_HINT);
+        assert!(err.is::<LayerHint>(), "{err:?}");
     }
 
     #[test]
@@ -342,6 +357,7 @@ esac
 
         assert!(start.elapsed() < std::time::Duration::from_secs(8));
         assert_eq!(err.to_string(), NO_ANSWER_HINT);
+        assert!(err.is::<LayerHint>(), "{err:?}");
         let calls = rex.calls();
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert!(calls[0].ends_with(&select_call()), "{calls:?}");
@@ -379,6 +395,7 @@ esac
             .unwrap_err();
 
         assert_eq!(err.to_string(), PEEK_HINT);
+        assert!(err.is::<LayerHint>(), "{err:?}");
         assert_eq!(rex.calls(), Vec::<String>::new());
     }
 

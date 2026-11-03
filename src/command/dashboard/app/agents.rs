@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ratatui::style::Style;
 
 use crate::github::{CheckSummary, PrSummary};
-use crate::multiplexer::rex::AppRefused;
+use crate::multiplexer::rex::{AppRefused, LayerHint};
 use crate::multiplexer::{AgentPane, AgentStatus, RemoteAgent};
 
 use super::DashboardTab;
@@ -24,13 +24,17 @@ use crate::command::pane_history::pane_to_remember;
 /// Rex's refusal, short enough for the footer of a dashboard in a pane.
 const APP_REFUSED_SHORT: &str = "Rex.app did not switch: Remote Control is off";
 
-/// The footer text for a failed jump. Rex's refusal carries the long fix
-/// that `last-done` prints, so the dashboard shows its short form.
-fn jump_error_message(err: &anyhow::Error) -> String {
+/// The footer text for a failed jump or peek. Only errors written for the
+/// user reach the footer: Rex's refusal, in its short form, and the layer's
+/// hints. Any other failure stays out of it, as a missed switch always has.
+fn footer_message(err: &anyhow::Error) -> Option<String> {
     if err.is::<AppRefused>() {
-        APP_REFUSED_SHORT.to_string()
+        Some(APP_REFUSED_SHORT.to_string())
+    } else if err.is::<LayerHint>() {
+        Some(err.to_string())
     } else {
-        err.to_string()
+        tracing::warn!(error = %format!("{err:#}"), "dashboard: switch failed");
+        None
     }
 }
 
@@ -295,8 +299,7 @@ impl App {
             .find(|a| a.pane_id == target_pane_id)
             .map(|a| a.window_name.as_str());
         if let Err(err) = self.mux.switch_to_pane(target_pane_id, window_hint) {
-            self.status_message = Some((jump_error_message(&err), std::time::Instant::now()));
-            self.status_until_key = true;
+            self.show_switch_error(&err);
             return;
         }
 
@@ -307,6 +310,13 @@ impl App {
         if let Some(current) = pane_to_remember(current_pane.as_deref(), target_pane_id) {
             self.last_pane_id = Some(current.to_string());
             save_last_pane_id(current);
+        }
+    }
+
+    fn show_switch_error(&mut self, err: &anyhow::Error) {
+        if let Some(msg) = footer_message(err) {
+            self.status_message = Some((msg, std::time::Instant::now()));
+            self.status_until_key = true;
         }
     }
 
@@ -431,8 +441,7 @@ impl App {
         {
             // Don't set should_jump - popup stays open
             if let Err(err) = self.mux.peek_pane(&agent.pane_id, Some(&agent.window_name)) {
-                self.status_message = Some((err.to_string(), std::time::Instant::now()));
-                self.status_until_key = true;
+                self.show_switch_error(&err);
             }
         }
     }
@@ -760,15 +769,20 @@ fn open_url(url: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppRefused, jump_error_message, should_close_after_jump};
+    use super::{AppRefused, footer_message, should_close_after_jump};
 
     #[test]
     fn a_refused_rex_jump_shows_the_short_form() {
         assert_eq!(
-            jump_error_message(&AppRefused.into()),
-            "Rex.app did not switch: Remote Control is off"
+            footer_message(&AppRefused.into()).as_deref(),
+            Some("Rex.app did not switch: Remote Control is off")
         );
-        assert_eq!(jump_error_message(&anyhow::anyhow!("other")), "other");
+    }
+
+    #[test]
+    fn a_switch_error_not_written_for_the_user_leaves_the_footer_empty() {
+        let err = anyhow::anyhow!(r#"tmux command failed: ["switch-client", "-t", "%2"]"#);
+        assert_eq!(footer_message(&err), None);
     }
 
     #[test]

@@ -21,6 +21,7 @@ use super::util;
 
 mod layer;
 
+pub use layer::LayerHint;
 use layer::LayerKind;
 
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
