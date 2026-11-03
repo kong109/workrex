@@ -90,7 +90,9 @@ const GUEST_SHIM: &str = concat!(
     "[ \"$WORKREX_SHIM_PID\" = $$ ] || for dir in $PATH; do\n",
     "  [ ! \"$dir/",
     env!("CARGO_BIN_NAME"),
-    "\" -ef \"$0\" ] && [ -x \"$dir/",
+    "\" -ef \"$0\" ] && [ -f \"$dir/",
+    env!("CARGO_BIN_NAME"),
+    "\" ] && [ -x \"$dir/",
     env!("CARGO_BIN_NAME"),
     "\" ] && WORKREX_SHIM_PID=$$ && export WORKREX_SHIM_PID && exec \"$dir/",
     env!("CARGO_BIN_NAME"),
@@ -460,6 +462,13 @@ mod tests {
         let dev = fake("dev", BIN);
         assert_eq!(
             hook(format!("{path}:{}", dev.display())),
+            format!("{BIN} set-window-status done\n")
+        );
+        // A directory named like the binary is not one.
+        let checkout = tmp.path().join("checkout");
+        std::fs::create_dir_all(checkout.join(BIN)).unwrap();
+        assert_eq!(
+            hook(format!("{}:{path}:{}", checkout.display(), dev.display())),
             format!("{BIN} set-window-status done\n")
         );
         // Another path to the shim itself is skipped, not taken for a real binary.
