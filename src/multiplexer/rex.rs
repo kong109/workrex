@@ -1123,9 +1123,9 @@ impl Multiplexer for RexBackend {
     fn switch_to_pane(&self, pane_id: &str, _window_hint: Option<&str>) -> Result<()> {
         let block = BlockId::parse(pane_id)?;
         let session = self.require_session_of(&block)?;
-        if Self::env_session().as_ref() != Some(&session) {
-            self.select_session(&session)?;
-        }
+        let view = self.view(&session)?;
+        let window = view.window_of(&block).map(|window| &window.window_id);
+        self.select_on_app(&session, window)?;
         self.select_pane(pane_id)
     }
 
