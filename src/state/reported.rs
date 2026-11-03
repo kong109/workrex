@@ -246,24 +246,29 @@ pub(crate) fn with_reported(
             state
         })
         .collect();
-    merged.extend(records.into_values().map(|record| AgentState {
-        workdir: record.workdir,
-        status: Some(record.status),
-        status_ts: Some(record.since),
-        activity_ts: None,
-        pane_title: None,
-        pane_pid: 0,
-        command: String::new(),
-        updated_ts: record.since,
-        window_name: record.window_name,
-        session_name: record.session_name,
-        boot_id: None,
-        agent_kind: None,
-        agent_session_id: None,
-        prompt: None,
-        remote: None,
-        pane_key: record.pane_key,
-    }));
+    merged.extend(
+        records
+            .into_values()
+            .filter(|record| record.hook_seen.is_none())
+            .map(|record| AgentState {
+                workdir: record.workdir,
+                status: Some(record.status),
+                status_ts: Some(record.since),
+                activity_ts: None,
+                pane_title: None,
+                pane_pid: 0,
+                command: String::new(),
+                updated_ts: record.since,
+                window_name: record.window_name,
+                session_name: record.session_name,
+                boot_id: None,
+                agent_kind: None,
+                agent_session_id: None,
+                prompt: None,
+                remote: None,
+                pane_key: record.pane_key,
+            }),
+    );
     Ok(merged)
 }
 
