@@ -106,6 +106,7 @@ def run_uninstall(env: MuxEnvironment, exe: Path) -> str:
             "TMPDIR": env.env.get("TMPDIR", "/tmp"),
             "XDG_CONFIG_HOME": env.env.get("XDG_CONFIG_HOME", ""),
             "XDG_STATE_HOME": env.env.get("XDG_STATE_HOME", ""),
+            "XDG_CACHE_HOME": str(env.home_path / ".cache"),
         },
     )
     env.send_keys("test:", script, enter=True)
@@ -309,7 +310,7 @@ def run_update_check(env: MuxEnvironment, exe: Path) -> None:
     )
 
 
-def test_update_check_keeps_its_own_cache_beside_upstreams(
+def test_update_check_keeps_its_own_cache_beside_upstreams_until_uninstall(
     mux_server: MuxEnvironment, workmux_exe_path: Path
 ):
     cache = mux_server.home_path / ".cache/workmux"
@@ -322,4 +323,10 @@ def test_update_check_keeps_its_own_cache_beside_upstreams(
 
     ours = json.loads((cache / f"{BIN}-update_check.json").read_text())
     assert ours["latest_version"] == "0.1.300"
+    assert upstream.read_bytes() == before
+
+    run_uninstall(mux_server, workmux_exe_path)
+
+    # Upstream's uninstall removes the cache dir and its own file with it.
+    assert not (cache / f"{BIN}-update_check.json").exists()
     assert upstream.read_bytes() == before

@@ -66,9 +66,12 @@ pub fn run(dry_run: bool) -> Result<()> {
     }
     println!();
 
-    // Phase 3: this binary's state dir; the cache and state dirs workmux shares stay
+    // Phase 3: this binary's state dir and update cache; the dirs it shares with workmux stay
     println!("  {} Data directories", style("●").dim());
-    let dirs = [("State", crate::bin_name::state_dir())];
+    let dirs = [
+        ("State directory", crate::bin_name::state_dir()),
+        ("Update cache", crate::bin_name::update_cache_file()),
+    ];
 
     for (label, path_result) in &dirs {
         match path_result {
@@ -81,7 +84,12 @@ pub fn run(dry_run: bool) -> Result<()> {
                         path.display()
                     );
                 } else {
-                    match std::fs::remove_dir_all(path) {
+                    let removed = if path.is_dir() {
+                        std::fs::remove_dir_all(path)
+                    } else {
+                        std::fs::remove_file(path)
+                    };
+                    match removed {
                         Ok(()) => println!(
                             "    {} Removed {} ({})",
                             style("~").dim(),
@@ -100,11 +108,7 @@ pub fn run(dry_run: bool) -> Result<()> {
                     }
                 }
             }
-            Ok(_path) => println!(
-                "    {} No {} directory",
-                style("~").dim(),
-                label.to_lowercase()
-            ),
+            Ok(_path) => println!("    {} No {}", style("~").dim(), label.to_lowercase()),
             Err(e) => println!("    {} Could not resolve: {}", style("~").yellow(), e),
         }
     }

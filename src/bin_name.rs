@@ -63,6 +63,11 @@ pub const NODE_ROOT: &str = concat!("~/.", env!("CARGO_BIN_NAME"), "-node");
 /// File name of the update-check cache, beside upstream's `update_check.json`.
 pub const UPDATE_CACHE_FILE: &str = concat!(env!("CARGO_BIN_NAME"), "-update_check.json");
 
+/// This binary's update-check cache, in the cache dir it shares with upstream.
+pub fn update_cache_file() -> Result<PathBuf> {
+    Ok(crate::xdg::cache_dir()?.join(UPDATE_CACHE_FILE))
+}
+
 /// This binary's own state directory. Upstream's uninstall deletes the shared one.
 pub fn state_dir() -> Result<PathBuf> {
     Ok(crate::xdg::state_dir()?.with_file_name(BIN))
