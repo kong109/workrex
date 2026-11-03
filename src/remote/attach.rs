@@ -1027,22 +1027,12 @@ mod tests {
 
     #[test]
     fn each_screen_write_is_flushed() {
-        struct Calls(Vec<&'static str>);
-        impl Write for Calls {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.push("write");
-                Ok(buf.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.0.push("flush");
-                Ok(())
-            }
-        }
+        // Like stdout, this holds output back until a newline or a flush.
+        let mut terminal = std::io::LineWriter::new(Vec::new());
         let input = Mutex::new(Input::Pending(1));
         let (events, _received) = mpsc::channel();
-        let mut out = Calls(Vec::new());
-        copy_output(&b"screen"[..], &mut out, &input, master(), 1, &events);
-        assert_eq!(out.0, ["write", "flush"]);
+        let chunks = (&b"screen"[..]).chain(&b"typed"[..]);
+        copy_output(chunks, &mut terminal, &input, master(), 1, &events);
+        assert_eq!(terminal.get_ref(), b"screentyped");
     }
 }
