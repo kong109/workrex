@@ -1238,6 +1238,46 @@ esac
         );
     }
 
+    /// Inside the late-move window a close keeps the record even when it
+    /// finds the destination in place, because the timed-out move can still
+    /// land, and the close after the landing must put the order back.
+    #[test]
+    fn a_close_inside_the_window_keeps_the_record_for_a_later_landing() {
+        let mut fake = ordered_fake(&[
+            ("session:first", "first"),
+            ("session:home", "home"),
+            ("session:t", "wm-t"),
+            ("session:u", "wm-u"),
+            ("session:v", "wm-v"),
+        ]);
+        let dir = fake.dir.path().to_path_buf();
+        std::fs::write(dir.join("stall"), "").unwrap();
+        fake.rex.close_session_to("wm-t", Some("home")).unwrap();
+        fake.rex.close_session_to("wm-u", Some("home")).unwrap();
+        std::fs::remove_file(dir.join("stall")).unwrap();
+        assert_eq!(labels(&fake), ["first", "home", "wm-v"]);
+
+        fake.rex
+            .close_session_with_id("session:gone", None)
+            .unwrap();
+        assert!(
+            fake.rex.records().restore.is_some(),
+            "in place, but the move may still land"
+        );
+
+        let landed = std::process::Command::new("sh")
+            .arg(dir.join("order.sh"))
+            .args(["move", "session", "move", "session:home", "--index", "1"])
+            .output()
+            .unwrap();
+        assert!(landed.status.success(), "{landed:?}");
+        reopen(&mut fake);
+        fake.rex
+            .close_session_with_id("session:gone", None)
+            .unwrap();
+        assert_eq!(labels(&fake), ["first", "home", "wm-v"], "put back");
+    }
+
     /// The dashboard keeps one backend for its whole run, and its poll
     /// lists the sessions shortly before the user closes one. A move that
     /// lands after that list is still put back.
