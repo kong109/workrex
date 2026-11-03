@@ -145,10 +145,26 @@ def test_hook_status_puts_its_icon_in_the_window_label(
             rex, workmux_exe_path, repo_path, "set-window-status", status, block=block
         )
         assert hook.returncode == 0, hook.stderr
-        assert window_label(rex, block) == f"{icon} {window}"
+        assert window_label(rex, block) == f"{icon}\u2002{window}"
 
     hook = workmux(
         rex, workmux_exe_path, repo_path, "set-window-status", "clear", block=block
     )
     assert hook.returncode == 0, hook.stderr
     assert window_label(rex, block) == window
+
+
+def test_a_window_prefix_ending_in_a_space_keeps_its_window(
+    rex, workmux_exe_path, repo_path
+):
+    prefix = " "
+    write_workmux_config(repo_path, panes=[{"focus": True}], window_prefix=prefix)
+    run_workmux_add(rex, workmux_exe_path, repo_path, "nerd")
+    wait_for_window_ready(rex, f"{prefix}nerd")
+    block = rex._target_block(f"{prefix}nerd")
+
+    hook = workmux(
+        rex, workmux_exe_path, repo_path, "set-window-status", "waiting", block=block
+    )
+    assert hook.returncode == 0, hook.stderr
+    assert window_label(rex, block) == f"💬 {prefix}nerd"

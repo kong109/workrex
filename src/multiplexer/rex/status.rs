@@ -119,12 +119,15 @@ fn unix_seconds(timestamp: &str) -> Option<u64> {
     u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second - offset).ok()
 }
 
+/// Separates a status icon from the window name. A plain space would be
+/// ambiguous, because window prefixes like the nerdfont one end in a space.
+const ICON_SEPARATOR: char = '\u{2002}';
+
 /// A window label without the status icon workmux put in front of it.
 pub(super) fn base_label(label: &str) -> &str {
-    match label.split_once(' ') {
-        Some((icon, name)) if !icon.is_empty() && !icon.chars().any(char::is_alphanumeric) => name,
-        _ => label,
-    }
+    label
+        .split_once(ICON_SEPARATOR)
+        .map_or(label, |(_, name)| name)
 }
 
 pub(super) fn deserialize_base_label<'de, D: Deserializer<'de>>(
@@ -136,7 +139,7 @@ pub(super) fn deserialize_base_label<'de, D: Deserializer<'de>>(
 
 fn label_with_icon(name: &str, icon: Option<&str>) -> String {
     match icon.filter(|icon| !icon.is_empty()) {
-        Some(icon) => format!("{icon} {name}"),
+        Some(icon) => format!("{icon}{ICON_SEPARATOR}{name}"),
         None => name.to_string(),
     }
 }
@@ -320,11 +323,17 @@ mod tests {
 
     #[test]
     fn window_labels_drop_the_status_icon() {
-        assert_eq!(base_label("💬 wm-feat-a"), "wm-feat-a");
-        assert_eq!(base_label("✅ wm-feat-a"), "wm-feat-a");
+        assert_eq!(base_label("💬\u{2002}wm-feat-a"), "wm-feat-a");
         assert_eq!(base_label("wm-feat-a"), "wm-feat-a");
-        assert_eq!(base_label("my notes"), "my notes");
-        assert_eq!(label_with_icon("wm-feat-a", Some("💬")), "💬 wm-feat-a");
+        assert_eq!(base_label("\u{f418} feat-a"), "\u{f418} feat-a");
+        assert_eq!(
+            base_label(&label_with_icon("\u{f418} feat-a", Some("✅"))),
+            "\u{f418} feat-a"
+        );
+        assert_eq!(
+            label_with_icon("wm-feat-a", Some("💬")),
+            "💬\u{2002}wm-feat-a"
+        );
         assert_eq!(label_with_icon("wm-feat-a", Some("")), "wm-feat-a");
         assert_eq!(label_with_icon("wm-feat-a", None), "wm-feat-a");
     }

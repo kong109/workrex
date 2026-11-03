@@ -690,10 +690,8 @@ def rex_binary() -> Optional[str]:
 
 def rex_base_label(label: str) -> str:
     """A Rex window label without the status icon workmux puts in front."""
-    icon, _, name = label.partition(" ")
-    if name and icon and not any(c.isalnum() for c in icon):
-        return name
-    return label
+    _, separator, name = label.partition("\u2002")
+    return name if separator else label
 
 
 class RexEnvironment(MuxEnvironment):
