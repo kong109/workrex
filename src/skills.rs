@@ -224,7 +224,10 @@ pub(crate) fn remove_skills_at(base_dir: PathBuf, agent_name: &str) -> Result<St
         ));
     }
 
+    use crate::bin_name::skills::Removal;
+
     let mut removed = 0u32;
+    let mut restored = 0u32;
     let mut skipped = 0u32;
 
     for skill in BUNDLED_SKILLS {
@@ -232,11 +235,11 @@ pub(crate) fn remove_skills_at(base_dir: PathBuf, agent_name: &str) -> Result<St
         if !path.exists() {
             continue;
         }
-        if crate::bin_name::skills::remove(&path)? {
-            removed += 1;
-        } else {
+        match crate::bin_name::skills::remove(&path)? {
+            Removal::Removed => removed += 1,
+            Removal::Restored => restored += 1,
             // A skill this binary did not write, or one modified since, stays.
-            skipped += 1;
+            Removal::Kept => skipped += 1,
         }
     }
 
@@ -249,10 +252,13 @@ pub(crate) fn remove_skills_at(base_dir: PathBuf, agent_name: &str) -> Result<St
     if removed > 0 {
         parts.push(format!("{removed} removed"));
     }
+    if restored > 0 {
+        parts.push(format!("{restored} restored"));
+    }
     if skipped > 0 {
         parts.push(format!("{skipped} kept"));
     }
-    if removed == 0 && skipped == 0 {
+    if removed == 0 && restored == 0 && skipped == 0 {
         parts.push("none found".to_string());
     }
 

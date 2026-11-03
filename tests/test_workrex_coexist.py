@@ -1,10 +1,13 @@
 """workrex coexists with upstream workmux: setup and uninstall leave upstream's hooks alone."""
 
 import json
+import re
 import shlex
 import shutil
 import time
 from pathlib import Path
+
+import pytest
 
 from .conftest import (
     MuxEnvironment,
@@ -226,8 +229,33 @@ def test_setup_with_skills_then_uninstall_leaves_upstream_skills_byte_identical(
         assert not (home / skills_dir / BIN).exists(), skills_dir
 
 
-def test_skills_taken_back_after_upstream_setup_are_restored_on_uninstall(
-    mux_server: MuxEnvironment, workmux_exe_path: Path
+def uninstall_upstream(home: Path) -> None:
+    """Leave what upstream `workmux uninstall` leaves.
+
+    It deletes each skill directory whose SKILL.md still holds upstream's text,
+    then its whole cache and state directories.
+    """
+    for skills_dir in SKILL_DIRS:
+        base = home / skills_dir
+        for skill in (REPO / "skills").iterdir():
+            path = base / skill.name / "SKILL.md"
+            if path.is_file() and path.read_text() == (skill / "SKILL.md").read_text():
+                shutil.rmtree(path.parent)
+        if base.is_dir() and not any(base.iterdir()):
+            base.rmdir()
+    for xdg_dir in (".cache", ".local/state"):
+        shutil.rmtree(home / xdg_dir / "workmux", ignore_errors=True)
+
+
+def skills_summary(output: str) -> str:
+    match = re.search(r"Skills for Claude Code \(.*\): (.*)", output)
+    assert match, output
+    return match.group(1).strip()
+
+
+@pytest.mark.parametrize("first", [BIN, "workmux"])
+def test_skills_taken_back_after_upstream_setup_leave_nothing_once_both_uninstall(
+    mux_server: MuxEnvironment, workmux_exe_path: Path, first: str
 ):
     home = mux_server.home_path
     install_opencode_version(mux_server, "v1.18.29")
@@ -237,14 +265,22 @@ def test_skills_taken_back_after_upstream_setup_are_restored_on_uninstall(
     for skills_dir in SKILL_DIRS:
         assert (home / skills_dir / BIN / "SKILL.md").exists(), skills_dir
     upstream = write_upstream_skills(home)
-
-    assert run_setup_overwriting_skills(mux_server, workmux_exe_path) > 0
-    # Upstream's uninstall deletes its state dir; workrex's manifest is not in it.
-    shutil.rmtree(home / ".local/state/workmux", ignore_errors=True)
-    run_uninstall(mux_server, workmux_exe_path)
-
     assert len(upstream) == 30
-    for path, before in upstream.items():
-        assert path.read_bytes() == before, path
+    assert run_setup_overwriting_skills(mux_server, workmux_exe_path) > 0
+
+    if first == BIN:
+        output = run_uninstall(mux_server, workmux_exe_path)
+        # Upstream is still installed, so it gets back the four skills workrex took.
+        assert skills_summary(output) == "1 removed, 4 restored, 1 kept"
+        for path, before in upstream.items():
+            assert path.read_bytes() == before, path
+        uninstall_upstream(home)
+    else:
+        uninstall_upstream(home)
+        output = run_uninstall(mux_server, workmux_exe_path)
+        # Upstream's uninstall left the four skills workrex holds; restoring
+        # upstream's text into them would leave files nothing owns.
+        assert skills_summary(output) == "5 removed"
+
     for skills_dir in SKILL_DIRS:
-        assert not (home / skills_dir / BIN).exists(), skills_dir
+        assert not (home / skills_dir).exists(), list((home / skills_dir).rglob("*"))
