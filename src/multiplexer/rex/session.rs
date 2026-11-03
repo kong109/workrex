@@ -918,6 +918,20 @@ mod tests {
         );
     }
 
+    /// The version check before a move can wait past the move's bound on a
+    /// slow server. A move that then fails at once did not time out.
+    #[test]
+    fn a_slow_version_check_does_not_count_against_the_move() {
+        let fake = FakeRex::new(&[
+            (
+                "server.version",
+                r#"$sleep 2.5; echo '{"rex_version":"t","api_revision":8}'"#,
+            ),
+            ("session move", "!boom"),
+        ]);
+        assert_eq!(fake.rex.move_session("d", ["--index", "1"]), Moved::Failed);
+    }
+
     #[test]
     fn concurrent_closes_do_not_interleave() {
         let fake = FakeRex::new(&[
