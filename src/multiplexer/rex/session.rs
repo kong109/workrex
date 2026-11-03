@@ -382,10 +382,13 @@ impl RexBackend {
     /// default per move.
     fn move_session(&self, session: &str, place: [&str; 2]) -> Moved {
         let args = ["session", "move", session, place[0], place[1]];
-        let started = Instant::now();
-        let moved = self
-            .ensure_supported()
-            .and_then(|()| self.exec_within(&args, None, Some(SESSION_MOVE_TIMEOUT)));
+        // From the move itself: the version check before it waits on a
+        // process-wide lock, and that wait is not the move's.
+        let mut started = Instant::now();
+        let moved = self.ensure_supported().and_then(|()| {
+            started = Instant::now();
+            self.exec_within(&args, None, Some(SESSION_MOVE_TIMEOUT))
+        });
         if let Err(error) = &moved {
             tracing::debug!(error = %error, "rex: session move failed");
         }
