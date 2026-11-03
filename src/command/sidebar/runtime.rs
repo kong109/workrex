@@ -59,7 +59,8 @@ fn spawn_input_thread(tx: mpsc::Sender<AppEvent>) {
 pub fn run_sidebar() -> Result<()> {
     let mux = create_backend(detect_backend());
 
-    if !mux.is_running().unwrap_or(false) {
+    // A sidebar host's pane identity waits for a slow server instead.
+    if mux.sidebar().is_none() && !mux.is_running().unwrap_or(false) {
         tracing::info!("sidebar-run exiting: mux not running");
         return Ok(());
     }

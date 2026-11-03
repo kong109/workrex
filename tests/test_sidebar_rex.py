@@ -328,6 +328,28 @@ def test_a_window_made_before_the_server_stalls_still_gets_its_sidebar(rex):
     ), "the failed pass dropped the new window"
 
 
+def test_a_sidebar_starting_as_the_server_stalls_outlasts_the_stall(rex):
+    env = rex
+    cli(env, "on")
+    window_id = new_window(env, env.session_id)
+    deadline = time.monotonic() + 10
+    while sidebar_of(windows(env, env.session_id)[window_id]) is None:
+        assert time.monotonic() < deadline, "the new window got no sidebar"
+        time.sleep(0.01)
+    # The sidebar TUI is still starting. Stopping the server past the rex
+    # CLI's 10 s timeout fails its first calls; a sidebar that quits then
+    # leaves its window looking closed by the user.
+    os.kill(env.server.pid, signal.SIGSTOP)
+    try:
+        time.sleep(14)
+    finally:
+        os.kill(env.server.pid, signal.SIGCONT)
+    time.sleep(5)
+    assert sidebar_of(windows(env, env.session_id)[window_id]) is not None, (
+        "the sidebar quit during the stall and stayed closed"
+    )
+
+
 def test_a_closed_sidebar_stays_closed_when_the_event_stream_restarts(rex):
     env = rex
     kept = new_window(env, env.session_id)

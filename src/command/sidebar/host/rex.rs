@@ -38,9 +38,24 @@ impl SidebarHost for RexBackend {
         }
     }
 
+    /// Waits out a slow server: a sidebar that quits here closes its block,
+    /// which the daemon then reads as the user closing it.
     fn pane_identity(&self) -> Option<HostPane> {
         let own = RexBackend::own_block()?;
-        let view = self.sidebar_view(&own.session_id).ok()??;
+        let mut attempt = 0;
+        let view = loop {
+            match self.sidebar_view(&own.session_id) {
+                Ok(view) => break view?,
+                Err(error) => match link::Failure::from(error) {
+                    link::Failure::Dead => return None,
+                    link::Failure::Unsure(error) => {
+                        attempt += 1;
+                        tracing::warn!(%error, attempt, "rex server not answering; retrying");
+                        std::thread::sleep(link::backoff(attempt));
+                    }
+                },
+            }
+        };
         let window = view
             .windows
             .iter()
