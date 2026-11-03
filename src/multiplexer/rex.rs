@@ -49,7 +49,7 @@ mod hosting;
 mod session;
 mod target;
 
-pub use hosting::HostedSession;
+pub use hosting::{HostedRead, HostedSession};
 
 impl BlockId {
     fn parse(pane_id: &str) -> Result<Self> {

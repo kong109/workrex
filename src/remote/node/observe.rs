@@ -255,11 +255,7 @@ impl Observer {
             .collect();
         if !hosted.is_empty() {
             match RexHost::open(&self.root, false) {
-                Ok(host) => {
-                    for execution in &hosted {
-                        live.extend(host.live_panes(execution));
-                    }
-                }
+                Ok(host) => live.extend(host.live_panes(&hosted.iter().collect::<Vec<_>>())),
                 Err(err) => tracing::debug!("node Rex server unavailable: {err:#}"),
             }
         }

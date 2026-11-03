@@ -14,7 +14,7 @@ use tempfile::TempPath;
 use super::execution::{kill_execution, new_session, session_alive, set_session_env, tmux_socket};
 use super::{Execution, NodeRoot, refuse, secrets};
 use crate::config::RemoteTerminal;
-use crate::multiplexer::rex::{HostedSession, RexBackend};
+use crate::multiplexer::rex::{HostedRead, HostedSession, RexBackend};
 use crate::multiplexer::{LivePaneInfo, Multiplexer, tmux::TmuxBackend};
 use crate::remote::protocol::{RexPlacement, Secrets, code, session_name};
 
@@ -296,19 +296,7 @@ impl RexHost {
     /// session one of `executions` recorded keeps that name after Rex
     /// renames it; any other is named by its label without the tag.
     pub fn sessions(&self, executions: &[&Execution]) -> Result<Vec<HostedSession>> {
-        let recorded: HashMap<&str, String> = executions
-            .iter()
-            .filter_map(|execution| {
-                let placement = execution.rex.as_ref()?;
-                (placement.instance_id == self.instance_id).then_some((execution, placement))
-            })
-            .flat_map(|(execution, placement)| {
-                placement
-                    .sessions
-                    .iter()
-                    .map(|(index, id)| (id.as_str(), session_name(&execution.ex_id, *index)))
-            })
-            .collect();
+        let recorded = self.recorded_names(executions);
         Ok(self
             .mux
             .hosted_sessions()?
@@ -326,6 +314,24 @@ impl RexHost {
             .collect())
     }
 
+    /// The sessions `executions` recorded on this server, each by the name
+    /// its tmux session would have.
+    fn recorded_names<'a>(&self, executions: &[&'a Execution]) -> HashMap<&'a str, String> {
+        executions
+            .iter()
+            .filter_map(|execution| {
+                let placement = execution.rex.as_ref()?;
+                (placement.instance_id == self.instance_id).then_some((execution, placement))
+            })
+            .flat_map(|(execution, placement)| {
+                placement
+                    .sessions
+                    .iter()
+                    .map(|(index, id)| (id.as_str(), session_name(&execution.ex_id, *index)))
+            })
+            .collect()
+    }
+
     fn recorded<'a>(&self, execution: &'a Execution, index: usize) -> Option<&'a str> {
         let placement = execution.rex.as_ref()?;
         if placement.instance_id != self.instance_id {
@@ -337,28 +343,28 @@ impl RexHost {
     fn pane_alive(&self, execution: &Execution, index: usize) -> bool {
         self.recorded(execution, index).is_some_and(|id| {
             self.mux
-                .hosted_live_panes(id)
-                .is_ok_and(|panes| !panes.is_empty())
+                .read_hosted(&[id])
+                .is_ok_and(|mut reads| reads.remove(id).is_some_and(|read| !read.live().is_empty()))
         })
     }
 
-    /// Live blocks of `execution`'s panes, each named as its tmux session
-    /// would be, so the observer reads both hosts alike.
-    pub fn live_panes(&self, execution: &Execution) -> HashMap<String, LivePaneInfo> {
+    /// Live blocks of the panes of `executions`, each named as its tmux
+    /// session would be, so the observer reads both hosts alike. One read
+    /// covers every recorded session.
+    pub fn live_panes(&self, executions: &[&Execution]) -> HashMap<String, LivePaneInfo> {
+        let names = self.recorded_names(executions);
+        let ids: Vec<&str> = names.keys().copied().collect();
+        let reads = self.mux.read_hosted(&ids).unwrap_or_else(|err| {
+            tracing::debug!("rex sessions unreadable: {err:#}");
+            HashMap::new()
+        });
         let mut live = HashMap::new();
-        let Some(placement) = &execution.rex else {
-            return live;
-        };
-        if placement.instance_id != self.instance_id {
-            return live;
-        }
-        for (index, id) in &placement.sessions {
-            let panes = self.mux.hosted_live_panes(id).unwrap_or_else(|err| {
+        for (id, read) in reads {
+            if let HostedRead::Unreadable(err) = &read {
                 tracing::debug!(session = %id, "rex session unreadable: {err:#}");
-                HashMap::new()
-            });
-            for (block, mut pane) in panes {
-                pane.session = Some(session_name(&execution.ex_id, *index));
+            }
+            for (block, mut pane) in read.live() {
+                pane.session = names.get(id.as_str()).cloned();
                 live.insert(block, pane);
             }
         }
@@ -685,27 +691,113 @@ mod tests {
         );
     }
 
+    /// The answer of one session read: `blocks` maps each session to its
+    /// blocks' process reports; a session left out is gone.
+    fn read_reply(blocks: &[(&str, &[(&str, &str)])], gone: &[&str]) -> String {
+        let mut reply = serde_json::Map::new();
+        for (session, blocks) in blocks {
+            let blocks: serde_json::Map<String, serde_json::Value> = blocks
+                .iter()
+                .map(|(block, process)| {
+                    let read = serde_json::json!({
+                        "window": { "window_id": "window:w", "label": "feat-r" },
+                        "process": serde_json::from_str::<serde_json::Value>(process).unwrap(),
+                        "title": "agent",
+                    });
+                    (block.to_string(), read)
+                })
+                .collect();
+            reply.insert(
+                session.to_string(),
+                serde_json::json!({
+                    "session": { "session_id": session, "label": "Fix the login bug" },
+                    "blocks": blocks,
+                }),
+            );
+        }
+        for session in gone {
+            let error = format!(
+                "stream response \"control-1\" failed: session {session} not found \
+                 (status=404 code=session_not_found)"
+            );
+            reply.insert(session.to_string(), serde_json::json!({ "error": error }));
+        }
+        serde_json::Value::Object(reply).to_string()
+    }
+
     #[test]
     fn a_rex_pane_is_alive_while_its_program_runs_on_the_same_server() {
-        let running = Fake::new(&[
-            ("session.view", VIEW),
-            ("process", RUNNING),
-            ("title", r#"{"title":"agent"}"#),
-        ]);
+        let running = Fake::new(&[(
+            "rex.session.attach",
+            &read_reply(&[("session:s", &[("block:b", RUNNING)])], &[]),
+        )]);
         let ex = execution(&[(0, "session:s")], "instance-1");
         assert!(running.host.pane_alive(&ex, 0));
         assert!(!running.host.pane_alive(&ex, 1));
-        let live = running.rex().live_panes(&ex);
-        assert!(!live.is_empty());
-        assert!(live.iter().all(|(id, pane)| id.starts_with("block:")
-            && pane.session.as_deref() == Some("x0123456789ab-0")));
+        let live = running.rex().live_panes(&[&ex]);
+        assert_eq!(
+            live.keys().collect::<Vec<_>>(),
+            ["block:b"],
+            "{:?}",
+            running.calls()
+        );
+        assert_eq!(live["block:b"].session.as_deref(), Some("x0123456789ab-0"));
+        assert_eq!(live["block:b"].window.as_deref(), Some("feat-r"));
         // A replaced server does not have the recorded sessions.
         let replaced = execution(&[(0, "session:s")], "instance-0");
         assert!(!running.host.pane_alive(&replaced, 0));
-        assert!(running.rex().live_panes(&replaced).is_empty());
+        assert!(running.rex().live_panes(&[&replaced]).is_empty());
 
-        let exited = Fake::new(&[("session.view", VIEW), ("process", EXITED)]);
+        let exited = Fake::new(&[(
+            "rex.session.attach",
+            &read_reply(&[("session:s", &[("block:b", EXITED)])], &[]),
+        )]);
         assert!(!exited.host.pane_alive(&ex, 0));
-        assert!(exited.rex().live_panes(&ex).is_empty());
+        assert!(exited.rex().live_panes(&[&ex]).is_empty());
+    }
+
+    #[test]
+    fn an_observation_reads_every_hosted_session_with_one_rex_process() {
+        let ids = [
+            "session:a",
+            "session:b",
+            "session:c",
+            "session:d",
+            "session:e",
+        ];
+        let blocks: Vec<[(&str, &str); 1]> = ids.iter().map(|id| [(*id, RUNNING)]).collect();
+        let live: Vec<(&str, &[(&str, &str)])> = ids
+            .iter()
+            .zip(&blocks)
+            .map(|(id, blocks)| (*id, &blocks[..]))
+            .collect();
+        let reply = read_reply(&live, &["session:gone"]);
+        let rex_processes = |executions: &[Execution]| {
+            let fake = Fake::new(&[("rex.session.attach", &reply)]);
+            let executions: Vec<&Execution> = executions.iter().collect();
+            let panes = fake.rex().live_panes(&executions);
+            (fake.calls().len(), panes)
+        };
+
+        let (one, panes) = rex_processes(&[execution(&[(0, "session:a")], "instance-1")]);
+        assert_eq!(panes.len(), 1);
+
+        let mut second = execution(&[(0, "session:d"), (1, "session:e")], "instance-1");
+        second.ex_id = "x999999999999".into();
+        let (six, panes) = rex_processes(&[
+            execution(
+                &[(0, "session:a"), (1, "session:b"), (2, "session:c")],
+                "instance-1",
+            ),
+            second,
+            execution(&[(3, "session:gone")], "instance-1"),
+        ]);
+        assert_eq!(one, six, "rex processes for 1 and 6 recorded sessions");
+        // The gone session is missing; the five others are read.
+        assert_eq!(panes.len(), 5, "{panes:?}");
+        assert_eq!(
+            panes["session:e"].session.as_deref(),
+            Some("x999999999999-1")
+        );
     }
 }

@@ -12,7 +12,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::super::{LivePaneInfo, Multiplexer};
-use super::{ClientList, CreatedWindow, RexBackend, SessionId, found, parallel_map, shell_block};
+use super::{
+    CallError, ClientList, CreatedWindow, ProcessReport, RexBackend, SessionId, SessionView,
+    WindowView, pane_info, shell_block,
+};
 
 /// Reads the env file in `$1`, removes it, replaces the environment the
 /// block inherited from the Rex server with it and runs the script in `$2`.
@@ -24,6 +27,121 @@ const SOURCE_ENV: &str = "env=$(cat \"$1\") && rm -f \"$1\" && \
     for v in $(env | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p'); do \
     case $v in REX_*|TERM|TERM_PROGRAM|TERM_PROGRAM_VERSION) ;; *) unset \"$v\" ;; esac; done; \
     eval \"$env\" && exec sh -c \"$2\"";
+
+/// Reads the sessions in `rex.args.sessions` in one `rex do`: for each, its
+/// label and, for each terminal block in a tiled layer, the window, process
+/// report and title. `rex do` drops error codes, so each session and block
+/// carries the error Rex gave for it. Lua encodes an empty table as `{}`, so
+/// the result keys every collection by id and drops empty `ancestors`.
+const READ_SESSIONS: &str = r#"
+local out = {}
+for _, id in ipairs(rex.args.sessions) do
+  local attached, err = rex.session.attach{session_id = id}
+  if not attached then
+    out[id] = {error = err}
+  else
+    local view = attached.view
+    local blocks = {}
+    for _, window in ipairs(view.windows or {}) do
+      for _, layer in ipairs(window.layers or {}) do
+        for _, block in ipairs(layer.kind == "tiled" and layer.blocks or {}) do
+          if block.creator_name == "com.superlogical.terminal" then
+            local call = {session_id = id, block_id = block.block_id, method = "process"}
+            local entry = {window = {window_id = window.window_id, label = window.label}}
+            entry.process, entry.error = rex.call("block.method", call)
+            if entry.process and entry.process.last_exit == nil then
+              if entry.process.ancestors and next(entry.process.ancestors) == nil then
+                entry.process.ancestors = nil
+              end
+              call.method = "title"
+              local title, failed = rex.call("block.method", call)
+              entry.title, entry.error = title and title.title, failed
+            end
+            blocks[block.block_id] = entry
+          end
+        end
+      end
+    end
+    out[id] = {session = {session_id = view.session_id, label = view.label}, blocks = blocks}
+  end
+end
+return out
+"#;
+
+#[derive(Debug, Deserialize)]
+struct SessionRead {
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    session: Option<SessionView>,
+    #[serde(default)]
+    blocks: HashMap<String, BlockRead>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BlockRead {
+    window: WindowView,
+    #[serde(default)]
+    process: Option<ProcessReport>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// What a read finds of a recorded session.
+#[derive(Debug)]
+pub enum HostedRead {
+    /// Rex has no session with that id.
+    Gone,
+    /// Its live terminal blocks, by block id.
+    Live(HashMap<String, LivePaneInfo>),
+    Unreadable(anyhow::Error),
+}
+
+impl HostedRead {
+    pub fn live(self) -> HashMap<String, LivePaneInfo> {
+        match self {
+            Self::Live(panes) => panes,
+            Self::Gone | Self::Unreadable(_) => HashMap::new(),
+        }
+    }
+
+    fn of(read: SessionRead) -> Self {
+        let not_found = |error: &str| {
+            matches!(
+                CallError::from_stderr(&["do"], error),
+                CallError::NotFound(_)
+            )
+        };
+        if let Some(error) = read.error {
+            return if not_found(&error) {
+                Self::Gone
+            } else {
+                Self::Unreadable(anyhow!("{error}"))
+            };
+        }
+        let Some(session) = read.session else {
+            return Self::Unreadable(anyhow!("Rex returned no view"));
+        };
+        let mut live = HashMap::new();
+        for (block, read) in read.blocks {
+            match (read.process, read.error) {
+                (_, Some(error)) if !not_found(&error) => {
+                    return Self::Unreadable(anyhow!("{block}: {error}"));
+                }
+                (Some(process), _) => {
+                    let title = read.title.unwrap_or_default();
+                    if let Some(pane) = pane_info(&session, &read.window, &process, title) {
+                        live.insert(block, pane);
+                    }
+                }
+                (None, _) => {}
+            }
+        }
+        Self::Live(live)
+    }
+}
 
 /// A jump to a session on a server reached over the tailnet; an unknown
 /// session id takes the app about five seconds to refuse.
@@ -161,22 +279,26 @@ impl RexBackend {
         self.destroy_session(&SessionId(id.to_string()))
     }
 
-    /// Live terminal blocks of session `id`; none when it is gone.
-    pub fn hosted_live_panes(&self, id: &str) -> Result<HashMap<String, LivePaneInfo>> {
-        let Some(view) = found(self.view(&SessionId(id.to_string())))? else {
-            return Ok(HashMap::new());
-        };
-        let blocks: Vec<_> = view.terminal_blocks().collect();
-        let panes = parallel_map(&blocks, |(window, block)| {
-            self.live_pane(&view, window, block)
-                .map(|pane| pane.map(|pane| (block.as_str().to_string(), pane)))
-        });
-        Ok(panes
-            .into_iter()
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .flatten()
-            .collect())
+    /// Sessions `ids`, read with one `rex` process however many there are.
+    /// A session that is gone or unreadable fails only its own entry.
+    pub fn read_hosted(&self, ids: &[&str]) -> Result<HashMap<String, HostedRead>> {
+        let mut reads = HashMap::new();
+        if ids.is_empty() {
+            return Ok(reads);
+        }
+        let output = self.run(
+            &["do", "-e", READ_SESSIONS, "--args", "-", "--json"],
+            Some(&json!({ "sessions": ids }).to_string()),
+        )?;
+        let mut found: HashMap<String, SessionRead> = Self::parse("session read", &output)?;
+        for id in ids {
+            let read = match found.remove(*id) {
+                Some(read) => HostedRead::of(read),
+                None => HostedRead::Unreadable(anyhow!("Rex did not read session {id}")),
+            };
+            reads.insert(id.to_string(), read);
+        }
+        Ok(reads)
     }
 
     /// Have the next `respawn_pane` source `env_file` before its command, so
