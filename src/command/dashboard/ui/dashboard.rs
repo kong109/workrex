@@ -1076,8 +1076,10 @@ mod tests {
 
     #[test]
     fn a_long_status_message_ends_at_a_word() {
-        let msg = "Rex.app did not switch: Remote Control is off. \
-                   Turn it on in Rex Settings so workmux can switch the app.";
+        let msg = crate::rebrand!(
+            "Rex.app did not switch: Remote Control is off. \
+             Turn it on in Rex Settings so workmux can switch the app."
+        );
         assert_eq!(
             render_footer(msg, 80).trim_end(),
             "  Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so…"

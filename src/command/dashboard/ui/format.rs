@@ -521,7 +521,9 @@ pub fn make_row_style(is_current: bool, is_main: bool, palette: &ThemePalette) -
 mod tests {
     #[test]
     fn fit_words_keeps_whole_words() {
-        let msg = "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so workmux can switch the app.";
+        let msg = crate::rebrand!(
+            "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so workmux can switch the app."
+        );
         assert_eq!(super::fit_words(msg, 200), msg);
         assert_eq!(
             super::fit_words(msg, 78),
