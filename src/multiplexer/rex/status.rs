@@ -313,7 +313,8 @@ mod tests {
                 .reported()
                 .is_none()
         );
-        let running = fixture("claude_code_blocked").owned_by_foreground(Some((85917, "claude")));
+        let running =
+            fixture("claude_code_blocked").owned_by_foreground(Some((85917, "claude.exe")));
         assert!(matches!(
             running.reported(),
             Some(ReportedStatus::Agent {

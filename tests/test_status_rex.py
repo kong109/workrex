@@ -262,3 +262,28 @@ def test_a_stale_hook_file_does_not_block_adoption(rex, workmux_exe_path, repo_p
     )
     report(rex, block, "state=working:app=fake")
     assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"
+
+
+def test_last_done_focuses_an_agent_that_only_reported_done(
+    rex, workmux_exe_path, repo_path
+):
+    block = start_fake_agent(rex, workmux_exe_path, repo_path, "osc-last-done")
+    report(rex, block, "state=done:app=fake")
+    pruning = workmux(rex, workmux_exe_path, repo_path, "list")
+    assert pruning.returncode == 0, pruning.stderr
+
+    def active_block():
+        view = rex.api("session.view", {"session_id": rex.session_id})
+        active = view.get("active_window_id")
+        window = next(w for w in view["windows"] if w["window_id"] == active)
+        return window.get("focused_block_id")
+
+    rex.api(
+        "session.focus_block",
+        {"session_id": rex.session_id, "block_id": rex.runner_block_id},
+    )
+    assert active_block() == rex.runner_block_id
+
+    result = workmux(rex, workmux_exe_path, repo_path, "last-done")
+    assert result.returncode == 0, result.stderr
+    assert poll_until(lambda: active_block() == block, timeout=5), result.stdout
