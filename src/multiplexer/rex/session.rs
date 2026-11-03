@@ -11,13 +11,16 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use super::super::Multiplexer;
 use super::super::types::CreateSessionParams;
 use super::super::util;
 
 use super::super::agent::shell_quote;
-use super::{RexBackend, SessionId, SessionSummary, SessionView, found};
+use super::{CallError, CallResult, RexBackend, SessionId, SessionSummary, SessionView, found};
+
+const SESSION_MOVE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ServerRecords {
@@ -309,20 +312,31 @@ impl RexBackend {
     }
 
     /// `rex session move` attaches to the session it moves, which
-    /// `session.move` requires.
-    fn move_session(&self, session: &str, place: [&str; 2]) -> bool {
-        let moved = self.run(&["session", "move", session, place[0], place[1]], None);
+    /// `session.move` requires. A hung server would otherwise hold the
+    /// registry lock, and every close and add behind it, for Rex's 10 s
+    /// default per move.
+    fn move_session(&self, session: &str, place: [&str; 2]) -> CallResult<()> {
+        let args = ["session", "move", session, place[0], place[1]];
+        let moved = self
+            .ensure_supported()
+            .and_then(|()| self.exec_within(&args, None, Some(SESSION_MOVE_TIMEOUT)));
         if let Err(error) = &moved {
             tracing::debug!(error = %error, "rex: session move failed");
         }
-        moved.is_ok()
+        moved.map(drop)
     }
 
-    fn put_back(&self, restore: &Restore) {
-        restore
-            .places()
-            .into_iter()
-            .any(|place| self.move_session(&restore.destination, place));
+    /// False when a move failed for a reason other than a neighbor that is
+    /// gone, so the order is left recorded for the next close.
+    fn put_back(&self, restore: &Restore) -> bool {
+        for place in restore.places() {
+            match self.move_session(&restore.destination, place) {
+                Ok(()) => return true,
+                Err(CallError::NotFound(_)) => {}
+                Err(_) => return false,
+            }
+        }
+        true
     }
 
     /// The whole close runs under the registry lock, so two closes, or a
@@ -336,28 +350,38 @@ impl RexBackend {
         preferred: Option<&str>,
     ) -> Result<()> {
         let mut locked = self.lock_records()?;
-        if let Some(left) = locked.records().restore.take() {
-            self.put_back(&left);
+        if let Some(left) = locked.records().restore.clone()
+            && self.put_back(&left)
+        {
+            locked.records().restore = None;
             locked.save()?;
         }
         let Some(session) = find()? else {
             return Ok(());
         };
-        let restore = self.plan_restore(&session, preferred, &locked.records().origins)?;
+        // A server that failed the last put back gets no new moves, and the
+        // order it left stays recorded.
+        let restore = match locked.records().restore {
+            Some(_) => None,
+            None => self.plan_restore(&session, preferred, &locked.records().origins)?,
+        };
         if let Some(restore) = &restore {
             locked.records().restore = Some(restore.clone());
             locked.save()?;
-            self.move_session(&restore.destination, ["--index", "1"]);
         }
+        let in_front = restore.as_ref().filter(|restore| {
+            self.move_session(&restore.destination, ["--index", "1"])
+                .is_ok()
+        });
         let destroyed = self.destroy_session(&session);
-        if let Some(restore) = &restore {
-            self.put_back(restore);
-        }
+        let put_back = in_front.is_some_and(|restore| self.put_back(restore));
         // Closing prunes rather than forgetting the closing session itself,
         // so a close that never ran leaves its record intact.
         let live = self.raw_sessions();
         let records = locked.records();
-        records.restore = None;
+        if put_back {
+            records.restore = None;
+        }
         if let Ok(live) = &live {
             records.retain_live(&session_ids(live));
         }
@@ -682,11 +706,98 @@ mod tests {
             ]
         );
         let fake = FakeRex::new(&[
-            ("session move d --before e", "!Error: session e not found"),
+            (
+                "session move d --before e",
+                "!Error: session target \"e\" not found",
+            ),
             ("session move d --before f", "{}"),
         ]);
-        fake.rex.put_back(&restore);
+        assert!(fake.rex.put_back(&restore));
         assert_eq!(fake.calls("session move").len(), 2);
+    }
+
+    #[test]
+    fn put_back_stops_at_a_failure_that_is_not_a_gone_neighbor() {
+        let restore = Restore {
+            destination: "d".into(),
+            order: ["a", "b", "d", "e", "f"].map(String::from).to_vec(),
+        };
+        let fake = FakeRex::new(&[("session move", "!Error: request timed out")]);
+        assert!(!fake.rex.put_back(&restore));
+        assert_eq!(fake.calls("session move").len(), 1);
+    }
+
+    #[test]
+    fn a_failed_move_to_the_front_skips_the_move_back_and_keeps_the_order() {
+        let fake = FakeRex::new(&[
+            ("session move", "!Error: request timed out"),
+            ("session.destroy", "{}"),
+            (
+                "session.list",
+                &session_list(&[
+                    ("session:first", "first"),
+                    (CALLER_SESSION, "wm-a"),
+                    ("session:home", "home"),
+                ]),
+            ),
+        ]);
+        fake.rex.close_session_to("wm-a", Some("home")).unwrap();
+        let steps = steps(&fake);
+        assert_eq!(steps.len(), 2, "{steps:#?}");
+        assert_eq!(steps[0], "session move session:home --index 1");
+        assert!(steps[1].contains("session.destroy"), "{steps:#?}");
+        assert_eq!(
+            fake.rex.records().restore,
+            Some(Restore {
+                destination: "session:home".into(),
+                order: vec!["session:first".into(), "session:home".into()],
+            })
+        );
+    }
+
+    #[test]
+    fn a_close_after_a_failed_put_back_only_destroys() {
+        let fake = FakeRex::new(&[
+            ("session move", "!Error: request timed out"),
+            ("session.destroy", "{}"),
+            (
+                "session.list",
+                &session_list(&[
+                    ("session:first", "first"),
+                    (CALLER_SESSION, "wm-a"),
+                    ("session:home", "home"),
+                ]),
+            ),
+        ]);
+        let left = Restore {
+            destination: "session:home".into(),
+            order: vec!["session:first".into(), "session:home".into()],
+        };
+        fake.rex
+            .update_records(|records| {
+                records.restore = Some(left.clone());
+                Ok(())
+            })
+            .unwrap();
+        fake.rex.close_session_to("wm-a", Some("home")).unwrap();
+        let steps = steps(&fake);
+        assert_eq!(steps.len(), 2, "{steps:#?}");
+        assert_eq!(steps[0], "session move session:home --after session:first");
+        assert!(steps[1].contains("session.destroy"), "{steps:#?}");
+        assert_eq!(fake.rex.records().restore, Some(left));
+    }
+
+    #[test]
+    fn a_hung_move_gives_up_after_the_timeout() {
+        let fake = FakeRex::new(&[("session move", "$sleep 10; echo '{}'")]);
+        let started = std::time::Instant::now();
+        let moved = fake.rex.move_session("d", ["--index", "1"]);
+        let waited = started.elapsed();
+        assert!(moved.is_err());
+        assert!(
+            waited >= SESSION_MOVE_TIMEOUT && waited < Duration::from_secs(8),
+            "{waited:?}"
+        );
     }
 
     #[test]

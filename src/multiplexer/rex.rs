@@ -399,9 +399,10 @@ impl std::error::Error for CallError {}
 impl CallError {
     fn from_stderr(args: &[&str], stderr: &str) -> Self {
         let stderr = stderr.trim();
-        let gone_block =
-            stderr.starts_with("Error: block target ") && stderr.ends_with(" not found");
-        if gone_block
+        let gone_target = (stderr.starts_with("Error: block target ")
+            || stderr.starts_with("Error: session target "))
+            && stderr.ends_with(" not found");
+        if gone_target
             || stderr.contains("code=not_found")
             || stderr.contains("code=session_not_found")
         {
@@ -2056,6 +2057,11 @@ mod tests {
             "Error: ... session session:x not found (status=404 code=session_not_found)",
         );
         assert!(matches!(session, CallError::NotFound(_)));
+        let gone_neighbor = CallError::from_stderr(
+            &["session", "move"],
+            "Error: session target \"session:01a1a022-f6a9\" not found",
+        );
+        assert!(matches!(gone_neighbor, CallError::NotFound(_)));
         let down = CallError::from_stderr(
             &["api", "call"],
             "Error: no Rex server is running at /tmp/x.sock, and autostart is disabled",
