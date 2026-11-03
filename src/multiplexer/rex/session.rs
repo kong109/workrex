@@ -1076,8 +1076,8 @@ mod tests {
     }
 
     /// A server that keeps a session order in `order`, one `id label` line
-    /// per session. While `stall` exists, the next `--index 1` move gives
-    /// no answer and lands only once `land` exists, then writes `landed`.
+    /// per session. While `stall` exists, an `--index` move gives no answer
+    /// and does not land.
     const ORDER_MODEL: &str = r#"d=$(dirname "$0"); cmd=$1; shift
 case $cmd in
 list)
@@ -1090,12 +1090,7 @@ destroy)
 move)
   while [ "$1" != move ]; do shift; done
   id=$2 how=$3 at=$4
-  if [ "$how" = --index ] && [ -e "$d/stall" ]; then
-    rm "$d/stall"
-    ( i=0; until [ -e "$d/land" ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done
-      sh "$0" move session move "$id" --index 1; touch "$d/landed" ) >/dev/null 2>&1 &
-    exec sleep 10
-  fi
+  [ "$how" = --index ] && [ -e "$d/stall" ] && exec sleep 10
   [ "$how" = --index ] || grep -q "^$at " "$d/order" || { echo "Error: session target \"$at\" not found" >&2; exit 1; }
   line=$(grep "^$id " "$d/order"); grep -v "^$id " "$d/order" > "$d/rest"
   { [ "$how" = --index ] && echo "$line"
@@ -1148,11 +1143,13 @@ esac
         fake.rex.close_session_to("wm-u", Some("home")).unwrap();
         assert_eq!(labels(&fake), ["first", "home", "wm-v"]);
 
-        std::fs::write(dir.join("land"), "").unwrap();
-        let waited = std::time::Instant::now();
-        while !dir.join("landed").exists() && waited.elapsed() < Duration::from_secs(10) {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        std::fs::remove_file(dir.join("stall")).unwrap();
+        let landed = std::process::Command::new("sh")
+            .arg(dir.join("order.sh"))
+            .args(["move", "session", "move", "session:home", "--index", "1"])
+            .output()
+            .unwrap();
+        assert!(landed.status.success(), "{landed:?}");
         assert_eq!(
             labels(&fake),
             ["home", "first", "wm-v"],

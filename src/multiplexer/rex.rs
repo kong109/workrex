@@ -2227,13 +2227,33 @@ mod tests {
         );
     }
 
+    /// Writes a fake `rex` from a child process. On Linux, a script this
+    /// process wrote can fail to start with ETXTBSY: a test on another thread
+    /// that forks while the file is open for writing keeps a writable copy
+    /// of its descriptor until that child execs.
+    fn write_script(path: &Path, content: String) -> std::io::Result<()> {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "cat > \"$0\""])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()?;
+        child.stdin.take().unwrap().write_all(content.as_bytes())?;
+        let status = child.wait()?;
+        assert!(
+            status.success(),
+            "writing {} failed: {status}",
+            path.display()
+        );
+        Ok(())
+    }
+
     #[test]
     fn an_unsupported_server_fails_every_call_after_one_version_query() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("calls");
         let program = dir.path().join("rex");
-        std::fs::write(
+        write_script(
             &program,
             format!(
                 "#!/bin/sh\necho \"$*\" >> '{}'\n\
@@ -2331,7 +2351,7 @@ mod tests {
                 arms.push_str(&format!("  *{pattern}*) {arm};;\n"));
             }
             let program = dir.path().join("rex");
-            std::fs::write(
+            write_script(
                 &program,
                 format!(
                     "#!/bin/sh\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\

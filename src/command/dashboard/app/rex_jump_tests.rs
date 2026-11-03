@@ -35,17 +35,36 @@ case "$call" in
 esac
 "#;
 
+/// Writes the fake `rex` from a child process. On Linux, a script this
+/// process wrote can fail to start with ETXTBSY: a test on another thread
+/// that forks while the file is open for writing keeps a writable copy of
+/// its descriptor until that child execs.
+fn write_fake_rex(path: &Path) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "cat > \"$0\" && chmod 755 \"$0\""])
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(FAKE_REX.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
 /// Runs `body` in a child process against the fake `rex`; `refuse` makes
 /// the app refuse every jump.
 fn with_rex_app(test_name: &str, refuse: bool, body: impl FnOnce(&mut App, &Path)) {
     if !test_support::is_isolated_child(test_name) {
-        use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let bin = temp.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
-        let rex = bin.join("rex");
-        std::fs::write(&rex, FAKE_REX).unwrap();
-        std::fs::set_permissions(&rex, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_fake_rex(&bin.join("rex"));
         if refuse {
             std::fs::write(bin.join("refuse"), "").unwrap();
         }
