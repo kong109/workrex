@@ -2480,6 +2480,12 @@ mod tests {
         let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
         let fake = FakeRex::new(&[("server.version", r#"{"rex_version":"t","api_revision":3}"#)])
             .in_pane("session:s", block);
+        // The block's session is known, so the script is the first call.
+        fake.rex
+            .block_sessions
+            .lock()
+            .unwrap()
+            .insert(BlockId(block.into()), SessionId("session:s".into()));
         let err = fake
             .rex
             .respawn_pane(block, Path::new("/work"), Some("handshake"))
