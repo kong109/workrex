@@ -11,10 +11,11 @@ from .conftest import (
     wait_for_window_ready,
     write_workmux_config,
 )
+from .rex_env import RexEnvironment
 
 
 def rename_from_pane(env: MuxEnvironment, window: str, new_name: str) -> None:
-    if env.backend_name == "rex":
+    if isinstance(env, RexEnvironment):
         command = f"{shlex.quote(env.rex)} window rename {new_name}"
     else:
         command = f'tmux rename-window -t "$TMUX_PANE" {new_name}'
