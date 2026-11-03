@@ -3619,7 +3619,7 @@ impl Config {
             ));
         }
 
-        fs::write(&config_path, EXAMPLE_PROJECT_CONFIG)?;
+        fs::write(&config_path, crate::rebrand!(EXAMPLE_PROJECT_CONFIG))?;
 
         println!("✓ Created .workmux.yaml");
         println!("\nThis file provides project-specific overrides.");
@@ -3636,8 +3636,7 @@ impl Config {
 
 /// Example project configuration with all options documented.
 /// Used by `workmux init` and `workmux config show`.
-pub const EXAMPLE_PROJECT_CONFIG: &str = crate::rebrand!(
-    r#"# workmux project configuration
+pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # For global settings, edit ~/.config/workmux/config.yaml
 # All options below are commented out - uncomment to override defaults.
 
@@ -3983,8 +3982,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = crate::rebrand!(
 #   #   - host_path: ~/data
 #   #     guest_path: /mnt/data
 #   #     writable: true
-"#
-);
+"#;
 
 /// Resolves an executable name or path to its full absolute path.
 ///

@@ -1,5 +1,6 @@
 //! Sandbox management commands.
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use std::io::{self, Write};
@@ -849,9 +850,8 @@ fn run_stop(name: Option<String>, all: bool, skip_confirm: bool) -> Result<()> {
             }
             None => {
                 anyhow::bail!(
-                    "VM '{}' not found. Use '{}' to see available VMs.",
-                    vm_name,
-                    crate::rebrand!("workmux sandbox stop")
+                    "VM '{}' not found. Use '{BIN} sandbox stop' to see available VMs.",
+                    vm_name
                 );
             }
         }
@@ -976,9 +976,8 @@ fn run_shell_container(exec: bool, command: Vec<String>, config: &Config) -> Res
         if containers.is_empty() {
             bail!(
                 "No running container found for worktree '{}'. \n\
-                 Start a sandbox first with '{bin} add --sandbox' or use '{bin} sandbox shell' without --exec.",
-                handle,
-                bin = crate::bin_name::BIN
+                 Start a sandbox first with '{BIN} add --sandbox' or use '{BIN} sandbox shell' without --exec.",
+                handle
             );
         }
 
@@ -1088,8 +1087,7 @@ fn run_shell_lima(exec: bool, command: Vec<String>, config: &Config) -> Result<(
     if exec {
         bail!(
             "The --exec flag is only supported with the container backend.\n\
-             Lima VMs are persistent, so '{}' always connects to the existing VM.",
-            crate::rebrand!("workmux sandbox shell")
+             Lima VMs are persistent, so '{BIN} sandbox shell' always connects to the existing VM."
         );
     }
 

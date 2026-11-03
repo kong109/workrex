@@ -462,8 +462,11 @@ mod tests {
         let image = tmp.path().join("image");
         std::fs::create_dir_all(&image).unwrap();
         std::fs::write(image.join("workmux"), "#!/bin/sh\necho workmux \"$@\"\n").unwrap();
-        std::fs::set_permissions(image.join("workmux"), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        std::fs::set_permissions(
+            image.join("workmux"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
         let alias = tmp.path().join("alias");
         std::os::unix::fs::symlink(&shims, &alias).unwrap();
         let shells = ["/bin/sh", "/bin/dash", "/bin/busybox"];
@@ -478,7 +481,10 @@ mod tests {
                 }
                 let mut child = cmd
                     .args(["-c", &format!("{BIN} set-window-status done")])
-                    .env("PATH", format!("{entries}:{}:/usr/bin:/bin", image.display()))
+                    .env(
+                        "PATH",
+                        format!("{entries}:{}:/usr/bin:/bin", image.display()),
+                    )
                     .stdout(std::process::Stdio::piped())
                     .spawn()
                     .unwrap();
