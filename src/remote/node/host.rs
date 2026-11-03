@@ -387,17 +387,19 @@ mod tests {
         fn new(cases: &[(&str, &str)]) -> Self {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
+            // Shell builtins only: the Nix build sandbox has no `cat`.
             let mut arms = String::new();
-            for (index, (pattern, reply)) in cases.iter().enumerate() {
-                let file = dir.path().join(format!("reply{index}"));
-                std::fs::write(&file, reply).unwrap();
-                arms.push_str(&format!("  *{pattern}*) cat '{}';;\n", file.display()));
+            for (pattern, reply) in cases {
+                let reply = reply.replace('\'', "'\\''");
+                arms.push_str(&format!("  *{pattern}*) printf '%s\\n' '{reply}';;\n"));
             }
             let program = dir.path().join("rex");
             std::fs::write(
                 &program,
                 format!(
-                    "#!/bin/sh\ncall=\"$* $(cat)\"\necho \"$call\" >> '{}'\ncase \"$call\" in\n\
+                    "#!/bin/sh\ninput=\nwhile IFS= read -r line || [ -n \"$line\" ]; do \
+                     input=\"$input$line\"; done\ncall=\"$* $input\"\n\
+                     echo \"$call\" >> '{}'\ncase \"$call\" in\n\
                      {arms}  *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":9}}';;\n\
                      \x20 *) echo \"unexpected: $call\" >&2; exit 1;;\nesac\n",
                     dir.path().join("calls").display()
