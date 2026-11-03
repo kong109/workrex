@@ -11,6 +11,8 @@ Rex can be used as an alternative to tmux. workmux detects it automatically from
 
 If you run tmux inside a Rex pane, workmux uses tmux, because `$TMUX` is checked first.
 
+workmux needs a Rex server that speaks API revision 8 or 9. On first use it reads the server's `server.version` and stops with `unsupported Rex <version>` when the server's supported revisions miss that range.
+
 ## Differences from tmux
 
 | Feature              | tmux                 | Rex                                 |

@@ -176,7 +176,8 @@ impl RexBackend {
         }
         let process = found(self.block_call::<ProcessReport>(&block, "process", json!({})))
             .ok()
-            .flatten()?;
+            .flatten()
+            .filter(|process| !process.has_exited())?;
         self.observe_program_status(&block, process.foreground.map(|fg| fg.pid));
         cached(self).flatten()
     }

@@ -10,13 +10,13 @@ import pytest
 
 from .conftest import (
     MuxEnvironment,
-    RexEnvironment,
     get_window_name,
     poll_until,
     run_workmux_add,
     wait_for_window_ready,
     write_workmux_config,
 )
+from .rex_env import RexEnvironment
 
 FAKE_AGENT = textwrap.dedent(
     """
