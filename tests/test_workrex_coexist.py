@@ -267,6 +267,8 @@ def test_skills_taken_back_after_upstream_setup_leave_nothing_once_both_uninstal
     upstream = write_upstream_skills(home)
     assert len(upstream) == 30
     assert run_setup_overwriting_skills(mux_server, workmux_exe_path) > 0
+    own_state = home / ".local/state" / BIN
+    assert (own_state / "skills.json").is_file()
 
     if first == BIN:
         output = run_uninstall(mux_server, workmux_exe_path)
@@ -284,3 +286,4 @@ def test_skills_taken_back_after_upstream_setup_leave_nothing_once_both_uninstal
 
     for skills_dir in SKILL_DIRS:
         assert not (home / skills_dir).exists(), list((home / skills_dir).rglob("*"))
+    assert not own_state.exists()
