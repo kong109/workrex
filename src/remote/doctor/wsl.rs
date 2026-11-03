@@ -129,8 +129,16 @@ fn is_wsl(kernel: &str) -> bool {
 }
 
 /// `row` for the linger fact, with the WSL fix when the kernel is WSL's.
-/// `systemd` is whether `/run/systemd/system` exists, the test sd_booted(3) uses.
-pub(super) fn linger_row(row: Row, kernel: &str, linger: &str, systemd: bool, user: &str) -> Row {
+/// `linger_error` is loginctl's stderr. `systemd` is whether
+/// `/run/systemd/system` exists, the test sd_booted(3) uses.
+pub(super) fn linger_row(
+    row: Row,
+    kernel: &str,
+    linger: &str,
+    linger_error: &str,
+    systemd: bool,
+    user: &str,
+) -> Row {
     if !is_wsl(kernel) {
         return row;
     }
@@ -149,8 +157,7 @@ pub(super) fn linger_row(row: Row, kernel: &str, linger: &str, systemd: bool, us
             ),
             ..row
         },
-        // logind fails `show-user` for a user with neither linger nor a session.
-        "" => Row {
+        "" if linger_error.contains("is not logged in or lingering") => Row {
             level: Level::Fail,
             detail: format!(
                 "disabled for {user}: logind has no linger or session for {user}, and WSL \
@@ -158,6 +165,12 @@ pub(super) fn linger_row(row: Row, kernel: &str, linger: &str, systemd: bool, us
             ),
             ..row
         },
+        "" => Row {
+            level: Level::Warn,
+            detail: format!("loginctl failed, so linger is unknown: {linger_error:?}"),
+            ..row
+        }
+        .fix("check that D-Bus and systemd-logind run: sudo systemctl status dbus systemd-logind"),
         _ => row,
     }
 }
@@ -289,20 +302,30 @@ mod tests {
         assert_eq!(row.fix, None);
     }
 
+    const NO_SYSTEMD: &str =
+        "System has not been booted with systemd as init system (PID 1). Can't operate.";
+    const NO_USER: &str = "Failed to get user: User ID 1000 is not logged in or lingering";
+    const NO_BUS: &str = "Failed to connect to bus: No such file or directory";
+
     const ENABLE_SYSTEMD: &str = "enable systemd in WSL: add `[boot]` `systemd=true` to \
                                   /etc/wsl.conf, run `wsl.exe --shutdown` on Windows, then \
                                   `sudo loginctl enable-linger cicero`";
 
     #[test]
     fn wsl_without_systemd_names_systemd() {
-        for (fact, row) in [
-            ("", linger(Level::Warn, "unknown linger state \"\"")),
+        for (fact, error, row) in [
+            (
+                "",
+                NO_SYSTEMD,
+                linger(Level::Warn, "unknown linger state \"\""),
+            ),
             (
                 "unavailable",
+                "",
                 Row::new("linger", Level::Warn, "loginctl not found; cannot check"),
             ),
         ] {
-            let row = linger_row(row, WSL, fact, false, "cicero");
+            let row = linger_row(row, WSL, fact, error, false, "cicero");
             assert_eq!(row.level, Level::Warn, "{fact:?}");
             assert_eq!(
                 row.detail,
@@ -318,6 +341,7 @@ mod tests {
             Row::new("linger", Level::Ok, "enabled for cicero"),
             WSL,
             "yes",
+            "",
             true,
             "cicero",
         );
@@ -332,6 +356,7 @@ mod tests {
             linger(Level::Warn, "unknown linger state \"\""),
             WSL,
             "",
+            NO_USER,
             true,
             "cicero",
         );
@@ -348,6 +373,32 @@ mod tests {
     }
 
     #[test]
+    fn wsl_with_logind_unreachable_warns_without_enable_linger() {
+        for error in [NO_BUS, ""] {
+            let row = linger_row(
+                linger(Level::Warn, "unknown linger state \"\""),
+                WSL,
+                "",
+                error,
+                true,
+                "cicero",
+            );
+            assert_eq!(row.level, Level::Warn, "{error:?}");
+            assert_eq!(
+                row.detail,
+                format!("loginctl failed, so linger is unknown: {error:?}")
+            );
+            assert_eq!(
+                row.fix.as_deref(),
+                Some(
+                    "check that D-Bus and systemd-logind run: sudo systemctl status dbus \
+                     systemd-logind"
+                )
+            );
+        }
+    }
+
+    #[test]
     fn wsl_with_systemd_and_a_session_keeps_enable_linger() {
         let row = linger_row(
             linger(
@@ -356,6 +407,7 @@ mod tests {
             ),
             WSL,
             "no",
+            "",
             true,
             "cicero",
         );
@@ -373,12 +425,13 @@ mod tests {
 
     #[test]
     fn non_wsl_rows_unchanged() {
-        for fact in ["no", "unavailable", ""] {
+        for (fact, error) in [("no", ""), ("unavailable", ""), ("", NO_USER), ("", NO_BUS)] {
             for systemd in [true, false] {
                 let row = linger_row(
                     linger(Level::Warn, "as before"),
                     "6.8.0-45-generic",
                     fact,
+                    error,
                     systemd,
                     "cicero",
                 );
