@@ -54,13 +54,13 @@ doing.
 
 Under the [Rex backend](/guide/rex/), workmux also reads the status that programs report to Rex through the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status) (OSC 7501). Claude Code reports it without any setup, so its status shows up in `workmux status` and the dashboard with no hooks installed.
 
-| Rex state | workmux status   |
-| --------- | ---------------- |
-| `working` | 🤖 working       |
-| `blocked` | 💬 waiting       |
-| `done`    | ✅ done          |
-| `error`   | ✅ done          |
-| `idle`    | none             |
+| Rex state | workmux status |
+| --------- | -------------- |
+| `working` | 🤖 working     |
+| `blocked` | 💬 waiting     |
+| `done`    | ✅ done        |
+| `error`   | ✅ done        |
+| `idle`    | none           |
 
 - When a pane reports program status, that status wins over the hook status. Hooks still track agents that do not report it.
 - A pane that reports status but has no hook state counts as an agent only when its working directory is a linked worktree of the repository you run workmux in.
