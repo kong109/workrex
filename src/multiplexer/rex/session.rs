@@ -10,56 +10,13 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::Path;
 
 use super::super::Multiplexer;
 use super::super::types::CreateSessionParams;
 use super::super::util;
 
-use super::{ClientInfo, RexBackend, SessionId, SessionSummary, SessionView, WindowId};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
-#[serde(transparent)]
-pub(super) struct ClientId(String);
-
-impl ClientId {
-    pub(super) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-const SELECT_TIMEOUT_MS: u64 = 2000;
-
-static FIX_PRINTED: AtomicBool = AtomicBool::new(false);
-
-#[derive(Debug, Deserialize)]
-struct ClientList {
-    #[serde(default)]
-    clients: Vec<Client>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Client {
-    #[serde(default)]
-    client_id: Option<ClientId>,
-    #[serde(default)]
-    info: Option<ClientInfo>,
-    #[serde(default)]
-    connection_state: String,
-}
-
-/// Connected app clients, most recently connected first. `client.list`
-/// returns clients in the order they connected.
-fn app_clients(list: ClientList) -> Vec<ClientId> {
-    list.clients
-        .into_iter()
-        .rev()
-        .filter(|client| client.connection_state != "lost")
-        .filter(|client| client.info.as_ref().is_some_and(|info| info.kind == "app"))
-        .filter_map(|client| client.client_id)
-        .collect()
-}
+use super::{RexBackend, SessionId, SessionSummary, SessionView};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ServerRecords {
@@ -70,11 +27,6 @@ struct ServerRecords {
 }
 
 impl ServerRecords {
-    fn forget(&mut self, session: &SessionId) {
-        self.names.remove(session.as_str());
-        self.origins.remove(session.as_str());
-    }
-
     fn retain_live(&mut self, live: &[SessionId]) {
         let live = |id: &String| live.iter().any(|session| session.as_str() == id);
         self.names.retain(|id, _| live(id));
@@ -85,29 +37,26 @@ impl ServerRecords {
 type ServerAddress = String;
 type Registry = HashMap<ServerAddress, ServerRecords>;
 
-fn registry_path() -> Result<PathBuf> {
-    Ok(crate::xdg::state_dir()?.join("rex-sessions.json"))
-}
-
-fn read_registry() -> Registry {
-    registry_path()
+fn read_registry(path: &Path) -> Registry {
+    fs::read_to_string(path)
         .ok()
-        .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
 }
 
-fn update_registry(change: impl FnOnce(&mut Registry)) -> Result<()> {
-    let path = registry_path()?;
+/// Every read that feeds `change` must run inside `change`, under the lock:
+/// a session list taken before it can miss a session that a concurrent `add`
+/// records meanwhile, and pruning with it would drop that record.
+fn update_registry(path: &Path, change: impl FnOnce(&mut Registry) -> Result<()>) -> Result<()> {
     let dir = path.parent().context("Rex registry path has no parent")?;
     fs::create_dir_all(dir)?;
     let lock = File::create(path.with_extension("lock"))?;
     lock.lock().context("Failed to lock the Rex registry")?;
-    let mut registry = read_registry();
-    change(&mut registry);
+    let mut registry = read_registry(path);
+    change(&mut registry)?;
     let mut file = tempfile::NamedTempFile::new_in(dir)?;
     file.write_all(serde_json::to_string(&registry)?.as_bytes())?;
-    file.persist(&path)?;
+    file.persist(path)?;
     Ok(())
 }
 
@@ -119,26 +68,24 @@ fn moves_app(caller: Option<&SessionId>, closing: &SessionId) -> bool {
     caller == Some(closing)
 }
 
-/// Rex.app shows the first session in its sidebar when the session it shows
-/// is destroyed, so the select runs to completion before the destroy starts.
-fn select_then_destroy(select: Option<String>, destroy: String) -> String {
-    match select {
-        Some(select) => format!("{select}; {destroy}"),
-        None => destroy,
+/// Where the app goes when the session it shows closes: the preferred
+/// session, then the session the closing one was opened from.
+fn pick_destination(
+    sessions: &[SessionSummary],
+    closing: &SessionId,
+    preferred: Option<&str>,
+    origin: Option<SessionId>,
+) -> Option<SessionId> {
+    let other = |id: &SessionId| id != closing;
+    if let Some(name) = preferred
+        && let Some(session) = sessions
+            .iter()
+            .find(|session| session.label == name && other(&session.session_id))
+    {
+        return Some(session.session_id.clone());
     }
-}
-
-fn select_args(app: &ClientId, session: &SessionId, window: Option<&WindowId>) -> Value {
-    let mut target = json!({ "session_id": session.as_str() });
-    if let Some(window) = window {
-        target["window_id"] = json!(window.as_str());
-    }
-    json!({
-        "client_id": app.as_str(),
-        "action": "session.select",
-        "args": target,
-        "origin": "api",
-        "timeout_ms": SELECT_TIMEOUT_MS,
+    origin.filter(|origin| {
+        other(origin) && sessions.iter().any(|session| &session.session_id == origin)
     })
 }
 
@@ -159,20 +106,25 @@ impl RexBackend {
             .unwrap_or_else(|_| "default".to_string())
     }
 
-    fn managed_names(&self) -> HashMap<String, String> {
-        read_registry()
-            .remove(&self.server_key())
-            .map(|records| records.names)
+    fn records(&self) -> ServerRecords {
+        self.registry
+            .as_deref()
+            .map(read_registry)
+            .and_then(|mut registry| registry.remove(&self.server_key()))
             .unwrap_or_default()
     }
 
-    fn update_records(&self, change: impl FnOnce(&mut ServerRecords)) -> Result<()> {
+    fn update_records(&self, change: impl FnOnce(&mut ServerRecords) -> Result<()>) -> Result<()> {
+        let path = self
+            .registry
+            .as_deref()
+            .context("No state directory for the Rex registry")?;
         let key = self.server_key();
-        update_registry(|registry| change(registry.entry(key).or_default()))
+        update_registry(path, |registry| change(registry.entry(key).or_default()))
     }
 
     pub(super) fn apply_managed_names(&self, sessions: &mut [SessionSummary]) {
-        let names = self.managed_names();
+        let names = self.records().names;
         if names.is_empty() {
             return;
         }
@@ -185,7 +137,7 @@ impl RexBackend {
     }
 
     pub(super) fn name_view(&self, view: &mut SessionView) {
-        if let Some(name) = self.managed_names().remove(view.session_id.as_str()) {
+        if let Some(name) = self.records().names.remove(view.session_id.as_str()) {
             view.label = name;
         }
     }
@@ -213,14 +165,8 @@ impl RexBackend {
                 json!({ "label": full_name, "initial_windows": [window] }),
             )
             .context("Failed to create Rex session")?;
-        let origin = Self::env_session();
-        let live: Vec<SessionId> = self
-            .raw_sessions()?
-            .into_iter()
-            .map(|s| s.session_id)
-            .collect();
+        let origin = self.caller.session.clone();
         self.update_records(|records| {
-            records.retain_live(&live);
             records
                 .names
                 .insert(created.session_id.as_str().to_string(), full_name);
@@ -230,6 +176,7 @@ impl RexBackend {
                     origin.as_str().to_string(),
                 );
             }
+            Ok(())
         })?;
         created
             .initial_windows
@@ -253,67 +200,23 @@ impl RexBackend {
             if let Some(name) = records.names.get_mut(session.as_str()) {
                 *name = new_full_name.to_string();
             }
+            Ok(())
         })
     }
 
-    /// Connected Rex.app clients attached to `session` (every app when
-    /// `session` is `None`), most recently connected first. Only these may be
-    /// asked to perform actions: a request aimed at a CLI client waits out the
-    /// whole timeout. Other Rex modules switch the app through `select_on_app`.
-    pub(super) fn app_clients_for(&self, session: Option<&SessionId>) -> Result<Vec<ClientId>> {
-        let args = match session {
-            Some(session) => json!({ "session_id": session.as_str() }),
-            None => json!({}),
-        };
-        Ok(app_clients(self.api("client.list", args)?))
-    }
-
-    fn perform_select(
-        &self,
-        app: &ClientId,
-        session: &SessionId,
-        window: Option<&WindowId>,
-    ) -> Result<()> {
-        self.api::<Value>("client.perform", select_args(app, session, window))?;
-        Ok(())
-    }
-
-    /// Ask the app attached to the caller's session to show `session`, on
-    /// `window` when given, trying the most recently connected app first. Rex.app
-    /// follows only this request: `session.focus_window` moves the session's
-    /// active window but not the tab the app shows. With no app connected there is
-    /// nothing to switch. When every app declines, print the fix once and go on.
-    pub(super) fn select_on_app(
-        &self,
-        session: &SessionId,
-        window: Option<&WindowId>,
-    ) -> Result<()> {
-        let apps = self.app_clients_for(Self::env_session().as_ref())?;
-        let mut declined = None;
-        for app in &apps {
-            match self.perform_select(app, session, window) {
-                Ok(()) => return Ok(()),
-                Err(error) => declined = Some(error),
-            }
-        }
-        if let Some(error) = declined
-            && !FIX_PRINTED.swap(true, Ordering::Relaxed)
-        {
-            eprintln!(
-                "Rex.app did not switch sessions ({error:#}). To let workmux switch sessions, \
-                 turn on Remote Control in Rex.app Settings under Rex Server."
-            );
-        }
-        Ok(())
-    }
-
-    pub(super) fn shell_select_on_app_cmd(&self, session: &SessionId) -> Result<String> {
-        Ok(
-            match self.app_clients_for(Self::env_session().as_ref())?.first() {
-                Some(app) => self.shell_api_cmd("client.perform", select_args(app, session, None)),
-                None => "true".to_string(),
-            },
-        )
+    /// Drops the records of sessions that are gone, listing them under the
+    /// registry lock. Closing prunes rather than forgetting the closing
+    /// session itself, so a close that never ran leaves its record intact.
+    fn prune_records(&self) -> Result<()> {
+        self.update_records(|records| {
+            let live: Vec<SessionId> = self
+                .raw_sessions()?
+                .into_iter()
+                .map(|session| session.session_id)
+                .collect();
+            records.retain_live(&live);
+            Ok(())
+        })
     }
 
     fn destination(
@@ -321,71 +224,69 @@ impl RexBackend {
         closing: &SessionId,
         preferred: Option<&str>,
     ) -> Result<Option<SessionId>> {
-        let sessions = self.sessions()?;
-        let other = |id: &SessionId| id != closing;
-        if let Some(name) = preferred
-            && let Some(session) = sessions
-                .iter()
-                .find(|session| session.label == name && other(&session.session_id))
-        {
-            return Ok(Some(session.session_id.clone()));
-        }
-        let origin = read_registry()
-            .remove(&self.server_key())
-            .and_then(|mut records| records.origins.remove(closing.as_str()))
+        let origin = self
+            .records()
+            .origins
+            .remove(closing.as_str())
             .map(SessionId);
-        Ok(origin.filter(|origin| {
-            other(origin) && sessions.iter().any(|session| &session.session_id == origin)
-        }))
+        Ok(pick_destination(
+            &self.sessions()?,
+            closing,
+            preferred,
+            origin,
+        ))
     }
 
+    /// The `rex` arguments that move the app showing the caller off
+    /// `closing`, when it may be showing it.
     fn relocation(
         &self,
         closing: &SessionId,
         preferred: Option<&str>,
-    ) -> Result<Option<(ClientId, SessionId)>> {
-        if !moves_app(Self::env_session().as_ref(), closing) {
+    ) -> Result<Option<Vec<String>>> {
+        if !moves_app(self.caller.session.as_ref(), closing) {
             return Ok(None);
         }
         let Some(destination) = self.destination(closing, preferred)? else {
             return Ok(None);
         };
         Ok(self
-            .app_clients_for(Some(closing))?
-            .into_iter()
-            .next()
-            .map(|app| (app, destination)))
+            .app_showing_caller()?
+            .map(|app| Self::select_args(&app, &destination, None)))
     }
 
     pub(super) fn close_session_to(&self, full_name: &str, preferred: Option<&str>) -> Result<()> {
         if let Some(session) = self.labeled_session(full_name)? {
-            if let Some((app, destination)) = self.relocation(&session, preferred)?
-                && let Err(error) = self.perform_select(&app, &destination, None)
-            {
-                tracing::debug!(error = %error, "rex:relocation select failed");
+            if let Some(select) = self.relocation(&session, preferred)? {
+                let select: Vec<&str> = select.iter().map(String::as_str).collect();
+                if let Err(error) = self.run(&select, None) {
+                    tracing::debug!(error = %error, "rex:relocation select failed");
+                }
             }
             self.destroy_session(&session)?;
-            self.forget_session(&session)?;
+            self.prune_records()?;
         }
         Ok(())
     }
 
-    fn forget_session(&self, session: &SessionId) -> Result<()> {
-        self.update_records(|records| records.forget(session))
-    }
-
-    pub(super) fn forget_and_shell_close_cmd(
+    /// Rex.app shows the first session in its sidebar when the session it
+    /// shows is destroyed, so the select runs to completion before the
+    /// destroy starts.
+    pub(super) fn shell_close_cmd(
         &self,
         session: &SessionId,
         preferred: Option<&str>,
     ) -> Result<String> {
-        let select = self
-            .relocation(session, preferred)?
-            .map(|(app, destination)| {
-                self.shell_api_cmd("client.perform", select_args(&app, &destination, None))
-            });
-        self.forget_session(session)?;
-        Ok(select_then_destroy(select, self.shell_destroy_cmd(session)))
+        let destroy = self.shell_destroy_cmd(session);
+        let script = match self.relocation(session, preferred)? {
+            Some(select) => {
+                let select: Vec<&str> = select.iter().map(String::as_str).collect();
+                format!("{}; {destroy}", self.shell_rex_cmd(&select))
+            }
+            None => destroy,
+        };
+        self.prune_records()?;
+        Ok(script)
     }
 
     pub(super) fn shell_close_session_named_cmd(
@@ -394,7 +295,7 @@ impl RexBackend {
         preferred: Option<&str>,
     ) -> Result<String> {
         Ok(match self.labeled_session(full_name)? {
-            Some(session) => self.forget_and_shell_close_cmd(&session, preferred)?,
+            Some(session) => self.shell_close_cmd(&session, preferred)?,
             None => String::new(),
         })
     }
@@ -402,22 +303,10 @@ impl RexBackend {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::{
+        APP, CALLER_BLOCK, CALLER_SESSION, FakeRex, clients, owner, session_list,
+    };
     use super::*;
-
-    #[test]
-    fn selecting_a_window_names_it_so_the_app_shows_that_tab() {
-        let app = ClientId("client:app".into());
-        let session = SessionId("session:1".into());
-        let window = WindowId("window:2".into());
-        assert_eq!(
-            select_args(&app, &session, Some(&window))["args"],
-            json!({"session_id": "session:1", "window_id": "window:2"})
-        );
-        assert_eq!(
-            select_args(&app, &session, None)["args"],
-            json!({"session_id": "session:1"})
-        );
-    }
 
     #[test]
     fn a_session_is_found_by_id_after_its_label_changed() {
@@ -429,58 +318,175 @@ mod tests {
         assert!(!matches_id_or_label(&session, "session:2"));
     }
 
-    fn apps(fixture: &str) -> Vec<String> {
-        app_clients(serde_json::from_str(fixture).unwrap())
-            .into_iter()
-            .map(|id| id.0)
+    fn summaries(sessions: &[(&str, &str)]) -> Vec<SessionSummary> {
+        serde_json::from_str::<Value>(&session_list(sessions)).unwrap()["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|session| serde_json::from_value(session.clone()).unwrap())
             .collect()
     }
 
     #[test]
-    fn zero_app_clients_select_nothing() {
-        assert!(apps(include_str!("../testdata/rex_client_ls_zero_app.json")).is_empty());
+    fn the_destination_is_the_preferred_session_then_the_origin() {
+        let sessions = summaries(&[
+            ("session:closing", "wm-a"),
+            ("session:home", "home"),
+            ("session:origin", "work"),
+        ]);
+        let closing = SessionId("session:closing".into());
+        let origin = || Some(SessionId("session:origin".into()));
+        let pick = |preferred, origin| pick_destination(&sessions, &closing, preferred, origin);
+        assert_eq!(
+            pick(Some("home"), origin()),
+            Some(SessionId("session:home".into()))
+        );
+        // A preferred session that is gone, or is the closing one, yields to the origin.
+        assert_eq!(pick(Some("gone"), origin()), origin());
+        assert_eq!(pick(Some("wm-a"), origin()), origin());
+        assert_eq!(pick(None, origin()), origin());
+        // An origin that is gone, or is the closing session, is no destination.
+        assert_eq!(pick(None, Some(SessionId("session:gone".into()))), None);
+        assert_eq!(pick(None, Some(closing.clone())), None);
+        assert_eq!(pick(None, None), None);
     }
 
-    #[test]
-    fn one_app_client_is_chosen_over_cli_and_unnamed_clients() {
-        assert_eq!(
-            apps(include_str!("../testdata/rex_client_ls_one_app.json")),
-            ["client:01a19e67-c952-7923-a102-902347c1c3c1"]
+    /// The caller's pane is in `session:b`, labeled `wm-a`, which the app
+    /// showing it is about to lose; `home` is where it should go.
+    fn closing_fake() -> FakeRex {
+        FakeRex::new(&[
+            ("block call -b block:caller size", &owner(APP)),
+            ("client.list", &clients(&[(APP, &[CALLER_SESSION])])),
+            ("session.select", "{}"),
+            ("session.destroy", "{}"),
+            (
+                "session.list",
+                &session_list(&[(CALLER_SESSION, "wm-a"), ("session:home", "home")]),
+            ),
+        ])
+        .in_pane(CALLER_SESSION, CALLER_BLOCK)
+    }
+
+    fn assert_select_precedes_destroy(fake: &FakeRex) {
+        let calls = fake.calls("");
+        let position = |needle: &str| {
+            calls
+                .iter()
+                .position(|call| call.contains(needle))
+                .unwrap_or_else(|| panic!("no {needle} in {calls:#?}"))
+        };
+        assert!(
+            calls[position("session.select")].contains("session_id=session:home"),
+            "{calls:#?}"
+        );
+        assert!(
+            position("session.select") < position("session.destroy"),
+            "{calls:#?}"
         );
     }
 
     #[test]
-    fn cli_clients_attached_to_the_session_are_never_chosen() {
+    fn closing_moves_the_app_before_it_destroys_the_session() {
+        let fake = closing_fake();
+        fake.rex.close_session_to("wm-a", Some("home")).unwrap();
+        assert_select_precedes_destroy(&fake);
+    }
+
+    #[test]
+    fn a_deferred_close_moves_the_app_before_it_destroys_the_session() {
+        let fake = closing_fake();
+        let script = fake
+            .rex
+            .shell_close_session_named_cmd("wm-a", Some("home"))
+            .unwrap();
+        assert!(fake.calls("session.destroy").is_empty());
+        let status = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_select_precedes_destroy(&fake);
+    }
+
+    #[test]
+    fn a_deferred_close_keeps_the_record_until_the_session_is_gone() {
+        let fake = closing_fake();
+        fake.rex
+            .update_records(|records| {
+                records.names.insert(CALLER_SESSION.into(), "wm-a".into());
+                Ok(())
+            })
+            .unwrap();
+        fake.rex
+            .shell_close_session_named_cmd("wm-a", None)
+            .unwrap();
         assert_eq!(
-            apps(include_str!("../testdata/rex_client_ls_app_plus_cli.json")),
-            ["client:01a19e67-c952-7923-a102-902347c1c3c1"]
+            fake.rex.records().names.get(CALLER_SESSION).unwrap(),
+            "wm-a"
         );
     }
 
-    #[test]
-    fn two_app_clients_put_the_most_recently_connected_first() {
-        assert_eq!(
-            apps(include_str!("../testdata/rex_client_ls_two_apps.json")),
-            [
-                "client:01a19e9a-1111-7000-8000-000000000002",
-                "client:01a19e67-c952-7923-a102-902347c1c3c1",
-            ]
-        );
+    /// Each fake creates its own session, then lists the sessions both have
+    /// created so far, taking `delay` to answer: a slow list taken before the
+    /// registry lock is stale once a faster `add` has recorded its session.
+    fn adding_fake(dir: &Path, session: &str, delay: &str) -> FakeRex {
+        let live = dir.join("live");
+        let create = dir.join(format!("create-{session}.sh"));
+        let created = json!({
+            "session_id": session,
+            "initial_windows": [{ "block_ids": [format!("block:{session}")] }],
+        });
+        let entry = json!({ "session_id": session, "label": "wm" });
+        std::fs::write(
+            &create,
+            format!("echo '{entry}' >> '{}'\necho '{created}'\n", live.display()),
+        )
+        .unwrap();
+        let list = dir.join(format!("list-{session}.sh"));
+        std::fs::write(
+            &list,
+            format!(
+                "list=$(paste -sd, '{}')\nsleep {delay}\nprintf '{{\"sessions\":[%s]}}\\n' \"$list\"\n",
+                live.display()
+            ),
+        )
+        .unwrap();
+        let mut fake = FakeRex::new(&[
+            ("session.create", &format!("$sh '{}'", create.display())),
+            ("session.list", &format!("$sh '{}'", list.display())),
+        ]);
+        fake.rex.registry = Some(dir.join("rex-sessions.json"));
+        fake.rex.server = Some(format!("unix://{}/s.sock", dir.display()));
+        fake
     }
 
     #[test]
-    fn lost_app_clients_are_skipped() {
-        let list = r#"{"clients":[
-            {"client_id":"client:a","info":{"kind":"app"},"connection_state":"connected"},
-            {"client_id":"client:b","info":{"kind":"app"},"connection_state":"lost"}]}"#;
-        assert_eq!(apps(list), ["client:a"]);
-    }
-
-    #[test]
-    fn deferred_close_selects_before_it_destroys() {
-        let script = select_then_destroy(Some("select".into()), "destroy".into());
-        assert!(script.find("select").unwrap() < script.find("destroy").unwrap());
-        assert_eq!(select_then_destroy(None, "destroy".into()), "destroy");
+    fn concurrent_adds_keep_both_sessions_recorded() {
+        let shared = tempfile::tempdir().unwrap();
+        let a = adding_fake(shared.path(), "session:a", "0.6");
+        let b = adding_fake(shared.path(), "session:b", "0");
+        let cwd = shared.path().to_path_buf();
+        let add = |fake: &FakeRex, name: &str| {
+            fake.rex
+                .create_managed_session(CreateSessionParams {
+                    prefix: "wm-",
+                    name,
+                    cwd: &cwd,
+                    initial_window_name: None,
+                })
+                .unwrap();
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| add(&a, "a"));
+            scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                add(&b, "b");
+            });
+        });
+        let names = a.rex.records().names;
+        assert_eq!(names.get("session:a").map(String::as_str), Some("wm-a"));
+        assert_eq!(names.get("session:b").map(String::as_str), Some("wm-b"));
     }
 
     #[test]

@@ -79,8 +79,8 @@ pub fn open(
 
     if mode == MuxMode::Session && !context.mux.supports_session_mode() {
         anyhow::bail!(
-            "Session mode (--mode session / --session) is only supported with tmux and Rex.\n\
-             Current backend: {}. Use window mode instead.",
+            "Session mode (--mode session / --session) is not supported by the {} backend.\n\
+             Use window mode instead.",
             context.mux.name()
         );
     }

@@ -280,11 +280,8 @@ impl App {
             .iter()
             .find(|a| a.pane_id == target_pane_id)
             .map(|a| a.window_name.as_str());
-        if self
-            .mux
-            .switch_to_pane(target_pane_id, window_hint)
-            .is_err()
-        {
+        if let Err(error) = self.mux.jump_to_pane(target_pane_id, window_hint) {
+            self.status_message = Some((error.to_string(), std::time::Instant::now()));
             return;
         }
 

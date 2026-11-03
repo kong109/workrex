@@ -92,26 +92,32 @@ class RexEnvironment(MuxEnvironment):
         )
         log.close()
 
-        deadline = time.monotonic() + 15
-        while self.mux_command(["whoami", "--json"], check=False).returncode != 0:
-            if self.server.poll() is not None or time.monotonic() > deadline:
-                raise RuntimeError(
-                    "Rex test server did not start:\n"
-                    + (self.socket_dir / "server.log").read_text()
-                )
-            time.sleep(0.05)
+        # The fixture's teardown never runs when setup raises, so a failed
+        # start stops the server it launched here.
+        try:
+            deadline = time.monotonic() + 15
+            while self.mux_command(["whoami", "--json"], check=False).returncode != 0:
+                if self.server.poll() is not None or time.monotonic() > deadline:
+                    raise RuntimeError(
+                        "Rex test server did not start:\n"
+                        + (self.socket_dir / "server.log").read_text()
+                    )
+                time.sleep(0.05)
 
-        created = self.api(
-            "session.create",
-            {
-                "label": "test",
-                "initial_windows": [
-                    {"window_label": "test", "layout": self._shell_layout()}
-                ],
-            },
-        )
-        self.session_id = created["session_id"]
-        self.runner_block_id = created["initial_windows"][0]["block_ids"][0]
+            created = self.api(
+                "session.create",
+                {
+                    "label": "test",
+                    "initial_windows": [
+                        {"window_label": "test", "layout": self._shell_layout()}
+                    ],
+                },
+            )
+            self.session_id = created["session_id"]
+            self.runner_block_id = created["initial_windows"][0]["block_ids"][0]
+        except BaseException:
+            self.stop_server()
+            raise
 
     def stop_server(self) -> None:
         if self.server is not None and self.server.poll() is None:

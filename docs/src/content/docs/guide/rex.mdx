@@ -7,9 +7,9 @@ description: Use Rex as an alternative multiplexer backend
 The Rex backend is new.
 :::
 
-Rex can be used as an alternative to tmux. workmux detects it automatically from `$REX_BLOCK` or `$REX_SESSION`, which Rex sets in every pane. To force it, set `WORKMUX_BACKEND=rex`.
+Rex can be used as an alternative to tmux. workmux detects it automatically from `$REX_BLOCK`, which Rex sets in every pane. To force it, set `WORKMUX_BACKEND=rex`.
 
-If you run tmux inside a Rex pane, workmux uses tmux, because `$TMUX` is checked first.
+If you run tmux, WezTerm, Zellij or kitty inside a Rex pane, workmux uses that multiplexer. Rex is checked last, because every program started from a Rex pane inherits `$REX_BLOCK`.
 
 workmux needs a Rex server that speaks API revision 8 or 9. On first use it reads the server's `server.version` and stops with `unsupported Rex <version>` when the server's supported revisions miss that range.
 
@@ -29,19 +29,20 @@ workmux needs a Rex server that speaks API revision 8 or 9. On first use it read
 - **Panes.** Each pane is a Rex block. Splits keep the configured `size` or `percentage`.
 - **Respawning.** Rex cannot restart the program in a block. When workmux needs to restart a pane, it opens a new block in the same place and closes the old one, so the pane ID changes.
 - **Capture.** `workmux capture` reads the block's full scrollback and keeps the last lines.
+- **The app.** Rex.app keeps its own shown tab. When workmux opens or switches to a window, it asks the Rex.app client that shows your pane to show that window too. Apps showing other sessions stay where they are, as tmux clients do.
 - **Shells.** workmux starts each block's shell directly as a login shell (`$SHELL -l`), as tmux does. It does not go through `/usr/bin/login`, so the environment of the Rex server reaches the pane unchanged.
 
 ## Session mode
 
 Under Rex, workmux uses [session mode](/guide/session-mode/) unless you set `mode` or pass `--mode`. Each worktree gets its own Rex session, and `workmux add` switches Rex.app to it. Set `mode: window` to get tabs in the current session instead, as under tmux.
 
-- **Switching the app.** workmux asks Rex.app to show the new session. With more than one Rex.app connected, it asks the one that connected last. Without a connected Rex.app, it creates the session and does not switch.
+- **Switching the app.** `workmux add` asks the Rex.app client that shows your pane to show the new session. Apps showing other sessions stay where they are. `--background` switches no app. Without such an app, workmux creates the session and does not switch.
 - **Closing.** When `remove`, `close` or `merge` runs inside the session it closes, workmux first sends Rex.app to the destination and then closes the session. The destination is the managed session of the merge target, then [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session the worktree was added from. Rex does not report which session Rex.app shows, so run from any other session, workmux closes the session without moving the app.
 - **Renamed sessions.** Agents may rename their Rex session (Rex tells Claude Code to name its session after the task). workmux records each session it creates by its Rex session ID under `$XDG_STATE_HOME/workmux/rex-sessions.json`, so it still finds the session after a rename.
 
 ### Remote Control
 
-Rex.app switches sessions only when **Remote Control** is on in Rex.app Settings under Rex Server. When it is off, `workmux add` still creates the session, prints the fix once and exits 0.
+Switching the tab Rex.app shows needs Remote Control, which you turn on in Rex Settings. Without it, the app refuses the switch: workmux prints `Turn on Remote Control in Rex Settings so workrex can switch the app.` once, and the command carries on. The window or session is still created and focused in the Rex session; only the app's view stays put. In the dashboard, a refused jump shows the same fix in the status line and the dashboard stays open.
 
 ## Requirements
 
@@ -65,4 +66,4 @@ workmux identifies the server by its address, which stays the same across restar
 ## Known limitations
 
 - Agent status icons do not appear in tab titles
-- Window ownership tracking and remote agents need tmux
+- Remote agents need tmux

@@ -508,6 +508,13 @@ pub trait Multiplexer: Send + Sync {
     /// switch by pane ID directly (tmux, WezTerm) ignore this parameter.
     fn switch_to_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()>;
 
+    /// `switch_to_pane` for a jump the user waits on, as in the dashboard.
+    /// Fails when the view did not move, so the caller can say why instead
+    /// of acting as if it had.
+    fn jump_to_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()> {
+        self.switch_to_pane(pane_id, window_hint)
+    }
+
     /// Whether jumping to a pane should exit the dashboard.
     /// Defaults to true. Override to return false to keep the dashboard open after jumping.
     fn should_exit_on_jump(&self) -> bool {
