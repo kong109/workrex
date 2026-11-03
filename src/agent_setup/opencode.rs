@@ -653,11 +653,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let plugins = tmp.path().join("plugins");
         fs::create_dir_all(&plugins).unwrap();
-        fs::write(
-            plugins.join(concat!(env!("CARGO_BIN_NAME"), "-status.ts")),
-            PLUGIN_SOURCE,
-        )
-        .unwrap();
+        fs::write(tmp.path().join(PLUGIN_FILE), PLUGIN_SOURCE).unwrap();
         fs::write(plugins.join("custom.ts"), "// keep me").unwrap();
         fs::write(tmp.path().join("package.json"), r#"{"custom": true}"#).unwrap();
 
@@ -674,11 +670,7 @@ mod tests {
                 *source
             );
         }
-        assert!(
-            !plugins
-                .join(concat!(env!("CARGO_BIN_NAME"), "-status.ts"))
-                .exists()
-        );
+        assert!(!tmp.path().join(PLUGIN_FILE).exists());
         assert_eq!(
             fs::read_to_string(plugins.join("custom.ts")).unwrap(),
             "// keep me"
@@ -1028,11 +1020,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let plugin_dir = tmp.path().join("plugins");
         fs::create_dir_all(&plugin_dir).unwrap();
-        fs::write(
-            plugin_dir.join(concat!(env!("CARGO_BIN_NAME"), "-status.ts")),
-            "// plugin code",
-        )
-        .unwrap();
+        fs::write(tmp.path().join(PLUGIN_FILE), "// plugin code").unwrap();
         fs::write(tmp.path().join("package.json"), r#"{"name": "custom"}"#).unwrap();
 
         uninstall_at(tmp.path().to_path_buf()).unwrap();

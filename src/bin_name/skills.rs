@@ -33,7 +33,7 @@ fn manifest_path() -> Result<PathBuf> {
     if let Some(path) = tests::MANIFEST.with(|m| m.borrow().clone()) {
         return Ok(path);
     }
-    Ok(crate::xdg::state_dir()?.join(format!("{BIN}-skills.json")))
+    Ok(super::state_dir()?.join("skills.json"))
 }
 
 fn load(path: &Path) -> Manifest {
@@ -264,5 +264,12 @@ pub(crate) mod tests {
 
         assert_eq!(fs::read_to_string(&shared).unwrap(), open_pr.content);
         assert!(!tmp.path().join("manifest.json").exists());
+
+        // Without upstream's skills, nothing else counts the identical file as its own.
+        fs::remove_file(&upstream).unwrap();
+        fs::remove_file(&shared).unwrap();
+        write(&shared, open_pr.content, None).unwrap();
+        crate::skills::remove_skills_at(base, "Claude Code").unwrap();
+        assert!(!shared.exists());
     }
 }
