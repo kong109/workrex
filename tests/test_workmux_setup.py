@@ -393,7 +393,9 @@ class TestSetupInstall:
         plugins.mkdir(parents=True)
         bundled_v1 = Path(__file__).parent.parent / v1_source
         v1 = bundled_v1.read_text()
-        (plugins / f"{BIN}-status.ts").write_text(rebrand(v1) if "resources" in v1_source else v1)
+        (plugins / f"{BIN}-status.ts").write_text(
+            rebrand(v1) if "resources" in v1_source else v1
+        )
         (plugins / "custom.ts").write_text("// keep me")
 
         run_setup_with_answers(mux_server, workmux_exe_path, hooks_answer="y")

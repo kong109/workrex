@@ -10,7 +10,14 @@ from pathlib import Path
 import pytest
 
 from ..conftest import get_window_name
-from .conftest import NODE_TERMINAL, Node, commit_project, local_records, wm, write_script
+from .conftest import (
+    NODE_TERMINAL,
+    Node,
+    commit_project,
+    local_records,
+    wm,
+    write_script,
+)
 
 TOKEN = "wr8-dummy-token-0123456789"
 
