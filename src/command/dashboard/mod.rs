@@ -319,6 +319,7 @@ fn handle_terminal_event(
     if key.kind != KeyEventKind::Press {
         return;
     }
+    app.note_keypress();
 
     // Help overlay handling - close on any key if open
     if app.show_help {

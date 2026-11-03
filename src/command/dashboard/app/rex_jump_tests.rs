@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
 use super::App;
 use crate::config::MuxMode;
@@ -98,6 +99,54 @@ fn a_refused_jump_shows_the_fix_in_the_status_line() {
                 Some(AppRefused.to_string())
             );
             assert!(!app.should_jump, "the dashboard stays open");
+        },
+    );
+}
+
+/// Makes the shown status, and its hold, `age` old.
+fn age_status(app: &mut App, age: Duration) {
+    let then = Instant::now() - age;
+    if let Some((_, created)) = &mut app.status_message {
+        *created = then;
+    }
+    if let Some(held) = &mut app.held_status {
+        held.set_at = then;
+    }
+}
+
+#[test]
+fn a_refused_jump_fix_stays_until_a_key_and_five_seconds() {
+    with_rex_app(
+        "command::dashboard::app::rex_jump_tests::a_refused_jump_fix_stays_until_a_key_and_five_seconds",
+        true,
+        |app, _| {
+            let shown = |app: &App| app.status_message.as_ref().map(|(text, _)| text.clone());
+            let fix = Some(AppRefused.to_string());
+
+            app.switch_to_pane_and_track("block:agent");
+            age_status(app, Duration::from_secs(60));
+            app.expire_status();
+            assert_eq!(shown(app), fix, "no key was pressed");
+
+            app.switch_to_pane_and_track("block:agent");
+            age_status(app, Duration::from_secs(2));
+            app.note_keypress();
+            app.expire_status();
+            assert_eq!(shown(app), fix, "a key came before five seconds");
+            age_status(app, Duration::from_secs(5));
+            app.expire_status();
+            assert_eq!(shown(app), None);
+
+            app.switch_to_pane_and_track("block:agent");
+            age_status(app, Duration::from_secs(5));
+            app.note_keypress();
+            assert_eq!(shown(app), None, "a key after five seconds clears it");
+
+            app.switch_to_pane_and_track("block:agent");
+            let earlier = Instant::now() - Duration::from_secs(2);
+            app.status_message = Some(("Sweep complete".into(), earlier));
+            app.expire_status();
+            assert_eq!(shown(app), None, "other statuses keep the short timeout");
         },
     );
 }

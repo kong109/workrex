@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ratatui::style::Style;
 
 use crate::github::{CheckSummary, PrSummary};
+use crate::multiplexer::rex::AppRefused;
 use crate::multiplexer::{AgentPane, AgentStatus, RemoteAgent};
 
 use super::DashboardTab;
@@ -281,7 +282,11 @@ impl App {
             .find(|a| a.pane_id == target_pane_id)
             .map(|a| a.window_name.as_str());
         if let Err(error) = self.mux.switch_to_pane(target_pane_id, window_hint) {
-            self.status_message = Some((error.to_string(), std::time::Instant::now()));
+            if error.is::<AppRefused>() {
+                self.hold_status(error.to_string());
+            } else {
+                self.status_message = Some((error.to_string(), std::time::Instant::now()));
+            }
             return;
         }
 
