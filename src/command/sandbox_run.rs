@@ -3,6 +3,7 @@
 //! Runs inside a tmux pane. Starts a TCP RPC server and executes the agent
 //! command inside a sandbox (Lima VM or Docker/Podman container).
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow, bail};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
@@ -78,7 +79,7 @@ pub fn run(
     node: Option<(PathBuf, String)>,
 ) -> Result<i32> {
     if command.is_empty() {
-        bail!("No command specified. Usage: workmux sandbox run <worktree> -- <command...>");
+        bail!("No command specified. Usage: {BIN} sandbox run <worktree> -- <command...>");
     }
     let node_root = node.as_ref().map(|(root, _)| root);
     if let Some(root) = node_root {

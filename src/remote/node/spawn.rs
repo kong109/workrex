@@ -68,7 +68,9 @@ pub fn spawn(root: &NodeRoot, request: SpawnRequest) -> Result<SpawnResponse> {
         .ok_or_else(|| {
             refuse(
                 code::BAD_REQUEST,
-                "remote agents must name the branch: `workmux add <branch> -b -P <prompt-file>`",
+                crate::rebrand!(
+                    "remote agents must name the branch: `workmux add <branch> -b -P <prompt-file>`"
+                ),
             )
         })?
         .to_string();

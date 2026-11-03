@@ -10,6 +10,8 @@ use anyhow::{Result, bail};
 use crate::agent_setup::Agent;
 use std::path::{Path, PathBuf};
 
+pub mod skills;
+
 pub const BIN: &str = env!("CARGO_BIN_NAME");
 
 /// The GitHub repository this binary is released from.
@@ -54,6 +56,37 @@ pub fn overlay_dockerfile(image: &str) -> String {
     format!("FROM {image}\nCOPY {BIN} /usr/local/bin/{BIN}\n")
 }
 
+/// The part of a node pin name after its prefix: release pins are `{BIN}-<version>`,
+/// dev pins and pins from before the rename `workmux-…`.
+pub fn pin_version(name: &str) -> Option<&str> {
+    name.strip_prefix(concat!(env!("CARGO_BIN_NAME"), "-"))
+        .or_else(|| name.strip_prefix("workmux-"))
+}
+
+/// Guest `PATH` entry named [`BIN`]: sandbox images ship upstream's `workmux`, while the
+/// mounted agent hooks call [`BIN`]. It runs a [`BIN`] that install-dev put in the guest,
+/// else the guest's `workmux`, which speaks the same sandbox RPC.
+const GUEST_SHIM: &str = concat!(
+    "#!/bin/sh\nself=$(dirname \"$0\")\nIFS=:\nfor dir in $PATH; do\n",
+    "  [ \"$dir\" != \"$self\" ] && [ -x \"$dir/",
+    env!("CARGO_BIN_NAME"),
+    "\" ] && exec \"$dir/",
+    env!("CARGO_BIN_NAME"),
+    "\" \"$@\"\ndone\nexec workmux \"$@\"\n"
+);
+
+/// Write the [`GUEST_SHIM`] into a sandbox shim directory.
+pub fn write_guest_shim(shim_bin: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if BIN == "workmux" {
+        return Ok(());
+    }
+    let path = shim_bin.join(BIN);
+    crate::util::write_atomic(&path, GUEST_SHIM.as_bytes())?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
 /// Print a completion script with upstream's command and function names renamed to [`BIN`].
 pub fn print_completion(script: &str) {
     print!("{}", script.replace("workmux", BIN));
@@ -77,11 +110,6 @@ pub fn rebrand_text(text: &str) -> String {
         }
     }
     String::from_utf8(out).expect("only ASCII was replaced")
-}
-
-/// An error whose message names [`BIN`] wherever it tells the user to run `workmux`.
-pub fn rebrand_error(err: anyhow::Error) -> anyhow::Error {
-    anyhow::Error::msg(rebrand_text(&format!("{err:?}")))
 }
 
 /// `cmd` with the help text of it and every subcommand and argument rebranded.
@@ -392,10 +420,47 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_guest_hooks_reach_a_guest_binary() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let shims = crate::sandbox::shims::create_shim_directory(tmp.path(), &[]).unwrap();
+        let fake = |dir: &str, name: &str| {
+            let dir = tmp.path().join(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\necho {name} \"$@\"\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            dir
+        };
+        let image = fake("image", "workmux");
+        let hook = |path: String| {
+            let out = std::process::Command::new(shims.join(BIN))
+                .args(["set-window-status", "done"])
+                .env("PATH", path)
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let path = format!("{}:{}:/usr/bin:/bin", shims.display(), image.display());
+        assert_eq!(hook(path.clone()), "workmux set-window-status done\n");
+        let dev = fake("dev", BIN);
+        assert_eq!(
+            hook(format!("{path}:{}", dev.display())),
+            format!("{BIN} set-window-status done\n")
+        );
+    }
+
+    #[test]
     fn dashboard_merge_action_calls_bin() {
         assert_eq!(
             crate::config::DashboardConfig::default().merge(),
             "!workrex merge"
         );
+    }
+
+    #[test]
+    fn update_cache_is_not_shared_with_upstream() {
+        let path = crate::command::update::update_cache_path().unwrap();
+        assert_eq!(path.file_name().unwrap(), "workrex-update_check.json");
     }
 }

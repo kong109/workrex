@@ -269,7 +269,7 @@ struct UpdateCache {
     notify_count: Option<u64>,
 }
 
-fn update_cache_path() -> Option<std::path::PathBuf> {
+pub(crate) fn update_cache_path() -> Option<std::path::PathBuf> {
     let dir = crate::xdg::cache_dir().ok()?;
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join(format!("{BIN}-update_check.json")))

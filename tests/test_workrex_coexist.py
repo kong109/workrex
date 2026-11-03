@@ -2,20 +2,36 @@
 
 import json
 import shlex
+import time
 from pathlib import Path
 
 from .conftest import (
     MuxEnvironment,
     get_scripts_dir,
     make_env_script,
+    poll_until,
     poll_until_file_has_content,
+    wait_for_pane_output,
 )
-from .support.bin_name import BIN, hook_bin, rebrand
-from .support.setup import install_opencode_version, run_setup_with_answers
+from .support.bin_name import BIN, bundled, hook_bin, rebrand
+from .support.setup import (
+    install_opencode_version,
+    run_setup_interactive,
+    run_setup_with_answers,
+)
 
 REPO = Path(__file__).parent.parent
 
 UPSTREAM_STOP = "workmux set-window-status done"
+UPSTREAM_WORKING = "workmux set-window-status working"
+AGY_SUFFIX = " >/dev/null 2>&1 || true; printf '{}\\n'"
+SKILL_DIRS = (
+    ".claude/skills",
+    ".config/opencode/skills",
+    ".grok/skills",
+    ".pi/agent/skills",
+    ".omp/agent/skills",
+)
 
 
 def pretty(value: dict) -> str:
@@ -45,7 +61,27 @@ def write_upstream_hooks(home: Path) -> dict[Path, bytes]:
         home / ".config/opencode/plugins/workmux-status.ts": (
             REPO / "resources/opencode/plugins/workmux-status.ts"
         ).read_text(),
+        home / ".grok/hooks/workmux-status.json": pretty(
+            json.loads((REPO / ".grok/hooks/workmux-status.json").read_text())
+        ),
+        home / ".omp/agent/extensions/workmux-status.ts": (
+            REPO / "resources/omp/extensions/workmux-status.ts"
+        ).read_text(),
+        home / ".gemini/config/hooks.json": pretty(
+            {
+                "workmux-status": {
+                    "PreInvocation": [
+                        {"type": "command", "command": f"{call}{AGY_SUFFIX}"}
+                        for call in ("workmux register-agent", UPSTREAM_WORKING)
+                    ],
+                    "Stop": [
+                        {"type": "command", "command": f"{UPSTREAM_STOP}{AGY_SUFFIX}"}
+                    ],
+                }
+            }
+        ),
     }
+    (home / ".gemini/antigravity-cli").mkdir(parents=True, exist_ok=True)
     for path, text in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
@@ -113,6 +149,11 @@ def test_setup_then_uninstall_leaves_upstream_hooks_byte_identical(
     }
     assert (home / f".pi/agent/extensions/{BIN}-status.ts").is_file()
     assert (home / f".copilot/hooks/{BIN}-status.json").is_file()
+    assert (home / f".grok/hooks/{BIN}-status.json").is_file()
+    assert (home / f".omp/agent/extensions/{BIN}-status.ts").is_file()
+    agy = home / ".gemini/config/hooks.json"
+    assert set(json.loads(agy.read_text())) == {"workmux-status", f"{BIN}-status"}
+    shared.append(agy)
     for path, before in upstream.items():
         if path not in shared:
             assert path.read_bytes() == before, path
@@ -124,4 +165,63 @@ def test_setup_then_uninstall_leaves_upstream_hooks_byte_identical(
         assert path.read_bytes() == before, path
     assert not (home / f".pi/agent/extensions/{BIN}-status.ts").exists()
     assert not (home / f".copilot/hooks/{BIN}-status.json").exists()
+    assert not (home / f".grok/hooks/{BIN}-status.json").exists()
+    assert not (home / f".omp/agent/extensions/{BIN}-status.ts").exists()
     assert (state / "agents/upstream.json").read_text() == "{}"
+
+
+def write_upstream_skills(home: Path) -> dict[Path, bytes]:
+    """Install upstream's bundled skills as upstream `workmux setup` writes them."""
+    files = {}
+    for skill in sorted((REPO / "skills").iterdir()):
+        for skills_dir in SKILL_DIRS:
+            path = home / skills_dir / skill.name / "SKILL.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text((skill / "SKILL.md").read_text())
+            files[path] = path.read_bytes()
+    return files
+
+
+def run_setup_overwriting_skills(env: MuxEnvironment, exe: Path) -> int:
+    """Run setup answering yes to hooks, skills and every skill-overwrite prompt."""
+    done = run_setup_interactive(env, exe)
+    for prompt in ("Install or update status tracking hooks?", "Install bundled skills?"):
+        wait_for_pane_output(env, "test", prompt, timeout=5)
+        env.send_keys("test:", "y")
+    overwrites = 0
+    deadline = time.monotonic() + 30
+    while not (done.exists() and done.read_text().strip()):
+        assert time.monotonic() < deadline, env.capture_pane("test")
+        screen = env.capture_pane("test") or ""
+        lines = [line for line in screen.splitlines() if line.strip()]
+        if lines and "with bundled version?" in lines[-1] and lines[-1].endswith("]"):
+            env.send_keys("test:", "y")
+            overwrites += 1
+            poll_until(lambda: env.capture_pane("test") != screen, 5)
+        time.sleep(0.05)
+    assert done.read_text().strip() == "0", env.capture_pane("test")
+    return overwrites
+
+
+def test_setup_with_skills_then_uninstall_leaves_upstream_skills_byte_identical(
+    mux_server: MuxEnvironment, workmux_exe_path: Path
+):
+    home = mux_server.home_path
+    install_opencode_version(mux_server, "v1.18.29")
+    upstream = write_upstream_hooks(home) | write_upstream_skills(home)
+
+    overwrites = run_setup_overwriting_skills(mux_server, workmux_exe_path)
+
+    assert overwrites > 0
+    for skills_dir in SKILL_DIRS:
+        ours = home / skills_dir / BIN / "SKILL.md"
+        assert ours.read_text() == bundled(REPO / "skills/workmux/SKILL.md"), ours
+        merge = home / skills_dir / "merge/SKILL.md"
+        assert merge.read_text() == bundled(REPO / "skills/merge/SKILL.md"), merge
+
+    run_uninstall(mux_server, workmux_exe_path)
+
+    for path, before in upstream.items():
+        assert path.read_bytes() == before, path
+    for skills_dir in SKILL_DIRS:
+        assert not (home / skills_dir / BIN).exists(), skills_dir

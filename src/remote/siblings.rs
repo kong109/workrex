@@ -7,6 +7,7 @@
 //! no record of is adopted again, and one it cannot adopt (unknown project,
 //! name taken) keeps running on the node until `workmux remote gc`.
 
+use crate::bin_name::BIN;
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::PathBuf;
@@ -107,7 +108,7 @@ fn adopt_one(
     let identity = &sibling.identity;
     let Some(project_root) = project_root(&identity.project_id, records) else {
         bail!(
-            "its repository has no other remote workspace on this machine; run `workmux open {}` \
+            "its repository has no other remote workspace on this machine; run `{BIN} open {}` \
              in the repository",
             identity.handle
         );
@@ -252,7 +253,7 @@ fn context(project_root: &std::path::Path) -> Result<WorkflowContext> {
 /// A node binary name as `install` makes them: `workmux-<version>` or
 /// `workmux-dev-<hash>`.
 fn valid_pin(name: &str) -> bool {
-    name.strip_prefix("workmux-").is_some_and(|rest| {
+    crate::bin_name::pin_version(name).is_some_and(|rest| {
         !rest.is_empty()
             && rest
                 .bytes()
@@ -305,5 +306,6 @@ mod tests {
         assert!(!valid_pin("workmux-x;rm -rf ~"));
         assert!(!valid_pin("../workmux-1"));
         assert!(!valid_pin("sh"));
+        assert!(valid_pin(&format!("{}-0.1.278", crate::bin_name::BIN)));
     }
 }

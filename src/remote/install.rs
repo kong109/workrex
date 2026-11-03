@@ -6,6 +6,7 @@
 //! and run before an atomic rename gives them the pinned name; an
 //! interrupted install leaves no file under the pinned name.
 
+use crate::bin_name::BIN;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -77,7 +78,7 @@ impl Pin {
                 spec.name
             ),
             PinSource::File(_) => format!(
-                "Rebuild remotes.{}.binary from the same source as this workmux \
+                "Rebuild remotes.{}.binary from the same source as this {BIN} \
                  (see `just remote-dev-binary`)",
                 spec.name
             ),
@@ -331,12 +332,12 @@ fn staged_failure(spec: &RemoteSpec, pin: &Pin, platform: &str, failure: HelloFa
     match failure {
         HelloFailure::PredatesNodes => format!(
             "{source} predates remote nodes (it has no `workmux node` command). Point \
-             remotes.{}.binary at a Linux build of this workmux (see `just remote-dev-binary`)",
+             remotes.{}.binary at a Linux build of this {BIN} (see `just remote-dev-binary`)",
             spec.name
         ),
         HelloFailure::NotANode { detail } => format!(
-            "{source} does not run as workmux on {platform}: {detail}. remotes.{}.binary must \
-             be a {platform} build of workmux (see `just remote-dev-binary`)",
+            "{source} does not run as {BIN} on {platform}: {detail}. remotes.{}.binary must \
+             be a {platform} build of {BIN} (see `just remote-dev-binary`)",
             spec.name
         ),
     }

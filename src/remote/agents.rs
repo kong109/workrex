@@ -1,6 +1,7 @@
 //! Remote agents as local views and commands see them: one row per agent
 //! the node reports, whether or not a local window relays it.
 
+use crate::bin_name::BIN;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -471,7 +472,7 @@ pub fn fetch_diff(
 
 fn no_execution(record: &WorkspaceRecord) -> anyhow::Error {
     anyhow!(
-        "remote workspace '{}' has no running agent; `workmux open {}` starts it",
+        "remote workspace '{}' has no running agent; `{BIN} open {}` starts it",
         record.handle,
         record.handle
     )

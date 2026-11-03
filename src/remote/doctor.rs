@@ -1,5 +1,6 @@
 //! `workmux remote doctor <name>`: check that a remote can run agents.
 
+use crate::bin_name::BIN;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -72,7 +73,7 @@ impl Row {
     }
 
     pub(super) fn fix(mut self, fix: impl Into<String>) -> Self {
-        self.fix = Some(crate::bin_name::rebrand_text(&fix.into()));
+        self.fix = Some(fix.into());
         self
     }
 }
@@ -137,7 +138,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
             Level::Fail,
             format!("{} is not installed", cx.node_path),
         )
-        .fix(format!("workmux remote setup {name}")),
+        .fix(format!("{BIN} remote setup {name}")),
         NodeStatus::Mismatch(hello) => Row::new(
             "node",
             Level::Fail,
@@ -154,7 +155,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
                 Level::Fail,
                 format!("{} does not answer: {detail}", cx.node_path),
             )
-            .fix(format!("workmux remote setup {name}"))
+            .fix(format!("{BIN} remote setup {name}"))
         }
     });
 
@@ -503,7 +504,7 @@ fn credential_rows(
             if !configured.contains(&auth.agent) && agent.found.is_empty() {
                 return None;
             }
-            let login = format!("workmux remote login {remote} {}", auth.agent);
+            let login = format!("{BIN} remote login {remote} {}", auth.agent);
             let row = if auth.files.is_empty() {
                 Row::new(
                     auth.agent,
@@ -852,3 +853,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../bin_name/doctor_tests.rs"]
+mod workrex_tests;

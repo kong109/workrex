@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow};
 
 use crate::{cmd, git};
@@ -53,7 +54,7 @@ pub fn merge(
     // Smart resolution: try handle first, then branch name
     let (worktree_path, branch_to_merge) = git::find_worktree(name).map_err(|_| {
         anyhow!(
-            "Worktree '{}' not found. Use 'workmux list' to see available worktrees.",
+            "Worktree '{}' not found. Use '{BIN} list' to see available worktrees.",
             name
         )
     })?;
@@ -262,9 +263,9 @@ pub fn merge(
     // Helper closure to generate the error message for merge conflicts
     let conflict_err = |branch: &str| -> anyhow::Error {
         let retry_cmd = if into_branch.is_some() {
-            format!("workmux merge {} --into {}", branch, target_branch)
+            format!("{BIN} merge {} --into {}", branch, target_branch)
         } else {
-            format!("workmux merge {}", branch)
+            format!("{BIN} merge {}", branch)
         };
         anyhow::Error::new(MergeConflict(format!(
             "Merge failed due to conflicts. Target worktree kept clean.\n\n\

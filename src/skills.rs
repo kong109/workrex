@@ -128,6 +128,7 @@ pub fn install_skills(agent: Agent) -> Result<String> {
                 if confirm_overwrite(skill.name)? {
                     fs::write(&path, skill.content)
                         .with_context(|| format!("Failed to write {}", path.display()))?;
+                    crate::bin_name::skills::record(&path, skill.content, Some(existing))?;
                     println!("  {} updated {}/SKILL.md", style("✓").green(), skill.name);
                     InstallOutcome::Updated
                 } else {
@@ -139,6 +140,7 @@ pub fn install_skills(agent: Agent) -> Result<String> {
                 .with_context(|| format!("Failed to create {}", dir.display()))?;
             fs::write(&path, skill.content)
                 .with_context(|| format!("Failed to write {}", path.display()))?;
+            crate::bin_name::skills::record(&path, skill.content, None)?;
             println!("  {} installed {}/SKILL.md", style("✓").green(), skill.name);
             InstallOutcome::Installed
         };
@@ -218,7 +220,7 @@ pub fn remove_skills(agent: Agent) -> Result<String> {
     remove_skills_at(base_dir, agent.name())
 }
 
-fn remove_skills_at(base_dir: PathBuf, agent_name: &str) -> Result<String> {
+pub(crate) fn remove_skills_at(base_dir: PathBuf, agent_name: &str) -> Result<String> {
     if !base_dir.exists() {
         return Ok(format!(
             "No skills directory found at {}",
@@ -234,17 +236,11 @@ fn remove_skills_at(base_dir: PathBuf, agent_name: &str) -> Result<String> {
         if !path.exists() {
             continue;
         }
-        match fs::read_to_string(&path) {
-            Ok(content) if content == skill.content => {
-                let dir = path.parent().unwrap();
-                fs::remove_dir_all(dir)?;
-                removed += 1;
-            }
-            Ok(_) => {
-                // User-modified skill, leave it
-                skipped += 1;
-            }
-            Err(_) => continue,
+        if crate::bin_name::skills::remove(&path)? {
+            removed += 1;
+        } else {
+            // A skill this binary did not write, or one modified since, stays.
+            skipped += 1;
         }
     }
 
@@ -435,6 +431,8 @@ mod tests {
         let skill_dir = skills_base.join(skill.name);
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), skill.content).unwrap();
+        crate::bin_name::skills::tests::use_manifest_in(tmp.path());
+        crate::bin_name::skills::record(&skill_dir.join("SKILL.md"), skill.content, None).unwrap();
 
         let result = remove_skills_at(skills_base, "Claude Code").unwrap();
         assert!(result.contains("1 removed"));
@@ -469,6 +467,8 @@ mod tests {
         let d1 = skills_base.join(s1.name);
         std::fs::create_dir_all(&d1).unwrap();
         std::fs::write(d1.join("SKILL.md"), s1.content).unwrap();
+        crate::bin_name::skills::tests::use_manifest_in(tmp.path());
+        crate::bin_name::skills::record(&d1.join("SKILL.md"), s1.content, None).unwrap();
 
         // Write second bundled skill modified (will be skipped)
         let s2 = &BUNDLED_SKILLS[1];

@@ -5,6 +5,7 @@
 //! record of it (see [`super::cache`]) and a window whose panes each run
 //! `workmux remote attach`; closing that window only detaches.
 
+use crate::bin_name::BIN;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -71,7 +72,7 @@ pub fn create(
             Some(record)
         }
         Some(record) if record.handle == handle => bail!(
-            "'{}' already exists as a remote workspace on '{}'. Use `workmux open {}`",
+            "'{}' already exists as a remote workspace on '{}'. Use `{BIN} open {}`",
             record.handle,
             record.remote,
             record.handle
@@ -95,14 +96,14 @@ pub fn create(
             {
                 let suffixed = crate::workflow::project_suffixed_handle(context, &handle);
                 eprintln!(
-                    "workmux: window '{}' exists in another repository, using '{}'",
+                    "{BIN}: window '{}' exists in another repository, using '{}'",
                     crate::multiplexer::util::prefixed(&context.prefix, &handle),
                     crate::multiplexer::util::prefixed(&context.prefix, &suffixed)
                 );
                 handle = suffixed;
                 if let Some(record) = cache::claimed(&project_root, &handle, request.branch) {
                     bail!(
-                        "'{}' already exists as a remote workspace on '{}'. Use `workmux open \
+                        "'{}' already exists as a remote workspace on '{}'. Use `{BIN} open \
                          {}`, or pick another name with --name",
                         record.handle,
                         record.remote,
@@ -316,8 +317,8 @@ pub fn create(
     })()
     .with_context(|| {
         format!(
-            "'{}' is partly set up on '{}'; run this `workmux add` again to resume it, \
-             or `workmux remove {}`",
+            "'{}' is partly set up on '{}'; run this `{BIN} add` again to resume it, \
+             or `{BIN} remove {}`",
             record.handle, spec.name, record.handle
         )
     })?;
@@ -335,7 +336,7 @@ pub fn create(
     )
     .with_context(|| {
         format!(
-            "'{}' is set up on '{}' but its agent did not start; run `workmux open {}` \
+            "'{}' is set up on '{}' but its agent did not start; run `{BIN} open {}` \
              to start it",
             record.handle, spec.name, record.handle
         )
@@ -735,7 +736,7 @@ pub(super) fn open_window_after(
     let mux = context.mux.as_ref();
     let execution = record.execution.as_ref().ok_or_else(|| {
         anyhow!(
-            "remote workspace '{}' on '{}' has no running agent; run `workmux open {}`",
+            "remote workspace '{}' on '{}' has no running agent; run `{BIN} open {}`",
             record.handle,
             record.remote,
             record.handle
@@ -846,8 +847,8 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
     }
     if record.state != WorkspaceState::Ready {
         bail!(
-            "remote workspace '{}' did not finish provisioning; run `workmux add --remote {} {}` \
-             again to resume it, or `workmux remove {}`",
+            "remote workspace '{}' did not finish provisioning; run `{BIN} add --remote {} {}` \
+             again to resume it, or `{BIN} remove {}`",
             record.handle,
             record.remote,
             record.branch,
@@ -934,7 +935,7 @@ pub fn close(mux: &dyn Multiplexer, record: &WorkspaceRecord) -> Result<()> {
         .context("Failed to close window")?;
     forget_attachments(record);
     println!(
-        "✓ Closed the window of '{}'; its agent keeps running on '{}' (`workmux open {}` \
+        "✓ Closed the window of '{}'; its agent keeps running on '{}' (`{BIN} open {}` \
          to return)",
         record.handle, record.remote, record.handle
     );
@@ -981,7 +982,7 @@ impl RemovalBatch {
         {
             if !options.force {
                 bail!(
-                    "A merge of '{}' is in progress in {}; finish it with `workmux merge {}`, or \
+                    "A merge of '{}' is in progress in {}; finish it with `{BIN} merge {}`, or \
                  pass --force to remove the remote workspace and keep that copy",
                     record.handle,
                     record.local_path.display(),
@@ -995,7 +996,7 @@ impl RemovalBatch {
             forget_attachments(record);
             eprintln!(
                 "workmux: forgot remote workspace '{}' without contacting '{}' ({reason:#}); \
-             its worktree and agent may remain there (`workmux remote gc {}` removes them)",
+             its worktree and agent may remain there (`{BIN} remote gc {}` removes them)",
                 record.handle, record.remote, record.remote
             );
             Ok(())
@@ -1067,7 +1068,7 @@ impl RemovalBatch {
             Ok(_) => {}
             Err(err) if error_code(&err) == Some(code::DIVERGED) => {
                 bail!(
-                    "{}; nothing was removed. Run `workmux remove {}` again",
+                    "{}; nothing was removed. Run `{BIN} remove {}` again",
                     super::homecoming::node_message(&err),
                     record.handle
                 );
@@ -1076,7 +1077,7 @@ impl RemovalBatch {
         }
         if record.local_path.join(".git").exists() {
             println!(
-                "The local copy at {} stays a local worktree (`workmux remove {}` removes it)",
+                "The local copy at {} stays a local worktree (`{BIN} remove {}` removes it)",
                 record.local_path.display(),
                 record.handle
             );
@@ -1140,7 +1141,7 @@ fn check_removable(
         let base = record.base_branch();
         if !is_ancestor(&record.project_root, head, &base) {
             if options.refuse_unmerged {
-                bail!("has commits not merged into its base; run `workmux rm --force`");
+                bail!("has commits not merged into its base; run `{BIN} rm --force`");
             }
             println!("The following branches have commits not merged into their base:");
             println!("  - {} (base: {base})", record.branch);

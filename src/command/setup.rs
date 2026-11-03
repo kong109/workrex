@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use anyhow::Result;
 use console::style;
 use std::io::{self, IsTerminal};
@@ -8,7 +9,7 @@ use crate::ui::confirm::{self, ConfirmDefault};
 
 pub fn run(hooks_only: bool, skills_only: bool) -> Result<()> {
     if !io::stdin().is_terminal() {
-        anyhow::bail!("workmux setup requires an interactive terminal");
+        anyhow::bail!("{BIN} setup requires an interactive terminal");
     }
 
     // If neither flag is set, do both

@@ -1,5 +1,6 @@
 //! `workmux remote`: manage SSH remotes that run agents.
 
+use crate::bin_name::BIN;
 use std::thread;
 
 use anyhow::{Result, bail};
@@ -114,7 +115,7 @@ pub fn run(args: RemoteArgs) -> Result<()> {
             if !doctor::run(&spec, &config)? {
                 bail!(
                     "remote '{name}' is not ready: fix the ✗ rows above, then run \
-                     `workmux remote doctor {name}` again"
+                     `{BIN} remote doctor {name}` again"
                 );
             }
             observe::current(&config, &name);
@@ -237,13 +238,13 @@ fn status(config: &Config, name: &str) -> String {
                 )
             }
             NodeStatus::Missing => {
-                format!("reachable, not set up: run workmux remote setup {name}")
+                format!("reachable, not set up: run {BIN} remote setup {name}")
             }
             NodeStatus::Mismatch(hello) => format!(
-                "protocol mismatch: node speaks {}, run workmux remote doctor {name}",
+                "protocol mismatch: node speaks {}, run {BIN} remote doctor {name}",
                 hello.protocol
             ),
-            NodeStatus::Broken(_) => format!("node binary broken: run workmux remote setup {name}"),
+            NodeStatus::Broken(_) => format!("node binary broken: run {BIN} remote setup {name}"),
         })
     };
     check().unwrap_or_else(|err| format!("error: {err:#}"))

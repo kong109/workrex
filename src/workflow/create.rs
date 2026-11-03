@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow};
 use std::path::Path;
 
@@ -96,7 +97,7 @@ pub fn suffix_taken_handle(
     let suffixed = project_suffixed_handle(context, handle);
     let suffixed_target = MuxHandle::new(context.mux.as_ref(), mode, &context.prefix, &suffixed);
     eprintln!(
-        "workmux: {} '{}' exists in another repository, using '{}'",
+        "{BIN}: {} '{}' exists in another repository, using '{}'",
         taken.kind(),
         taken.full_name(),
         suffixed_target.full_name()
@@ -241,7 +242,7 @@ fn create_impl(
     // Check if branch already has a worktree
     if worktree_exists {
         return Err(anyhow!(
-            "A worktree for branch '{}' already exists. Use 'workmux open {}' to open it.",
+            "A worktree for branch '{}' already exists. Use '{BIN} open {}' to open it.",
             branch_name,
             branch_name
         ));
@@ -738,7 +739,7 @@ pub fn create_with_changes(
 
     if !has_tracked_changes && !has_movable_untracked {
         return Err(anyhow!(
-            "No uncommitted changes to move. Use 'workmux add {}' to create a clean worktree.",
+            "No uncommitted changes to move. Use '{BIN} add {}' to create a clean worktree.",
             branch_name
         ));
     }

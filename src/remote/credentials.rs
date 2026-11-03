@@ -2,6 +2,7 @@
 //! login flow on the node, with the credential directories remote
 //! executions mount; `--import` copies the laptop's credential files once.
 
+use crate::bin_name::BIN;
 use std::io::{IsTerminal, Write};
 use std::net::TcpListener;
 use std::path::Path;
@@ -229,7 +230,7 @@ struct Import {
 /// Read `auth`'s credential files from `dir`, the laptop's agent directory.
 fn collect_import(auth: &AgentAuth, dir: &Path, macos: bool, remote: &str) -> Result<Import> {
     let agent = auth.agent;
-    let login_hint = format!("log in on the remote with `workmux remote login {remote} {agent}`");
+    let login_hint = format!("log in on the remote with `{BIN} remote login {remote} {agent}`");
     if auth.files.is_empty() {
         bail!(
             "{agent} keeps its logins in {}, a database that also holds its \
@@ -289,7 +290,7 @@ pub fn import(spec: &RemoteSpec, config: &Config, agent: &str) -> Result<()> {
     println!(
         "Copying {} from {} to '{}'. This is a one-time copy: agents rotate their \
          refresh token as they use it, so once either machine refreshes, the other \
-         copy can stop working. Run this again, or `workmux remote login {} {agent}`, \
+         copy can stop working. Run this again, or `{BIN} remote login {} {agent}`, \
          when the remote one does.",
         names.join(", "),
         dir.display(),
@@ -365,7 +366,10 @@ mod tests {
             .err()
             .unwrap()
             .to_string();
-        assert!(err.contains("workmux remote login r codex"), "{err}");
+        assert!(
+            err.contains(crate::rebrand!("workmux remote login r codex")),
+            "{err}"
+        );
     }
 
     #[test]
@@ -398,6 +402,9 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(err.contains("agent.db"), "{err}");
-        assert!(err.contains("workmux remote login r omp"), "{err}");
+        assert!(
+            err.contains(crate::rebrand!("workmux remote login r omp")),
+            "{err}"
+        );
     }
 }
