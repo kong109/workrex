@@ -213,7 +213,7 @@ esac
                 dir = dir.path().display(),
             );
             let program = dir.path().join("rex");
-            fs::write(&program, script).unwrap();
+            super::super::tests::write_script(&program, script).unwrap();
             fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
             Self { dir }
         }

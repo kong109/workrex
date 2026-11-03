@@ -437,15 +437,13 @@ mod tests {
 
     #[test]
     fn sandbox_guest_hooks_reach_a_guest_binary() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let shims = crate::sandbox::shims::create_shim_directory(tmp.path(), &[]).unwrap();
         let fake = |dir: &str, name: &str| {
             let dir = tmp.path().join(dir);
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join(name);
-            std::fs::write(&path, format!("#!/bin/sh\necho {name} \"$@\"\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::test_support::write_script(&path, &format!("#!/bin/sh\necho {name} \"$@\"\n"));
             dir
         };
         let image = fake("image", "workmux");
@@ -495,7 +493,6 @@ mod tests {
 
     #[test]
     fn guest_shim_lets_a_process_the_binary_starts_reach_it_again() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let shims = crate::sandbox::shims::create_shim_directory(tmp.path(), &[]).unwrap();
         let dev = tmp.path().join("dev");
@@ -509,9 +506,7 @@ mod tests {
             (&image, "workmux", "echo workmux \"$@\"".to_string()),
         ] {
             std::fs::create_dir_all(dir).unwrap();
-            std::fs::write(dir.join(name), format!("#!/bin/sh\n{script}\n")).unwrap();
-            std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
+            crate::test_support::write_script(&dir.join(name), &format!("#!/bin/sh\n{script}\n"));
         }
         // The child inherits the sentinel, but runs the shim under another pid.
         let out = std::process::Command::new(shims.join(BIN))
@@ -530,18 +525,15 @@ mod tests {
 
     #[test]
     fn guest_shim_reached_again_through_a_copy_falls_back_instead_of_looping() {
-        use std::os::unix::fs::PermissionsExt;
         use std::time::{Duration, Instant};
         let tmp = tempfile::tempdir().unwrap();
         let shims = crate::sandbox::shims::create_shim_directory(tmp.path(), &[]).unwrap();
         let image = tmp.path().join("image");
         std::fs::create_dir_all(&image).unwrap();
-        std::fs::write(image.join("workmux"), "#!/bin/sh\necho workmux \"$@\"\n").unwrap();
-        std::fs::set_permissions(
-            image.join("workmux"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        crate::test_support::write_script(
+            &image.join("workmux"),
+            "#!/bin/sh\necho workmux \"$@\"\n",
+        );
         let copy = tmp.path().join("copy");
         std::fs::create_dir_all(&copy).unwrap();
         std::fs::copy(shims.join(BIN), copy.join(BIN)).unwrap();
