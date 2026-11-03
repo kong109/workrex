@@ -71,7 +71,11 @@ impl SidebarHost for RexBackend {
     fn attach_daemon(&self) -> Result<Box<dyn DaemonIo>> {
         let instance = self.resolve_instance_id()?;
         let files = Files::for_instance(&instance)?;
-        let plane = Plane::new(self.detached(), files.clone(), Config::load(None)?)?;
+        let plane = Plane::new(
+            self.detached_for_events(),
+            files.clone(),
+            Config::load(None)?,
+        )?;
         let observed = Arc::new(Observed::default());
         // The first tick must see the server, or the daemon would treat
         // every agent's pane as gone.

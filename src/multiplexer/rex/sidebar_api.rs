@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::time::Duration;
 
 use super::{BlockId, RexBackend, SessionId, WindowId, found, parallel_map, shell_block};
 use crate::multiplexer::LivePaneInfo;
@@ -140,6 +141,15 @@ impl RexBackend {
     /// A backend for another thread that talks to the same server.
     pub(crate) fn detached(&self) -> RexBackend {
         RexBackend::with_server(self.server.clone())
+    }
+
+    /// A backend for the daemon's thread. The daemon reads a session because
+    /// an event says it changed, so a reused read would predate the change.
+    pub(crate) fn detached_for_events(&self) -> RexBackend {
+        RexBackend {
+            reuse: Duration::ZERO,
+            ..self.detached()
+        }
     }
 
     pub(crate) fn server_address(&self) -> Option<&str> {
