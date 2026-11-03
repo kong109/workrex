@@ -152,6 +152,30 @@ fn a_refused_jump_fix_stays_until_a_key_and_five_seconds() {
     );
 }
 
+#[test]
+fn an_early_key_keeps_the_refused_jump_fix_for_the_full_five_seconds() {
+    with_rex_app(
+        "command::dashboard::app::rex_jump_tests::an_early_key_keeps_the_refused_jump_fix_for_the_full_five_seconds",
+        true,
+        |app, _| {
+            let shown = |app: &App| app.status_message.as_ref().map(|(text, _)| text.clone());
+
+            app.switch_to_pane_and_track("block:agent");
+            app.note_keypress();
+            age_status(app, Duration::from_millis(4_900));
+            app.expire_status();
+            assert_eq!(
+                shown(app),
+                Some(AppRefused.to_string()),
+                "just under five seconds"
+            );
+            age_status(app, Duration::from_secs(5));
+            app.expire_status();
+            assert_eq!(shown(app), None, "five seconds");
+        },
+    );
+}
+
 /// Feeds the dashboard one key press, the way its event loop does.
 fn press_a_key(app: &mut App) {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
