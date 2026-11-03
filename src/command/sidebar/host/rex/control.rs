@@ -978,6 +978,16 @@ mod tests {
     }
 
     #[test]
+    fn an_exited_program_wakes_the_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut follower = unreachable_follower(&dir);
+        assert!(follower.handle(vec![Event::ChildExited {
+            session_id: "session:1".into(),
+            block_id: "block:1".into(),
+        }]));
+    }
+
+    #[test]
     fn a_steady_event_stream_still_closes_its_batch() {
         // Terminals retitled every 5 ms never leave the stream quiet. A
         // window reset by each event would hold the batch for the whole 2 s.

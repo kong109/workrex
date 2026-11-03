@@ -598,8 +598,10 @@ def test_an_agent_that_exits_leaves_the_running_sidebar(rex):
     assert poll_until(
         lambda: "last_exit" in (env.block_call(agent, "process") or {}), timeout=5
     )
+    # The exit wakes the daemon; without the wake the row waits for the
+    # next 2 s observation.
     assert poll_until(
-        lambda: SPINNER.search(capture(env, sidebar)) is None, timeout=3
+        lambda: SPINNER.search(capture(env, sidebar)) is None, timeout=1
     ), capture(env, sidebar)
 
 
