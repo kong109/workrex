@@ -70,6 +70,18 @@ fn render_tab_header(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// The footer's status message, cut at a word boundary to fit the width.
+fn render_status(f: &mut Frame, msg: &str, p: &ThemePalette, area: Rect) {
+    let msg = format::fit_words(msg, usize::from(area.width).saturating_sub(2));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            format!("  {msg}"),
+            Style::default().fg(p.text),
+        )])),
+        area,
+    );
+}
+
 /// Render the dashboard view (table + preview + footer).
 pub fn render_dashboard(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -107,17 +119,7 @@ pub fn render_dashboard(f: &mut Frame, app: &mut App) {
     // Footer - show status message if active, otherwise mode-specific help
     let mut remote_tip_drawn = false;
     if let Some((msg, _)) = &app.status_message {
-        let p = &app.palette;
-        f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                format!(
-                    "  {}",
-                    format::fit_words(msg, usize::from(footer_area.width).saturating_sub(2))
-                ),
-                Style::default().fg(p.text),
-            )])),
-            footer_area,
-        );
+        render_status(f, msg, &app.palette, footer_area);
     } else {
         match app.active_tab {
             DashboardTab::Agents => {
@@ -1061,6 +1063,23 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         ((0..width).map(|x| buffer[(x, 0)].symbol()).collect(), drawn)
+    }
+
+    #[test]
+    fn a_long_status_message_ends_at_a_word() {
+        let msg = "Rex.app did not switch: Remote Control is off. \
+                   Turn it on in Rex Settings so workmux can switch the app.";
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|f| render_status(f, msg, &palette(), f.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let line: String = (0..80).map(|x| buffer[(x, 0)].symbol()).collect();
+
+        assert_eq!(
+            line.trim_end(),
+            "  Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so…"
+        );
     }
 
     #[test]
