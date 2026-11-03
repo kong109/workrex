@@ -132,6 +132,11 @@ def test_agent_spawns_sibling(
     focused = active_window(mux_server)
     tell(worktree, "spawn sib -b -p sibling-task")
     assert poll_until(lambda: running(node, "sib"), timeout=20), node_pane(node, ex_id)
+    # The agent prints spawn-exit only once `add` returns, which can be after
+    # the sibling's record reads running.
+    assert poll_until(lambda: "spawn-exit-" in node_pane(node, ex_id), timeout=30), (
+        node_pane(node, ex_id)
+    )
     assert "spawn-exit-0" in node_pane(node, ex_id)
     sibling = by_branch(node, "sib")
     assert sibling is not None
