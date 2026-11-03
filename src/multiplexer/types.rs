@@ -293,6 +293,7 @@ pub enum BackendType {
     Kitty,
     /// Zellij backend
     Zellij,
+    /// Rex backend
     Rex,
 }
 
