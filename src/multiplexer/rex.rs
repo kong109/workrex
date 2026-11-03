@@ -3323,7 +3323,6 @@ mod tests {
     #[test]
     fn a_second_look_at_a_pane_the_batch_missed_reads_afresh() {
         let session = "session:01a19e60-6410-7e09-a3ee-f675512a3a06";
-        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
         let fake = FakeRex::new(&[
             ("session.list", &session_list(&[(session, "fixture")])),
             ("session.view", "$cat \"$dir/view\""),
@@ -3335,15 +3334,45 @@ mod tests {
         fake.write("view", &view_json(session, "fixture", &[]));
         assert!(fake.rex.get_all_live_pane_info().unwrap().is_empty());
         fake.write("view", VIEW);
-        let agent: crate::state::AgentState = serde_json::from_value(json!({
-            "pane_key": { "backend": "rex", "instance": "unix:///s.sock", "pane_id": block },
+        assert!(
+            fake.rex
+                .validate_agent_alive(&agent_in_view(85152))
+                .unwrap()
+        );
+    }
+
+    /// The second look checks the pid and command like the batch does, so a
+    /// pane that now runs another process reads as dead.
+    #[test]
+    fn a_second_look_at_a_pane_running_another_process_reads_as_dead() {
+        let fake = FakeRex::new(&[
+            (
+                "session.list",
+                &session_list(&[("session:01a19e60-6410-7e09-a3ee-f675512a3a06", "fixture")]),
+            ),
+            ("session.view", VIEW),
+            ("target.resolve", RESOLVE),
+            (" process ", PROCESS),
+            (" title ", r#"{"title":""}"#),
+        ]);
+        assert!(!fake.rex.validate_agent_alive(&agent_in_view(4242)).unwrap());
+    }
+
+    /// An agent recorded in VIEW's block, which PROCESS shows running
+    /// `sleep` under pid 85152.
+    fn agent_in_view(pane_pid: u32) -> crate::state::AgentState {
+        serde_json::from_value(json!({
+            "pane_key": {
+                "backend": "rex",
+                "instance": "unix:///s.sock",
+                "pane_id": "block:01a19e60-6442-727c-b026-9bb98fffd538",
+            },
             "workdir": "/private/tmp",
-            "pane_pid": 85152,
+            "pane_pid": pane_pid,
             "command": "sleep",
             "updated_ts": 0,
         }))
-        .unwrap();
-        assert!(fake.rex.validate_agent_alive(&agent).unwrap());
+        .unwrap()
     }
 
     /// A remote relay's window closes itself when its remote session ends,

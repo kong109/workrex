@@ -1465,6 +1465,73 @@ mod tests {
         );
     }
 
+    fn pane_with(pid: Option<u32>, command: Option<&str>) -> Option<LivePaneInfo> {
+        Some(util::build_live_pane_info(
+            pid,
+            command.map(str::to_string),
+            PathBuf::from("/private/tmp"),
+            "",
+            "main".to_string(),
+            "wm-work".to_string(),
+        ))
+    }
+
+    fn agent_with(pane_pid: u32, command: &str) -> crate::state::AgentState {
+        serde_json::from_value(serde_json::json!({
+            "pane_key": { "backend": "tmux", "instance": "default", "pane_id": "%1" },
+            "workdir": "/private/tmp",
+            "pane_pid": pane_pid,
+            "command": command,
+            "updated_ts": 0,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_pane_with_the_recorded_pid_and_command_runs_the_agent() {
+        assert!(pane_runs_agent(
+            pane_with(Some(7), Some("node")),
+            &agent_with(7, "node")
+        ));
+    }
+
+    #[test]
+    fn a_missing_pane_runs_no_agent() {
+        assert!(!pane_runs_agent(None, &agent_with(7, "node")));
+    }
+
+    #[test]
+    fn a_pane_with_another_pid_runs_no_agent() {
+        assert!(!pane_runs_agent(
+            pane_with(Some(8), Some("node")),
+            &agent_with(7, "node")
+        ));
+    }
+
+    #[test]
+    fn a_pane_with_another_command_runs_no_agent() {
+        assert!(!pane_runs_agent(
+            pane_with(Some(7), Some("zsh")),
+            &agent_with(7, "node")
+        ));
+    }
+
+    /// A backend that does not report a pid skips the pid check.
+    #[test]
+    fn a_pane_without_a_pid_is_judged_by_its_command() {
+        let agent = agent_with(7, "node");
+        assert!(pane_runs_agent(pane_with(None, Some("node")), &agent));
+        assert!(!pane_runs_agent(pane_with(None, Some("zsh")), &agent));
+    }
+
+    /// A backend that does not report a command skips the command check.
+    #[test]
+    fn a_pane_without_a_command_is_judged_by_its_pid() {
+        let agent = agent_with(7, "node");
+        assert!(pane_runs_agent(pane_with(Some(7), None), &agent));
+        assert!(!pane_runs_agent(pane_with(Some(8), None), &agent));
+    }
+
     #[test]
     fn zellij_inside_rex() {
         assert_eq!(
