@@ -375,7 +375,7 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
         if dispatched && host.pane_alive(execution, *index) {
             continue;
         }
-        host.kill_pane(execution, *index);
+        host.kill_pane(root, execution, *index);
         let spawn_env = (workspace.isolation == RemoteIsolation::None)
             .then_some((root.path.as_path(), request.ws_id.as_str()));
         let created = host.create(

@@ -3,7 +3,7 @@
 //! The host is fixed when the execution starts and recorded on it
 //! (`Execution::rex`), so verbs never read it from config.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
@@ -91,7 +91,7 @@ impl SessionHost {
     }
 
     /// End pane `index`'s session, if any, before it starts again.
-    pub fn kill_pane(&self, execution: &Execution, index: usize) {
+    pub fn kill_pane(&self, root: &NodeRoot, execution: &Execution, index: usize) {
         match self {
             Self::Tmux { socket, .. } => {
                 let name = session_name(&execution.ex_id, index);
@@ -99,10 +99,11 @@ impl SessionHost {
                     .args(["kill-session", "-t", &format!("={name}")])
                     .output();
             }
-            Self::Rex(rex) => rex.kill_where(|session| {
-                rex.recorded(execution, index) == Some(session.id.as_str())
-                    || rex.untagged(&session.label) == Some(&session_name(&execution.ex_id, index))
-            }),
+            Self::Rex(rex) => {
+                let name = session_name(&execution.ex_id, index);
+                let own: Vec<&str> = rex.recorded(execution, index).into_iter().collect();
+                rex.kill_owned(root, execution, &own, |label| label == name);
+            }
         }
     }
 
@@ -156,7 +157,7 @@ impl SessionHost {
     pub fn kill_execution(&self, root: &NodeRoot, execution: &Execution) {
         match self {
             Self::Tmux { socket, .. } => kill_execution(root, socket, &execution.ex_id),
-            Self::Rex(rex) => rex.kill_execution(execution),
+            Self::Rex(rex) => rex.kill_execution(root, execution),
         }
     }
 }
@@ -387,22 +388,51 @@ impl RexHost {
         }
     }
 
-    /// Every recorded session and every session labeled for the execution,
-    /// which also sweeps duplicates a crashed start left.
-    fn kill_execution(&self, execution: &Execution) {
+    /// Every session `execution` recorded, and every session labeled for it
+    /// that no execution records: duplicates a crashed start left.
+    fn kill_execution(&self, root: &NodeRoot, execution: &Execution) {
         let prefix = format!("{}-", execution.ex_id);
-        let recorded: Vec<&str> = execution
+        let own = self.recorded_ids(execution);
+        self.kill_owned(root, execution, &own, |label| label.starts_with(&prefix));
+    }
+
+    /// Destroy the sessions in `own`, and the sessions whose untagged label
+    /// `labeled` accepts that no execution on `root` records. A session
+    /// another execution records is never destroyed, whatever its label.
+    /// Rex keeps no creator on a session, so one created outside workrex
+    /// with this root's tagged label passes for an orphan.
+    fn kill_owned(
+        &self,
+        root: &NodeRoot,
+        execution: &Execution,
+        own: &[&str],
+        labeled: impl Fn(&str) -> bool,
+    ) {
+        let executions: Vec<Execution> = root
+            .workspaces()
+            .into_iter()
+            .filter_map(|workspace| workspace.execution)
+            .collect();
+        let recorded: HashSet<&str> = executions
+            .iter()
+            .chain([execution])
+            .flat_map(|execution| self.recorded_ids(execution))
+            .collect();
+        self.kill_where(|session| {
+            own.contains(&session.id.as_str())
+                || (!recorded.contains(session.id.as_str())
+                    && self.untagged(&session.label).is_some_and(&labeled))
+        });
+    }
+
+    /// The sessions `execution` recorded on this server.
+    fn recorded_ids<'a>(&self, execution: &'a Execution) -> Vec<&'a str> {
+        execution
             .rex
             .iter()
             .filter(|placement| placement.instance_id == self.instance_id)
             .flat_map(|placement| placement.sessions.values().map(String::as_str))
-            .collect();
-        self.kill_where(|session| {
-            recorded.contains(&session.id.as_str())
-                || self
-                    .untagged(&session.label)
-                    .is_some_and(|label| label.starts_with(&prefix))
-        });
+            .collect()
     }
 }
 
@@ -422,7 +452,8 @@ fn root_tag(root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::node::{Execution, ExecutionState, PaneProgress};
+    use crate::remote::node::{Execution, ExecutionState, PaneProgress, Workspace};
+    use crate::remote::protocol::WorkspaceIdentity;
     use std::collections::BTreeMap;
 
     const TAG: &str = "wr0000beef.";
@@ -641,6 +672,63 @@ mod tests {
                 "{id}: {destroyed:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_session_another_execution_records_survives_whatever_its_label() {
+        // B's session carries A's label and A's carries B's, as after a swap.
+        let list = serde_json::json!({ "sessions": [
+            { "session_id": "session:a", "label": format!("{TAG}x999999999999-0") },
+            { "session_id": "session:b", "label": format!("{TAG}x0123456789ab-0") },
+            { "session_id": "session:pane1", "label": format!("{TAG}x0123456789ab-0") },
+            { "session_id": "session:orphan", "label": format!("{TAG}x0123456789ab-0") },
+        ]});
+        let fake = Fake::new(&[
+            ("session.list", &list.to_string()),
+            ("session.destroy", "{}"),
+        ]);
+        let root = fake.root();
+        let mut workspace = Workspace::new(
+            &root,
+            WorkspaceIdentity {
+                ws_id: "w999999999999".into(),
+                project_id: "repo-0123456789ab".into(),
+                handle: "b".into(),
+                branch: "b".into(),
+                base_sha: "a".repeat(40),
+            },
+            crate::config::RemoteIsolation::None,
+        );
+        let mut b = execution(&[(0, "session:b")], "instance-1");
+        b.ex_id = "x999999999999".into();
+        workspace.execution = Some(b);
+        root.save(&workspace).unwrap();
+        let destroyed = || -> Vec<String> {
+            fake.calls()
+                .into_iter()
+                .filter(|call| call.contains("session.destroy"))
+                .collect()
+        };
+
+        let a = execution(&[(0, "session:a"), (1, "session:pane1")], "instance-1");
+        let destroys = |id: &str| {
+            let id = format!("\"session:{id}\"");
+            destroyed().iter().filter(|call| call.contains(&id)).count()
+        };
+        fake.host.kill_pane(&root, &a, 0);
+        assert_eq!(
+            ["a", "b", "pane1", "orphan"].map(destroys),
+            [1, 0, 0, 1],
+            "{:?}",
+            destroyed()
+        );
+        fake.host.kill_execution(&root, &a);
+        assert_eq!(
+            ["a", "b", "pane1", "orphan"].map(destroys),
+            [2, 0, 1, 2],
+            "{:?}",
+            destroyed()
+        );
     }
 
     #[test]
