@@ -9,6 +9,7 @@ pub mod handle;
 pub mod handshake;
 pub mod kitty;
 pub mod rex;
+mod sidebar_host;
 pub mod tmux;
 pub mod types;
 pub mod util;
@@ -25,6 +26,7 @@ use std::time::Duration;
 
 pub use handle::MuxHandle;
 pub use handshake::PaneHandshake;
+pub(crate) use sidebar_host::*;
 pub use tmux::TmuxBackend;
 pub use types::*;
 
@@ -502,6 +504,16 @@ pub trait Multiplexer: Send + Sync {
     /// (e.g., Zellij can't look up a pane by ID alone). Backends that can
     /// switch by pane ID directly (tmux, WezTerm) ignore this parameter.
     fn switch_to_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()>;
+
+    /// Called when the dashboard quits without jumping, for backends that
+    /// must hand focus back to the pane the dashboard was opened over.
+    fn dashboard_quit(&self) {}
+
+    /// Show a pane while the dashboard keeps the keyboard. Defaults to a
+    /// switch, which a tmux popup survives.
+    fn peek_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()> {
+        self.switch_to_pane(pane_id, window_hint)
+    }
 
     /// Whether jumping to a pane should exit the dashboard.
     /// Defaults to true. Override to return false to keep the dashboard open after jumping.
@@ -1022,6 +1034,11 @@ pub trait Multiplexer: Send + Sync {
     /// Default returns None (no crash detection for this backend).
     fn server_boot_id(&self) -> Result<Option<String>> {
         Ok(None)
+    }
+
+    /// The backend's own sidebar, for backends that run it without tmux.
+    fn sidebar(&self) -> Option<&dyn SidebarHost> {
+        None
     }
 
     /// Validate if an agent is still alive and should be kept in the dashboard.

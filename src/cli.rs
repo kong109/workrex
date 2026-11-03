@@ -886,15 +886,15 @@ enum Commands {
 pub struct SidebarAppearanceArgs {
     /// Sidebar placement when enabling
     #[arg(long, value_enum)]
-    position: Option<SidebarPosition>,
+    pub(crate) position: Option<SidebarPosition>,
 
     /// Sidebar width in columns or as a percentage, for example 40 or 15%
     #[arg(long)]
-    width: Option<SidebarWidth>,
+    pub(crate) width: Option<SidebarWidth>,
 
     /// Sidebar height in rows or as a percentage, for example 3 or 10%
     #[arg(long)]
-    height: Option<SidebarHeight>,
+    pub(crate) height: Option<SidebarHeight>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1297,6 +1297,13 @@ pub fn run() -> Result<()> {
         Commands::Docs => command::docs::run(),
         Commands::Changelog => command::changelog::run(),
         Commands::Update => command::update::run(),
+        Commands::Sidebar {
+            session,
+            appearance,
+            action,
+        } if command::sidebar::host::hosted() => {
+            command::sidebar::host::handle_cli(session, appearance, action)
+        }
         Commands::Sidebar {
             session,
             appearance,

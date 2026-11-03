@@ -20,6 +20,13 @@ use super::agent::shell_quote;
 use super::types::*;
 use super::util;
 
+pub(crate) mod events;
+mod layer;
+pub(crate) mod sidebar_api;
+
+pub use layer::LayerHint;
+use layer::LayerKind;
+
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
 const TERMINAL_CREATOR: &str = "com.superlogical.terminal";
 
@@ -93,7 +100,7 @@ struct WindowView {
 #[derive(Debug, Deserialize)]
 struct LayerView {
     #[serde(default)]
-    kind: String,
+    kind: LayerKind,
     #[serde(default)]
     blocks: Vec<BlockView>,
 }
@@ -123,7 +130,7 @@ impl WindowView {
     fn terminal_block_ids(&self) -> impl Iterator<Item = &BlockId> {
         self.layers
             .iter()
-            .filter(|layer| layer.kind == "tiled")
+            .filter(|layer| layer.kind == LayerKind::Tiled)
             .flat_map(|layer| layer.blocks.iter())
             .filter(|block| block.is_terminal())
             .map(|block| &block.block_id)
@@ -589,6 +596,8 @@ pub fn in_rex_terminal() -> bool {
 struct Caller {
     session: Option<SessionId>,
     block: Option<BlockId>,
+    /// The block a dashboard layer was opened over.
+    origin: Option<BlockId>,
 }
 
 impl Caller {
@@ -601,6 +610,7 @@ impl Caller {
             block: std::env::var("REX_BLOCK")
                 .ok()
                 .and_then(|id| BlockId::parse(&id).ok()),
+            origin: layer::origin_block(),
         }
     }
 }
@@ -1396,11 +1406,12 @@ impl Multiplexer for RexBackend {
     /// the app, so the server's focus is often a pane the user never saw.
     fn active_pane_id(&self) -> Option<String> {
         let view = self.current_or_only_view().ok()?;
-        let block = match &self.caller.block {
-            Some(caller) if view.window_of(caller).is_some() => caller,
-            _ => view.active_window()?.focused_block_id.as_ref()?,
-        };
-        Some(block.as_str().to_string())
+        layer::active_block(
+            &view,
+            self.caller.block.as_ref(),
+            self.caller.origin.clone(),
+        )
+        .map(|block| block.0)
     }
 
     fn get_client_active_pane_path(&self) -> Result<PathBuf> {
@@ -1800,7 +1811,21 @@ impl Multiplexer for RexBackend {
     /// owns it. A refused jump fails, so the dashboard stays open, and only
     /// a command outside a full-screen display prints the fix.
     fn switch_to_pane(&self, pane_id: &str, _window_hint: Option<&str>) -> Result<()> {
+        if self.caller.origin.is_some() {
+            return self.jump_to_block(&BlockId::parse(pane_id)?);
+        }
         self.jump_to_pane(pane_id, &REMOTE_CONTROL_HINT, &mut std::io::stderr())
+    }
+
+    fn dashboard_quit(&self) {
+        self.return_to_origin()
+    }
+
+    fn peek_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()> {
+        if self.caller.origin.is_some() {
+            return self.peek_block(&BlockId::parse(pane_id)?);
+        }
+        self.switch_to_pane(pane_id, window_hint)
     }
 
     fn kill_pane(&self, pane_id: &str) -> Result<()> {
@@ -2048,6 +2073,10 @@ impl Multiplexer for RexBackend {
 
     fn server_boot_id(&self) -> Result<Option<String>> {
         Ok(Some(self.whoami()?.boot_id))
+    }
+
+    fn sidebar(&self) -> Option<&dyn super::SidebarHost> {
+        Some(self)
     }
 }
 
@@ -2321,6 +2350,27 @@ mod tests {
         Ok(())
     }
 
+    impl RexBackend {
+        /// A backend whose `rex` is the shell script `body`, written to
+        /// `dir`, with its server address in `dir`.
+        pub(crate) fn scripted(dir: &Path, body: String) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let program = dir.join("rex");
+            write_script(&program, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            RexBackend {
+                program: program.display().to_string(),
+                caller: Caller::default(),
+                ..RexBackend::for_server(&format!("unix://{}/s.sock", dir.display()))
+            }
+        }
+
+        pub(crate) fn reusing_reads_for(mut self, reuse: Duration) -> Self {
+            self.reuse = reuse;
+            self
+        }
+    }
+
     #[test]
     fn an_unsupported_server_fails_every_call_after_one_version_query() {
         use std::os::unix::fs::PermissionsExt;
@@ -2403,7 +2453,6 @@ mod tests {
 
     impl FakeRex {
         fn new(cases: &[(&str, &str)]) -> Self {
-            use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             let mut arms = String::new();
             for (index, (pattern, reply)) in cases.iter().enumerate() {
@@ -2423,25 +2472,17 @@ mod tests {
                 let pattern = pattern.replace(' ', "?");
                 arms.push_str(&format!("  *{pattern}*) {arm};;\n"));
             }
-            let program = dir.path().join("rex");
-            write_script(
-                &program,
+            let rex = RexBackend::scripted(
+                dir.path(),
                 format!(
-                    "#!/bin/sh\ndir=$(dirname \"$0\")\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
+                    "dir=$(dirname \"$0\")\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
                      case \"$call\" in\n\
                      {arms}\
                      \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
                      \x20 *) echo \"unexpected: $call\" >&2; exit 1;;\nesac\n",
                     log = dir.path().join("calls").display(),
                 ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let rex = RexBackend {
-                program: program.display().to_string(),
-                caller: Caller::default(),
-                ..RexBackend::for_server(&format!("unix://{}/s.sock", dir.path().display()))
-            };
+            );
             Self { dir, rex }
         }
 
@@ -2449,6 +2490,7 @@ mod tests {
             self.rex.caller = Caller {
                 session: Some(SessionId(session.into())),
                 block: Some(BlockId(block.into())),
+                origin: None,
             };
             self
         }
