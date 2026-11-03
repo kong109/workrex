@@ -268,7 +268,7 @@ fn a_reader_keeps_the_records_of_another_server() {
     let dir = store.reported_dir();
     fs::create_dir_all(&dir).unwrap();
     let other_path = dir.join(other.pane_key.to_filename());
-    let other_record = record(&other, AgentStatus::Working, 100);
+    let other_record = record(&other, AgentStatus::Working, 100, None);
     fs::write(&other_path, serde_json::to_vec(&other_record).unwrap()).unwrap();
     store
         .upsert_agent(&hooked("block:a", AgentStatus::Waiting, 100))
@@ -285,4 +285,100 @@ fn a_reader_keeps_the_records_of_another_server() {
     let records = read_records(&dir).unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].1, other_record);
+}
+
+fn store_record(store: &StateStore, record: &ReportedRecord) {
+    let dir = store.reported_dir();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(record.pane_key.to_filename()),
+        serde_json::to_vec(record).unwrap(),
+    )
+    .unwrap();
+}
+
+fn last_done_status(store: &StateStore) -> Option<AgentStatus> {
+    let merged = with_reported(store, store.list_all_agents().unwrap()).unwrap();
+    assert_eq!(merged.len(), 1);
+    merged[0].status
+}
+
+#[test]
+fn a_record_applies_only_while_the_hook_has_the_status_it_was_merged_against() {
+    let (_dir, store) = temp_store();
+    let seen = hooked("block:a", AgentStatus::Working, 100);
+    store.upsert_agent(&seen).unwrap();
+    let done = record(&seen, AgentStatus::Done, 90, Some(HookVersion::of(&seen)));
+    store_record(&store, &done);
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
+
+    store
+        .upsert_agent(&hooked("block:a", AgentStatus::Working, 101))
+        .unwrap();
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Working));
+
+    store.upsert_agent(&seen).unwrap();
+    store_record(
+        &store,
+        &ReportedRecord {
+            hook_seen: None,
+            ..done
+        },
+    );
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Working));
+}
+
+#[test]
+fn a_record_without_the_hook_it_was_merged_against_is_not_read() {
+    let (_dir, store) = temp_store();
+    let seen = hooked("block:a", AgentStatus::Working, 100);
+    store.upsert_agent(&seen).unwrap();
+    let mut old = serde_json::to_value(record(&seen, AgentStatus::Done, 200, None)).unwrap();
+    old.as_object_mut().unwrap().remove("hook_seen");
+    let dir = store.reported_dir();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(seen.pane_key.to_filename()),
+        serde_json::to_vec(&old).unwrap(),
+    )
+    .unwrap();
+
+    assert!(read_records(&dir).unwrap().is_empty());
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Working));
+}
+
+#[test]
+fn a_hook_repeating_its_status_keeps_the_record() {
+    let (_dir, store) = temp_store();
+    store
+        .upsert_agent(&hooked("block:a", AgentStatus::Working, 100))
+        .unwrap();
+    let done = ReportedStatus::Agent {
+        status: AgentStatus::Done,
+        since: 200,
+    };
+    store
+        .load_all_reconciled_agents(&reporting("block:a", Some(done)))
+        .unwrap();
+    let mut repeated = hooked("block:a", AgentStatus::Working, 100);
+    repeated.updated_ts = 300;
+    store.upsert_agent(&repeated).unwrap();
+
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
+}
+
+#[test]
+fn a_hook_status_change_within_the_merged_second_keeps_the_hook_status() {
+    let (_dir, store) = temp_store();
+    store
+        .upsert_agent(&hooked("block:a", AgentStatus::Waiting, 100))
+        .unwrap();
+    store
+        .load_all_reconciled_agents(&reporting("block:a", Some(working(100))))
+        .unwrap();
+    store
+        .upsert_agent(&hooked("block:a", AgentStatus::Done, 100))
+        .unwrap();
+
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
 }

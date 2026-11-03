@@ -29,9 +29,31 @@ pub(crate) struct ReportedRecord {
     pub pane_key: PaneKey,
     pub status: AgentStatus,
     pub since: u64,
+    /// The hook state the reader merged the report against, or `None` for
+    /// an agent with no hook state. Required, so a record without it is
+    /// not read.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub hook_seen: Option<HookVersion>,
     pub workdir: PathBuf,
     pub window_name: Option<String>,
     pub session_name: Option<String>,
+}
+
+/// One hook status: the status and when the hook set it, or when the hook
+/// last wrote for a state with no status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct HookVersion {
+    pub status: Option<AgentStatus>,
+    pub ts: u64,
+}
+
+impl HookVersion {
+    pub(crate) fn of(state: &AgentState) -> Self {
+        Self {
+            status: state.status,
+            ts: state.status_ts.unwrap_or(state.updated_ts),
+        }
+    }
 }
 
 /// Let a reported status win over the stored one. Returns whether the state
@@ -74,9 +96,11 @@ impl<'a> Reports<'a> {
         let Some(reported) = self.mux.reported_status(&state.pane_key.pane_id) else {
             return;
         };
+        let hook_seen = HookVersion::of(state);
         apply(state, reported);
         if let ReportedStatus::Agent { status, since } = reported {
-            self.shown.push(record(state, status, since));
+            self.shown
+                .push(record(state, status, since, Some(hook_seen)));
         }
     }
 
@@ -106,7 +130,7 @@ impl<'a> Reports<'a> {
             .filter(|(_, live, _, _)| within(&worktrees, &live.working_dir))
             .map(|(pane_id, live, status, since)| {
                 let state = self.adopted_state(pane_id, live, status, since, boot_id);
-                self.shown.push(record(&state, status, since));
+                self.shown.push(record(&state, status, since, None));
                 let mut pane = state.to_agent_pane(
                     live.session.clone().unwrap_or_default(),
                     live.window.clone().unwrap_or_default(),
@@ -195,10 +219,10 @@ impl<'a> Reports<'a> {
 /// Hook state with the statuses readers last saw merged in, plus agents
 /// that only reported, for readers like last-done that skip the live query.
 ///
-/// A record is a snapshot of an old live query, so it overrides the hook only
-/// when it was reported after the hook's status changed. Both times are whole
-/// seconds and a tie keeps the hook: within one second the order is unknown,
-/// and the hook owns the state while the record may be stale.
+/// A record holds the result of a live merge against one hook status, so it
+/// applies only while the hook still has that status. Once the hook changes,
+/// the hook stands until a pruning reader merges the live report again and
+/// rewrites the record.
 pub(crate) fn with_reported(
     store: &StateStore,
     agents: Vec<AgentState>,
@@ -211,7 +235,7 @@ pub(crate) fn with_reported(
         .into_iter()
         .map(|mut state| {
             if let Some(record) = records.remove(&state.pane_key)
-                && record.since > state.status_ts.unwrap_or(state.updated_ts)
+                && record.hook_seen == Some(HookVersion::of(&state))
             {
                 let reported = ReportedStatus::Agent {
                     status: record.status,
@@ -243,11 +267,17 @@ pub(crate) fn with_reported(
     Ok(merged)
 }
 
-fn record(state: &AgentState, status: AgentStatus, since: u64) -> ReportedRecord {
+fn record(
+    state: &AgentState,
+    status: AgentStatus,
+    since: u64,
+    hook_seen: Option<HookVersion>,
+) -> ReportedRecord {
     ReportedRecord {
         pane_key: state.pane_key.clone(),
         status,
         since,
+        hook_seen,
         workdir: state.workdir.clone(),
         window_name: state.window_name.clone(),
         session_name: state.session_name.clone(),

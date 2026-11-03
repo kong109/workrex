@@ -320,6 +320,51 @@ def test_last_done_prefers_a_hook_status_newer_than_the_last_report_a_reader_saw
     assert_last_done_focuses(rex, workmux_exe_path, repo_path, block)
 
 
+def hook_status(env: RexEnvironment, exe: Path, repo: Path, block: str, status: str):
+    result = workmux(env, exe, repo, "set-window-status", status, block=block)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("hook", ["waiting", "done"])
+def test_last_done_agrees_with_status_when_a_live_report_outranks_a_newer_hook(
+    rex, workmux_exe_path, repo_path, hook
+):
+    block = start_fake_agent(
+        rex, workmux_exe_path, repo_path, f"osc-outranks-{hook}", launch="{agent}"
+    )
+    report(rex, block, "state=working:app=fake")
+    assert workmux(rex, workmux_exe_path, repo_path, "list").returncode == 0
+
+    time.sleep(1.2)
+    hook_status(rex, workmux_exe_path, repo_path, block, hook)
+    assert workmux(rex, workmux_exe_path, repo_path, "list").returncode == 0
+
+    assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"
+    result = workmux(rex, workmux_exe_path, repo_path, "last-done")
+    assert result.returncode == 0, result.stderr
+    assert "No completed or waiting agents found" in result.stdout + result.stderr
+
+
+def test_last_done_agrees_with_status_after_a_hook_change_in_the_reports_second(
+    rex, workmux_exe_path, repo_path
+):
+    block = start_fake_agent(
+        rex, workmux_exe_path, repo_path, "osc-same-second", launch="{agent}"
+    )
+    hook_status(rex, workmux_exe_path, repo_path, block, "waiting")
+    report(rex, block, "state=working:app=fake")
+    assert workmux(rex, workmux_exe_path, repo_path, "list").returncode == 0
+
+    time.sleep(1.2 - time.time() % 1)
+    report(rex, block, "state=done:app=fake")
+    assert workmux(rex, workmux_exe_path, repo_path, "list").returncode == 0
+    hook_status(rex, workmux_exe_path, repo_path, block, "working")
+    assert workmux(rex, workmux_exe_path, repo_path, "list").returncode == 0
+
+    assert agent_status(rex, workmux_exe_path, repo_path, block) == "done"
+    assert_last_done_focuses(rex, workmux_exe_path, repo_path, block)
+
+
 def test_a_reporting_pane_in_the_main_worktree_is_not_adopted(
     rex, workmux_exe_path, repo_path
 ):
