@@ -18,7 +18,6 @@ from .conftest import Node, git, wm
 from .test_status import start_workmux, status_rows
 
 
-
 def turn_agent(directory: Path) -> Path:
     """An agent that is done, then runs one turn per line typed into it:
     after a delay it reports `working`, a while later it writes `turn-<n>`

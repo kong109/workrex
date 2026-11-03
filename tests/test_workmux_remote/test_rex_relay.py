@@ -21,7 +21,9 @@ def test_rex_relay_lifecycle_in_its_own_session(
 ):
     env = mux_server
     repo = mux_repo_path
-    commit_project(repo, {"nerdfont": False, "panes": [{"command": "echo AGENT-READY"}]})
+    commit_project(
+        repo, {"nerdfont": False, "panes": [{"command": "echo AGENT-READY"}]}
+    )
     window = get_window_name("feat")
 
     added = wm(env, workmux_exe_path, repo, "add feat --remote lo")
@@ -68,7 +70,11 @@ def test_rex_relay_in_window_mode_opens_beside_the_caller(
     repo = mux_repo_path
     commit_project(
         repo,
-        {"nerdfont": False, "mode": "window", "panes": [{"command": "echo AGENT-READY"}]},
+        {
+            "nerdfont": False,
+            "mode": "window",
+            "panes": [{"command": "echo AGENT-READY"}],
+        },
     )
     window = get_window_name("feat")
 

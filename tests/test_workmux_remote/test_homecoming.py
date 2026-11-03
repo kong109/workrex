@@ -19,7 +19,6 @@ from ..support.bin_name import rebrand
 from .conftest import Node, git, local_records, wm, write_script
 
 
-
 def configure(repo: Path, **extra) -> None:
     project = {"nerdfont": False, "panes": [{"command": "echo AGENT-READY"}], **extra}
     (repo / ".workmux.yaml").write_text(yaml.dump(project))

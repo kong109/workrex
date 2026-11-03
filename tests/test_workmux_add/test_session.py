@@ -399,7 +399,11 @@ class TestOpenSessionFlag:
 
         # Create as window-mode worktree
         add_branch_and_get_worktree(
-            env, workmux_exe_path, repo_path, branch_name, extra_args="--mode window --background"
+            env,
+            workmux_exe_path,
+            repo_path,
+            branch_name,
+            extra_args="--mode window --background",
         )
 
         # Close the window
@@ -435,7 +439,11 @@ class TestOpenSessionFlag:
 
         # Create as window-mode worktree
         add_branch_and_get_worktree(
-            env, workmux_exe_path, repo_path, branch_name, extra_args="--mode window --background"
+            env,
+            workmux_exe_path,
+            repo_path,
+            branch_name,
+            extra_args="--mode window --background",
         )
 
         # Close the window
@@ -488,7 +496,11 @@ class TestOpenSessionFlag:
 
         # Create as window-mode worktree
         add_branch_and_get_worktree(
-            env, workmux_exe_path, repo_path, branch_name, extra_args="--mode window --background"
+            env,
+            workmux_exe_path,
+            repo_path,
+            branch_name,
+            extra_args="--mode window --background",
         )
 
         # Verify window exists
@@ -533,7 +545,11 @@ class TestMixedMode:
 
         # Create window-mode worktree (use --background to stay in test session)
         add_branch_and_get_worktree(
-            env, workmux_exe_path, repo_path, window_branch, extra_args="--mode window --background"
+            env,
+            workmux_exe_path,
+            repo_path,
+            window_branch,
+            extra_args="--mode window --background",
         )
 
         # Create session-mode worktree
@@ -567,7 +583,11 @@ class TestMixedMode:
 
         # Create both types in background
         add_branch_and_get_worktree(
-            env, workmux_exe_path, repo_path, window_branch, extra_args="--mode window --background"
+            env,
+            workmux_exe_path,
+            repo_path,
+            window_branch,
+            extra_args="--mode window --background",
         )
         add_branch_and_get_worktree(
             env,
