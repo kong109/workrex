@@ -23,9 +23,15 @@ SHELL = "com.superlogical.terminal.shell"
 pytestmark = pytest.mark.skipif(rex_binary() is None, reason="rex CLI not found")
 
 
+def rex_cli() -> str:
+    rex = rex_binary()
+    assert rex is not None, "rex CLI not found"
+    return rex
+
+
 class RexServer:
     def __init__(self, workmux: Path, tmp_path: Path):
-        self.rex = rex_binary()
+        self.rex = rex_cli()
         # macOS limits socket paths to 104 bytes; pytest tmp paths run longer.
         self.dir = Path(tempfile.mkdtemp(prefix="rx", dir="/tmp"))
         self.url = f"unix://{self.dir / 's.sock'}"
@@ -152,7 +158,7 @@ def rex(workmux_exe_path: Path, tmp_path: Path) -> Generator[RexServer, None, No
 
 def test_lua_file_passes_config_check():
     result = subprocess.run(
-        [rex_binary(), "config", "check", str(LUA)], capture_output=True, text=True
+        [rex_cli(), "config", "check", str(LUA)], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "actions: 1" in result.stdout
