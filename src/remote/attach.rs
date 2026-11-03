@@ -612,37 +612,14 @@ impl Relay {
         let forward = master.clone();
         let reader = master.clone();
         let output = thread::spawn(move || {
-            let mut reader = &*reader;
-            let mut stdout = std::io::stdout();
-            let mut buf = [0u8; 16 * 1024];
-            let mut announced = false;
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        // Forward keystrokes before the screen shows, so
-                        // whatever is typed after seeing it gets through.
-                        if !announced {
-                            let mut input = input.lock().unwrap();
-                            if matches!(*input, Input::Pending(pending) if pending == generation) {
-                                flush_input();
-                                *input = Input::Forwarded(forward.clone());
-                            }
-                        }
-                        if stdout
-                            .write_all(&buf[..n])
-                            .and_then(|_| stdout.flush())
-                            .is_err()
-                        {
-                            break;
-                        }
-                        if !announced {
-                            announced = true;
-                            let _ = events.send(Event::Output(generation));
-                        }
-                    }
-                }
-            }
+            copy_output(
+                &*reader,
+                std::io::stdout(),
+                &input,
+                forward,
+                generation,
+                &events,
+            )
         });
 
         let events = self.events.clone();
@@ -731,6 +708,42 @@ fn write_out(text: &str) {
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(text.as_bytes());
     let _ = stdout.flush();
+}
+
+/// Copy connection `generation`'s output to the terminal.
+fn copy_output(
+    mut reader: impl Read,
+    mut out: impl Write,
+    input: &Mutex<Input>,
+    master: Arc<File>,
+    generation: u64,
+    events: &Sender<Event>,
+) {
+    let mut buf = [0u8; 16 * 1024];
+    let mut announced = false;
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                // Forward keystrokes before the screen shows, so whatever is
+                // typed after seeing it gets through.
+                if !announced {
+                    let mut input = input.lock().unwrap();
+                    if matches!(*input, Input::Pending(pending) if pending == generation) {
+                        flush_input();
+                        *input = Input::Forwarded(master.clone());
+                    }
+                }
+                if out.write_all(&buf[..n]).and_then(|_| out.flush()).is_err() {
+                    break;
+                }
+                if !announced {
+                    announced = true;
+                    let _ = events.send(Event::Output(generation));
+                }
+            }
+        }
+    }
 }
 
 /// Drop keystrokes the terminal has queued but nobody read yet.
@@ -950,5 +963,57 @@ mod tests {
         );
         let text = status_text("box", &Ending::Detached, None);
         assert_eq!(text, " box: detached · r reconnect · q close ");
+    }
+
+    /// A terminal that notes, at each write, whether keystrokes go to the
+    /// connection.
+    struct Terminal<'a> {
+        input: &'a Mutex<Input>,
+        forwarded: Vec<bool>,
+    }
+
+    impl Write for Terminal<'_> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let input = self.input.try_lock();
+            self.forwarded
+                .push(matches!(input.as_deref(), Ok(Input::Forwarded(_))));
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn master() -> Arc<File> {
+        Arc::new(File::open("/dev/null").unwrap())
+    }
+
+    #[test]
+    fn keys_are_forwarded_before_the_screen_shows() {
+        let input = Mutex::new(Input::Pending(1));
+        let mut terminal = Terminal {
+            input: &input,
+            forwarded: Vec::new(),
+        };
+        let (events, received) = mpsc::channel();
+        copy_output(&b"screen"[..], &mut terminal, &input, master(), 1, &events);
+        assert_eq!(terminal.forwarded, [true]);
+        assert!(matches!(received.try_recv(), Ok(Event::Output(1))));
+    }
+
+    #[test]
+    fn a_replaced_connection_never_takes_the_keys() {
+        // Waking from sleep connects again without joining the old output
+        // thread, so its first output can arrive after the new connect.
+        let input = Mutex::new(Input::Pending(2));
+        let (events, _received) = mpsc::channel();
+        copy_output(&b"old"[..], Vec::new(), &input, master(), 1, &events);
+        assert!(matches!(*input.lock().unwrap(), Input::Pending(2)));
+
+        let new = master();
+        copy_output(&b"new"[..], Vec::new(), &input, new.clone(), 2, &events);
+        let input = input.lock().unwrap();
+        assert!(matches!(&*input, Input::Forwarded(master) if Arc::ptr_eq(master, &new)));
     }
 }
