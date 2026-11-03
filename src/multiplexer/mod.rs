@@ -1502,10 +1502,9 @@ mod tests {
 
     #[test]
     fn a_pane_with_another_pid_runs_no_agent() {
-        assert!(!pane_runs_agent(
-            pane_with(Some(8), Some("node")),
-            &agent_with(7, "node")
-        ));
+        let agent = agent_with(7, "node");
+        assert!(!pane_runs_agent(pane_with(Some(8), Some("node")), &agent));
+        assert!(!pane_runs_agent(pane_with(Some(6), Some("node")), &agent));
     }
 
     #[test]
@@ -1530,6 +1529,15 @@ mod tests {
         let agent = agent_with(7, "node");
         assert!(pane_runs_agent(pane_with(Some(7), None), &agent));
         assert!(!pane_runs_agent(pane_with(Some(8), None), &agent));
+    }
+
+    /// With neither value reported, neither check runs.
+    #[test]
+    fn a_pane_without_a_pid_or_a_command_runs_the_agent() {
+        assert!(pane_runs_agent(
+            pane_with(None, None),
+            &agent_with(7, "node")
+        ));
     }
 
     #[test]

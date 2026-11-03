@@ -762,6 +762,7 @@ impl Follower {
         let mut sessions: Vec<String> = Vec::new();
         let mut sizes = HashMap::new();
         let mut destroyed = HashSet::new();
+        let mut new_sessions = HashSet::new();
         let mut wake = false;
         let touch = |sessions: &mut Vec<String>, session_id: &str| {
             if !sessions.iter().any(|id| id == session_id) {
@@ -780,8 +781,12 @@ impl Follower {
                         .insert(window_id.clone(), session_id.clone());
                     wake = true;
                 }
-                Event::SessionCreated { session_id }
-                | Event::WindowClosed { session_id, .. }
+                Event::SessionCreated { session_id } => {
+                    new_sessions.insert(session_id.clone());
+                    touch(&mut sessions, session_id);
+                    wake = true;
+                }
+                Event::WindowClosed { session_id, .. }
                 | Event::BlockClosed { session_id, .. }
                 | Event::ViewChanged { session_id } => {
                     touch(&mut sessions, session_id);
@@ -814,15 +819,19 @@ impl Follower {
         sessions.retain(|session_id| !destroyed.contains(session_id));
 
         if !sessions.is_empty() || !destroyed.is_empty() {
-            let pass = self.pass_over(sessions, destroyed, sizes);
+            let pass = self.pass_over(sessions, &new_sessions, destroyed, sizes);
             self.work.settle(pass);
         }
         wake
     }
 
+    /// Rex reports a new session with `session_created` alone, and no
+    /// `window_created` follows for the windows it starts with, so the read
+    /// of a session in `new_sessions` names the windows owed a sidebar.
     fn pass_over(
         &mut self,
         sessions: Vec<String>,
+        new_sessions: &HashSet<String>,
         destroyed: HashSet<String>,
         sizes: HashMap<String, u32>,
     ) -> Result<()> {
@@ -834,6 +843,13 @@ impl Follower {
             .collect();
         for session_id in sessions {
             let view = plane.rex.sidebar_view(&session_id)?;
+            if let Some(view) = view.as_ref().filter(|_| new_sessions.contains(&session_id)) {
+                for window in &view.windows {
+                    self.work
+                        .created
+                        .insert(window.window_id.clone(), session_id.clone());
+                }
+            }
             views.push((session_id, view));
         }
         let windows: HashSet<String> = self.work.created.keys().cloned().collect();
@@ -1054,5 +1070,58 @@ mod tests {
         assert!(sessions.includes("session:a"));
         assert!(!sessions.includes("session:z"));
         assert!(!Scope::Off.includes("session:a"));
+    }
+
+    /// Rex reports a new session with `session_created` alone: no
+    /// `window_created` follows for the window it starts with.
+    #[test]
+    fn a_new_session_gets_a_sidebar_from_its_session_created_event() {
+        const VIEW: &str =
+            include_str!("../../../../multiplexer/testdata/rex_sidebar_view_before.json");
+        const SESSION: &str = "session:01a19e92-e5aa-7c77-a9b2-9042bbdbf620";
+        const WINDOW: &str = "window:01a19e92-e5ba-7c40-bd4e-37d60b3ba9bb";
+        let dir = tempfile::tempdir().unwrap();
+        let view = dir.path().join("view");
+        std::fs::write(&view, VIEW).unwrap();
+        let rex = RexBackend::scripted(
+            dir.path(),
+            format!(
+                "cat > /dev/null\ncase \"$*\" in\n\
+                 \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
+                 \x20 *session.view*) cat '{}';;\n\
+                 \x20 *' size '*) echo '{{\"columns\":120,\"rows\":40}}';;\n\
+                 \x20 *session.new_split*) \
+                 echo '{{\"block_ids\":[\"block:sidebar\"],\"split_ids\":[\"split:sidebar\"]}}';;\n\
+                 \x20 *) exit 1;;\nesac\n",
+                view.display()
+            ),
+        );
+        let files = Files::at(dir.path().join("state"), "test");
+        files
+            .update_prefs(|prefs| {
+                Scope::Global {
+                    optout: HashSet::new(),
+                }
+                .write(prefs)
+            })
+            .unwrap();
+        let plane = Plane::new(rex.detached_for_events(), files, Config::default()).unwrap();
+        let mut follower = Follower {
+            plane: plane.for_daemon(),
+            observed: Arc::default(),
+            stream: None,
+            work: Work::default(),
+        };
+
+        follower.handle(vec![Event::SessionCreated {
+            session_id: SESSION.into(),
+        }]);
+        let records = follower.plane.files.records();
+        assert_eq!(
+            records.get(WINDOW).map(|record| record.block_id.as_str()),
+            Some("block:sidebar"),
+            "{records:?}"
+        );
+        assert!(follower.work.created.is_empty());
     }
 }

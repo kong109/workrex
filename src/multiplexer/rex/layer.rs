@@ -139,7 +139,6 @@ mod tests {
     use super::super::{Caller, SessionId};
     use super::*;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     const LAYER_VIEW: &str = include_str!("../testdata/rex_session_view_dashboard_layer.json");
     const APP_CLIENTS: &str = include_str!("../testdata/rex_client_list.json");
@@ -213,8 +212,7 @@ esac
                 dir = dir.path().display(),
             );
             let program = dir.path().join("rex");
-            fs::write(&program, script).unwrap();
-            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            crate::test_support::write_script(&program, &script);
             Self { dir }
         }
 
