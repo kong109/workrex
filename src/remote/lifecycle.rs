@@ -706,14 +706,30 @@ fn collect_tree(
 /// Command a window pane runs to relay pane `index` of `ex_id`.
 fn attach_command_line(remote: &str, ex_id: &str, index: usize) -> Result<String> {
     let exe = std::env::current_exe().context("Failed to locate the workmux binary")?;
+    Ok(attach_command(
+        &exe.to_string_lossy(),
+        remote,
+        ex_id,
+        index,
+        |name| std::env::var_os(name),
+    ))
+}
+
+fn attach_command(
+    exe: &str,
+    remote: &str,
+    ex_id: &str,
+    index: usize,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> String {
     let mut env: Vec<String> = Vec::new();
-    if std::env::var_os(super::transport::LOOPBACK_ENV).is_some_and(|v| v == "1") {
+    if var(super::transport::LOOPBACK_ENV).is_some_and(|v| v == "1") {
         env.push(format!("{}=1", super::transport::LOOPBACK_ENV));
     }
     // Rex panes start with the Rex server's environment, which need not
     // locate the config and state this command used.
     for name in ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] {
-        if let Some(value) = std::env::var_os(name) {
+        if let Some(value) = var(name) {
             env.push(format!("{name}={}", shell_quote(&value.to_string_lossy())));
         }
     }
@@ -722,11 +738,11 @@ fn attach_command_line(remote: &str, ex_id: &str, index: usize) -> Result<String
     } else {
         format!("env {} ", env.join(" "))
     };
-    Ok(format!(
+    format!(
         "{env}{} remote attach {} {ex_id} --pane {index}",
-        shell_quote(&exe.to_string_lossy()),
+        shell_quote(exe),
         shell_quote(remote)
-    ))
+    )
 }
 
 /// Create the window for `record`'s execution: one pane per remote session,
@@ -1418,5 +1434,28 @@ mod transfer_tests {
                 assert!(payload.len() > 46_000_000);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod attach_tests {
+    use super::*;
+
+    #[test]
+    fn relay_command_carries_the_config_and_state_dirs() {
+        let command = attach_command("/opt/bin/workrex", "winbox", "x1", 0, |name| match name {
+            "XDG_CONFIG_HOME" => Some("/home/me/my config".into()),
+            "XDG_STATE_HOME" => Some("/home/me/state".into()),
+            _ => None,
+        });
+        assert_eq!(
+            command,
+            "env XDG_CONFIG_HOME='/home/me/my config' XDG_STATE_HOME=/home/me/state \
+             /opt/bin/workrex remote attach winbox x1 --pane 0"
+        );
+        assert_eq!(
+            attach_command("/opt/bin/workrex", "winbox", "x1", 2, |_| None),
+            "/opt/bin/workrex remote attach winbox x1 --pane 2"
+        );
     }
 }
