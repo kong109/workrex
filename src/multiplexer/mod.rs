@@ -1056,10 +1056,10 @@ pub trait Multiplexer: Send + Sync {
 ///
 /// 1. `$WORKMUX_BACKEND` set → use that backend
 /// 2. `$TMUX` set → tmux
-/// 3. `$REX_BLOCK` or `$REX_SESSION` set → Rex
-/// 4. `$WEZTERM_PANE` set → WezTerm
-/// 5. `$ZELLIJ`, `$ZELLIJ_PANE_ID`, or `$ZELLIJ_SESSION_NAME` set → Zellij
-/// 6. `$KITTY_WINDOW_ID` set → Kitty
+/// 3. `$WEZTERM_PANE` set → WezTerm
+/// 4. `$ZELLIJ`, `$ZELLIJ_PANE_ID`, or `$ZELLIJ_SESSION_NAME` set → Zellij
+/// 5. `$KITTY_WINDOW_ID` set → Kitty
+/// 6. `$REX_BLOCK` set (and not empty) → Rex
 /// 7. None → defaults to tmux (for backward compatibility)
 ///
 /// This ordering ensures that running tmux inside kitty (or wezterm) correctly
@@ -1070,7 +1070,8 @@ pub fn detect_backend() -> BackendType {
             Ok(bt) => return bt,
             Err(_) => {
                 eprintln!(
-                    "workmux: invalid WORKMUX_BACKEND={val:?}, expected tmux|rex|wezterm|kitty|zellij"
+                    "workmux: invalid WORKMUX_BACKEND={val:?}, expected {}",
+                    BackendType::expected_names()
                 );
             }
         }
@@ -1085,48 +1086,60 @@ pub fn detect_backend_strict() -> Result<BackendType> {
         && !value.trim().is_empty()
     {
         return value.parse().map_err(|_| {
-            anyhow!("invalid WORKMUX_BACKEND={value:?}, expected tmux|rex|wezterm|kitty|zellij")
+            anyhow!(
+                "invalid WORKMUX_BACKEND={value:?}, expected {}",
+                BackendType::expected_names()
+            )
         });
     }
 
     Ok(detect_backend_from_environment())
 }
 
-fn detect_backend_from_environment() -> BackendType {
-    let tmux = std::env::var("TMUX").is_ok();
-    if prefers_rex(tmux, rex::in_rex_pane()) {
-        return BackendType::Rex;
-    }
-    resolve_backend(
-        std::env::var("TMUX").is_ok(),
-        std::env::var("WEZTERM_PANE").is_ok(),
-        std::env::var("ZELLIJ").is_ok()
-            || std::env::var("ZELLIJ_PANE_ID").is_ok()
-            || std::env::var("ZELLIJ_SESSION_NAME").is_ok(),
-        std::env::var("KITTY_WINDOW_ID").is_ok(),
-    )
+/// Which multiplexers the environment says we are running inside.
+#[derive(Debug, Default, Clone, Copy)]
+struct BackendSignals {
+    tmux: bool,
+    wezterm: bool,
+    zellij: bool,
+    kitty: bool,
+    rex: bool,
 }
 
-fn prefers_rex(tmux: bool, rex: bool) -> bool {
-    rex && !tmux
+fn detect_backend_from_environment() -> BackendType {
+    resolve_backend(BackendSignals {
+        tmux: std::env::var("TMUX").is_ok(),
+        wezterm: std::env::var("WEZTERM_PANE").is_ok(),
+        zellij: std::env::var("ZELLIJ").is_ok()
+            || std::env::var("ZELLIJ_PANE_ID").is_ok()
+            || std::env::var("ZELLIJ_SESSION_NAME").is_ok(),
+        kitty: std::env::var("KITTY_WINDOW_ID").is_ok(),
+        rex: rex::in_rex_terminal(),
+    })
 }
 
 /// Pure auto-detection logic, separated for testability.
-fn resolve_backend(tmux: bool, wezterm: bool, zellij: bool, kitty: bool) -> BackendType {
-    if tmux {
+fn resolve_backend(signals: BackendSignals) -> BackendType {
+    if signals.tmux {
         return BackendType::Tmux;
     }
 
-    if wezterm {
+    if signals.wezterm {
         return BackendType::WezTerm;
     }
 
-    if zellij {
+    if signals.zellij {
         return BackendType::Zellij;
     }
 
-    if kitty {
+    if signals.kitty {
         return BackendType::Kitty;
+    }
+
+    // Last, because every terminal started from a Rex pane inherits
+    // REX_BLOCK: any other multiplexer seen here is nested inside Rex
+    if signals.rex {
+        return BackendType::Rex;
     }
 
     BackendType::Tmux
@@ -1230,7 +1243,7 @@ mod tests {
     #[test]
     fn no_env_defaults_to_tmux() {
         assert_eq!(
-            resolve_backend(false, false, false, false),
+            resolve_backend(BackendSignals::default()),
             BackendType::Tmux
         );
     }
@@ -1238,7 +1251,10 @@ mod tests {
     #[test]
     fn tmux_only() {
         assert_eq!(
-            resolve_backend(true, false, false, false),
+            resolve_backend(BackendSignals {
+                tmux: true,
+                ..Default::default()
+            }),
             BackendType::Tmux
         );
     }
@@ -1246,7 +1262,10 @@ mod tests {
     #[test]
     fn wezterm_only() {
         assert_eq!(
-            resolve_backend(false, true, false, false),
+            resolve_backend(BackendSignals {
+                wezterm: true,
+                ..Default::default()
+            }),
             BackendType::WezTerm
         );
     }
@@ -1254,7 +1273,10 @@ mod tests {
     #[test]
     fn zellij_only() {
         assert_eq!(
-            resolve_backend(false, false, true, false),
+            resolve_backend(BackendSignals {
+                zellij: true,
+                ..Default::default()
+            }),
             BackendType::Zellij
         );
     }
@@ -1262,30 +1284,58 @@ mod tests {
     #[test]
     fn kitty_only() {
         assert_eq!(
-            resolve_backend(false, false, false, true),
+            resolve_backend(BackendSignals {
+                kitty: true,
+                ..Default::default()
+            }),
             BackendType::Kitty
         );
     }
 
     #[test]
     fn tmux_inside_kitty() {
-        assert_eq!(resolve_backend(true, false, false, true), BackendType::Tmux);
+        assert_eq!(
+            resolve_backend(BackendSignals {
+                tmux: true,
+                kitty: true,
+                ..Default::default()
+            }),
+            BackendType::Tmux
+        );
     }
 
     #[test]
     fn tmux_inside_wezterm() {
-        assert_eq!(resolve_backend(true, true, false, false), BackendType::Tmux);
+        assert_eq!(
+            resolve_backend(BackendSignals {
+                tmux: true,
+                wezterm: true,
+                ..Default::default()
+            }),
+            BackendType::Tmux
+        );
     }
 
     #[test]
     fn tmux_inside_zellij() {
-        assert_eq!(resolve_backend(true, false, true, false), BackendType::Tmux);
+        assert_eq!(
+            resolve_backend(BackendSignals {
+                tmux: true,
+                zellij: true,
+                ..Default::default()
+            }),
+            BackendType::Tmux
+        );
     }
 
     #[test]
     fn wezterm_inside_kitty() {
         assert_eq!(
-            resolve_backend(false, true, false, true),
+            resolve_backend(BackendSignals {
+                wezterm: true,
+                kitty: true,
+                ..Default::default()
+            }),
             BackendType::WezTerm
         );
     }
@@ -1293,35 +1343,85 @@ mod tests {
     #[test]
     fn zellij_inside_kitty() {
         assert_eq!(
-            resolve_backend(false, false, true, true),
+            resolve_backend(BackendSignals {
+                zellij: true,
+                kitty: true,
+                ..Default::default()
+            }),
             BackendType::Zellij
         );
     }
 
     #[test]
-    fn rex_pane_alone_selects_rex() {
-        assert!(prefers_rex(false, true));
-    }
-
-    #[test]
-    fn tmux_inside_rex_selects_tmux() {
-        assert!(!prefers_rex(true, true));
-    }
-
-    #[test]
-    fn outside_rex_defers_to_other_backends() {
-        assert!(!prefers_rex(false, false));
-    }
-
-    #[test]
-    fn workmux_backend_names_rex() {
-        assert_eq!("rex".parse::<BackendType>(), Ok(BackendType::Rex));
-        assert_eq!("Rex".parse::<BackendType>(), Ok(BackendType::Rex));
-        assert_eq!(BackendType::Rex.to_string(), "rex");
-    }
-
-    #[test]
     fn all_env_vars_set() {
-        assert_eq!(resolve_backend(true, true, true, true), BackendType::Tmux);
+        assert_eq!(
+            resolve_backend(BackendSignals {
+                tmux: true,
+                wezterm: true,
+                zellij: true,
+                kitty: true,
+                ..Default::default()
+            }),
+            BackendType::Tmux
+        );
+    }
+
+    #[test]
+    fn wezterm_inside_rex() {
+        assert_eq!(
+            resolve_backend(BackendSignals {
+                wezterm: true,
+                rex: true,
+                ..Default::default()
+            }),
+            BackendType::WezTerm
+        );
+    }
+
+    #[test]
+    fn kitty_inside_rex() {
+        assert_eq!(
+            resolve_backend(BackendSignals {
+                kitty: true,
+                rex: true,
+                ..Default::default()
+            }),
+            BackendType::Kitty
+        );
+    }
+
+    #[test]
+    fn rex_only() {
+        assert_eq!(
+            resolve_backend(BackendSignals {
+                rex: true,
+                ..Default::default()
+            }),
+            BackendType::Rex
+        );
+    }
+
+    #[test]
+    fn tmux_inside_rex() {
+        assert_eq!(
+            resolve_backend(BackendSignals {
+                tmux: true,
+                rex: true,
+                ..Default::default()
+            }),
+            BackendType::Tmux
+        );
+    }
+
+    #[test]
+    fn zellij_inside_rex() {
+        assert_eq!(
+            resolve_backend(BackendSignals {
+                zellij: true,
+                rex: true,
+                ..Default::default()
+            }),
+            BackendType::Zellij
+        );
     }
 }

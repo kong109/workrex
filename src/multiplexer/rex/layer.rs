@@ -1,7 +1,4 @@
-use anyhow::{Result, anyhow};
-
-use super::{BlockId, RexBackend, SessionView, WindowId};
-use crate::multiplexer::Multiplexer;
+use super::{BlockId, SessionView};
 
 /// The block that was focused when the dashboard action opened its layer.
 pub(super) fn origin_block() -> Option<BlockId> {
@@ -32,37 +29,11 @@ pub(super) fn active_block(
     (!floating).then(|| focused.clone())
 }
 
-impl RexBackend {
-    /// The app keeps its own current tab: `session.focus_block` moves the
-    /// server's active window but not the tab the app shows. The app is told
-    /// which session and window to show first, so a failed switch leaves
-    /// focus alone.
-    pub(super) fn jump_to_block(&self, block: &BlockId) -> Result<()> {
-        let target = self
-            .resolve("block", block.as_str())?
-            .ok_or_else(|| anyhow!("Rex block {} not found", block.as_str()))?;
-        self.block_sessions
-            .lock()
-            .unwrap()
-            .insert(block.clone(), target.session_id.clone());
-        if self.app_attached()? {
-            let mut args = vec![format!("session_id={}", target.session_id.as_str())];
-            args.extend(target.window_id.as_ref().map(window_arg));
-            let mut command = vec!["do", "session.select"];
-            command.extend(args.iter().map(String::as_str));
-            self.run(&command, None)?;
-        }
-        self.select_pane(block.as_str())
-    }
-}
-
-fn window_arg(window: &WindowId) -> String {
-    format!("window_id={}", window.as_str())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::multiplexer::Multiplexer;
+    use crate::multiplexer::rex::RexBackend;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
@@ -102,6 +73,7 @@ echo "$* $input" >> "$d/log"
 case "$*" in
   *target.resolve*) echo '{{"results":[{{"status":"resolved","target":{{"session_id":"{AGENT_SESSION}","window_id":"{AGENT_WINDOW}"}}}}]}}' ;;
   *client.list*) cat "$d/clients.json" ;;
+  *server.version*) echo '{{"rex_version":"t","api_revision":8}}' ;;
   *session.focus_block*) echo '{{"revision":1}}' ;;
   *) echo '{{}}' ;;
 esac
@@ -121,7 +93,11 @@ esac
         fn calls(&self) -> Vec<String> {
             let log = fs::read_to_string(self.dir.path().join("log")).unwrap_or_default();
             log.lines()
-                .filter(|line| !line.contains("target.resolve") && !line.contains("client.list"))
+                .filter(|line| {
+                    !line.contains("target.resolve")
+                        && !line.contains("client.list")
+                        && !line.contains("server.version")
+                })
                 .map(str::to_string)
                 .collect()
         }
@@ -139,7 +115,7 @@ esac
     #[test]
     fn jump_shows_the_agents_session_and_window_before_focusing_it() {
         let rex = FakeRex::new(APP_CLIENTS);
-        rex.backend().jump_to_block(&block(AGENT)).unwrap();
+        rex.backend().select_pane(AGENT).unwrap();
 
         let calls = rex.calls();
         assert_eq!(calls.len(), 2, "{calls:?}");
@@ -155,7 +131,7 @@ esac
     #[test]
     fn jump_without_an_app_only_focuses() {
         let rex = FakeRex::new(NO_APP_CLIENTS);
-        rex.backend().jump_to_block(&block(AGENT)).unwrap();
+        rex.backend().select_pane(AGENT).unwrap();
 
         let calls = rex.calls();
         assert_eq!(calls.len(), 1, "{calls:?}");
