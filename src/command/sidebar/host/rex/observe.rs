@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::multiplexer::rex::RexBackend;
@@ -46,7 +46,6 @@ struct Cache {
 #[derive(Debug, Default)]
 pub(super) struct Observed {
     cache: Mutex<Cache>,
-    pub stop: AtomicBool,
     pub events_pid: AtomicU32,
 }
 
@@ -74,6 +73,17 @@ impl Observed {
             .views
             .insert(view.session_id.clone(), view);
         self.fill(rex, sidebars);
+    }
+
+    /// Every window in the cached views.
+    pub fn window_ids(&self) -> HashSet<String> {
+        let cache = self.cache.lock().unwrap();
+        cache
+            .views
+            .values()
+            .flat_map(|view| &view.windows)
+            .map(|window| window.window_id.clone())
+            .collect()
     }
 
     pub fn drop_session(&self, session_id: &str) {
@@ -209,8 +219,8 @@ fn build(
     snapshot
 }
 
-/// The daemon's reads and writes under Rex. Dropping it stops the control
-/// plane's event stream.
+/// The daemon's reads and writes under Rex. Dropping it, as the daemon
+/// exits, stops the control plane's event stream.
 pub(super) struct RexDaemonIo {
     pub observed: Arc<Observed>,
     pub files: Files,
@@ -246,7 +256,6 @@ impl DaemonIo for RexDaemonIo {
 
 impl Drop for RexDaemonIo {
     fn drop(&mut self) {
-        self.observed.stop.store(true, Ordering::Relaxed);
         let pid = self.observed.events_pid.load(Ordering::Relaxed);
         if pid != 0 {
             // SAFETY: kill(2) on a pid this process spawned and still owns.

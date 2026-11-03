@@ -3,6 +3,7 @@
 //! blocks in new windows and keep their width.
 
 mod control;
+mod link;
 mod observe;
 mod size;
 mod store;
@@ -172,12 +173,18 @@ impl<'a> Requests<'a> {
         };
 
         if change == Change::On {
-            let position = appearance
-                .position
-                .or(config.sidebar.position)
-                .unwrap_or_default();
-            if position == SidebarPosition::Top || appearance.height.is_some() {
-                bail!("the sidebar opens on the left under Rex; a top sidebar needs tmux");
+            if appearance.height.is_some() {
+                bail!("--height sizes a top sidebar, and under Rex the sidebar opens on the left");
+            }
+            match (appearance.position, config.sidebar.position) {
+                (Some(SidebarPosition::Top), _) => {
+                    bail!("--position top needs tmux; under Rex the sidebar opens on the left")
+                }
+                (None, Some(SidebarPosition::Top)) => bail!(
+                    "your config sets sidebar.position to top, which needs tmux; under Rex \
+                     pass --position left or set sidebar.position: left"
+                ),
+                _ => {}
             }
             let _ = std::thread::spawn(crate::tips::mark_sidebar_used);
         }
@@ -197,7 +204,8 @@ impl<'a> Requests<'a> {
         if appearance.width.is_some() {
             config.sidebar.width = appearance.width;
         }
-        Plane::new(self.rex.detached(), self.files.clone(), config)?.reconcile_all()?;
+        Plane::new(self.rex.detached(), self.files.clone(), config)?
+            .reconcile_all(change == Change::On)?;
         if next == Scope::Off {
             self.signal(libc::SIGTERM);
         }
@@ -240,7 +248,7 @@ impl<'a> Requests<'a> {
         let config = Config::load(None).unwrap_or_default();
         Plane::new(self.rex.detached(), self.files.clone(), config)?
             .sparing(&pane.pane_id)
-            .reconcile_all()?;
+            .reconcile_all(false)?;
         if next == Scope::Off {
             self.signal(libc::SIGTERM);
         }

@@ -292,10 +292,74 @@ def test_the_daemon_exits_after_its_server_dies(rex):
     env.server.terminate()
     env.server.wait(timeout=5)
 
-    # Three failed whoami calls a second apart, then the 10 s idle exit.
+    # The event stream ends and reconnecting finds no server.
     assert poll_until(lambda: not _alive(pid), timeout=20, poll_interval=0.2), (
         "daemon outlived its server"
     )
+
+
+def events_children(pid: int) -> list:
+    rows = subprocess.run(
+        ["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True
+    ).stdout
+    return [
+        int(fields[0])
+        for fields in (row.split(None, 2) for row in rows.splitlines())
+        if len(fields) == 3 and int(fields[1]) == pid and " events " in fields[2]
+    ]
+
+
+def test_a_window_made_before_the_server_stalls_still_gets_its_sidebar(rex):
+    env = rex
+    cli(env, "on")
+    window_id = new_window(env, env.session_id)
+    # Stop the server after it publishes the creation event but inside the
+    # daemon's 50 ms batch window, so the pass for the new window times out.
+    time.sleep(0.02)
+    os.kill(env.server.pid, signal.SIGSTOP)
+    try:
+        time.sleep(11)
+    finally:
+        os.kill(env.server.pid, signal.SIGCONT)
+    assert poll_until(
+        lambda: sidebar_of(windows(env, env.session_id)[window_id]) is not None,
+        timeout=36,
+        poll_interval=0.5,
+    ), "the failed pass dropped the new window"
+
+
+def test_a_closed_sidebar_stays_closed_when_the_event_stream_restarts(rex):
+    env = rex
+    kept = new_window(env, env.session_id)
+    cli(env, "on")
+    closed = next(window for window in windows(env, env.session_id) if window != kept)
+    sidebar = sidebar_of(windows(env, env.session_id)[closed])
+    env.api(
+        "block.close",
+        {"session_id": env.session_id, "block_id": sidebar["block_id"]},
+    )
+    assert poll_until(
+        lambda: sidebar_count(windows(env, env.session_id)[closed]) == 0, timeout=2
+    )
+    time.sleep(0.5)
+
+    pid = daemon_pid(env)
+    [stream] = events_children(pid)
+    os.kill(stream, signal.SIGKILL)
+    assert poll_until(
+        lambda: events_children(pid) not in ([], [stream]), timeout=10
+    ), "the event stream did not restart"
+    later = new_window(env, env.session_id)
+    assert poll_until(
+        lambda: sidebar_of(windows(env, env.session_id)[later]) is not None, timeout=2
+    )
+
+    current = windows(env, env.session_id)
+    assert sidebar_count(current[closed]) == 0, "the closed sidebar came back"
+    assert sidebar_of(current[kept]) is not None
+
+    cli(env, "on")
+    assert sidebar_of(windows(env, env.session_id)[closed]) is not None
 
 
 def test_agent_status_reaches_the_sidebar_rows(rex):

@@ -147,9 +147,10 @@ impl RexBackend {
     }
 
     pub(crate) fn own_block() -> Option<OwnBlock> {
+        let caller = super::Caller::from_env();
         Some(OwnBlock {
-            session_id: Self::env_session()?.0,
-            block_id: Self::env_block()?.0,
+            session_id: caller.session?.0,
+            block_id: caller.block?.0,
         })
     }
 
@@ -296,6 +297,9 @@ impl RexBackend {
         else {
             return Ok(None);
         };
+        if process.has_exited() {
+            return Ok(None);
+        }
         let title = found(self.block_call::<super::TitleReport>(&block, "title", json!({})))?
             .map(|report| report.title)
             .unwrap_or_default();

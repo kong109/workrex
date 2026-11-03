@@ -15,9 +15,10 @@ use std::time::{Duration, Instant};
 
 use crate::config::{Config, SidebarWidth};
 use crate::multiplexer::rex::RexBackend;
-use crate::multiplexer::rex::events::Event;
+use crate::multiplexer::rex::events::{Event, EventStream};
 use crate::multiplexer::rex::sidebar_api::{View, Window};
 
+use super::link::{self, Failure, Link, Server};
 use super::observe::Observed;
 use super::size::{self, SizeAction};
 use super::store::{self, Files, Options, Records, WindowSidebar};
@@ -29,8 +30,6 @@ use super::store::{self, Files, Options, Records, WindowSidebar};
 const SETTLE: Duration = Duration::from_millis(50);
 /// Re-read every session this often in case an event was lost.
 const SAFETY_REBUILD: Duration = Duration::from_secs(30);
-/// Failed `whoami` calls in a row after which the server counts as gone.
-const UNREACHABLE_LIMIT: u32 = 3;
 
 /// Which sessions get a sidebar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,21 +85,28 @@ impl Scope {
     }
 }
 
-/// Which windows of a session a pass may add a sidebar to. Only new windows
-/// and explicit requests get one, so a sidebar the user closed stays closed.
+/// Which windows of a session a pass may add a sidebar to.
 enum Create<'a> {
+    /// `sidebar on`: every window, the ones whose sidebar the user closed
+    /// included.
+    Reopen,
+    /// Every window but those whose sidebar the user closed.
     All,
     Only(&'a HashSet<String>),
 }
 
 impl Create<'_> {
-    fn allows(&self, window: &str) -> bool {
+    fn allows(&self, window: &str, closed: &Closed) -> bool {
         match self {
-            Create::All => true,
-            Create::Only(windows) => windows.contains(window),
+            Create::Reopen => true,
+            Create::All => !closed.contains_key(window),
+            Create::Only(windows) => windows.contains(window) && !closed.contains_key(window),
         }
     }
 }
+
+/// Windows whose sidebar the user closed, with their session ids.
+type Closed = BTreeMap<String, String>;
 
 #[derive(Default)]
 struct PassResult {
@@ -120,6 +126,9 @@ pub(super) struct Plane {
     /// A sidebar block the pass must leave in place: the one a quitting
     /// sidebar runs in, which it closes last.
     spare: Option<String>,
+    /// The daemon records which sidebars the user closed; other passes
+    /// leave a closed sidebar's record for it to find.
+    daemon: bool,
 }
 
 impl Plane {
@@ -134,7 +143,13 @@ impl Plane {
             command,
             cwd: dirs_home(),
             spare: None,
+            daemon: false,
         })
+    }
+
+    pub fn for_daemon(mut self) -> Self {
+        self.daemon = true;
+        self
     }
 
     pub fn sparing(mut self, block_id: &str) -> Self {
@@ -168,8 +183,8 @@ impl Plane {
     }
 
     /// Bring every session in line with the scope, adding sidebars where
-    /// they are missing.
-    pub fn reconcile_all(&mut self) -> Result<Records> {
+    /// they are missing. `reopen` also brings back the ones the user closed.
+    pub fn reconcile_all(&mut self, reopen: bool) -> Result<Records> {
         // Views are read under the lock: a view from before another pass
         // placed a sidebar would make that sidebar look lost.
         let mut guard = self.files.lock_records()?;
@@ -181,10 +196,11 @@ impl Plane {
         let views = views
             .into_iter()
             .map(|view| (view.session_id.clone(), Some(view)));
+        let create = if reopen { Create::Reopen } else { Create::All };
         let result = self.sync(
             &mut guard.records,
             views.collect(),
-            Create::All,
+            create,
             &HashMap::new(),
             None,
         );
@@ -205,18 +221,33 @@ impl Plane {
         let prefs = self.files.prefs();
         let scope = Scope::from_prefs(&prefs);
         let (configured, mut synced) = self.width_policy(&prefs);
+        let closed_before = self.files.daemon().windows_with(store::CLOSED);
+        let mut closed = closed_before.clone();
         let mut current = BTreeMap::new();
         let mut dragged = None;
         let mut first_error = None;
         for (session_id, view) in views {
             let Some(view) = view else {
                 records.retain(|_, record| record.session_id != session_id);
+                closed.retain(|_, session| *session != session_id);
                 if let Some(observed) = observed {
                     observed.drop_session(&session_id);
                 }
                 continue;
             };
-            let result = self.pass(records, &view, &scope, &create, sizes, configured, synced);
+            closed.retain(|window, session| {
+                *session != session_id || view.windows.iter().any(|w| w.window_id == *window)
+            });
+            let result = self.pass(
+                records,
+                &view,
+                &scope,
+                &create,
+                &mut closed,
+                sizes,
+                configured,
+                synced,
+            );
             let view = match result {
                 Ok(result) => {
                     dragged = dragged.or(result.dragged);
@@ -244,6 +275,21 @@ impl Plane {
             self.spread(records, &mut current, &scope, configured, synced)?;
         }
 
+        if self.daemon {
+            closed.retain(|window, _| !records.contains_key(window));
+            if closed != closed_before
+                && let Err(error) = self.files.update_daemon(|daemon| {
+                    for window in closed_before.keys() {
+                        daemon.set_window(window, store::CLOSED, None);
+                    }
+                    for (window, session) in &closed {
+                        daemon.set_window(window, store::CLOSED, Some(session.clone()));
+                    }
+                })
+            {
+                tracing::warn!(%error, "failed to record closed sidebars");
+            }
+        }
         if let Some(observed) = observed {
             let sidebars = sidebar_blocks(records);
             for view in current.values() {
@@ -282,6 +328,7 @@ impl Plane {
                 &view,
                 scope,
                 &Create::Only(&HashSet::new()),
+                &mut Closed::new(),
                 &HashMap::new(),
                 configured,
                 synced,
@@ -302,6 +349,7 @@ impl Plane {
         view: &View,
         scope: &Scope,
         create: &Create,
+        closed: &mut Closed,
         sizes: &HashMap<String, u32>,
         configured: bool,
         synced: Option<u16>,
@@ -327,7 +375,12 @@ impl Plane {
                 continue;
             };
             if !window.block_ids().any(|block| block == record.block_id) {
-                records.remove(&window_id);
+                if self.daemon {
+                    closed.insert(window_id.clone(), session_id.to_string());
+                    records.remove(&window_id);
+                } else if matches!(create, Create::Reopen) || !in_scope {
+                    records.remove(&window_id);
+                }
                 continue;
             }
             if self.spare.as_deref() == Some(record.block_id.as_str()) {
@@ -379,7 +432,9 @@ impl Plane {
 
         if in_scope {
             for window in &view.windows {
-                if records.contains_key(&window.window_id) || !create.allows(&window.window_id) {
+                if records.contains_key(&window.window_id)
+                    || !create.allows(&window.window_id, closed)
+                {
                     continue;
                 }
                 if let Some(record) = self.place(session_id, window, synced)? {
@@ -526,42 +581,41 @@ pub(super) fn contain(
     Ok(())
 }
 
-/// Run the control plane for the daemon until `observed.stop` is set.
-pub(super) fn spawn(mut plane: Plane, observed: Arc<Observed>, socket: PathBuf) {
-    keep_alive(socket, observed.clone());
+/// Run the control plane for the daemon. When the server is gone it ends
+/// the daemon, whatever clients are still connected.
+pub(super) fn spawn(plane: Plane, observed: Arc<Observed>, socket: PathBuf) {
+    keep_alive(socket);
     thread::spawn(move || {
-        let mut unreachable = 0;
-        while !observed.stop.load(Ordering::Relaxed) {
-            if let Err(error) = run_stream(&mut plane, &observed) {
-                tracing::warn!(%error, "sidebar event stream failed");
-            }
-            unreachable = match plane.rex.boot_id() {
-                Ok(_) => 0,
-                Err(_) => unreachable + 1,
-            };
-            if unreachable >= UNREACHABLE_LIMIT {
-                tracing::info!("rex server unreachable; releasing the sidebar daemon");
-                observed.stop.store(true, Ordering::Relaxed);
-                break;
-            }
-            thread::sleep(Duration::from_secs(1));
+        let mut follower = Follower {
+            plane: plane.for_daemon(),
+            observed,
+            stream: None,
+            work: Work::default(),
+        };
+        let mut link = Link::start();
+        while link != Link::Gone {
+            link = link.step(&mut follower);
         }
+        follower.disconnect();
+        tracing::info!("rex server gone; stopping the sidebar daemon");
+        let _ = signal_hook::low_level::raise(signal_hook::consts::SIGTERM);
     });
 }
 
 /// The daemon exits ten seconds after its last client, and under Rex no hook
-/// restarts it. So the control plane holds a client connection of its own
-/// until `observed.stop` is set, reading and dropping the snapshots it gets.
-fn keep_alive(socket: PathBuf, observed: Arc<Observed>) {
+/// restarts it. So the control plane holds a client connection of its own,
+/// reading and dropping the snapshots it gets, and the daemon lives as long
+/// as its server.
+fn keep_alive(socket: PathBuf) {
     thread::spawn(move || {
         let mut buf = [0u8; 64 * 1024];
-        while !observed.stop.load(Ordering::Relaxed) {
+        loop {
             let Ok(mut stream) = UnixStream::connect(&socket) else {
                 thread::sleep(Duration::from_millis(50));
                 continue;
             };
             let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
-            while !observed.stop.load(Ordering::Relaxed) {
+            loop {
                 match stream.read(&mut buf) {
                     Ok(0) => break,
                     Ok(_) => {}
@@ -577,44 +631,273 @@ fn keep_alive(socket: PathBuf, observed: Arc<Observed>) {
     });
 }
 
-fn run_stream(plane: &mut Plane, observed: &Observed) -> Result<()> {
-    let mut stream = plane.rex.events()?;
-    observed.events_pid.store(stream.pid(), Ordering::Relaxed);
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        while let Some(event) = stream.next_event() {
-            if tx.send(event).is_err() {
-                break;
+/// Work a failed pass leaves for the next one.
+#[derive(Default)]
+struct Work {
+    /// Windows owed a sidebar, with their session ids.
+    created: BTreeMap<String, String>,
+    /// A pass over every session is owed.
+    sweep: bool,
+    /// The owed sweep may add a sidebar to any window: the server is not
+    /// the one last seen.
+    full: bool,
+    failures: u32,
+    retry_at: Option<Instant>,
+}
+
+impl Work {
+    fn owed(&self) -> bool {
+        self.sweep || !self.created.is_empty()
+    }
+
+    fn done(&mut self) {
+        *self = Work::default();
+    }
+
+    fn failed(&mut self, error: anyhow::Error) {
+        tracing::warn!(%error, "sidebar control plane pass failed");
+        self.sweep = true;
+        self.failures += 1;
+        self.retry_at = Some(Instant::now() + link::backoff(self.failures));
+    }
+}
+
+/// The daemon's side of the server: the event stream and the passes it
+/// drives.
+struct Follower {
+    plane: Plane,
+    observed: Arc<Observed>,
+    stream: Option<EventStream>,
+    work: Work,
+}
+
+impl Follower {
+    fn disconnect(&mut self) {
+        self.observed.events_pid.store(0, Ordering::Relaxed);
+        self.stream = None;
+    }
+
+    /// Run owed work if there is any, keeping it on failure.
+    fn run_owed(&mut self) {
+        if !self.work.owed() {
+            return;
+        }
+        match self.sweep() {
+            Ok(()) => {
+                self.work.done();
+                wake_daemon();
+            }
+            Err(error) => self.work.failed(error),
+        }
+    }
+
+    /// Read every session and pass over it. Windows the cache has not seen
+    /// were created while no event reached us, so they are owed a sidebar.
+    fn sweep(&mut self) -> Result<()> {
+        let plane = &mut self.plane;
+        let mut guard = plane.files.lock_records()?;
+        let views = plane.rex.sidebar_views()?;
+        let known = self.observed.window_ids();
+        for view in &views {
+            for window in &view.windows {
+                if !known.contains(&window.window_id) {
+                    self.work
+                        .created
+                        .insert(window.window_id.clone(), view.session_id.clone());
+                }
             }
         }
-    });
-
-    // Windows created while no stream ran get their sidebar now.
-    let records = plane.reconcile_all()?;
-    observed.replace_all(
-        &plane.rex,
-        plane.rex.sidebar_views()?,
-        &sidebar_blocks(&records),
-    );
-    wake_daemon();
-
-    loop {
-        if observed.stop.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-        let first = match rx.recv_timeout(SAFETY_REBUILD) {
-            Ok(event) => event,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                plane.reload_config();
-                rebuild(plane, observed)?;
-                continue;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+        let live: HashSet<&str> = views.iter().map(|view| view.session_id.as_str()).collect();
+        let gone: HashSet<String> = guard
+            .records
+            .values()
+            .map(|record| record.session_id.clone())
+            .chain(
+                plane
+                    .files
+                    .daemon()
+                    .windows_with(store::CLOSED)
+                    .into_values(),
+            )
+            .filter(|session_id| !live.contains(session_id.as_str()))
+            .collect();
+        let mut sessions: Vec<(String, Option<View>)> = gone
+            .into_iter()
+            .map(|session_id| (session_id, None))
+            .collect();
+        sessions.extend(
+            views
+                .into_iter()
+                .map(|view| (view.session_id.clone(), Some(view))),
+        );
+        let windows: HashSet<String> = self.work.created.keys().cloned().collect();
+        let create = if self.work.full {
+            Create::All
+        } else {
+            Create::Only(&windows)
         };
-        let batch = gather(first, &rx, SETTLE);
-        if let Err(error) = handle(plane, observed, batch) {
-            tracing::warn!(%error, "sidebar control plane pass failed");
+        let current = plane.sync(&mut guard.records, sessions, create, &HashMap::new(), None);
+        guard.save()?;
+        let sidebars = sidebar_blocks(&guard.records);
+        drop(guard);
+        self.observed
+            .replace_all(&plane.rex, current?.into_values().collect(), &sidebars);
+        Ok(())
+    }
+
+    fn handle(&mut self, batch: Vec<Event>) {
+        let sidebars = sidebar_blocks(&self.plane.files.records());
+        let mut sessions: Vec<String> = Vec::new();
+        let mut sizes = HashMap::new();
+        let mut destroyed = HashSet::new();
+        let mut wake = false;
+        let touch = |sessions: &mut Vec<String>, session_id: &str| {
+            if !sessions.iter().any(|id| id == session_id) {
+                sessions.push(session_id.to_string());
+            }
+        };
+        for event in &batch {
+            self.observed.apply(event);
+            match event {
+                Event::WindowCreated {
+                    session_id,
+                    window_id,
+                } => {
+                    self.work
+                        .created
+                        .insert(window_id.clone(), session_id.clone());
+                    wake = true;
+                }
+                Event::SessionCreated { session_id }
+                | Event::WindowClosed { session_id, .. }
+                | Event::BlockClosed { session_id, .. }
+                | Event::ViewChanged { session_id } => {
+                    touch(&mut sessions, session_id);
+                    wake = true;
+                }
+                Event::SessionDestroyed { session_id } => {
+                    destroyed.insert(session_id.clone());
+                    wake = true;
+                }
+                Event::SizeChanged {
+                    session_id,
+                    block_id,
+                    columns,
+                    ..
+                } if sidebars.contains(block_id) => {
+                    sizes.insert(block_id.clone(), *columns);
+                    touch(&mut sessions, session_id);
+                }
+                Event::ProgramStatusChanged { .. } | Event::ProgramStatusRemoved { .. } => {
+                    wake = true;
+                }
+                _ => {}
+            }
         }
+        for session_id in self.work.created.values() {
+            touch(&mut sessions, session_id);
+        }
+        sessions.retain(|session_id| !destroyed.contains(session_id));
+
+        if !sessions.is_empty() || !destroyed.is_empty() {
+            match self.pass_over(sessions, destroyed, sizes) {
+                // Every owed window's session was in this pass.
+                Ok(()) => self.work.created.clear(),
+                Err(error) => self.work.failed(error),
+            }
+        }
+        if wake {
+            wake_daemon();
+        }
+    }
+
+    fn pass_over(
+        &mut self,
+        sessions: Vec<String>,
+        destroyed: HashSet<String>,
+        sizes: HashMap<String, u32>,
+    ) -> Result<()> {
+        let plane = &mut self.plane;
+        let mut guard = plane.files.lock_records()?;
+        let mut views: Vec<(String, Option<View>)> = destroyed
+            .into_iter()
+            .map(|session_id| (session_id, None))
+            .collect();
+        for session_id in sessions {
+            let view = plane.rex.sidebar_view(&session_id)?;
+            views.push((session_id, view));
+        }
+        let windows: HashSet<String> = self.work.created.keys().cloned().collect();
+        let result = plane.sync(
+            &mut guard.records,
+            views,
+            Create::Only(&windows),
+            &sizes,
+            Some(&self.observed),
+        );
+        guard.save()?;
+        result.map(drop)
+    }
+}
+
+impl Server for Follower {
+    fn connect(&mut self) -> Result<String, Failure> {
+        self.disconnect();
+        let stream = self.plane.rex.events()?;
+        let boot_id = self.plane.rex.boot_id()?;
+        self.observed
+            .events_pid
+            .store(stream.pid(), Ordering::Relaxed);
+        self.stream = Some(stream);
+        Ok(boot_id)
+    }
+
+    fn resync(&mut self, full: bool) {
+        self.work.sweep = true;
+        self.work.full |= full;
+        self.work.retry_at = None;
+        self.run_owed();
+    }
+
+    fn follow(&mut self) {
+        let mut next_sweep = Instant::now() + SAFETY_REBUILD;
+        loop {
+            let Some(stream) = &self.stream else {
+                return;
+            };
+            let due = self
+                .work
+                .retry_at
+                .filter(|_| self.work.owed())
+                .map_or(next_sweep, |at| at.min(next_sweep));
+            let batch = match stream
+                .receiver()
+                .recv_timeout(due.saturating_duration_since(Instant::now()))
+            {
+                Ok(first) => Some(gather(first, stream.receiver(), SETTLE)),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.disconnect();
+                    return;
+                }
+            };
+            if let Some(batch) = batch {
+                self.handle(batch);
+            }
+            let now = Instant::now();
+            if now >= next_sweep {
+                next_sweep = now + SAFETY_REBUILD;
+                self.plane.reload_config();
+                self.work.sweep = true;
+                self.run_owed();
+            } else if self.work.retry_at.is_some_and(|at| now >= at) {
+                self.run_owed();
+            }
+        }
+    }
+
+    fn wait(&mut self, delay: Duration) {
+        thread::sleep(delay);
     }
 }
 
@@ -628,105 +911,6 @@ fn gather<T>(first: T, rx: &mpsc::Receiver<T>, settle: Duration) -> Vec<T> {
         batch.push(event);
     }
     batch
-}
-
-fn rebuild(plane: &mut Plane, observed: &Observed) -> Result<()> {
-    let mut guard = plane.files.lock_records()?;
-    let views = plane.rex.sidebar_views()?;
-    let views = views
-        .into_iter()
-        .map(|view| (view.session_id.clone(), Some(view)))
-        .collect();
-    let empty = HashSet::new();
-    let current = plane.sync(
-        &mut guard.records,
-        views,
-        Create::Only(&empty),
-        &HashMap::new(),
-        None,
-    );
-    guard.save()?;
-    let sidebars = sidebar_blocks(&guard.records);
-    drop(guard);
-    observed.replace_all(&plane.rex, current?.into_values().collect(), &sidebars);
-    Ok(())
-}
-
-fn handle(plane: &mut Plane, observed: &Observed, batch: Vec<Event>) -> Result<()> {
-    let sidebars = sidebar_blocks(&plane.files.records());
-    let mut sessions: Vec<String> = Vec::new();
-    let mut created: HashSet<String> = HashSet::new();
-    let mut sizes = HashMap::new();
-    let mut destroyed = HashSet::new();
-    let mut wake = false;
-    let touch = |sessions: &mut Vec<String>, session_id: &str| {
-        if !sessions.iter().any(|id| id == session_id) {
-            sessions.push(session_id.to_string());
-        }
-    };
-    for event in &batch {
-        observed.apply(event);
-        match event {
-            Event::WindowCreated {
-                session_id,
-                window_id,
-            } => {
-                created.insert(window_id.clone());
-                touch(&mut sessions, session_id);
-                wake = true;
-            }
-            Event::SessionCreated { session_id }
-            | Event::WindowClosed { session_id, .. }
-            | Event::BlockClosed { session_id, .. }
-            | Event::ViewChanged { session_id } => {
-                touch(&mut sessions, session_id);
-                wake = true;
-            }
-            Event::SessionDestroyed { session_id } => {
-                destroyed.insert(session_id.clone());
-                wake = true;
-            }
-            Event::SizeChanged {
-                session_id,
-                block_id,
-                columns,
-                ..
-            } if sidebars.contains(block_id) => {
-                sizes.insert(block_id.clone(), *columns);
-                touch(&mut sessions, session_id);
-            }
-            Event::ProgramStatusChanged { .. } | Event::ProgramStatusRemoved { .. } => {
-                wake = true;
-            }
-            _ => {}
-        }
-    }
-    sessions.retain(|session_id| !destroyed.contains(session_id));
-
-    if !sessions.is_empty() || !destroyed.is_empty() {
-        let mut guard = plane.files.lock_records()?;
-        let mut views: Vec<(String, Option<View>)> = destroyed
-            .into_iter()
-            .map(|session_id| (session_id, None))
-            .collect();
-        for session_id in sessions {
-            let view = plane.rex.sidebar_view(&session_id)?;
-            views.push((session_id, view));
-        }
-        let result = plane.sync(
-            &mut guard.records,
-            views,
-            Create::Only(&created),
-            &sizes,
-            Some(observed),
-        );
-        guard.save()?;
-        result?;
-    }
-    if wake {
-        wake_daemon();
-    }
-    Ok(())
 }
 
 /// Ask this daemon's tick loop for an observation now, through the same

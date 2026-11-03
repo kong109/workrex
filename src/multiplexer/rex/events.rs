@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::mpsc;
 
 use super::RexBackend;
 
@@ -167,21 +168,18 @@ impl Event {
     }
 }
 
-/// A running `rex events` process. Dropping it kills the process.
+/// A running `rex events` process. A reader thread parses its output into
+/// `receiver`, and dropping the stream kills and reaps the process at once,
+/// which ends the reader.
 pub(crate) struct EventStream {
     child: Child,
-    lines: std::io::Lines<BufReader<ChildStdout>>,
+    events: mpsc::Receiver<Event>,
 }
 
 impl EventStream {
-    /// The next event workmux acts on, or `None` once the stream ends.
-    pub(crate) fn next_event(&mut self) -> Option<Event> {
-        for line in self.lines.by_ref() {
-            if let Some(event) = Event::parse(&line.ok()?) {
-                return Some(event);
-            }
-        }
-        None
+    /// The events workmux acts on. It disconnects once the stream ends.
+    pub(crate) fn receiver(&self) -> &mpsc::Receiver<Event> {
+        &self.events
     }
 
     pub(crate) fn pid(&self) -> u32 {
@@ -193,6 +191,17 @@ impl Drop for EventStream {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+fn read_events(stdout: ChildStdout, tx: mpsc::Sender<Event>) {
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { break };
+        if let Some(event) = Event::parse(&line)
+            && tx.send(event).is_err()
+        {
+            break;
+        }
     }
 }
 
@@ -215,10 +224,9 @@ impl RexBackend {
             .spawn()
             .context("Failed to start rex events")?;
         let stdout = child.stdout.take().context("rex events has no stdout")?;
-        Ok(EventStream {
-            child,
-            lines: BufReader::new(stdout).lines(),
-        })
+        let (tx, events) = mpsc::channel();
+        std::thread::spawn(move || read_events(stdout, tx));
+        Ok(EventStream { child, events })
     }
 }
 

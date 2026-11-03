@@ -1,7 +1,9 @@
 //! Sidebar state for one Rex server. Rex has no user options, so the values
-//! tmux keeps in `@workmux_*` options live in three files, one per writer:
-//! preferences (CLI and TUI), the daemon's outputs, and the sidebar blocks
-//! the control plane placed.
+//! tmux keeps in `@workmux_*` options live in three files: preferences,
+//! written by the CLI and the sidebar TUI; the daemon's outputs, written only
+//! by the daemon; and the sidebar blocks placed, written by the CLI, the
+//! daemon's control plane and a quitting sidebar. Every write holds the
+//! file's lock for its read-modify-write.
 
 use anyhow::{Context, Result};
 use nix::fcntl::{Flock, FlockArg};
@@ -19,6 +21,9 @@ pub(super) const SLEEPING: &str = "@workmux_sleeping_panes";
 pub(super) const EXPANDED: &str = "@workmux_sidebar_expanded";
 pub(super) const DAEMON_PID: &str = "@workmux_sidebar_daemon_pid";
 pub(super) const AGENTS: &str = "@workmux_sidebar_agents";
+/// Per window, in the daemon's file: the window's sidebar was closed by the
+/// user, so no reconcile brings it back. The value is the session id.
+pub(super) const CLOSED: &str = "@workmux_sidebar_closed";
 
 /// Option values by name, server-wide and per window, the way tmux scopes
 /// them.
@@ -72,6 +77,14 @@ impl Options {
         self.global(name)
             .map(|value| value.split_whitespace().map(String::from).collect())
             .unwrap_or_default()
+    }
+
+    /// Every window that has option `name`, with its value.
+    pub fn windows_with(&self, name: &str) -> BTreeMap<String, String> {
+        self.windows
+            .iter()
+            .filter_map(|(window, options)| Some((window.clone(), options.get(name)?.clone())))
+            .collect()
     }
 
     pub fn set_global_set(&mut self, name: &str, ids: &HashSet<String>) {
@@ -145,8 +158,8 @@ impl Files {
         read(&self.path("daemon"))
     }
 
-    /// The daemon is the only writer, but a stopping CLI clears the file, so
-    /// writes still take the lock.
+    /// Only the daemon writes this file, but from two threads, its tick and
+    /// its control plane, so writes take the lock.
     pub fn update_daemon<R>(&self, change: impl FnOnce(&mut Options) -> R) -> Result<R> {
         let _lock = self.lock("daemon")?;
         update(&self.path("daemon"), change)
