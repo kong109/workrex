@@ -7,6 +7,7 @@
 //! from the agent, and no hooks run. The laptop learns about it from `node
 //! watch` and adopts it when it next looks (see `remote::siblings`).
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -68,7 +69,9 @@ pub fn spawn(root: &NodeRoot, request: SpawnRequest) -> Result<SpawnResponse> {
         .ok_or_else(|| {
             refuse(
                 code::BAD_REQUEST,
-                "remote agents must name the branch: `workmux add <branch> -b -P <prompt-file>`",
+                crate::rebrand!(
+                    "remote agents must name the branch: `workmux add <branch> -b -P <prompt-file>`"
+                ),
             )
         })?
         .to_string();
@@ -161,7 +164,7 @@ pub fn spawn(root: &NodeRoot, request: SpawnRequest) -> Result<SpawnResponse> {
             },
         );
         if let Err(cleanup) = cleanup {
-            eprintln!("workmux: could not clean up workspace {ws_id}: {cleanup:#}");
+            eprintln!("{BIN}: could not clean up workspace {ws_id}: {cleanup:#}");
         }
         return Err(err);
     }

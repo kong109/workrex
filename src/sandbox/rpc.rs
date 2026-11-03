@@ -4,6 +4,7 @@
 //! workmux binary connects via a host-internal address and sends JSON-lines
 //! requests.
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
@@ -117,7 +118,7 @@ fn on_node(request: &RpcRequest, node: &NodeWorkspace, worktree: &Path) -> Optio
              agents cannot read; copy the image into the worktree instead"
             .to_string(),
         RpcRequest::Close { .. } => {
-            format!("the window is on the local machine: run `workmux close {handle}` there")
+            format!("the window is on the local machine: run `{BIN} close {handle}` there")
         }
     };
     Some(RpcResponse::Error { message: refusal })
@@ -612,7 +613,7 @@ fn dispatch_request(request: &RpcRequest, ctx: &RpcContext) -> RpcResponse {
         }
         RpcRequest::Remove { name, .. } => RpcResponse::Error {
             // pre_remove hooks run on the host, and `remove` cannot skip them.
-            message: format!("removing runs hooks on the host: run `workmux rm {name}` there"),
+            message: format!("removing runs hooks on the host: run `{BIN} rm {name}` there"),
         },
         RpcRequest::Close { .. } => {
             // Handled in handle_connection before dispatch
@@ -1307,7 +1308,7 @@ mod tests {
         };
         assert!(refusal(&paste).contains("clipboard is on the local machine"));
         let close = RpcRequest::Close { name: "x".into() };
-        assert!(refusal(&close).contains("`workmux close feat`"));
+        assert!(refusal(&close).contains(crate::rebrand!("`workmux close feat`")));
         assert!(on_node(&RpcRequest::Heartbeat, &node, worktree).is_none());
     }
 
@@ -1319,7 +1320,9 @@ mod tests {
             force: false,
         };
         match dispatch_request(&request, &test_context(dir.path())) {
-            RpcResponse::Error { message } => assert!(message.contains("`workmux rm feat`")),
+            RpcResponse::Error { message } => {
+                assert!(message.contains(crate::rebrand!("`workmux rm feat`")))
+            }
             other => panic!("expected a refusal, got {other:?}"),
         }
     }

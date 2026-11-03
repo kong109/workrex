@@ -655,8 +655,8 @@ fn unused_pins(
             }
         }
     }
-    let wrapper =
-        fs::read_to_string(root.path.join("run").join("bin").join("workmux")).unwrap_or_default();
+    let wrapper = fs::read_to_string(root.path.join("run").join("bin").join(crate::bin_name::BIN))
+        .unwrap_or_default();
     let bin = root.path.join("bin");
     for entry in read_dir(Path::new("/proc")) {
         if let Ok(exe) = fs::read_link(entry.join("exe"))
@@ -674,7 +674,7 @@ fn unused_pins(
         .into_iter()
         .filter(|path| path.is_file())
         .filter_map(|path| Some(path.file_name()?.to_str()?.to_string()))
-        .filter(|name| name.starts_with("workmux-"))
+        .filter(|name| crate::bin_name::pin_version(name).is_some())
         .filter(|name| !used.contains(name) && !wrapper.contains(&format!("/bin/{name}")))
         .collect();
     pins.sort();
@@ -702,3 +702,7 @@ mod tests {
         assert!(!is_execution_session("login-claude"));
     }
 }
+
+#[cfg(test)]
+#[path = "gc_pins_tests.rs"]
+mod pins_tests;

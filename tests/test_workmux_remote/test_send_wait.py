@@ -13,6 +13,7 @@ from ..conftest import (
     poll_until,
     wait_for_pane_output,
 )
+from ..support.bin_name import rebrand
 from .conftest import Node, git, wm
 from .test_status import start_workmux, status_rows
 
@@ -25,7 +26,7 @@ def turn_agent(directory: Path) -> Path:
     and reports `done`. Lines starting with `fast` take no time."""
     path = directory / "turn-agent"
     path.write_text(
-        f"""#!/bin/sh
+        rebrand(f"""#!/bin/sh
 workmux set-window-status done </dev/null
 echo TURN-AGENT-READY
 n=0
@@ -37,7 +38,7 @@ while read -r line; do
   echo "$line" > {directory}/turn-$n
   workmux set-window-status done </dev/null
 done
-"""
+""")
     )
     path.chmod(0o755)
     return path

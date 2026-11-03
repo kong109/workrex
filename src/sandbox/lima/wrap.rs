@@ -38,7 +38,7 @@ pub fn wrap_for_lima(
     // which is necessary because limactl/SSH flattens separate args.
     // Prefix with space to prevent shell history entry.
     Ok(format!(
-        " workmux sandbox run '{}' -- '{}'",
+        concat!(" ", env!("CARGO_BIN_NAME"), " sandbox run '{}' -- '{}'"),
         shell_escape(&working_dir.to_string_lossy()),
         shell_escape(command)
     ))
@@ -81,7 +81,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(result.starts_with(" workmux sandbox run"));
+        assert!(result.starts_with(crate::rebrand!(" workmux sandbox run")));
         assert!(result.contains("/Users/test/project"));
         // Command is passed as a single quoted arg (no sh -lc at this level)
         assert!(result.contains("-- 'claude'"));

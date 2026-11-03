@@ -11,12 +11,13 @@ from ..conftest import (
     poll_until_file_has_content,
     wait_for_pane_output,
 )
+from .bin_name import rebrand
 
 
 def write_claude_manual_status_hook(claude_dir: Path) -> None:
     claude_dir.mkdir(parents=True, exist_ok=True)
     plugin_path = Path(__file__).parents[2] / ".claude-plugin" / "plugin.json"
-    plugin = json.loads(plugin_path.read_text())
+    plugin = json.loads(rebrand(plugin_path.read_text()))
     (claude_dir / "settings.json").write_text(json.dumps({"hooks": plugin["hooks"]}))
 
 

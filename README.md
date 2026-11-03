@@ -1,3 +1,8 @@
+> **workrex** is a fork of [raine/workmux](https://github.com/raine/workmux) that
+> runs agents in Rex. It installs as `workrex` from
+> [kong109/workrex](https://github.com/kong109/workrex/releases). The upstream
+> README follows. See [NOTICE.md](NOTICE.md) for credits and what the fork renames.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="meta/logo-dark.svg">

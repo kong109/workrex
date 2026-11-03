@@ -29,6 +29,7 @@ pub mod siblings;
 pub mod transfer;
 pub mod transport;
 
+use crate::bin_name::BIN;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
@@ -37,7 +38,7 @@ use crate::config::{Config, RemoteIsolation};
 use crate::shell::shell_quote;
 
 /// Default node root on the remote.
-pub const DEFAULT_NODE_PATH: &str = "~/.workmux-node";
+pub const DEFAULT_NODE_PATH: &str = crate::bin_name::NODE_ROOT;
 
 /// A validated `remotes.<name>` entry.
 #[derive(Debug, Clone)]
@@ -280,7 +281,7 @@ pub fn reject_remote_placement(config: &Config) -> Result<()> {
         Placement::Local => Ok(()),
         Placement::Remote(name) => bail!(
             "the dashboard creates local agents only, and `placement` selects remote \
-             '{name}'; use `workmux add --remote {name}` or `workmux add --local`"
+             '{name}'; use `{BIN} add --remote {name}` or `{BIN} add --local`"
         ),
     }
 }
@@ -435,7 +436,10 @@ mod tests {
     fn reject_remote_placement_names_remote_and_fix() {
         let config = config_with(&["hetzner"], Some("hetzner"));
         let err = reject_remote_placement(&config).unwrap_err().to_string();
-        assert!(err.contains("workmux add --remote hetzner"), "{err}");
+        assert!(
+            err.contains(crate::rebrand!("workmux add --remote hetzner")),
+            "{err}"
+        );
         assert!(reject_remote_placement(&config_with(&["hetzner"], None)).is_ok());
     }
 

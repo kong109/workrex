@@ -33,6 +33,7 @@ pub mod shell;
 pub mod spawn;
 pub mod trust;
 
+use crate::bin_name::BIN;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -489,7 +490,7 @@ pub(super) fn login_env() -> Vec<(String, String)> {
                 Err(err) => format!("{err:#}"),
             };
             eprintln!(
-                "workmux: could not read the login environment of {shell} ({detail}); \
+                "{BIN}: could not read the login environment of {shell} ({detail}); \
                  using the ssh session environment"
             );
             Vec::new()

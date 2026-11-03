@@ -13,7 +13,7 @@ command = ["ruff", "format", "tests", "--check", "--quiet"]
 [[check]]
 name = "unit-tests"
 mode = "cargo"
-command = ["cargo", "test", "--bin", "workmux", "--message-format=json"]
+command = ["cargo", "test", "--bin", "workrex", "--message-format=json"]
 
 [[check]]
 name = "status-plugin-tests"

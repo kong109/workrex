@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use anyhow::{Result, anyhow};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -58,7 +59,7 @@ fn remove_with_hook_output(
                 (path, String::new())
             } else {
                 return Err(anyhow!(
-                    "Worktree '{}' not found. Use 'workmux list' to see available worktrees.",
+                    "Worktree '{}' not found. Use '{BIN} list' to see available worktrees.",
                     handle
                 )
                 .context(e));

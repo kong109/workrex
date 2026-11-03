@@ -2,6 +2,7 @@ mod agent_display;
 mod agent_identity;
 mod agent_setup;
 mod agent_staleness;
+mod bin_name;
 mod claude;
 mod cli;
 mod cmd;
