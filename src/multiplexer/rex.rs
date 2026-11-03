@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::SplitDirection;
 
@@ -208,19 +208,31 @@ static SERVER_VERDICTS: LazyLock<Mutex<HashMap<Option<String>, Verdict>>> =
 /// loop that polls for a change made outside workmux sees it within this time.
 const READ_REUSE: Duration = Duration::from_millis(250);
 
+const READ_ONLY_API: [&str; 5] = [
+    "session.list",
+    "session.view",
+    "target.resolve",
+    "server.version",
+    "client.list",
+];
+const READ_ONLY_BLOCK: [&str; 4] = ["process", "title", "size", "format"];
+
 /// Calls that leave the server as it was. Any other call drops reused reads.
 fn changes_nothing(args: &[&str]) -> bool {
     match args {
-        ["api", "call", method, ..] => matches!(
-            *method,
-            "session.list" | "session.view" | "target.resolve" | "server.version" | "client.list"
-        ),
-        ["block", "call", "-b", _, method, ..] => {
-            matches!(*method, "process" | "title" | "size" | "format")
-        }
+        ["api", "call", method, ..] => READ_ONLY_API.contains(method),
+        ["block", "call", "-b", _, method, ..] => READ_ONLY_BLOCK.contains(method),
         ["whoami", ..] => true,
         _ => false,
     }
+}
+
+/// Session reads a command can reuse. `writes` counts the writes that have
+/// returned, so a read that overlapped one is not stored.
+#[derive(Debug, Default)]
+struct Reads {
+    writes: u64,
+    answers: HashMap<String, (Instant, String)>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -644,7 +656,8 @@ fn print_once(printed: &AtomicBool, out: &mut impl Write, text: &str) {
 #[derive(Debug)]
 pub struct RexBackend {
     program: String,
-    reads: Mutex<HashMap<String, (std::time::Instant, String)>>,
+    reads: Mutex<Reads>,
+    reuse: Duration,
     server: Option<String>,
     caller: Caller,
     endpoint: OnceLock<String>,
@@ -673,6 +686,7 @@ impl RexBackend {
         Self {
             program,
             reads: Mutex::default(),
+            reuse: READ_REUSE,
             server,
             caller: Caller::from_env(),
             endpoint: OnceLock::new(),
@@ -704,16 +718,21 @@ impl RexBackend {
             return self.exec(args, stdin);
         };
         let key = format!("{method} {}", stdin.unwrap_or_default());
-        if let Some((fetched, output)) = self.reads.lock().unwrap().get(&key)
-            && fetched.elapsed() < READ_REUSE
-        {
-            return Ok(output.clone());
-        }
+        let writes = {
+            let reads = self.reads.lock().unwrap();
+            if let Some((fetched, output)) = reads.answers.get(&key)
+                && fetched.elapsed() < self.reuse
+            {
+                return Ok(output.clone());
+            }
+            reads.writes
+        };
+        let started = Instant::now();
         let output = self.exec(args, stdin)?;
-        self.reads
-            .lock()
-            .unwrap()
-            .insert(key, (std::time::Instant::now(), output.clone()));
+        let mut reads = self.reads.lock().unwrap();
+        if reads.writes == writes {
+            reads.answers.insert(key, (started, output.clone()));
+        }
         Ok(output)
     }
 
@@ -747,9 +766,21 @@ impl RexBackend {
         stdin: Option<&str>,
         timeout: Option<Duration>,
     ) -> CallResult<String> {
+        let result = self.spawn(args, stdin, timeout);
         if !changes_nothing(args) {
-            self.reads.lock().unwrap().clear();
+            let mut reads = self.reads.lock().unwrap();
+            reads.writes += 1;
+            reads.answers.clear();
         }
+        result
+    }
+
+    fn spawn(
+        &self,
+        args: &[&str],
+        stdin: Option<&str>,
+        timeout: Option<Duration>,
+    ) -> CallResult<String> {
         let program = &self.program;
         let mut command = Command::new(program);
         for var in Self::INHERITED_SCOPE_VARS {
@@ -2375,7 +2406,7 @@ mod tests {
             write_script(
                 &program,
                 format!(
-                    "#!/bin/sh\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
+                    "#!/bin/sh\ndir=$(dirname \"$0\")\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
                      case \"$call\" in\n\
                      {arms}\
                      \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
@@ -2882,5 +2913,140 @@ mod tests {
             rex.sessions().unwrap();
         }
         assert_eq!(fake.calls("server.version").len(), 1);
+    }
+
+    const SESSION_VIEW: [&str; 4] = ["api", "call", "session.view", "-"];
+    const CLOSE: [&str; 4] = ["api", "call", "session.close_window", "-"];
+
+    impl FakeRex {
+        /// Reuses reads for as long as a test runs, so only writes drop them.
+        fn reusing(mut self) -> Self {
+            self.rex.reuse = Duration::from_secs(3600);
+            self
+        }
+
+        fn write(&self, name: &str, text: &str) {
+            std::fs::write(self.dir.path().join(name), text).unwrap();
+        }
+
+        fn wait_for(&self, name: &str) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !self.dir.path().join(name).exists() {
+                assert!(Instant::now() < deadline, "the fake rex never wrote {name}");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn view(&self) -> String {
+            self.rex.run(&SESSION_VIEW, Some("{}")).unwrap()
+        }
+    }
+
+    #[test]
+    fn the_reads_a_command_reuses_are_these() {
+        assert_eq!(
+            READ_ONLY_API,
+            [
+                "session.list",
+                "session.view",
+                "target.resolve",
+                "server.version",
+                "client.list",
+            ]
+        );
+        assert_eq!(READ_ONLY_BLOCK, ["process", "title", "size", "format"]);
+    }
+
+    #[test]
+    fn every_write_drops_the_reads_before_it() {
+        let block = |method| vec!["block", "call", "-b", "block:x", method, "-"];
+        let api = |method| vec!["api", "call", method, "-"];
+        let mut writes: Vec<Vec<&str>> = [
+            "session.create",
+            "session.destroy",
+            "session.new_window",
+            "session.move_window",
+            "session.close_window",
+            "session.focus_window",
+            "session.set_window_label",
+            "session.set_label",
+            "session.new_split",
+            "session.focus_block",
+            "session.zoom_block",
+            "session.set_block_label",
+            "block.close",
+            "block.event",
+            "client.perform",
+        ]
+        .into_iter()
+        .map(api)
+        .collect();
+        writes.push(block("write"));
+        writes.push(vec!["send-key", "-b", "block:x", "Enter"]);
+        let mut reads: Vec<Vec<&str>> = READ_ONLY_API.into_iter().map(api).collect();
+        reads.extend(READ_ONLY_BLOCK.map(block));
+        reads.push(vec!["whoami", "--json"]);
+
+        for (call, drops) in writes
+            .iter()
+            .map(|call| (call, true))
+            .chain(reads.iter().map(|call| (call, false)))
+        {
+            let fake = FakeRex::new(&[
+                ("session.view", "{}"),
+                ("server.version", r#"{"rex_version":"t","api_revision":8}"#),
+                ("", "{}"),
+            ])
+            .reusing();
+            fake.view();
+            fake.rex.run(call, Some("{}")).unwrap();
+            fake.view();
+            let views = if drops { 2 } else { 1 };
+            assert_eq!(fake.calls("session.view").len(), views, "{call:?}");
+        }
+    }
+
+    #[test]
+    fn a_read_that_spans_a_write_is_not_reused() {
+        let fake = FakeRex::new(&[
+            (
+                "session.view",
+                "$s=$(cat \"$dir/state\"); touch \"$dir/started\"; \
+                 while [ ! -e \"$dir/release\" ]; do sleep 0.01; done; printf %s \"$s\"",
+            ),
+            ("session.close_window", "$echo new > \"$dir/state\""),
+        ])
+        .reusing();
+        fake.write("state", "old");
+        thread::scope(|scope| {
+            let reader = scope.spawn(|| fake.view());
+            fake.wait_for("started");
+            fake.rex.run(&CLOSE, Some("{}")).unwrap();
+            fake.write("release", "");
+            assert_eq!(reader.join().unwrap(), "old");
+        });
+        assert_eq!(fake.view().trim(), "new");
+    }
+
+    #[test]
+    fn a_read_made_during_a_write_is_not_reused_after_it() {
+        let fake = FakeRex::new(&[
+            ("session.view", "$cat \"$dir/state\""),
+            (
+                "session.close_window",
+                "$touch \"$dir/writing\"; while [ ! -e \"$dir/read\" ]; do sleep 0.01; done; \
+                 echo new > \"$dir/state\"",
+            ),
+        ])
+        .reusing();
+        fake.write("state", "old");
+        thread::scope(|scope| {
+            let writer = scope.spawn(|| fake.rex.run(&CLOSE, Some("{}")).unwrap());
+            fake.wait_for("writing");
+            assert_eq!(fake.view(), "old");
+            fake.write("read", "");
+            writer.join().unwrap();
+        });
+        assert_eq!(fake.view().trim(), "new");
     }
 }
