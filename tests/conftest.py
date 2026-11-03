@@ -465,7 +465,9 @@ class TmuxEnvironment(MuxEnvironment):
         self.tmux(["new-session", "-d", "-s", name])
 
     def list_windows_in_session(self, session: str) -> list[str]:
-        result = self.tmux(["list-windows", "-t", f"{session}:", "-F", "#{window_name}"])
+        result = self.tmux(
+            ["list-windows", "-t", f"{session}:", "-F", "#{window_name}"]
+        )
         return [w for w in result.stdout.strip().split("\n") if w]
 
     def session_pane_path(self, session: str) -> str:
