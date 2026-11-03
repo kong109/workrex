@@ -15,9 +15,9 @@ def test_branch_named_workmux_is_kept_in_add_error(
     result = run_workmux_command(
         mux_server, workmux_exe_path, repo_path, "add workmux", expect_fail=True
     )
-    assert "Failed to create worktree environment for branch 'workmux'" in result.stderr, (
-        result.stderr
-    )
+    assert (
+        "Failed to create worktree environment for branch 'workmux'" in result.stderr
+    ), result.stderr
 
 
 def test_hook_command_naming_workmux_is_kept_in_error(
@@ -48,10 +48,14 @@ def test_hints_name_the_binary_to_type(
     result = run_workmux_command(
         mux_server, workmux_exe_path, repo_path, "open nope", expect_fail=True
     )
-    assert f"Use '{BIN} list' to see available worktrees." in result.stdout + result.stderr
+    assert (
+        f"Use '{BIN} list' to see available worktrees." in result.stdout + result.stderr
+    )
 
 
-def test_init_template_names_the_binary(mux_server: MuxEnvironment, workmux_exe_path: Path):
+def test_init_template_names_the_binary(
+    mux_server: MuxEnvironment, workmux_exe_path: Path
+):
     result = mux_server.run_command([str(workmux_exe_path), "init"])
     assert result.returncode == 0, result.stderr
     content = (mux_server.tmp_path / ".workmux.yaml").read_text()

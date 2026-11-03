@@ -54,7 +54,9 @@ def test_install_dev_ships_the_built_binary(
         "LOG": str(log),
     }
     if skip_build:
-        subprocess.run([fakebin / "cargo", "build", "--target", _guest_target()], env=env)
+        subprocess.run(
+            [fakebin / "cargo", "build", "--target", _guest_target()], env=env
+        )
     args = ["sandbox", "install-dev"] + (["--skip-build"] if skip_build else [])
     result = subprocess.run(
         [workmux_exe_path, *args], env=env, cwd=ws, capture_output=True, text=True

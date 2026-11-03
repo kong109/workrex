@@ -183,6 +183,4 @@ def test_interrupted_setup_recovers(node: Node):
     assert result.returncode == 0, result.stderr
     assert f"installed {BIN}" in result.stdout
     sums = remote_sh(f"sha256sum {node.pin}").stdout.split()
-    assert sums and sums[0].startswith(
-        dev_pin(node.binary).removeprefix(f"{BIN}-dev-")
-    )
+    assert sums and sums[0].startswith(dev_pin(node.binary).removeprefix(f"{BIN}-dev-"))

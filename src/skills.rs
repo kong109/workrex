@@ -250,7 +250,7 @@ pub(crate) fn remove_skills_at(base_dir: PathBuf, agent_name: &str) -> Result<St
         parts.push(format!("{removed} removed"));
     }
     if skipped > 0 {
-        parts.push(format!("{skipped} skipped (modified)"));
+        parts.push(format!("{skipped} kept"));
     }
     if removed == 0 && skipped == 0 {
         parts.push("none found".to_string());
@@ -448,7 +448,7 @@ mod tests {
         std::fs::write(skill_dir.join("SKILL.md"), "modified content").unwrap();
 
         let result = remove_skills_at(skills_base, "Claude Code").unwrap();
-        assert!(result.contains("1 skipped (modified)"));
+        assert!(result.contains("1 kept"));
         assert!(skill_dir.exists());
     }
 
@@ -474,7 +474,7 @@ mod tests {
 
         let result = remove_skills_at(skills_base, "Claude Code").unwrap();
         assert!(result.contains("1 removed"));
-        assert!(result.contains("1 skipped (modified)"));
+        assert!(result.contains("1 kept"));
         assert!(!d1.exists());
         assert!(d2.exists());
     }
