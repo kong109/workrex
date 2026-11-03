@@ -892,6 +892,46 @@ mod tests {
     }
 
     #[test]
+    fn an_unsupported_server_whose_opening_read_is_not_an_object_is_named() {
+        let fake = Fake::new(&[
+            ("server.status", "[\"a changed envelope\"]"),
+            (
+                "call?server.version",
+                r#"{"rex_version":"t","api_revision":3}"#,
+            ),
+        ]);
+        let message = format!("{:#}", fake.open(true).err().expect("open fails"));
+        assert!(message.contains("runs unsupported Rex t"), "{message}");
+    }
+
+    #[test]
+    fn an_unsupported_server_whose_opening_read_moved_the_version_is_named() {
+        let reply = serde_json::json!({ "result": {
+            "version": { "rex_version": "t", "api_revision": 3 } } })
+        .to_string();
+        let fake = Fake::new(&[
+            ("server.status", &reply),
+            (
+                "call?server.version",
+                r#"{"rex_version":"t","api_revision":3}"#,
+            ),
+        ]);
+        let message = format!("{:#}", fake.open(true).err().expect("open fails"));
+        assert!(message.contains("runs unsupported Rex t"), "{message}");
+    }
+
+    #[test]
+    fn a_supported_server_whose_opening_read_is_not_an_object_says_so() {
+        let fake = Fake::new(&[("server.status", "[\"a changed envelope\"]")]);
+        let message = format!("{:#}", fake.open(true).err().expect("open fails"));
+        assert!(
+            message.contains("Failed to parse rex open output"),
+            "{message}"
+        );
+        assert!(!message.contains("unsupported"), "{message}");
+    }
+
+    #[test]
     fn a_failed_opening_read_names_its_step() {
         let status_failed = serde_json::json!({
             "version": { "rex_version": "t", "api_revision": 9 },

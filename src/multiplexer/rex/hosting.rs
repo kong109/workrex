@@ -298,18 +298,13 @@ impl RexBackend {
     /// unsupported server whose answers changed shape is named as such, and
     /// later calls reuse the verdict.
     pub fn open_server(&self, list_sessions: bool) -> Result<OpenedServer> {
-        let output = match self.exec_script("open", OPEN, &json!({ "sessions": list_sessions })) {
-            Ok(output) => output,
-            Err(err) => {
-                // Name an unsupported server rather than how its `do` failed.
-                if let Err(CallError::Unsupported(why)) = self.ensure_supported() {
-                    bail!(why);
-                }
-                return Err(err.into());
-            }
-        };
-        let mut read: Map<String, Value> = Self::parse("open", &output)?;
-        let version: ServerVersion = required_part(&mut read, "version", "server.version")?;
+        let output = self
+            .exec_script("open", OPEN, &json!({ "sessions": list_sessions }))
+            .map_err(|err| self.unsupported_or(err.into()))?;
+        let mut read: Map<String, Value> =
+            Self::parse("open", &output).map_err(|err| self.unsupported_or(err.into()))?;
+        let version: ServerVersion = required_part(&mut read, "version", "server.version")
+            .map_err(|err| self.unsupported_or(err))?;
         self.record_verdict(&version)?;
         let status = required_part(&mut read, "status", "server.status")?;
         if let Some(err) = part_error(&read, "sessions") {
@@ -323,6 +318,16 @@ impl RexBackend {
                     .collect()
             });
         Ok(OpenedServer { status, sessions })
+    }
+
+    /// `err`, unless the server runs a Rex this backend does not speak:
+    /// then that, since a server too old or too new for the opening read
+    /// fails it in ways that say nothing about why.
+    fn unsupported_or(&self, err: anyhow::Error) -> anyhow::Error {
+        match self.ensure_supported() {
+            Err(CallError::Unsupported(why)) => anyhow!(why),
+            _ => err,
+        }
     }
 
     /// Every session on the server, by id and label as Rex reports them.
