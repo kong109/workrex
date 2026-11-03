@@ -476,6 +476,57 @@ mod tests {
     }
 
     #[test]
+    fn a_view_is_connecting_through_the_whole_deadline() {
+        let deadline = 1000 + STALE_AFTER.as_secs();
+        assert!(awaiting_first_answer(Some(1000), None, deadline));
+        assert!(!awaiting_first_answer(Some(1000), None, deadline + 1));
+    }
+
+    #[test]
+    fn an_answer_in_the_second_the_view_started_ends_connecting() {
+        let observation = Observation {
+            last_seen: Some(1000),
+            ..Default::default()
+        };
+        assert!(!awaiting_first_answer(Some(1000), Some(&observation), 1000));
+    }
+
+    #[test]
+    fn spawning_an_observer_marks_its_remote_connecting() {
+        const TEST: &str =
+            "remote::observe::tests::spawning_an_observer_marks_its_remote_connecting";
+        if !crate::test_support::is_isolated_child(TEST) {
+            let state = tempfile::tempdir().unwrap();
+            crate::test_support::run_isolated_test(
+                TEST,
+                state.path(),
+                &[("XDG_STATE_HOME", state.path())],
+            );
+            return;
+        }
+        let name = "box-spawned";
+        // Holding the observer lock keeps the spawned observer waiting to
+        // take over, so it never connects.
+        let _held = take_lock(name).unwrap().expect("the lock is free");
+        let remote = crate::config::RemoteConfig {
+            host: "example".into(),
+            path: None,
+            isolation: None,
+            binary: None,
+            terminal: None,
+            rex_client: None,
+        };
+        let config = Config {
+            remotes: [(name.to_string(), remote)].into_iter().collect(),
+            ..Config::default()
+        };
+        assert!(!connecting(name, None, now()));
+        spawn(&config, &[name.to_string()]);
+        assert!(connecting(name, None, now()));
+        println!("{}", crate::test_support::ISOLATED_TEST_CANARY);
+    }
+
+    #[test]
     fn frames_update_connectivity_and_skew() {
         let mut observation = Observation::default();
         assert!(!observation.is_connected(100));

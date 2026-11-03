@@ -877,6 +877,21 @@ mod tests {
     }
 
     #[test]
+    fn a_supported_server_whose_sessions_do_not_parse_is_named() {
+        let reply = serde_json::json!({
+            "version": { "rex_version": "t", "api_revision": 9 },
+            "status": running_status(),
+            "sessions": ["session:a"],
+        });
+        let fake = Fake::new(&[("server.status", &reply.to_string())]);
+        let message = format!("{:#}", fake.open(true).err().expect("open fails"));
+        assert!(
+            message.contains("Failed to parse rex session.list output"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn a_failed_opening_read_names_its_step() {
         let status_failed = serde_json::json!({
             "version": { "rex_version": "t", "api_revision": 9 },

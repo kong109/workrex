@@ -688,6 +688,26 @@ mod tests {
     }
 
     #[test]
+    fn a_connected_row_is_never_connecting() {
+        let mut watched = record();
+        watched.remote = "box-kept-current".into();
+        observe::observing_since("box-kept-current", 1000);
+        // Another view's observer kept the file current before this view
+        // started, so the remote is connected but has not answered this view.
+        let observations = HashMap::from([(
+            "box-kept-current".to_string(),
+            Observation {
+                connected: true,
+                last_seen: Some(999),
+                ..Default::default()
+            },
+        )]);
+        let rows_now = rows(&[watched], &[], &observations, &hosts(), 1002);
+        let remote = rows_now[0].remote.as_ref().unwrap();
+        assert!(remote.connected && !remote.connecting);
+    }
+
+    #[test]
     fn rows_keep_the_title_beside_connectivity() {
         let rows = rows(&[record()], &[], &HashMap::new(), &hosts(), 5);
         let mut remote = rows[0].remote.clone().unwrap();
