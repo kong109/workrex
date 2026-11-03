@@ -110,7 +110,10 @@ pub fn render_dashboard(f: &mut Frame, app: &mut App) {
         let p = &app.palette;
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
-                format!("  {msg}"),
+                format!(
+                    "  {}",
+                    format::fit_words(msg, usize::from(footer_area.width).saturating_sub(2))
+                ),
                 Style::default().fg(p.text),
             )])),
             footer_area,

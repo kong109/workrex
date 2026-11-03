@@ -1713,6 +1713,13 @@ impl Multiplexer for RexBackend {
         self.return_to_origin()
     }
 
+    fn peek_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()> {
+        if self.caller.origin.is_some() {
+            return self.peek_block(&BlockId::parse(pane_id)?);
+        }
+        self.switch_to_pane(pane_id, window_hint)
+    }
+
     fn kill_pane(&self, pane_id: &str) -> Result<()> {
         let block = BlockId::parse(pane_id)?;
         let Some(session) = self.session_of(&block)? else {

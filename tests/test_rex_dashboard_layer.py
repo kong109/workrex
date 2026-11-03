@@ -211,20 +211,24 @@ def test_q_returns_focus_to_the_block_the_dashboard_opened_over(rex: RexServer):
 
 
 HINT = "Turn on Remote Control in Rex Settings to jump across tabs"
+NO_ANSWER_HINT = "Rex.app did not respond; jump not made"
+PEEK_HINT = "Peek works only for agents in this tab"
+REFUSE = "echo 'Error: Remote Control is off for this client (code=refused)' >&2; exit 1"
 
 
-def refusing_rex(workmux: Path, tmp_path: Path) -> Path:
+def refusing_rex(workmux: Path, tmp_path: Path, select: str = REFUSE) -> Path:
     """A workmux whose rex reports an app that owns every block and is
-    attached to the sessions `attach_app` names, and
-    fails session.select, as Rex.app does with Remote Control off. Rex sets
-    REX_BIN_DIR in every block, so the wrapper overrides it."""
+    attached to the sessions `attach_app` names, and answers session.select
+    with `select`: by default it fails, as Rex.app does with Remote Control
+    off. Each select is logged to `selects.log`. Rex sets REX_BIN_DIR in
+    every block, so the wrapper overrides it."""
     bin_dir = tmp_path / "refusing-rex"
     bin_dir.mkdir()
     owner = '{"columns":80,"rows":24,"owner":"client:app"}'
     (bin_dir / "rex").write_text(
         f"""#!/bin/sh
 case "$*" in
-  *session.select*) echo 'Error: Remote Control is off for this client (code=refused)' >&2; exit 1 ;;
+  *session.select*) echo "$*" >> '{bin_dir / "selects.log"}'; {select} ;;
   *client.list*) cat '{bin_dir / "clients.json"}'; exit 0 ;;
   *"block call -b "*" size "*) echo '{owner}'; exit 0 ;;
 esac
@@ -262,6 +266,34 @@ def refusing(
         yield server
     finally:
         server.stop()
+
+
+@pytest.fixture
+def silent(workmux_exe_path: Path, tmp_path: Path) -> Generator[RexServer, None, None]:
+    """An app that never answers session.select."""
+    workmux = refusing_rex(workmux_exe_path, tmp_path, select="exec sleep 30")
+    server = RexServer(workmux, tmp_path)
+    try:
+        yield server
+    finally:
+        server.stop()
+
+
+def selects(rex: RexServer) -> list[str]:
+    log = Path(rex.env["WORKREX_BIN"]).parent / "selects.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def holds(predicate: Callable[[], bool], seconds: float) -> bool:
+    """Whether `predicate` stays true for `seconds`. The dashboard clears
+    expiring messages on its 2 s refresh, 1.5 s or more after they appear,
+    so 5 s spans two refreshes past any expiry."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not predicate():
+            return False
+        time.sleep(0.1)
+    return True
 
 
 def agent_command(rex: RexServer) -> list[str]:
@@ -305,12 +337,71 @@ def test_refused_jump_to_another_tab_keeps_the_dashboard_and_its_hint(
 
     refusing.cli("send-key", "-b", dashboard, "Enter")
     wait_until(lambda: HINT in refusing.screen(dashboard))
-    time.sleep(2)
 
-    assert HINT in refusing.screen(dashboard)
+    assert holds(lambda: HINT in refusing.screen(dashboard), 5)
     assert refusing.focused(session) == dashboard
     assert len(floating_layers(refusing.window(session))) == 1
 
     refusing.cli("send", "-b", dashboard, "j")
     wait_until(lambda: HINT not in refusing.screen(dashboard))
     assert refusing.focused(session) == dashboard
+
+
+def test_peek_keeps_the_keyboard_on_the_dashboard(refusing: RexServer):
+    session, shell, agent = refusing.split_session(agent_command(refusing))
+    attach_app(refusing, session)
+    dashboard = open_dashboard_over(refusing, session, shell)
+    agent_screen = refusing.screen(agent)
+
+    refusing.cli("send", "-b", dashboard, "p")
+    time.sleep(1)
+    assert refusing.focused(session) == dashboard
+    refusing.cli("send", "-b", dashboard, "j")
+    time.sleep(1)
+
+    assert refusing.focused(session) == dashboard
+    assert len(floating_layers(refusing.window(session))) == 1
+    assert refusing.screen(agent) == agent_screen
+    assert selects(refusing) == []
+
+
+def test_peek_at_another_tab_keeps_the_dashboard_with_a_hint(refusing: RexServer):
+    session, shell, _ = refusing.split_session(
+        agent_command(refusing), agent_in_new_tab=True
+    )
+    attach_app(refusing, session)
+    dashboard = open_dashboard_over(refusing, session, shell)
+
+    refusing.cli("send", "-b", dashboard, "p")
+    wait_until(lambda: PEEK_HINT in refusing.screen(dashboard))
+
+    assert refusing.focused(session) == dashboard
+    assert selects(refusing) == []
+
+
+def test_unanswered_jump_to_another_tab_keeps_the_dashboard_and_its_hint(
+    silent: RexServer,
+):
+    session, shell, agent = silent.split_session(
+        agent_command(silent), agent_in_new_tab=True
+    )
+    attach_app(silent, session)
+    dashboard = open_dashboard_over(silent, session, shell)
+
+    silent.cli("send-key", "-b", dashboard, "Enter")
+    wait_until(lambda: NO_ANSWER_HINT in silent.screen(dashboard))
+
+    assert len(selects(silent)) == 1
+    assert holds(lambda: silent.focused(session) == dashboard, 3)
+    assert len(floating_layers(silent.window(session))) == 1
+
+
+def test_unanswered_jump_within_the_tab_lands_and_closes(silent: RexServer):
+    session, shell, agent = silent.split_session(agent_command(silent))
+    attach_app(silent, session)
+    dashboard = open_dashboard_over(silent, session, shell)
+
+    silent.cli("send-key", "-b", dashboard, "Enter")
+    wait_until(lambda: not floating_layers(silent.window(session)))
+
+    assert silent.focused(session) == agent

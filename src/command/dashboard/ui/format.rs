@@ -13,6 +13,28 @@ pub fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Fit a message into `width` columns at a word boundary, so a footer
+/// never ends mid-word. A message that does not fit ends with an ellipsis.
+pub fn fit_words(s: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+    if s.width() <= width {
+        return s.to_string();
+    }
+    let mut fitted = String::new();
+    for word in s.split_whitespace() {
+        let next = if fitted.is_empty() {
+            word.to_string()
+        } else {
+            format!("{fitted} {word}")
+        };
+        if next.width() + 1 > width {
+            break;
+        }
+        fitted = next;
+    }
+    fitted + "…"
+}
+
 use crate::config::StatusIcons;
 use crate::git::GitStatus;
 use crate::github::{CheckSummary, PrSummary};
@@ -497,6 +519,20 @@ pub fn make_row_style(is_current: bool, is_main: bool, palette: &ThemePalette) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fit_words_keeps_whole_words() {
+        let msg = "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so workmux can switch the app.";
+        assert_eq!(super::fit_words(msg, 200), msg);
+        assert_eq!(
+            super::fit_words(msg, 78),
+            "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so…"
+        );
+        assert_eq!(
+            super::fit_words("Rex.app did not respond", 12),
+            "Rex.app did…"
+        );
+    }
+
     use super::*;
     use crate::config::{ThemeMode, ThemeScheme};
     use crate::github::ClosingIssue;

@@ -2,9 +2,11 @@ use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{AppSwitch, BlockId, Multiplexer, RexBackend, SessionView, WindowId};
+use super::{AppSwitch, BlockId, Multiplexer, ResolvedTarget, RexBackend, SessionView, WindowId};
 
 const REMOTE_CONTROL_HINT: &str = "Turn on Remote Control in Rex Settings to jump across tabs";
+const NO_ANSWER_HINT: &str = "Rex.app did not respond; jump not made";
+const PEEK_HINT: &str = "Peek works only for agents in this tab";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,13 +45,45 @@ pub(super) fn active_block(
 
 impl RexBackend {
     /// The dashboard layer's jump: the app shows the block's tab, then the
-    /// block is focused and the layer closes. When the app refuses (Remote
-    /// Control off), a block in the tab the layer is open over is still
-    /// focused; any other jump fails with a hint short enough for the
-    /// footer and leaves focus alone. Nothing is printed, since the layer's
-    /// display would swallow it. An app that does not answer may still
-    /// switch late, so the block is focused as `switch_to_pane` does.
+    /// block is focused and the layer closes. Focus must never land on a
+    /// block the app may not show, so when the app refuses (Remote Control
+    /// off) or does not answer within 1 s, only a block in the tab the layer
+    /// is open over is focused. Any other jump fails with a hint short
+    /// enough for the footer and leaves the keyboard on the dashboard; an
+    /// app that switches late then shows a tab with its own focused block.
+    /// With no app at all, the server's focus is what clients show, so the
+    /// block is focused. Nothing is printed, since the layer's display
+    /// would swallow it.
     pub(super) fn jump_to_block(&self, block: &BlockId) -> Result<()> {
+        let target = self.target_of(block)?;
+        let hint = match self.show_on_app(&target.session_id, target.window_id.as_ref()) {
+            AppSwitch::Shown => None,
+            AppSwitch::Refused => Some(REMOTE_CONTROL_HINT),
+            AppSwitch::NoApp => {
+                (!matches!(self.app_showing_caller(), Ok(None))).then_some(NO_ANSWER_HINT)
+            }
+        };
+        if let Some(hint) = hint
+            && !self.in_layer_tab(&target)?
+        {
+            return Err(anyhow!(hint));
+        }
+        self.select_pane(block.as_str())
+    }
+
+    /// The dashboard layer's peek, which keeps the keyboard on the dashboard
+    /// as a tmux popup does. A block in the layer's tab already shows around
+    /// the layer. Showing any other tab would hide the layer with the
+    /// keyboard still in it, so that peek fails with a hint.
+    pub(super) fn peek_block(&self, block: &BlockId) -> Result<()> {
+        if self.in_layer_tab(&self.target_of(block)?)? {
+            Ok(())
+        } else {
+            Err(anyhow!(PEEK_HINT))
+        }
+    }
+
+    fn target_of(&self, block: &BlockId) -> Result<ResolvedTarget> {
         let target = self
             .resolve("block", block.as_str())?
             .ok_or_else(|| anyhow!("Rex block {} not found", block.as_str()))?;
@@ -57,13 +91,12 @@ impl RexBackend {
             .lock()
             .unwrap()
             .insert(block.clone(), target.session_id.clone());
-        if self.show_on_app(&target.session_id, target.window_id.as_ref()) == AppSwitch::Refused {
-            let here = self.caller.origin.as_ref();
-            if target.window_id.is_none() || target.window_id != self.window_of(here)? {
-                return Err(anyhow!(REMOTE_CONTROL_HINT));
-            }
-        }
-        self.select_pane(block.as_str())
+        Ok(target)
+    }
+
+    fn in_layer_tab(&self, target: &ResolvedTarget) -> Result<bool> {
+        Ok(target.window_id.is_some()
+            && target.window_id == self.window_of(self.caller.origin.as_ref())?)
     }
 
     fn window_of(&self, block: Option<&BlockId>) -> Result<Option<WindowId>> {
@@ -299,18 +332,73 @@ esac
     }
 
     #[test]
-    fn an_app_that_never_answers_still_lands_the_jump_from_the_dashboard() {
+    fn an_app_that_never_answers_keeps_the_dashboard_for_another_tab() {
         let rex = FakeRex::with_select(APP_CLIENTS, "exec sleep 30");
         let start = std::time::Instant::now();
-        rex.backend(in_dashboard(HERE_ELSEWHERE))
+        let err = rex
+            .backend(in_dashboard(HERE_ELSEWHERE))
+            .jump_to_block(&block(AGENT))
+            .unwrap_err();
+
+        assert!(start.elapsed() < std::time::Duration::from_secs(8));
+        assert_eq!(err.to_string(), NO_ANSWER_HINT);
+        let calls = rex.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].ends_with(&select_call()), "{calls:?}");
+    }
+
+    #[test]
+    fn an_app_that_never_answers_still_lands_a_jump_in_the_dashboards_tab() {
+        let rex = FakeRex::with_select(APP_CLIENTS, "exec sleep 30");
+        rex.backend(in_dashboard(HERE_IN_AGENT_TAB))
             .jump_to_block(&block(AGENT))
             .unwrap();
 
-        assert!(start.elapsed() < std::time::Duration::from_secs(8));
         let calls = rex.calls();
         assert_eq!(calls.len(), 2, "{calls:?}");
         assert!(calls[0].ends_with(&select_call()), "{calls:?}");
         assert_focuses_agent(&calls[1]);
+    }
+
+    #[test]
+    fn peek_in_the_dashboards_tab_moves_nothing() {
+        let rex = FakeRex::new(APP_CLIENTS);
+        rex.backend(in_dashboard(HERE_IN_AGENT_TAB))
+            .peek_pane(AGENT, None)
+            .unwrap();
+
+        assert_eq!(rex.calls(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn peek_at_another_tab_fails_with_the_hint_and_moves_nothing() {
+        let rex = FakeRex::new(APP_CLIENTS);
+        let err = rex
+            .backend(in_dashboard(HERE_ELSEWHERE))
+            .peek_pane(AGENT, None)
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), PEEK_HINT);
+        assert_eq!(rex.calls(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn peek_outside_the_dashboard_layer_switches() {
+        let rex = FakeRex::new(APP_CLIENTS);
+        rex.backend(in_pane(HERE_ELSEWHERE))
+            .peek_pane(AGENT, None)
+            .unwrap();
+
+        let calls = rex.calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert_focuses_agent(&calls[1]);
+    }
+
+    #[test]
+    fn layer_hints_fit_a_narrow_footer() {
+        for hint in [REMOTE_CONTROL_HINT, NO_ANSWER_HINT, PEEK_HINT] {
+            assert!(hint.len() < 60, "{hint}");
+        }
     }
 
     /// Runs refused dashboard jumps in a child test process, whose stderr

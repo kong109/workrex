@@ -36,7 +36,7 @@ workmux needs a Rex server that speaks API revision 8 or 9. On first use it read
 
 ## Remote Control
 
-A jump needs Remote Control, which you turn on in Rex Settings. Without it, the app refuses the jump and the target is not focused. The dashboard and the sidebar stay open and print nothing to the terminal; the [dashboard layer](#dashboard) shows a hint in its footer instead. `last-agent` and `last-done` print `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so workmux can switch the app.` once.
+A jump needs Remote Control, which you turn on in Rex Settings. Without it, the app refuses the jump and the target is not focused. The dashboard stays open and shows `Rex.app did not switch: Remote Control is off` in its footer until you press a key. The [dashboard layer](#dashboard) shows its own hint instead. `last-agent` and `last-done` print `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so workmux can switch the app.` once.
 
 ## Dashboard
 
@@ -55,7 +55,8 @@ rex config reload
 
 Press `Shift+Cmd+D`, or run **workrex: Open Dashboard** from the command palette. Pressing the key again while the dashboard is open focuses it instead of opening a second one. The key replaces Rex's default for **Split Pane Down**, which keeps `Shift+Cmd+Down`. To use another key, change the `rex.bind` line at the end of the file.
 
-- **Jumping.** Choosing an agent switches the app to the agent's tab, focuses its block, and closes the layer. With [Remote Control](#remote-control) off, you can still jump to an agent in the tab the dashboard is open over. Choosing an agent in any other tab or session keeps the dashboard open with `Turn on Remote Control in Rex Settings to jump across tabs` in its footer until you press a key. If the app does not answer within 1 s, the block is focused and the layer closes, since the app may still switch late.
+- **Jumping.** Choosing an agent switches the app to the agent's tab, focuses its block, and closes the layer. With [Remote Control](#remote-control) off, you can still jump to an agent in the tab the dashboard is open over. Choosing an agent in any other tab or session keeps the dashboard open with `Turn on Remote Control in Rex Settings to jump across tabs` in its footer until you press a key. If the app does not answer within 1 s, a jump within the tab still lands and closes the layer. A jump to any other tab or session keeps the dashboard open with `Rex.app did not respond; jump not made` in its footer, so the keyboard never goes to a block the app may not show. If the app switches late anyway, the keyboard follows the tab it shows.
+- **Peeking.** Press `p` to look at an agent while the keyboard stays on the dashboard, as with a tmux popup. An agent in the dashboard's tab shows around the layer. A floating layer belongs to one tab, so peeking at an agent in another tab shows `Peek works only for agents in this tab`; press `Enter` to jump there instead.
 - **Closing.** Press `q` to close the layer. Focus returns to the block you were in.
 - **Options.** The action passes `args` to `workrex dashboard`, for example `rex.bind("shift+cmd+d", "workrex_dashboard", { args = { "--session" } })`.
 - **Binary.** The action runs `workrex` from your login shell's `PATH`. To run another binary, set `WORKREX_BIN` in the Rex server's environment.

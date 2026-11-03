@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ratatui::style::Style;
 
 use crate::github::{CheckSummary, PrSummary};
+use crate::multiplexer::rex::AppRefused;
 use crate::multiplexer::{AgentPane, AgentStatus, RemoteAgent};
 
 use super::DashboardTab;
@@ -19,6 +20,19 @@ use super::super::sort::SortMode;
 use super::super::spinner::SPINNER_FRAMES;
 use super::App;
 use crate::command::pane_history::pane_to_remember;
+
+/// Rex's refusal, short enough for the footer of a dashboard in a pane.
+const APP_REFUSED_SHORT: &str = "Rex.app did not switch: Remote Control is off";
+
+/// The footer text for a failed jump. Rex's refusal carries the long fix
+/// that `last-done` prints, so the dashboard shows its short form.
+fn jump_error_message(err: &anyhow::Error) -> String {
+    if err.is::<AppRefused>() {
+        APP_REFUSED_SHORT.to_string()
+    } else {
+        err.to_string()
+    }
+}
 
 /// Selected agent pane target for multiplexer operations.
 pub(crate) struct PaneTarget {
@@ -281,7 +295,7 @@ impl App {
             .find(|a| a.pane_id == target_pane_id)
             .map(|a| a.window_name.as_str());
         if let Err(err) = self.mux.switch_to_pane(target_pane_id, window_hint) {
-            self.status_message = Some((err.to_string(), std::time::Instant::now()));
+            self.status_message = Some((jump_error_message(&err), std::time::Instant::now()));
             self.status_until_key = true;
             return;
         }
@@ -415,10 +429,11 @@ impl App {
         if let Some(selected) = self.table_state.selected()
             && let Some(agent) = self.agents.get(selected)
         {
-            let _ = self
-                .mux
-                .switch_to_pane(&agent.pane_id, Some(&agent.window_name));
             // Don't set should_jump - popup stays open
+            if let Err(err) = self.mux.peek_pane(&agent.pane_id, Some(&agent.window_name)) {
+                self.status_message = Some((err.to_string(), std::time::Instant::now()));
+                self.status_until_key = true;
+            }
         }
     }
 
@@ -745,7 +760,16 @@ fn open_url(url: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::should_close_after_jump;
+    use super::{AppRefused, jump_error_message, should_close_after_jump};
+
+    #[test]
+    fn a_refused_rex_jump_shows_the_short_form() {
+        assert_eq!(
+            jump_error_message(&AppRefused.into()),
+            "Rex.app did not switch: Remote Control is off"
+        );
+        assert_eq!(jump_error_message(&anyhow::anyhow!("other")), "other");
+    }
 
     #[test]
     fn jump_closes_only_when_config_and_multiplexer_allow_it() {
