@@ -7,6 +7,7 @@ Run with `--backend=rex`.
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -16,7 +17,15 @@ from typing import Optional
 
 import pytest
 
-from .conftest import get_test_backends, poll_until, skip_if_backend_unavailable
+from .conftest import (
+    get_session_name,
+    get_test_backends,
+    get_window_name,
+    poll_until,
+    run_workmux_command,
+    skip_if_backend_unavailable,
+    write_workmux_config,
+)
 from .rex_env import RexEnvironment
 
 SIDEBAR_LABEL = "workrex-sidebar"
@@ -188,6 +197,56 @@ def test_a_new_window_gets_a_sidebar_from_its_creation_event(rex):
     ), "no sidebar within 1 s"
     print(f"new window to sidebar: {(time.monotonic() - started) * 1000:.0f} ms")
     assert sidebar_count(windows(env, env.session_id)[window_id]) == 1
+
+
+def session_labeled(env: SidebarRex, label: str) -> Optional[str]:
+    for session in env.api("session.list")["sessions"]:
+        if session.get("label") == label:
+            return session["session_id"]
+    return None
+
+
+def gets_sidebars(env: SidebarRex, session_id: str) -> bool:
+    """Whether every window of the session has its sidebar within 5 s."""
+    return poll_until(
+        lambda: all_have_sidebars(env, session_id), timeout=5.0, poll_interval=0.05
+    )
+
+
+def test_a_new_session_gets_sidebars_without_a_window_event(rex):
+    # Rex reports a new session with session_created alone: its first
+    # window gets no window_created.
+    env = rex
+    cli(env, "on")
+    env.mux_command(["new", "fresh", "--", "sh", "-c", "sleep 100000"])
+    session_id = session_labeled(env, "fresh")
+    assert session_id is not None
+    assert gets_sidebars(env, session_id), view(env, session_id)
+
+
+@pytest.mark.parametrize("mode", ["session", "window"])
+def test_add_gets_a_sidebar_in_either_mode(rex, _template_git_repo, mode):
+    env = rex
+    repo = env.tmp_path
+    shutil.copytree(_template_git_repo / ".git", repo / ".git")
+    shutil.copy(_template_git_repo / ".gitignore", repo / ".gitignore")
+    (env.home_path / ".config" / "workmux").mkdir(parents=True, exist_ok=True)
+    (env.home_path / ".config" / "workmux" / "config.yaml").write_text("{}\n")
+    write_workmux_config(repo)
+    cli(env, "on")
+    branch = f"feat-{mode}"
+    args = "--background" if mode == "session" else "--mode window --background"
+
+    run_workmux_command(env, env.workmux, repo, f"add {branch} {args}")
+
+    if mode == "session":
+        session_id = session_labeled(env, get_session_name(branch))
+        assert session_id is not None
+        assert gets_sidebars(env, session_id), view(env, session_id)
+    else:
+        assert gets_sidebars(env, env.session_id), view(env, env.session_id)
+        labels = [w.get("label") for w in windows(env, env.session_id).values()]
+        assert get_window_name(branch) in labels
 
 
 def test_dragging_one_sidebar_moves_every_sidebar_and_persists(rex):
