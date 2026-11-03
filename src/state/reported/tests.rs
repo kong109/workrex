@@ -4,7 +4,9 @@ use std::sync::Mutex;
 use super::fake_mux::{FakeMux, INSTANCE};
 use super::*;
 use crate::multiplexer::AgentStatus;
-use crate::test_support::{init_repo, run_git};
+use crate::test_support::{
+    ISOLATED_TEST_CANARY, init_repo, is_isolated_child, run_git, run_isolated_test,
+};
 
 pub(crate) fn hooked(pane_id: &str, status: AgentStatus, status_ts: u64) -> AgentState {
     AgentState {
@@ -696,17 +698,55 @@ fn a_pruning_reader_keeps_an_adopted_record_while_its_pane_moves_within_the_work
     }
 }
 
+/// Adoption lists the worktrees of the repository the reader runs in, so the
+/// test reruns itself in a child whose working directory is the main
+/// worktree. Changing the working directory here would race other tests.
 #[test]
-fn a_pane_in_the_main_worktree_is_not_adopted() {
-    let dir = tempfile::tempdir().unwrap();
-    let (repo, worktree) = linked_worktree(dir.path());
+fn a_reader_in_the_repository_adopts_only_panes_in_its_linked_worktrees() {
+    const TEST_NAME: &str = "state::reported::tests::a_reader_in_the_repository_adopts_only_panes_in_its_linked_worktrees";
+    if !is_isolated_child(TEST_NAME) {
+        let dir = tempfile::tempdir().unwrap();
+        let (repo, _worktree) = linked_worktree(dir.path());
+        run_isolated_test(TEST_NAME, &repo, &[]);
+        return;
+    }
+
+    println!("{ISOLATED_TEST_CANARY}");
+    let repo = std::env::current_dir().unwrap();
+    let worktree = repo.with_file_name("wt");
     fs::create_dir(repo.join("src")).unwrap();
+    fs::create_dir(worktree.join("sub")).unwrap();
+    let (_dir, store) = temp_store();
+    let panes = [
+        ("block:main", repo.clone()),
+        ("block:src", repo.join("src")),
+        ("block:sub", worktree.join("sub")),
+    ];
+    let done = ReportedStatus::Agent {
+        status: AgentStatus::Done,
+        since: 200,
+    };
+    let mux = FakeMux {
+        live: panes
+            .iter()
+            .map(|(pane, dir)| (pane.to_string(), live(dir.to_str().unwrap())))
+            .collect(),
+        reported: panes
+            .iter()
+            .map(|(pane, _)| (pane.to_string(), done))
+            .collect(),
+        during_query: Mutex::new(None),
+    };
 
-    let worktrees = linked_worktrees_in(Some(&repo));
+    let adopted: Vec<_> = store
+        .load_all_reconciled_agents(&mux)
+        .unwrap()
+        .into_iter()
+        .map(|agent| agent.pane_id)
+        .collect();
 
-    assert_eq!(containing(&worktrees, &repo), None);
-    assert_eq!(containing(&worktrees, &repo.join("src")), None);
-    assert_eq!(containing(&worktrees, &worktree), Some(&worktree));
+    assert_eq!(adopted, ["block:sub"]);
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
 }
 
 /// Run a pruning reader while the adopted agent's pane, in `pane_dir`, still
