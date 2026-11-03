@@ -834,6 +834,11 @@ mod tests {
         ]);
         let message = err(&older);
         assert!(message.contains("runs unsupported Rex t"), "{message}");
+        let refused = older.rex().mux.open_server(true).err().expect("open fails");
+        assert!(
+            format!("{refused:#}").starts_with("unsupported Rex t"),
+            "{refused:#}"
+        );
         assert!(!message.contains("does not answer"), "{message}");
 
         let off = Fake::new(&[("server.status", &opened(9, false, Some(&[])))]);
