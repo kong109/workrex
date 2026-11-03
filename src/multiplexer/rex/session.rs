@@ -380,11 +380,11 @@ impl RexBackend {
             .map(|app| (app, destination)))
     }
 
-    /// Close every session named `full_name`, first sending the app to the
-    /// destination. Rex.app shows the first session in its sidebar when the
+    /// Close the session named `full_name` (the caller's when several share
+    /// the name), first sending the app to the destination. Rex.app shows the first session in its sidebar when the
     /// session it shows is destroyed, so the order matters.
-    pub(super) fn close_sessions_to(&self, full_name: &str, preferred: Option<&str>) -> Result<()> {
-        for session in self.sessions_labeled(full_name)? {
+    pub(super) fn close_session_to(&self, full_name: &str, preferred: Option<&str>) -> Result<()> {
+        if let Some(session) = self.labeled_session(full_name)? {
             if let Some((app, destination)) = self.relocation(&session, preferred)?
                 && let Err(error) = self.perform_select(&app, &destination, None)
             {
@@ -400,7 +400,7 @@ impl RexBackend {
         self.update_records(|records| records.forget(session))
     }
 
-    /// The deferred form of `close_sessions_to` for one session.
+    /// The deferred form of `close_session_to` for one session.
     pub(super) fn shell_close_session_cmd(
         &self,
         session: &SessionId,
@@ -416,17 +416,15 @@ impl RexBackend {
         Ok(select_then_destroy(select, self.shell_destroy_cmd(session)))
     }
 
-    pub(super) fn shell_close_sessions_to_cmd(
+    pub(super) fn shell_close_session_named_cmd(
         &self,
         full_name: &str,
         preferred: Option<&str>,
     ) -> Result<String> {
-        Ok(self
-            .sessions_labeled(full_name)?
-            .iter()
-            .map(|session| self.shell_close_session_cmd(session, preferred))
-            .collect::<Result<Vec<_>>>()?
-            .join("; "))
+        Ok(match self.labeled_session(full_name)? {
+            Some(session) => self.shell_close_session_cmd(&session, preferred)?,
+            None => String::new(),
+        })
     }
 }
 

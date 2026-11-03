@@ -496,7 +496,7 @@ class TestOpenSessionFlag:
         )
 
         # Verify window exists
-        existing_windows = env.list_windows_in("test")
+        existing_windows = env.list_windows_in_session("test")
         assert window_name in existing_windows
 
         # Open with --session (should close old window and create session)
@@ -510,7 +510,7 @@ class TestOpenSessionFlag:
         )
 
         # Old window should be gone
-        existing_windows = env.list_windows_in("test")
+        existing_windows = env.list_windows_in_session("test")
         assert window_name not in existing_windows, (
             f"Window {window_name!r} should have been closed during mode conversion"
         )
@@ -551,7 +551,7 @@ class TestMixedMode:
         )
 
         # Verify window exists for window-mode (specify test session explicitly)
-        existing_windows = env.list_windows_in("test")
+        existing_windows = env.list_windows_in_session("test")
         window_name = get_window_name(window_branch)
         assert window_name in existing_windows, (
             f"Window {window_name!r} not found in test session. Existing: {existing_windows!r}"
@@ -583,7 +583,7 @@ class TestMixedMode:
         )
 
         # Verify both exist (specify test session for window check)
-        existing_windows = env.list_windows_in("test")
+        existing_windows = env.list_windows_in_session("test")
         window_name = get_window_name(window_branch)
         assert window_name in existing_windows, (
             f"Window {window_name!r} not found in test session. Existing: {existing_windows!r}"
@@ -597,7 +597,7 @@ class TestMixedMode:
 
         # Verify session is gone but window still exists
         assert_session_not_exists(env, get_session_name(session_branch))
-        existing_windows = env.list_windows_in("test")
+        existing_windows = env.list_windows_in_session("test")
         assert window_name in existing_windows, (
             f"Window {window_name!r} should still exist after session removal"
         )
@@ -608,7 +608,7 @@ class TestMixedMode:
         )
 
         # Verify window is gone
-        existing_windows = env.list_windows_in("test")
+        existing_windows = env.list_windows_in_session("test")
         assert window_name not in existing_windows, (
             f"Window {window_name!r} should be removed"
         )

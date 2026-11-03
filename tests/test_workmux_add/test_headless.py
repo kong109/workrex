@@ -310,7 +310,6 @@ os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])
     assert new_attachment.returncode != 0
 
 
-@pytest.mark.tmux_only
 def test_headless_remove_does_not_close_same_named_window(
     mux_server: MuxEnvironment,
     workmux_exe_path: Path,
@@ -330,7 +329,7 @@ def test_headless_remove_does_not_close_same_named_window(
     assert result.returncode == 0, result.stderr
 
     same_name = f"wm-{branch}"
-    mux_server.mux_command(["new-window", "-d", "-n", same_name])
+    mux_server.new_window(same_name)
     mux_server.run_command(
         [
             "git",
