@@ -5,17 +5,14 @@ configuration.
 """
 
 import json
-import os
-import shutil
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Generator
 
 import pytest
 
-from .rex_env import rex_binary
+from .rex_env import RexEnvironment, rex_binary
 
 LUA = Path(__file__).parent.parent / "resources/rex/workrex.lua"
 SHELL = "com.superlogical.terminal.shell"
@@ -29,59 +26,39 @@ def rex_cli() -> str:
     return rex
 
 
-class RexServer:
-    def __init__(self, workmux: Path, tmp_path: Path):
-        self.rex = rex_cli()
-        # macOS limits socket paths to 104 bytes; pytest tmp paths run longer.
-        self.dir = Path(tempfile.mkdtemp(prefix="rx", dir="/tmp"))
-        self.url = f"unix://{self.dir / 's.sock'}"
-        self.env = {
-            key: value
-            for key, value in os.environ.items()
-            if key not in ("REX_BLOCK", "REX_SESSION", "REX_CLIENT", "TMUX")
-        }
-        self.env.update(
-            REX_SERVER=self.url,
-            WORKREX_BIN=str(workmux),
-            XDG_STATE_HOME=str(tmp_path / "state"),
-            XDG_CONFIG_HOME=str(tmp_path / "config"),
-        )
-        log = open(self.dir / "server.log", "w")
-        self.process = subprocess.Popen(
-            [self.rex, "server", "run", "--listen", self.url]
-            + ["--state-dir", str(self.dir / "state"), "--restore=false"]
-            + ["--config", str(LUA)],
-            env=self.env,
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        log.close()
-        wait_until(lambda: self.cli("whoami", check=False).returncode == 0, 15)
+class LayerRex(RexEnvironment):
+    """A Rex test server whose config is the dashboard's Lua file, with
+    `workmux` as the binary the action runs."""
 
-    def stop(self) -> None:
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=5)
-        shutil.rmtree(self.dir, ignore_errors=True)
+    def __init__(self, workmux: Path, tmp_path: Path):
+        super().__init__(tmp_path)
+        # RexEnvironment starts its server with `--config /dev/null`; this
+        # shim swaps in the Lua file for that one command.
+        shim = tmp_path / "rex-shim" / "rex"
+        shim.parent.mkdir()
+        shim.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = server ] && [ "$2" = run ]; then\n'
+            "  for a; do shift; "
+            f'[ "$a" = /dev/null ] && a="{LUA}"; set -- "$@" "$a"; done\n'
+            "fi\n"
+            f'exec "{self.rex}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        self.rex = str(shim)
+        self.env.pop("REX_CLIENT", None)
+        # The isolated HOME has no config, so the dashboard would first ask
+        # about Nerd Fonts.
+        config = self.home_path / ".config" / "workmux"
+        config.mkdir(parents=True, exist_ok=True)
+        (config / "config.yaml").write_text("nerdfont: false\n")
+        self.env["WORKREX_BIN"] = str(workmux)
+        self.start_server()
 
     def cli(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [self.rex, "--autostart=false", "-S", self.url, *args],
-            env=self.env,
-            capture_output=True,
-            text=True,
-            check=check,
-        )
+        return self.mux_command(list(args), check=check)
 
-    def api(self, method: str, args: dict) -> dict:
-        return json.loads(self.cli("api", "call", method, json.dumps(args)).stdout)
-
-    def new_session(self) -> tuple[str, str]:
+    def shell_session(self) -> tuple[str, str]:
         layout = {"block": {"flavor": SHELL}}
         created = self.api(
             "session.create",
@@ -150,12 +127,12 @@ def floating_layers(window: dict) -> list[dict]:
 
 
 @pytest.fixture
-def rex(workmux_exe_path: Path, tmp_path: Path) -> Generator[RexServer, None, None]:
-    server = RexServer(workmux_exe_path, tmp_path)
+def rex(workmux_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None, None]:
+    server = LayerRex(workmux_exe_path, tmp_path)
     try:
         yield server
     finally:
-        server.stop()
+        server.stop_server()
 
 
 def test_lua_file_passes_config_check():
@@ -166,12 +143,12 @@ def test_lua_file_passes_config_check():
     assert "actions: 1" in result.stdout
 
 
-def test_server_lists_the_dashboard_action(rex: RexServer):
+def test_server_lists_the_dashboard_action(rex: LayerRex):
     assert "workrex_dashboard" in rex.cli("actions").stdout
 
 
-def test_action_opens_one_dashboard_layer_and_q_closes_it(rex: RexServer):
-    session, shell = rex.new_session()
+def test_action_opens_one_dashboard_layer_and_q_closes_it(rex: LayerRex):
+    session, shell = rex.shell_session()
 
     opened = rex.open_dashboard(session)
     window = rex.window(session)
@@ -191,9 +168,9 @@ def test_action_opens_one_dashboard_layer_and_q_closes_it(rex: RexServer):
 
 
 def test_a_dashboard_that_exited_is_replaced_instead_of_refocused(tmp_path: Path):
-    rex = RexServer(Path("/usr/bin/false"), tmp_path)
+    rex = LayerRex(Path("/usr/bin/false"), tmp_path)
     try:
-        session, _ = rex.new_session()
+        session, _ = rex.shell_session()
         dead = rex.open_dashboard(session)
         wait_until(lambda: rex.last_exit(dead["block_id"]) is not None)
 
@@ -202,10 +179,10 @@ def test_a_dashboard_that_exited_is_replaced_instead_of_refocused(tmp_path: Path
         [layer] = floating_layers(rex.window(session))
         assert [b["block_id"] for b in layer["blocks"]] == [fresh["block_id"]]
     finally:
-        rex.stop()
+        rex.stop_server()
 
 
-def test_q_returns_focus_to_the_block_the_dashboard_opened_over(rex: RexServer):
+def test_q_returns_focus_to_the_block_the_dashboard_opened_over(rex: LayerRex):
     # Rex hands focus to the tab's last block when a layer's program exits.
     session, shell, _ = rex.split_session()
     rex.focus(session, shell)
@@ -253,7 +230,7 @@ exec '{rex_binary()}' "$@"
     return bin_dir / "workmux"
 
 
-def attach_app(rex: RexServer, session: str) -> None:
+def attach_app(rex: LayerRex, session: str) -> None:
     clients = {
         "clients": [
             {
@@ -268,28 +245,26 @@ def attach_app(rex: RexServer, session: str) -> None:
 
 
 @pytest.fixture
-def refusing(
-    workmux_exe_path: Path, tmp_path: Path
-) -> Generator[RexServer, None, None]:
-    server = RexServer(refusing_rex(workmux_exe_path, tmp_path), tmp_path)
+def refusing(workmux_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None, None]:
+    server = LayerRex(refusing_rex(workmux_exe_path, tmp_path), tmp_path)
     try:
         yield server
     finally:
-        server.stop()
+        server.stop_server()
 
 
 @pytest.fixture
-def silent(workmux_exe_path: Path, tmp_path: Path) -> Generator[RexServer, None, None]:
+def silent(workmux_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None, None]:
     """An app that never answers session.select."""
     workmux = refusing_rex(workmux_exe_path, tmp_path, select="exec sleep 30")
-    server = RexServer(workmux, tmp_path)
+    server = LayerRex(workmux, tmp_path)
     try:
         yield server
     finally:
-        server.stop()
+        server.stop_server()
 
 
-def selects(rex: RexServer) -> list[str]:
+def selects(rex: LayerRex) -> list[str]:
     log = Path(rex.env["WORKREX_BIN"]).parent / "selects.log"
     return log.read_text().splitlines() if log.exists() else []
 
@@ -306,17 +281,17 @@ def holds(predicate: Callable[[], bool], seconds: float) -> bool:
     return True
 
 
-def agent_command(rex: RexServer) -> list[str]:
+def agent_command(rex: LayerRex) -> list[str]:
     """A program that reports itself as a working agent and keeps running,
     which keeps it listed."""
-    repo = Path(rex.env["XDG_STATE_HOME"]).parent / "repo"
+    repo = rex.tmp_path / "repo"
     repo.mkdir(exist_ok=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
     script = 'cd "$1" && "$WORKREX_BIN" set-window-status working && read x'
     return ["sh", "-c", script, "sh", str(repo)]
 
 
-def open_dashboard_over(rex: RexServer, session: str, shell: str) -> str:
+def open_dashboard_over(rex: LayerRex, session: str, shell: str) -> str:
     """Opens the dashboard over `shell` and returns its block once it lists
     the agent."""
     rex.focus(session, shell)
@@ -325,7 +300,7 @@ def open_dashboard_over(rex: RexServer, session: str, shell: str) -> str:
     return dashboard
 
 
-def test_refused_jump_within_the_tab_still_lands_and_closes(refusing: RexServer):
+def test_refused_jump_within_the_tab_still_lands_and_closes(refusing: LayerRex):
     session, shell, agent = refusing.split_session(agent_command(refusing))
     attach_app(refusing, session)
     dashboard = open_dashboard_over(refusing, session, shell)
@@ -337,7 +312,7 @@ def test_refused_jump_within_the_tab_still_lands_and_closes(refusing: RexServer)
 
 
 def test_refused_jump_to_another_tab_keeps_the_dashboard_and_its_hint(
-    refusing: RexServer,
+    refusing: LayerRex,
 ):
     session, shell, _ = refusing.split_session(
         agent_command(refusing), agent_in_new_tab=True
@@ -357,7 +332,7 @@ def test_refused_jump_to_another_tab_keeps_the_dashboard_and_its_hint(
     assert refusing.focused(session) == dashboard
 
 
-def test_peek_keeps_the_keyboard_on_the_dashboard(refusing: RexServer):
+def test_peek_keeps_the_keyboard_on_the_dashboard(refusing: LayerRex):
     session, shell, agent = refusing.split_session(agent_command(refusing))
     attach_app(refusing, session)
     dashboard = open_dashboard_over(refusing, session, shell)
@@ -375,7 +350,7 @@ def test_peek_keeps_the_keyboard_on_the_dashboard(refusing: RexServer):
     assert selects(refusing) == []
 
 
-def test_peek_at_another_tab_keeps_the_dashboard_with_a_hint(refusing: RexServer):
+def test_peek_at_another_tab_keeps_the_dashboard_with_a_hint(refusing: LayerRex):
     session, shell, _ = refusing.split_session(
         agent_command(refusing), agent_in_new_tab=True
     )
@@ -390,7 +365,7 @@ def test_peek_at_another_tab_keeps_the_dashboard_with_a_hint(refusing: RexServer
 
 
 def test_unanswered_jump_to_another_tab_keeps_the_dashboard_and_its_hint(
-    silent: RexServer,
+    silent: LayerRex,
 ):
     session, shell, agent = silent.split_session(
         agent_command(silent), agent_in_new_tab=True
@@ -406,7 +381,7 @@ def test_unanswered_jump_to_another_tab_keeps_the_dashboard_and_its_hint(
     assert len(floating_layers(silent.window(session))) == 1
 
 
-def test_unanswered_jump_within_the_tab_lands_and_closes(silent: RexServer):
+def test_unanswered_jump_within_the_tab_lands_and_closes(silent: LayerRex):
     session, shell, agent = silent.split_session(agent_command(silent))
     attach_app(silent, session)
     dashboard = open_dashboard_over(silent, session, shell)
@@ -417,7 +392,7 @@ def test_unanswered_jump_within_the_tab_lands_and_closes(silent: RexServer):
     assert silent.focused(session) == agent
 
 
-def test_a_jump_from_the_layer_remembers_the_block_beneath_it(rex: RexServer):
+def test_a_jump_from_the_layer_remembers_the_block_beneath_it(rex: LayerRex):
     # The dashboard's own block sits in the window's floating layer and is
     # gone once the layer closes, so last-agent must not get it.
     session, shell, agent = rex.split_session(agent_command(rex))
