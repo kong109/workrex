@@ -58,6 +58,7 @@ fn spawn_input_thread(tx: mpsc::Sender<AppEvent>) {
 /// Run the sidebar TUI (called by the hidden `_sidebar-run` command).
 pub fn run_sidebar() -> Result<()> {
     let mux = create_backend(detect_backend());
+    let host_mux = mux.clone();
 
     if !mux.is_running().unwrap_or(false) {
         tracing::info!("sidebar-run exiting: mux not running");
@@ -199,7 +200,12 @@ pub fn run_sidebar() -> Result<()> {
                 quit_reason = app.quit_reason.as_deref().unwrap_or("unknown"),
                 "sidebar-run quitting"
             );
-            if app.quit_silent {
+            if let Some(host) = host_mux.sidebar().filter(|_| !app.quit_silent) {
+                let pane = host_identity.clone().into();
+                if let Err(error) = host.handle(crate::multiplexer::SidebarRequest::Quit { pane }) {
+                    tracing::warn!(%error, "sidebar quit failed");
+                }
+            } else if app.quit_silent {
                 schedule_pane_kill(&host_identity.pane_id);
             } else {
                 shutdown_all_sidebars(&host_identity);

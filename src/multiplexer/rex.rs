@@ -17,6 +17,9 @@ use super::agent::shell_quote;
 use super::types::*;
 use super::util;
 
+pub(crate) mod events;
+pub(crate) mod sidebar_api;
+
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
 
 macro_rules! rex_id {
@@ -1386,6 +1389,10 @@ impl Multiplexer for RexBackend {
 
     fn server_boot_id(&self) -> Result<Option<String>> {
         Ok(Some(self.whoami()?.boot_id))
+    }
+
+    fn sidebar(&self) -> Option<&dyn super::SidebarHost> {
+        Some(self)
     }
 }
 

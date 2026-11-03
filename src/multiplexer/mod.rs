@@ -9,6 +9,7 @@ pub mod handle;
 pub mod handshake;
 pub mod kitty;
 pub mod rex;
+mod sidebar_host;
 pub mod tmux;
 pub mod types;
 pub mod util;
@@ -24,6 +25,7 @@ use std::time::Duration;
 
 pub use handle::MuxHandle;
 pub use handshake::PaneHandshake;
+pub(crate) use sidebar_host::*;
 pub use tmux::TmuxBackend;
 pub use types::*;
 
@@ -1021,6 +1023,12 @@ pub trait Multiplexer: Send + Sync {
     /// Default returns None (no crash detection for this backend).
     fn server_boot_id(&self) -> Result<Option<String>> {
         Ok(None)
+    }
+
+    /// The backend's own sidebar, for backends that run it without tmux's
+    /// panes and hooks.
+    fn sidebar(&self) -> Option<&dyn SidebarHost> {
+        None
     }
 
     /// Validate if an agent is still alive and should be kept in the dashboard.

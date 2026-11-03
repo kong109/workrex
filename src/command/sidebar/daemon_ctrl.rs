@@ -84,6 +84,9 @@ fn signal_pid(pid: &str) {
 }
 
 pub(super) fn signal_daemon_for(mux: &dyn Multiplexer) {
+    if let Some(host) = mux.sidebar() {
+        return host.refresh();
+    }
     if mux.name() == "tmux" {
         let tmux = TmuxBackend::for_socket(&mux.instance_id());
         if let Ok(Some(pid)) = tmux.global_option("@workmux_sidebar_daemon_pid") {
@@ -95,6 +98,9 @@ pub(super) fn signal_daemon_for(mux: &dyn Multiplexer) {
 /// Signal the daemon to do an immediate refresh, bypassing tmux hook latency.
 pub(super) fn signal_daemon() {
     let mux = create_backend(detect_backend());
+    if let Some(host) = mux.sidebar() {
+        return host.refresh();
+    }
     if mux.name() == "tmux" {
         signal_daemon_for(mux.as_ref());
     } else if let Some(pid) = daemon_pid() {
