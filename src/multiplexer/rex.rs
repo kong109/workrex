@@ -186,7 +186,7 @@ impl ServerVersion {
             return Ok(());
         }
         Err(format!(
-            "unsupported Rex {} (API revisions {} to {}), workrex supports Rex API revisions {} to {}",
+            "unsupported Rex {} (API revisions {} to {}), workmux supports Rex API revisions {} to {}",
             self.rex_version,
             theirs.start(),
             theirs.end(),
@@ -561,8 +561,27 @@ impl Caller {
     }
 }
 
+/// What became of asking Rex.app to show a session or window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AppSwitch {
+    Shown,
+    /// The app turned the request down because Remote Control is off.
+    Refused,
+    /// No app owns the caller's pane, or the app could not be asked.
+    NoApp,
+}
+
+const REMOTE_CONTROL_FIX: &str = "Rex.app did not switch: Remote Control is off. \
+     Turn it on in Rex Settings so workmux can switch the app.";
+
 /// Printed once per process, so a loop over panes repeats no hint.
 static REMOTE_CONTROL_HINT: AtomicBool = AtomicBool::new(false);
+
+fn print_once(printed: &AtomicBool, out: &mut impl Write, text: &str) {
+    if !printed.swap(true, Ordering::Relaxed) {
+        let _ = writeln!(out, "{text}");
+    }
+}
 
 #[derive(Debug)]
 pub struct RexBackend {
@@ -897,7 +916,6 @@ impl RexBackend {
     }
 
     fn focus_window(&self, session: &SessionId, window: &WindowId) -> Result<()> {
-        self.show_on_app(session, Some(window));
         self.api::<Value>(
             "session.focus_window",
             json!({ "session_id": session.as_str(), "window_id": window.as_str() }),
@@ -972,13 +990,12 @@ impl RexBackend {
         Ok(pane_info(session, window, &process, title))
     }
 
-    /// The Rex.app client showing the caller's pane, as tmux moves only the
-    /// clients that show the caller's session. The app attaches to every
-    /// session in its sidebar, so attachment alone does not say it shows
-    /// the caller. It also claims each terminal block it shows, and the claim
-    /// outlasts the view, so an app that showed the caller's pane earlier
-    /// still counts.
-    fn app_showing_caller(&self) -> Result<Option<ClientId>> {
+    /// The Rex.app client that owns the caller's pane. The app claims each
+    /// terminal block it shows and keeps the claim after it moves on, so the
+    /// owner is the app that showed the pane last, not one that shows it
+    /// now. It must also be attached to the caller's session, as a lost or
+    /// non-app client cannot be switched.
+    fn app_owning_caller(&self) -> Result<Option<ClientId>> {
         let (Some(session), Some(block)) = (&self.caller.session, &self.caller.block) else {
             return Ok(None);
         };
@@ -1005,38 +1022,25 @@ impl RexBackend {
 
     /// Rex.app keeps its own shown tab, which `session.focus_window` and
     /// `session.focus_block` leave alone, so the app is asked to show it.
-    /// The switch is a courtesy: when the app refuses, the fix is printed
-    /// and the command carries on.
-    fn show_on_app(&self, session: &SessionId, window: Option<&WindowId>) {
-        let app = match self.app_showing_caller() {
+    fn show_on_app(&self, session: &SessionId, window: Option<&WindowId>) -> AppSwitch {
+        let app = match self.app_owning_caller() {
             Ok(Some(app)) => app,
-            Ok(None) => return,
+            Ok(None) => return AppSwitch::NoApp,
             Err(error) => {
                 tracing::warn!(error = %format!("{error:#}"), "rex: app lookup failed");
-                return;
+                return AppSwitch::NoApp;
             }
         };
         let args = Self::select_args(&app, session, window);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        if let Err(error) = self.run(&args, None)
-            && !REMOTE_CONTROL_HINT.swap(true, Ordering::Relaxed)
-        {
-            eprintln!(
-                "Rex.app did not switch to the window ({error}). Turn on Remote Control \
-                 in Rex Settings so workrex can switch the app."
-            );
-        }
-    }
-
-    fn shell_select_session_cmd(&self, session: &SessionId) -> Result<String> {
-        Ok(match self.app_showing_caller()? {
-            Some(app) => {
-                let args = Self::select_args(&app, session, None);
-                let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                self.shell_rex_cmd(&args)
+        match self.run(&args, None) {
+            Ok(_) => AppSwitch::Shown,
+            Err(error) if error.to_string().contains("(code=refused)") => AppSwitch::Refused,
+            Err(error) => {
+                tracing::warn!(%error, "rex: app switch failed");
+                AppSwitch::NoApp
             }
-            None => "true".to_string(),
-        })
+        }
     }
 
     fn records_dir(&self) -> Result<PathBuf> {
@@ -1143,9 +1147,8 @@ impl Multiplexer for RexBackend {
     }
 
     fn is_running(&self) -> Result<bool> {
-        // An unsupported server is running: the calls that follow name why
-        // workrex cannot use it, where callers that read `false` as "no
-        // server" would hide it.
+        // An unsupported server is running, so a command that acts on it
+        // goes on to a call that names why workmux cannot use it.
         match self.run(&["api", "call", "session.list"], None) {
             Ok(_) | Err(CallError::Unsupported(_)) => Ok(true),
             Err(_) => Ok(false),
@@ -1373,8 +1376,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn switch_to_session(&self, prefix: &str, name: &str) -> Result<()> {
-        let session = self.first_session_labeled(&util::prefixed(prefix, name))?;
-        self.show_on_app(&session, None);
+        self.first_session_labeled(&util::prefixed(prefix, name))?;
         Ok(())
     }
 
@@ -1493,7 +1495,8 @@ impl Multiplexer for RexBackend {
     }
 
     fn shell_switch_session_cmd(&self, full_name: &str) -> Result<String> {
-        self.shell_select_session_cmd(&self.first_session_labeled(full_name)?)
+        self.first_session_labeled(full_name)?;
+        Ok("true".to_string())
     }
 
     fn shell_kill_session_cmd(&self, full_name: &str) -> Result<String> {
@@ -1578,10 +1581,6 @@ impl Multiplexer for RexBackend {
 
     fn select_pane(&self, pane_id: &str) -> Result<()> {
         let block = BlockId::parse(pane_id)?;
-        let target = self
-            .resolve("block", block.as_str())?
-            .ok_or_else(|| anyhow!("Rex block {pane_id} not found"))?;
-        self.show_on_app(&target.session_id, target.window_id.as_ref());
         self.block_session_call(
             "session.focus_block",
             &block,
@@ -1600,7 +1599,26 @@ impl Multiplexer for RexBackend {
         Ok(())
     }
 
+    /// The one call that moves Rex.app. Rex does not say which session an
+    /// app shows now, so `add` and `open` leave the app alone, but a jump is
+    /// asked for from the pane the user is looking at, through the app that
+    /// owns it. A refused jump fails, so the dashboard stays open, and only
+    /// a command outside a full-screen display prints the fix.
     fn switch_to_pane(&self, pane_id: &str, _window_hint: Option<&str>) -> Result<()> {
+        let block = BlockId::parse(pane_id)?;
+        let target = self
+            .resolve("block", block.as_str())?
+            .ok_or_else(|| anyhow!("Rex block {pane_id} not found"))?;
+        if self.show_on_app(&target.session_id, target.window_id.as_ref()) == AppSwitch::Refused {
+            if !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
+                print_once(
+                    &REMOTE_CONTROL_HINT,
+                    &mut std::io::stderr(),
+                    REMOTE_CONTROL_FIX,
+                );
+            }
+            return Err(anyhow!(REMOTE_CONTROL_FIX));
+        }
         self.select_pane(pane_id)
     }
 
@@ -2078,7 +2096,7 @@ mod tests {
         assert_eq!(
             ancient.check(),
             Err("unsupported Rex 0.0.1-old (API revisions 0 to 0), \
-                 workrex supports Rex API revisions 8 to 9"
+                 workmux supports Rex API revisions 8 to 9"
                 .to_string())
         );
         let future: ServerVersion = serde_json::from_str(
@@ -2247,28 +2265,26 @@ mod tests {
     const CALLER_SESSION: &str = "session:b";
     const CALLER_BLOCK: &str = "block:caller";
 
-    fn clients(apps: &[(&str, &[&str])]) -> String {
-        let clients: Vec<Value> = apps
-            .iter()
-            .map(|(id, sessions)| {
-                json!({
-                    "client_id": id,
-                    "info": { "kind": "app" },
-                    "connection_state": "connected",
-                    "session_ids": sessions,
-                })
-            })
-            .chain([json!({ "client_id": "client:cli", "info": { "kind": "cli" } })])
-            .collect();
-        json!({ "clients": clients }).to_string()
+    fn client(id: &str, kind: &str, state: &str, sessions: &[&str]) -> Value {
+        json!({
+            "client_id": id,
+            "info": { "kind": kind },
+            "connection_state": state,
+            "session_ids": sessions,
+        })
+    }
+
+    fn app(id: &str, sessions: &[&str]) -> Value {
+        client(id, "app", "connected", sessions)
     }
 
     fn owner(client: &str) -> String {
         json!({ "columns": 80, "rows": 24, "owner": client }).to_string()
     }
 
-    /// The caller's pane is in session B, window W, and `apps` are connected.
-    fn app_fake(owner_id: &str, apps: &[(&str, &[&str])], select: &str) -> FakeRex {
+    /// The caller's pane is in session B, window W, the pane `block:agent`
+    /// is in the same window, and `clients` are connected.
+    fn app_fake(owner_id: &str, clients: &[Value], select: &str) -> FakeRex {
         let resolved = json!({ "results": [{
             "status": "resolved",
             "target": { "session_id": "session:b", "window_id": "window:w" },
@@ -2282,7 +2298,7 @@ mod tests {
         .to_string();
         FakeRex::new(&[
             ("block call -b block:caller size", &owner(owner_id)),
-            ("client.list", &clients(apps)),
+            ("client.list", &json!({ "clients": clients }).to_string()),
             ("session.select", select),
             ("target.resolve", &resolved),
             ("session.view", &view),
@@ -2293,10 +2309,35 @@ mod tests {
         .in_pane(CALLER_SESSION, CALLER_BLOCK)
     }
 
+    fn select_wm_feat(rex: &RexBackend) {
+        rex.select_window_target(&WindowTarget::with_id(
+            "wm-feat".into(),
+            None,
+            "window:w".into(),
+        ))
+        .unwrap();
+    }
+
     #[test]
-    fn switching_panes_shows_the_window_on_the_app_showing_the_caller() {
-        let fake = app_fake(APP, &[(APP, &[CALLER_SESSION])], "{}");
+    fn add_and_open_leave_the_app_alone() {
+        // The app owns the caller's pane and is attached to its session, as
+        // it is after showing the session once and moving on to another.
+        let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
         fake.rex.select_pane("block:agent").unwrap();
+        select_wm_feat(&fake.rex);
+        fake.rex.select_window("", "wm-feat").unwrap();
+        fake.rex.switch_to_session("", "b").unwrap();
+        assert_eq!(fake.rex.shell_switch_session_cmd("b").unwrap(), "true");
+        assert!(fake.calls(" do ").is_empty(), "{:?}", fake.calls(" do "));
+        assert!(fake.calls("client.list").is_empty());
+        assert_eq!(fake.calls("session.focus_block").len(), 1);
+        assert_eq!(fake.calls("session.focus_window").len(), 2);
+    }
+
+    #[test]
+    fn a_jump_shows_the_pane_on_the_app_that_owns_the_caller() {
+        let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
+        fake.rex.switch_to_pane("block:agent", None).unwrap();
         assert_eq!(
             fake.calls("session.select"),
             [format!(
@@ -2309,56 +2350,51 @@ mod tests {
     }
 
     #[test]
-    fn selecting_a_window_shows_it_on_the_app_showing_the_caller() {
-        let fake = app_fake(APP, &[(APP, &[CALLER_SESSION])], "{}");
-        fake.rex
-            .select_window_target(&WindowTarget::with_id(
-                "wm-feat".into(),
-                None,
-                "window:w".into(),
-            ))
-            .unwrap();
-        let selects = fake.calls("session.select");
-        assert_eq!(selects.len(), 1, "{selects:?}");
-        assert!(
-            selects[0].ends_with(
-                "-C client:app-1 do session.select session_id=session:b window_id=window:w "
-            ),
-            "{selects:?}"
-        );
-        assert_eq!(fake.calls("session.focus_window").len(), 1);
-    }
-
-    #[test]
-    fn a_refused_app_switch_does_not_fail_the_command() {
+    fn a_refused_jump_fails_and_leaves_the_pane_unfocused() {
         let fake = app_fake(
             APP,
-            &[(APP, &[CALLER_SESSION])],
+            &[app(APP, &[CALLER_SESSION])],
             "!Error: Remote Control is off for this client (code=refused)",
         );
-        fake.rex.select_pane("block:agent").unwrap();
-        fake.rex
-            .select_window_target(&WindowTarget::with_id(
-                "wm-feat".into(),
-                None,
-                "window:w".into(),
-            ))
-            .unwrap();
-        fake.rex.switch_to_session("", "b").unwrap();
-        assert_eq!(fake.calls("session.select").len(), 3);
-        assert_eq!(fake.calls("session.focus_block").len(), 1);
-        assert_eq!(fake.calls("session.focus_window").len(), 1);
+        let error = fake.rex.switch_to_pane("block:agent", None).unwrap_err();
+        assert_eq!(error.to_string(), REMOTE_CONTROL_FIX);
+        assert_eq!(fake.calls("session.select").len(), 1);
+        assert!(fake.calls("session.focus_block").is_empty());
     }
 
     #[test]
-    fn with_two_apps_only_the_one_showing_the_caller_is_asked() {
+    fn a_jump_the_app_fails_for_another_reason_still_focuses_the_pane() {
+        let fake = app_fake(
+            APP,
+            &[app(APP, &[CALLER_SESSION])],
+            "!Error: the client did not answer (code=timeout)",
+        );
+        fake.rex.switch_to_pane("block:agent", None).unwrap();
+        assert_eq!(fake.calls("session.select").len(), 1);
+        assert_eq!(fake.calls("session.focus_block").len(), 1);
+    }
+
+    #[test]
+    fn the_remote_control_fix_prints_once() {
+        let printed = AtomicBool::new(false);
+        let mut out = Vec::new();
+        print_once(&printed, &mut out, REMOTE_CONTROL_FIX);
+        print_once(&printed, &mut out, REMOTE_CONTROL_FIX);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!("{REMOTE_CONTROL_FIX}\n")
+        );
+    }
+
+    #[test]
+    fn with_two_apps_only_the_one_owning_the_caller_is_asked() {
         let other = "client:app-2";
         let fake = app_fake(
             other,
-            &[(APP, &[CALLER_SESSION]), (other, &[CALLER_SESSION])],
+            &[app(APP, &[CALLER_SESSION]), app(other, &[CALLER_SESSION])],
             "{}",
         );
-        fake.rex.select_pane("block:agent").unwrap();
+        fake.rex.switch_to_pane("block:agent", None).unwrap();
         let selects = fake.calls(" do ");
         assert_eq!(selects.len(), 1, "{selects:?}");
         assert!(
@@ -2368,25 +2404,31 @@ mod tests {
     }
 
     #[test]
-    fn a_background_add_leaves_an_app_showing_another_session_alone() {
-        // The app attaches to every session in its sidebar, the caller's
-        // included, but another client owns the caller's never-shown block.
-        let fake = app_fake("client:cli", &[(APP, &[CALLER_SESSION, "session:c"])], "{}");
-        fake.rex.select_pane("block:agent").unwrap();
-        assert!(fake.calls("session.select").is_empty());
-        assert_eq!(fake.calls("session.focus_block").len(), 1);
-
-        // An app that owns the block but is not attached to the session.
-        let fake = app_fake(APP, &[(APP, &["session:c"])], "{}");
-        fake.rex.select_pane("block:agent").unwrap();
-        assert!(fake.calls("session.select").is_empty());
+    fn a_jump_asks_no_owner_that_cannot_be_switched() {
+        let owners = [
+            // The app attaches to every session in its sidebar, the
+            // caller's included, but another client owns the caller's pane.
+            ("client:cli", vec![app(APP, &[CALLER_SESSION, "session:c"])]),
+            (
+                "client:cli",
+                vec![client("client:cli", "cli", "connected", &[CALLER_SESSION])],
+            ),
+            (APP, vec![app(APP, &["session:c"])]),
+            (APP, vec![client(APP, "app", "lost", &[CALLER_SESSION])]),
+        ];
+        for (owner, clients) in owners {
+            let fake = app_fake(owner, &clients, "{}");
+            fake.rex.switch_to_pane("block:agent", None).unwrap();
+            assert!(fake.calls(" do ").is_empty(), "{owner} {clients:?}");
+            assert_eq!(fake.calls("session.focus_block").len(), 1);
+        }
     }
 
     #[test]
     fn outside_a_rex_pane_no_app_is_moved() {
-        let mut fake = app_fake(APP, &[(APP, &[CALLER_SESSION])], "{}");
+        let mut fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
         fake.rex.caller = Caller::default();
-        fake.rex.select_pane("block:agent").unwrap();
+        fake.rex.switch_to_pane("block:agent", None).unwrap();
         assert!(fake.calls("session.select").is_empty());
         assert!(fake.calls("client.list").is_empty());
     }
@@ -2547,7 +2589,7 @@ mod tests {
     }
 
     #[test]
-    fn listing_on_an_unsupported_server_names_the_server() {
+    fn listing_on_a_server_whose_windows_cannot_be_read_still_lists_worktrees() {
         let repo = tempfile::tempdir().unwrap();
         crate::test_support::init_repo(repo.path());
         let fake = FakeRex::new(&[(
@@ -2555,19 +2597,17 @@ mod tests {
             r#"{"rex_version":"0.0.1-old","api_revision":3}"#,
         )]);
         assert!(fake.rex.is_running().unwrap());
-        let Err(error) = crate::workflow::list_in(
+        assert!(fake.rex.get_all_window_names().is_err());
+        let rows = crate::workflow::list_in(
             &crate::config::Config::default(),
             &fake.rex,
             false,
             &[],
             Some(repo.path()),
-        ) else {
-            panic!("listing succeeded on an unsupported server");
-        };
-        assert!(
-            format!("{error:#}").contains("unsupported Rex 0.0.1-old"),
-            "{error:#}"
-        );
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].has_mux_window);
     }
 
     #[test]

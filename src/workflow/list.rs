@@ -92,7 +92,7 @@ pub fn list_in(
     // Check mux status and get all windows/sessions once to avoid repeated process calls
     let mux_running = mux.is_running().unwrap_or(false);
     let mux_windows: HashSet<String> = if mux_running {
-        mux.get_all_window_names()?
+        mux.get_all_window_names().unwrap_or_default()
     } else {
         HashSet::new()
     };
