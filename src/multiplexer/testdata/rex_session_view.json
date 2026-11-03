@@ -1,0 +1,143 @@
+{
+  "revision": 5,
+  "session_id": "session:01a19e60-6410-7e09-a3ee-f675512a3a06",
+  "label": "fixture",
+  "active_window_id": "window:01a19e60-6426-7ba0-a8c7-3c6814d342d5",
+  "windows": [
+    {
+      "window_id": "window:01a19e60-6426-7ba0-a8c7-3c6814d342d5",
+      "label": "main",
+      "focused_block_id": "block:01a19e60-6411-7269-9417-612b2fa8332c",
+      "layers": [
+        {
+          "layer_id": "layer:01a19e60-6426-7ba8-8bd7-ecb609f04a45",
+          "kind": "tiled",
+          "bounds": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "layout": {
+            "rect": [
+              0,
+              0,
+              1,
+              1
+            ],
+            "block_id": "block:01a19e60-6411-7269-9417-612b2fa8332c"
+          },
+          "blocks": [
+            {
+              "block_id": "block:01a19e60-6411-7269-9417-612b2fa8332c",
+              "label": "shell",
+              "creator_name": "com.superlogical.terminal",
+              "flavor": "com.superlogical.terminal.shell",
+              "host_id": "e334f1f1-0286-472e-be89-a5dbebd7f061",
+              "owner": "client:01a19e60-640f-7094-b1c4-48141a041d4a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "window_id": "window:01a19e60-645f-7b81-a5b3-80f93f61518c",
+      "label": "wm-feat-a",
+      "focused_block_id": "block:01a19e60-6442-727c-b026-9bb98fffd538",
+      "layers": [
+        {
+          "layer_id": "layer:01a19e60-645f-7b89-bbf2-01eaf0e6f93f",
+          "kind": "tiled",
+          "bounds": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "layout": {
+            "rect": [
+              0,
+              0,
+              1,
+              1
+            ],
+            "split": {
+              "split_id": "split:01a19e60-645f-7b9c-8fff-44ce66efe2e4",
+              "direction": "horizontal",
+              "ratio": 0.6,
+              "before": {
+                "rect": [
+                  0,
+                  0,
+                  0.6,
+                  1
+                ],
+                "block_id": "block:01a19e60-6442-727c-b026-9bb98fffd538"
+              },
+              "after": {
+                "rect": [
+                  0.6,
+                  0,
+                  0.4,
+                  1
+                ],
+                "block_id": "block:01a19e60-6450-70cf-8c47-ad83f1d1d707"
+              }
+            }
+          },
+          "blocks": [
+            {
+              "block_id": "block:01a19e60-6442-727c-b026-9bb98fffd538",
+              "label": "shell",
+              "creator_name": "com.superlogical.terminal",
+              "flavor": "com.superlogical.terminal.shell",
+              "host_id": "e334f1f1-0286-472e-be89-a5dbebd7f061"
+            },
+            {
+              "block_id": "block:01a19e60-6450-70cf-8c47-ad83f1d1d707",
+              "label": "shell",
+              "creator_name": "com.superlogical.terminal",
+              "flavor": "com.superlogical.terminal.shell",
+              "host_id": "e334f1f1-0286-472e-be89-a5dbebd7f061"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "window_id": "window:01a19e60-648c-7933-b46c-9034c701c9ff",
+      "label": "logs",
+      "focused_block_id": "block:01a19e60-647a-7a8f-93b9-0c14612608dc",
+      "layers": [
+        {
+          "layer_id": "layer:01a19e60-648c-793b-b1c7-d352cd2a4522",
+          "kind": "tiled",
+          "bounds": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "layout": {
+            "rect": [
+              0,
+              0,
+              1,
+              1
+            ],
+            "block_id": "block:01a19e60-647a-7a8f-93b9-0c14612608dc"
+          },
+          "blocks": [
+            {
+              "block_id": "block:01a19e60-647a-7a8f-93b9-0c14612608dc",
+              "label": "shell",
+              "creator_name": "com.superlogical.terminal",
+              "flavor": "com.superlogical.terminal.shell",
+              "host_id": "e334f1f1-0286-472e-be89-a5dbebd7f061"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -157,6 +157,7 @@ export default defineConfig({
           label: "Alternative backends",
           items: [
             { label: "kitty", slug: "guide/kitty" },
+            { label: "Rex", slug: "guide/rex" },
             { label: "WezTerm", slug: "guide/wezterm" },
             { label: "Zellij", slug: "guide/zellij" },
           ],

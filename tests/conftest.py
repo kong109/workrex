@@ -316,6 +316,15 @@ class MuxEnvironment(ABC):
         """Create a new window/tab with optional name."""
         pass
 
+    def list_sessions(self) -> list[str]:
+        raise NotImplementedError(f"{self.backend_name} has no sessions")
+
+    def new_session(self, name: str) -> None:
+        raise NotImplementedError(f"{self.backend_name} has no sessions")
+
+    def list_windows_in_session(self, session: str) -> list[str]:
+        raise NotImplementedError(f"{self.backend_name} has no sessions")
+
     @abstractmethod
     def configure_default_shell(self, shell: str) -> None:
         """Configure the default shell for new panes.
@@ -443,6 +452,21 @@ class TmuxEnvironment(MuxEnvironment):
         if name:
             args.extend(["-n", name])
         self.mux_command(args)
+
+    def list_sessions(self) -> list[str]:
+        result = self.tmux(["list-sessions", "-F", "#{session_name}"], check=False)
+        if result.returncode != 0:
+            return []
+        return [s for s in result.stdout.strip().split("\n") if s]
+
+    def new_session(self, name: str) -> None:
+        self.tmux(["new-session", "-d", "-s", name])
+
+    def list_windows_in_session(self, session: str) -> list[str]:
+        result = self.tmux(
+            ["list-windows", "-t", f"{session}:", "-F", "#{window_name}"]
+        )
+        return [w for w in result.stdout.strip().split("\n") if w]
 
     def configure_default_shell(self, shell: str) -> None:
         """Configure tmux to use the specified shell for new panes."""
@@ -699,6 +723,11 @@ def skip_if_backend_unavailable(backend: str):
         )
         if result.returncode != 0:
             pytest.skip("wezterm not running or not available")
+    elif backend == "rex":
+        from .rex_env import rex_binary
+
+        if rex_binary() is None:
+            pytest.skip("rex not installed")
 
 
 # Type alias for tests that accept either backend
@@ -723,22 +752,17 @@ def assert_window_exists(env: MuxEnvironment, window_name: str) -> None:
     )
 
 
-def assert_session_exists(env: "TmuxEnvironment", session_name: str) -> None:
-    """Ensure a tmux session with the provided name exists."""
-    result = env.tmux(["list-sessions", "-F", "#{session_name}"])
-    existing_sessions = [s for s in result.stdout.strip().split("\n") if s]
+def assert_session_exists(env: "MuxEnvironment", session_name: str) -> None:
+    """Ensure a session with the provided name exists."""
+    existing_sessions = env.list_sessions()
     assert session_name in existing_sessions, (
         f"Session {session_name!r} not found. Existing: {existing_sessions!r}"
     )
 
 
-def assert_session_not_exists(env: "TmuxEnvironment", session_name: str) -> None:
-    """Ensure a tmux session with the provided name does NOT exist."""
-    result = env.tmux(["list-sessions", "-F", "#{session_name}"], check=False)
-    if result.returncode != 0:
-        # No sessions exist at all
-        return
-    existing_sessions = [s for s in result.stdout.strip().split("\n") if s]
+def assert_session_not_exists(env: "MuxEnvironment", session_name: str) -> None:
+    """Ensure a session with the provided name does NOT exist."""
+    existing_sessions = env.list_sessions()
     assert session_name not in existing_sessions, (
         f"Session {session_name!r} should not exist but was found. Existing: {existing_sessions!r}"
     )
@@ -1057,7 +1081,7 @@ def pytest_addoption(parser):
         "--backend",
         action="store",
         default=None,
-        help="Multiplexer backend to test: tmux, wezterm, or both (comma-separated)",
+        help="Multiplexer backend to test: tmux, wezterm, rex, or several (comma-separated)",
     )
 
 
@@ -1137,6 +1161,10 @@ def mux_server(request, tmp_path: Path) -> Generator[MuxEnvironment, None, None]
 
     if backend == "tmux":
         test_env = TmuxEnvironment(tmp_path)
+    elif backend == "rex":
+        from .rex_env import RexEnvironment
+
+        test_env = RexEnvironment(tmp_path)
     else:
         test_env = WezTermEnvironment(tmp_path)
 
