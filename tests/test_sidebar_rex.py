@@ -283,6 +283,21 @@ def test_a_killed_daemon_is_restarted_by_the_next_command(rex):
     )
 
 
+def test_the_daemon_exits_after_its_server_dies(rex):
+    env = rex
+    cli(env, "on")
+    pid = daemon_pid(env)
+    assert pid is not None and _alive(pid)
+
+    env.server.terminate()
+    env.server.wait(timeout=5)
+
+    # Three failed whoami calls a second apart, then the 10 s idle exit.
+    assert poll_until(lambda: not _alive(pid), timeout=20, poll_interval=0.2), (
+        "daemon outlived its server"
+    )
+
+
 def test_agent_status_reaches_the_sidebar_rows(rex):
     env = rex
     env.mux_command(["send", "-b", env.runner_block_id, "claude\n"])

@@ -4,12 +4,14 @@
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{ErrorKind, Read};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::{Config, SidebarWidth};
 use crate::multiplexer::rex::RexBackend;
@@ -20,11 +22,15 @@ use super::observe::Observed;
 use super::size::{self, SizeAction};
 use super::store::{self, Files, Options, Records, WindowSidebar};
 
-/// How long the daemon waits for more events before acting on a batch. A
-/// layout change arrives as several events in a few milliseconds.
+/// How long the daemon gathers events before acting on a batch. A layout
+/// change arrives as several events in a few milliseconds. The window is
+/// fixed rather than reset by each event: agents retitle their terminals
+/// many times a second, so a busy server never goes quiet for 50 ms.
 const SETTLE: Duration = Duration::from_millis(50);
 /// Re-read every session this often in case an event was lost.
 const SAFETY_REBUILD: Duration = Duration::from_secs(30);
+/// Failed `whoami` calls in a row after which the server counts as gone.
+const UNREACHABLE_LIMIT: u32 = 3;
 
 /// Which sessions get a sidebar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -522,16 +528,51 @@ pub(super) fn contain(
 
 /// Run the control plane for the daemon until `observed.stop` is set.
 pub(super) fn spawn(mut plane: Plane, observed: Arc<Observed>, socket: PathBuf) {
+    keep_alive(socket, observed.clone());
     thread::spawn(move || {
-        // The daemon exits ten seconds after its last client. Under Rex no
-        // hook restarts it, so the control plane stays a client itself.
-        let (keepalive_tx, _keepalive_rx) = mpsc::sync_channel::<()>(1);
-        let _keepalive = crate::command::sidebar::client::connect(&socket, keepalive_tx);
+        let mut unreachable = 0;
         while !observed.stop.load(Ordering::Relaxed) {
             if let Err(error) = run_stream(&mut plane, &observed) {
                 tracing::warn!(%error, "sidebar event stream failed");
             }
+            unreachable = match plane.rex.boot_id() {
+                Ok(_) => 0,
+                Err(_) => unreachable + 1,
+            };
+            if unreachable >= UNREACHABLE_LIMIT {
+                tracing::info!("rex server unreachable; releasing the sidebar daemon");
+                observed.stop.store(true, Ordering::Relaxed);
+                break;
+            }
             thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+/// The daemon exits ten seconds after its last client, and under Rex no hook
+/// restarts it. So the control plane holds a client connection of its own
+/// until `observed.stop` is set, reading and dropping the snapshots it gets.
+fn keep_alive(socket: PathBuf, observed: Arc<Observed>) {
+    thread::spawn(move || {
+        let mut buf = [0u8; 64 * 1024];
+        while !observed.stop.load(Ordering::Relaxed) {
+            let Ok(mut stream) = UnixStream::connect(&socket) else {
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+            while !observed.stop.load(Ordering::Relaxed) {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                        ) => {}
+                    Err(_) => break,
+                }
+            }
         }
     });
 }
@@ -570,14 +611,23 @@ fn run_stream(plane: &mut Plane, observed: &Observed) -> Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
         };
-        let mut batch = vec![first];
-        while let Ok(event) = rx.recv_timeout(SETTLE) {
-            batch.push(event);
-        }
+        let batch = gather(first, &rx, SETTLE);
         if let Err(error) = handle(plane, observed, batch) {
             tracing::warn!(%error, "sidebar control plane pass failed");
         }
     }
+}
+
+/// `first` and every event that arrives within `settle` of it.
+fn gather<T>(first: T, rx: &mpsc::Receiver<T>, settle: Duration) -> Vec<T> {
+    let mut batch = vec![first];
+    let deadline = Instant::now() + settle;
+    while let Some(left) = deadline.checked_duration_since(Instant::now())
+        && let Ok(event) = rx.recv_timeout(left)
+    {
+        batch.push(event);
+    }
+    batch
 }
 
 fn rebuild(plane: &mut Plane, observed: &Observed) -> Result<()> {
@@ -688,6 +738,43 @@ fn wake_daemon() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_steady_event_stream_still_closes_its_batch() {
+        // Terminals retitled every 5 ms never leave the stream quiet. A
+        // window reset by each event would hold the batch for the whole 2 s.
+        let (tx, rx) = mpsc::channel();
+        let sender = thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(2);
+            let mut n = 0u32;
+            while Instant::now() < until && tx.send(n).is_ok() {
+                n += 1;
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let started = Instant::now();
+        let batch = gather(rx.recv().unwrap(), &rx, Duration::from_millis(50));
+        let took = started.elapsed();
+        assert!(took < Duration::from_millis(500), "batch took {took:?}");
+        assert!(batch.len() > 1, "{batch:?}");
+        assert!(batch.windows(2).all(|pair| pair[0] < pair[1]));
+        // The events after the deadline wait for the next batch.
+        assert!(rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        drop(rx);
+        sender.join().unwrap();
+    }
+
+    #[test]
+    fn a_quiet_stream_closes_its_batch_at_the_deadline() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        let started = Instant::now();
+        let batch = gather(rx.recv().unwrap(), &rx, Duration::from_millis(50));
+        assert_eq!(batch, vec![1, 2]);
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        drop(tx);
+    }
 
     #[test]
     fn scope_round_trips_through_preferences() {
