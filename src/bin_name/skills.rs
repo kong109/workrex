@@ -57,14 +57,22 @@ fn save(path: &Path, manifest: &Manifest) -> Result<()> {
         .with_context(|| format!("Failed to write {}", path.display()))
 }
 
-/// Record that `path` now holds `content` written by this binary, replacing `previous`.
-pub fn record(path: &Path, content: &str, previous: Option<String>) -> Result<()> {
+/// Write `content` to `path`, which held `previous`, recording it first so a
+/// failed write never loses what uninstall must restore.
+pub fn write(path: &Path, content: &str, previous: Option<String>) -> Result<()> {
+    record(path, content, previous)?;
+    fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))
+}
+
+fn record(path: &Path, content: &str, previous: Option<String>) -> Result<()> {
     let manifest_path = manifest_path()?;
     let mut manifest = load(&manifest_path);
-    // A second overwrite keeps the content first replaced, which is the user's.
     let replaced = match manifest.files.remove(path) {
-        Some(entry) => entry.replaced,
-        None => previous,
+        // Still this binary's last write, so what that write replaced is the original.
+        Some(entry) if previous.as_deref().is_some_and(|p| hash(p) == entry.sha256) => {
+            entry.replaced
+        }
+        _ => previous,
     };
     let sha256 = hash(content);
     manifest
@@ -75,8 +83,8 @@ pub fn record(path: &Path, content: &str, previous: Option<String>) -> Result<()
 
 /// Undo this binary's write of `path` if the file still holds what it wrote.
 ///
-/// Returns false, leaving the file alone, when this binary did not write it or it
-/// was changed since.
+/// Returns false, leaving the file alone, when this binary did not write it, it
+/// was changed since, or upstream's identical skill shares it.
 pub fn remove(path: &Path) -> Result<bool> {
     let manifest_path = manifest_path()?;
     let mut manifest = load(&manifest_path);
@@ -86,13 +94,26 @@ pub fn remove(path: &Path) -> Result<bool> {
     if !fs::read_to_string(path).is_ok_and(|content| hash(&content) == entry.sha256) {
         return Ok(false);
     }
-    match &entry.replaced {
-        Some(previous) => fs::write(path, previous)?,
-        None => fs::remove_dir_all(path.parent().context("skill file has no directory")?)?,
-    }
+    let dir = path.parent().context("skill file has no directory")?;
+    let removed = match &entry.replaced {
+        Some(previous) => fs::write(path, previous).map(|()| true)?,
+        None if upstream_uses(dir, &entry.sha256) => false,
+        None => fs::remove_dir_all(dir).map(|()| true)?,
+    };
     manifest.files.remove(path);
     save(&manifest_path, &manifest)?;
-    Ok(true)
+    Ok(removed)
+}
+
+/// Whether upstream workmux's skills are installed beside `dir`, whose file
+/// holds the bundled skill hashed `sha256`, and that skill is byte-identical
+/// to upstream's: upstream setup then counts this file as its own.
+fn upstream_uses(dir: &Path, sha256: &str) -> bool {
+    let upstream_installed = dir.with_file_name("workmux").join("SKILL.md").exists();
+    upstream_installed
+        && crate::skills::BUNDLED_SKILLS
+            .iter()
+            .any(|skill| hash(skill.content) == sha256 && !skill.content.contains(BIN))
 }
 
 #[cfg(test)]
@@ -160,6 +181,73 @@ pub(crate) mod tests {
 
         assert_eq!(fs::read_to_string(&upstream).unwrap(), upstream_content);
         assert!(!ours.parent().unwrap().exists());
+        assert!(!tmp.path().join("manifest.json").exists());
+    }
+
+    #[test]
+    fn rewriting_after_another_writer_restores_that_writer() {
+        let tmp = tempfile::tempdir().unwrap();
+        use_manifest_in(tmp.path());
+        let retaken = tmp.path().join("retaken/SKILL.md");
+        let rewritten = tmp.path().join("rewritten/SKILL.md");
+        for path in [&retaken, &rewritten] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        write(&retaken, "ours", None).unwrap();
+        fs::write(&retaken, "upstream").unwrap();
+        write(&retaken, "ours", Some("upstream".into())).unwrap();
+        write(&rewritten, "ours", Some("user".into())).unwrap();
+        write(&rewritten, "ours", Some("ours".into())).unwrap();
+
+        assert!(remove(&retaken).unwrap());
+        assert!(remove(&rewritten).unwrap());
+
+        assert_eq!(fs::read_to_string(&retaken).unwrap(), "upstream");
+        assert_eq!(fs::read_to_string(&rewritten).unwrap(), "user");
+    }
+
+    #[test]
+    fn a_failed_install_never_loses_the_original() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("merge/SKILL.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "upstream").unwrap();
+        let unwritable = tmp.path().join("state");
+        fs::write(&unwritable, "").unwrap();
+        use_manifest_in(&unwritable);
+        assert!(write(&path, "ours", Some("upstream".into())).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "upstream");
+
+        use_manifest_in(tmp.path());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(write(&path, "ours", Some("upstream".into())).is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let manifest = load(&tmp.path().join("manifest.json"));
+        assert_eq!(manifest.files[&path].replaced.as_deref(), Some("upstream"));
+    }
+
+    #[test]
+    fn uninstall_keeps_a_skill_upstream_installed_identically() {
+        let tmp = tempfile::tempdir().unwrap();
+        use_manifest_in(tmp.path());
+        let base = tmp.path().join("skills");
+        let open_pr = crate::skills::BUNDLED_SKILLS
+            .iter()
+            .find(|s| s.name == "open-pr")
+            .unwrap();
+        assert!(!open_pr.content.contains(BIN));
+        let shared = base.join("open-pr/SKILL.md");
+        let upstream = base.join("workmux/SKILL.md");
+        for path in [&shared, &upstream] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(&upstream, "upstream workmux skill").unwrap();
+        write(&shared, open_pr.content, None).unwrap();
+
+        crate::skills::remove_skills_at(base.clone(), "Claude Code").unwrap();
+
+        assert_eq!(fs::read_to_string(&shared).unwrap(), open_pr.content);
         assert!(!tmp.path().join("manifest.json").exists());
     }
 }

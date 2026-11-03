@@ -126,9 +126,7 @@ pub fn install_skills(agent: Agent) -> Result<String> {
             } else {
                 print_skill_diff(skill.name, &existing, skill.content);
                 if confirm_overwrite(skill.name)? {
-                    fs::write(&path, skill.content)
-                        .with_context(|| format!("Failed to write {}", path.display()))?;
-                    crate::bin_name::skills::record(&path, skill.content, Some(existing))?;
+                    crate::bin_name::skills::write(&path, skill.content, Some(existing))?;
                     println!("  {} updated {}/SKILL.md", style("✓").green(), skill.name);
                     InstallOutcome::Updated
                 } else {
@@ -138,9 +136,7 @@ pub fn install_skills(agent: Agent) -> Result<String> {
         } else {
             fs::create_dir_all(&dir)
                 .with_context(|| format!("Failed to create {}", dir.display()))?;
-            fs::write(&path, skill.content)
-                .with_context(|| format!("Failed to write {}", path.display()))?;
-            crate::bin_name::skills::record(&path, skill.content, None)?;
+            crate::bin_name::skills::write(&path, skill.content, None)?;
             println!("  {} installed {}/SKILL.md", style("✓").green(), skill.name);
             InstallOutcome::Installed
         };
@@ -432,7 +428,7 @@ mod tests {
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), skill.content).unwrap();
         crate::bin_name::skills::tests::use_manifest_in(tmp.path());
-        crate::bin_name::skills::record(&skill_dir.join("SKILL.md"), skill.content, None).unwrap();
+        crate::bin_name::skills::write(&skill_dir.join("SKILL.md"), skill.content, None).unwrap();
 
         let result = remove_skills_at(skills_base, "Claude Code").unwrap();
         assert!(result.contains("1 removed"));
@@ -468,7 +464,7 @@ mod tests {
         std::fs::create_dir_all(&d1).unwrap();
         std::fs::write(d1.join("SKILL.md"), s1.content).unwrap();
         crate::bin_name::skills::tests::use_manifest_in(tmp.path());
-        crate::bin_name::skills::record(&d1.join("SKILL.md"), s1.content, None).unwrap();
+        crate::bin_name::skills::write(&d1.join("SKILL.md"), s1.content, None).unwrap();
 
         // Write second bundled skill modified (will be skipped)
         let s2 = &BUNDLED_SKILLS[1];
