@@ -103,6 +103,11 @@ def test_rex_hosted_agent_lifecycle(
     added = wm(env, exe, repo, "add feat --remote lo")
     assert "Successfully created remote workspace" in added.stdout, added.stderr
     assert "Agent terminal hosted on Rex" in added.stdout, added.stdout
+    # The panes are sessions on the node's Rex server, not a local window.
+    assert (
+        "Successfully created remote workspace and Rex sessions for 'feat' on 'lo'"
+        in added.stdout
+    ), added.stdout
 
     [record] = local_records(env)
     ex_id = record["execution"]["ex_id"]

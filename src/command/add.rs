@@ -1221,11 +1221,16 @@ impl<'a> CreationPlan<'a> {
                 if self.max_concurrent.is_some() {
                     active_targets.push(record.window_name.clone());
                 }
+                // A hosted workspace's terminals are sessions on the node's
+                // Rex server; no local window holds them.
+                let holder = match record.execution.as_ref().and_then(|e| e.rex.as_ref()) {
+                    Some(rex) if rex.sessions.len() == 1 => "Rex session".to_string(),
+                    Some(_) => "Rex sessions".to_string(),
+                    None => format!("{} window", mux.name()),
+                };
                 println!(
-                    "✓ Successfully created remote workspace and {} window for '{}' on '{}'",
-                    mux.name(),
-                    record.branch,
-                    record.remote
+                    "✓ Successfully created remote workspace and {holder} for '{}' on '{}'",
+                    record.branch, record.remote
                 );
                 if let Some(base) = &record.base_label {
                     println!("  Base: {base}");
