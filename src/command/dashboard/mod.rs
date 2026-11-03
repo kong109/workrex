@@ -324,10 +324,7 @@ fn handle_terminal_event(
         return;
     }
 
-    if app.status_until_key {
-        app.status_until_key = false;
-        app.status_message = None;
-    }
+    app.note_keypress();
 
     // Help overlay handling - close on any key if open
     if app.show_help {

@@ -21,16 +21,11 @@ use super::super::spinner::SPINNER_FRAMES;
 use super::App;
 use crate::command::pane_history::pane_to_remember;
 
-/// Rex's refusal, short enough for the footer of a dashboard in a pane.
-const APP_REFUSED_SHORT: &str = "Rex.app did not switch: Remote Control is off";
-
 /// The footer text for a failed jump or peek. Only errors written for the
-/// user reach the footer: Rex's refusal, in its short form, and the layer's
-/// hints. Any other failure stays out of it, as a missed switch always has.
+/// user reach the footer: Rex's refusal and the layer's hints. Any other
+/// failure stays out of it, as a missed switch always has.
 fn footer_message(err: &anyhow::Error) -> Option<String> {
-    if err.is::<AppRefused>() {
-        Some(APP_REFUSED_SHORT.to_string())
-    } else if err.is::<LayerHint>() {
+    if err.is::<AppRefused>() || err.is::<LayerHint>() {
         Some(err.to_string())
     } else {
         tracing::warn!(error = %format!("{err:#}"), "dashboard: switch failed");
@@ -315,8 +310,7 @@ impl App {
 
     fn show_switch_error(&mut self, err: &anyhow::Error) {
         if let Some(msg) = footer_message(err) {
-            self.status_message = Some((msg, std::time::Instant::now()));
-            self.status_until_key = true;
+            self.hold_status(msg);
         }
     }
 
@@ -772,10 +766,10 @@ mod tests {
     use super::{AppRefused, footer_message, should_close_after_jump};
 
     #[test]
-    fn a_refused_rex_jump_shows_the_short_form() {
+    fn a_refused_rex_jump_shows_the_fix() {
         assert_eq!(
-            footer_message(&AppRefused.into()).as_deref(),
-            Some("Rex.app did not switch: Remote Control is off")
+            footer_message(&AppRefused.into()),
+            Some(AppRefused.to_string())
         );
     }
 
