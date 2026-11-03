@@ -16,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use super::super::Multiplexer;
 use super::super::types::CreateSessionParams;
 use super::super::util;
+use crate::bin_name::BIN;
 
 use super::super::agent::shell_quote;
 use super::{CallError, RexBackend, SessionId, SessionSummary, SessionView, found};
@@ -215,7 +216,7 @@ fn pick_destination(
 
 /// Names the worktree, not the Rex session: an agent renames its session.
 pub(super) fn new_session_hint(worktree: &str) -> String {
-    format!("Rex.app stays put: to see {worktree}, press Enter on its row in workmux dashboard.")
+    format!("Rex.app stays put: to see {worktree}, press Enter on its row in {BIN} dashboard.")
 }
 
 fn session_ids(sessions: &[SessionSummary]) -> Vec<SessionId> {
@@ -501,7 +502,8 @@ impl RexBackend {
         session: &SessionId,
         preferred: Option<&str>,
     ) -> Result<String> {
-        let exe = std::env::current_exe().context("Failed to locate the workmux executable")?;
+        let exe = std::env::current_exe()
+            .context(crate::rebrand!("Failed to locate the workmux executable"))?;
         let mut words = vec!["env".to_string()];
         for var in Self::INHERITED_SCOPE_VARS {
             words.extend(["-u".to_string(), var.to_string()]);

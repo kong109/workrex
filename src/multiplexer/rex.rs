@@ -2830,7 +2830,9 @@ mod tests {
         let hint = fake.rex.focus_new_session("block:agent", "feat-a").unwrap();
         assert_eq!(
             hint.as_deref(),
-            Some("Rex.app stays put: to see feat-a, press Enter on its row in workmux dashboard.")
+            Some(crate::rebrand!(
+                "Rex.app stays put: to see feat-a, press Enter on its row in workmux dashboard."
+            ))
         );
         assert!(
             fake.calls("client.perform").is_empty(),
