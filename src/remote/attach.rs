@@ -1016,4 +1016,33 @@ mod tests {
         let input = input.lock().unwrap();
         assert!(matches!(&*input, Input::Forwarded(master) if Arc::ptr_eq(master, &new)));
     }
+
+    #[test]
+    fn output_after_the_exit_leaves_the_keys_with_the_relay() {
+        let input = Mutex::new(Input::Dropped);
+        let (events, _received) = mpsc::channel();
+        copy_output(&b"late"[..], Vec::new(), &input, master(), 1, &events);
+        assert!(matches!(*input.lock().unwrap(), Input::Dropped));
+    }
+
+    #[test]
+    fn each_screen_write_is_flushed() {
+        struct Calls(Vec<&'static str>);
+        impl Write for Calls {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.push("write");
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.0.push("flush");
+                Ok(())
+            }
+        }
+        let input = Mutex::new(Input::Pending(1));
+        let (events, _received) = mpsc::channel();
+        let mut out = Calls(Vec::new());
+        copy_output(&b"screen"[..], &mut out, &input, master(), 1, &events);
+        assert_eq!(out.0, ["write", "flush"]);
+    }
 }
