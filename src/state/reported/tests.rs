@@ -569,6 +569,49 @@ fn a_hook_status_change_within_the_merged_second_keeps_the_hook_status() {
     assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
 }
 
+#[test]
+fn an_adopted_record_is_read_while_its_worktree_is_linked_by_relative_paths() {
+    let (dir, store) = temp_store();
+    let repo = dir.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    init_repo(&repo);
+    let worktree = dir.path().join("wt");
+    let args = [
+        "-c",
+        "worktree.useRelativePaths=true",
+        "worktree",
+        "add",
+        "-q",
+        worktree.to_str().unwrap(),
+    ];
+    run_git(&repo, &args);
+    let worktree = worktree.canonicalize().unwrap();
+    store_record(&store, &adopted_in(&worktree, worktree.clone()));
+
+    assert_eq!(last_done_status(&store), Some(AgentStatus::Done));
+}
+
+#[test]
+fn a_pane_is_adopted_in_a_worktree_whose_parent_became_a_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    init_repo(&repo);
+    let parent = dir.path().join("worktrees");
+    run_git(
+        &repo,
+        &["worktree", "add", "-q", parent.join("wt").to_str().unwrap()],
+    );
+    let moved = dir.path().join("moved");
+    fs::rename(&parent, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &parent).unwrap();
+    let pane_dir = moved.join("wt").canonicalize().unwrap();
+
+    let worktrees = linked_worktrees_in(Some(&repo));
+
+    assert_eq!(containing(&worktrees, &pane_dir), Some(&pane_dir));
+}
+
 /// Where an adopted agent's pane is now, given the repository and the
 /// worktree it was adopted in.
 type PaneDir = fn(&Path, &Path) -> PathBuf;

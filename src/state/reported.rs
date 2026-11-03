@@ -128,7 +128,7 @@ impl<'a> Reports<'a> {
             return Vec::new();
         }
         candidates.sort_by(|a, b| a.0.cmp(b.0));
-        let worktrees = current_linked_worktrees();
+        let worktrees = linked_worktrees_in(None);
         candidates
             .into_iter()
             .filter_map(|(pane_id, live, status, since)| {
@@ -344,10 +344,10 @@ fn remove(path: &Path) -> Result<()> {
     }
 }
 
-/// Linked worktrees of the repository the command runs in, from one
-/// `git worktree list`.
-fn current_linked_worktrees() -> Vec<PathBuf> {
-    let Ok(listing) = crate::git::list_worktrees_with_main_in(None) else {
+/// Linked worktrees of the repository at `repo`, or of the one the command
+/// runs in, from one `git worktree list`.
+fn linked_worktrees_in(repo: Option<&Path>) -> Vec<PathBuf> {
+    let Ok(listing) = crate::git::list_worktrees_with_main_in(repo) else {
         return Vec::new();
     };
     let main = resolved(&listing.main_path);
