@@ -226,6 +226,20 @@ esac
             }
         }
 
+        /// A backend that reuses reads for as long as a test runs, so only
+        /// writes drop them.
+        fn reusing(&self, caller: Caller) -> RexBackend {
+            RexBackend {
+                reuse: std::time::Duration::from_secs(3600),
+                ..self.backend(caller)
+            }
+        }
+
+        fn count(&self, method: &str) -> usize {
+            let log = fs::read_to_string(self.dir.path().join("log")).unwrap_or_default();
+            log.lines().filter(|line| line.contains(method)).count()
+        }
+
         fn calls(&self) -> Vec<String> {
             let log = fs::read_to_string(self.dir.path().join("log")).unwrap_or_default();
             log.lines()
@@ -264,6 +278,11 @@ esac
             "{call}"
         );
         assert!(call.contains(&format!(r#""block_id":"{AGENT}""#)), "{call}");
+    }
+
+    fn view(rex: &RexBackend) {
+        rex.run(&["api", "call", "session.view", "-"], Some("{}"))
+            .unwrap();
     }
 
     fn select_call() -> String {
@@ -414,6 +433,82 @@ esac
         let calls = rex.calls();
         assert_eq!(calls.len(), 2, "{calls:?}");
         assert_focuses_agent(&calls[1]);
+    }
+
+    /// The dashboard reads session views between jumps, so a view read
+    /// before a jump must not be reused after it.
+    #[test]
+    fn a_jump_drops_the_reads_before_it() {
+        for (app, clients) in [("an app", APP_CLIENTS), ("no app", NO_APP_CLIENTS)] {
+            let rex = FakeRex::new(clients);
+            let backend = rex.reusing(in_dashboard(HERE_ELSEWHERE));
+            view(&backend);
+            backend.jump_to_block(&block(AGENT)).unwrap();
+            view(&backend);
+
+            assert_eq!(rex.count("session.view"), 2, "with {app}");
+        }
+    }
+
+    #[test]
+    fn a_refused_jump_drops_the_reads_before_it() {
+        let rex = FakeRex::refusing_select(APP_CLIENTS);
+        let backend = rex.reusing(in_dashboard(HERE_ELSEWHERE));
+        view(&backend);
+        backend.jump_to_block(&block(AGENT)).unwrap_err();
+        view(&backend);
+
+        assert_eq!(rex.count("session.view"), 2);
+    }
+
+    /// An app that answers late may still switch, so its ask counts as a
+    /// write.
+    #[test]
+    fn an_unanswered_jump_drops_the_reads_before_it() {
+        let rex = FakeRex::with_select(APP_CLIENTS, "exec sleep 30");
+        let backend = rex.reusing(in_dashboard(HERE_ELSEWHERE));
+        view(&backend);
+        backend.jump_to_block(&block(AGENT)).unwrap_err();
+        view(&backend);
+
+        assert_eq!(rex.count("session.view"), 2);
+    }
+
+    #[test]
+    fn peeks_keep_the_reads_before_them() {
+        for (origin, peeks) in [(HERE_IN_AGENT_TAB, true), (HERE_ELSEWHERE, false)] {
+            let rex = FakeRex::new(APP_CLIENTS);
+            let backend = rex.reusing(in_dashboard(origin));
+            view(&backend);
+            assert_eq!(backend.peek_pane(AGENT, None).is_ok(), peeks);
+            view(&backend);
+
+            assert_eq!(rex.count("session.view"), 1, "{origin}");
+        }
+    }
+
+    #[test]
+    fn quitting_the_dashboard_drops_the_reads_before_it() {
+        let rex = FakeRex::new(APP_CLIENTS);
+        let backend = rex.reusing(in_dashboard(HERE_ELSEWHERE));
+        view(&backend);
+        backend.dashboard_quit();
+        view(&backend);
+
+        assert_eq!(rex.count("session.view"), 2);
+    }
+
+    /// A block can move to another tab between two peeks, and a peek writes
+    /// nothing that would drop a reused answer, so each peek resolves the
+    /// block and the origin again.
+    #[test]
+    fn each_peek_resolves_where_its_blocks_are_now() {
+        let rex = FakeRex::new(APP_CLIENTS);
+        let backend = rex.reusing(in_dashboard(HERE_IN_AGENT_TAB));
+        backend.peek_pane(AGENT, None).unwrap();
+        backend.peek_pane(AGENT, None).unwrap();
+
+        assert_eq!(rex.count("target.resolve"), 4);
     }
 
     #[test]

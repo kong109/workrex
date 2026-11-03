@@ -2352,6 +2352,27 @@ mod tests {
         Ok(())
     }
 
+    impl RexBackend {
+        /// A backend whose `rex` is the shell script `body`, written to
+        /// `dir`, with its server address in `dir`.
+        pub(crate) fn scripted(dir: &Path, body: String) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let program = dir.join("rex");
+            write_script(&program, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            RexBackend {
+                program: program.display().to_string(),
+                caller: Caller::default(),
+                ..RexBackend::for_server(&format!("unix://{}/s.sock", dir.display()))
+            }
+        }
+
+        pub(crate) fn reusing_reads_for(mut self, reuse: Duration) -> Self {
+            self.reuse = reuse;
+            self
+        }
+    }
+
     #[test]
     fn an_unsupported_server_fails_every_call_after_one_version_query() {
         use std::os::unix::fs::PermissionsExt;
@@ -2434,7 +2455,6 @@ mod tests {
 
     impl FakeRex {
         fn new(cases: &[(&str, &str)]) -> Self {
-            use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             let mut arms = String::new();
             for (index, (pattern, reply)) in cases.iter().enumerate() {
@@ -2454,25 +2474,17 @@ mod tests {
                 let pattern = pattern.replace(' ', "?");
                 arms.push_str(&format!("  *{pattern}*) {arm};;\n"));
             }
-            let program = dir.path().join("rex");
-            write_script(
-                &program,
+            let rex = RexBackend::scripted(
+                dir.path(),
                 format!(
-                    "#!/bin/sh\ndir=$(dirname \"$0\")\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
+                    "dir=$(dirname \"$0\")\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
                      case \"$call\" in\n\
                      {arms}\
                      \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
                      \x20 *) echo \"unexpected: $call\" >&2; exit 1;;\nesac\n",
                     log = dir.path().join("calls").display(),
                 ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let rex = RexBackend {
-                program: program.display().to_string(),
-                caller: Caller::default(),
-                ..RexBackend::for_server(&format!("unix://{}/s.sock", dir.path().display()))
-            };
+            );
             Self { dir, rex }
         }
 
@@ -3101,6 +3113,79 @@ mod tests {
             writer.join().unwrap();
         });
         assert_eq!(fake.view().trim(), "new");
+    }
+
+    #[test]
+    fn a_failed_write_still_drops_the_reads_before_it() {
+        let fake = FakeRex::new(&[
+            ("session.view", "$cat \"$dir/state\""),
+            (
+                "session.close_window",
+                "$echo new > \"$dir/state\"; echo 'Error: boom' >&2; exit 1",
+            ),
+        ])
+        .reusing();
+        fake.write("state", "old");
+        assert_eq!(fake.view(), "old");
+        assert!(fake.rex.run(&CLOSE, Some("{}")).is_err());
+        assert_eq!(fake.view().trim(), "new");
+    }
+
+    #[test]
+    fn a_timed_out_write_still_drops_the_reads_before_it() {
+        let fake = FakeRex::new(&[
+            ("session.view", "{}"),
+            ("client.perform", "$while :; do sleep 0.01; done"),
+        ])
+        .reusing();
+        fake.view();
+        let perform = ["api", "call", "client.perform", "-"];
+        let result = fake
+            .rex
+            .exec_within(&perform, Some("{}"), Some(Duration::from_millis(100)));
+        assert!(result.is_err());
+        fake.view();
+        assert_eq!(fake.calls("session.view").len(), 2);
+    }
+
+    /// A read that takes most of the reuse window expires a full window
+    /// after it started, not after it returned.
+    #[test]
+    fn a_read_is_reused_for_one_window_from_its_start() {
+        let mut fake = FakeRex::new(&[(
+            "session.view",
+            "$touch \"$dir/started\"; \
+             while [ ! -e \"$dir/release\" ]; do sleep 0.01; done; echo '{}'",
+        )]);
+        fake.rex.reuse = Duration::from_secs(1);
+        thread::scope(|scope| {
+            let reader = scope.spawn(|| fake.view());
+            fake.wait_for("started");
+            let started = Instant::now();
+            thread::sleep(Duration::from_millis(800));
+            fake.write("release", "");
+            reader.join().unwrap();
+            let expired = started + Duration::from_millis(1100);
+            thread::sleep(expired.saturating_duration_since(Instant::now()));
+        });
+        fake.view();
+        assert_eq!(fake.calls("session.view").len(), 2);
+    }
+
+    #[test]
+    fn each_session_has_its_own_view() {
+        let fake = FakeRex::new(&[
+            ("session.view*session:a", &view_json("session:a", "a", &[])),
+            ("session.view*session:b", &view_json("session:b", "b", &[])),
+        ])
+        .reusing();
+        for label in ["a", "b"] {
+            let view = fake
+                .rex
+                .view(&SessionId(format!("session:{label}")))
+                .unwrap();
+            assert_eq!(view.label, label);
+        }
     }
 
     #[test]
