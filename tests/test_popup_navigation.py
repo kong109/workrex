@@ -176,7 +176,7 @@ def test_popup_current_window_navigation(
     state = tmp_path / "popup-state"
     command = (
         f"cd {shlex.quote(str(worktree))}; "
-        f"export XDG_STATE_HOME={shlex.quote(str(state))} RUST_LOG=workmux=debug; "
+        f"export XDG_STATE_HOME={shlex.quote(str(state))} RUST_LOG=workrex=debug; "
         + shlex.join([str(workmux_exe_path), operation, branch])
         + (" -f" if operation == "remove" else "")
     )

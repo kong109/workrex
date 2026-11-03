@@ -23,7 +23,7 @@ use crate::agent_setup::json_config::{
 };
 
 /// Hooks configuration embedded at compile time.
-const HOOKS_JSON: &str = include_str!("../../resources/codex/hooks/workmux-status.json");
+const HOOKS_JSON: &str = crate::rebrand_include!("../../resources/codex/hooks/workmux-status.json");
 
 fn codex_dir() -> Option<PathBuf> {
     codex_dir_from_env(
@@ -45,7 +45,7 @@ fn codex_dir_from_env(
         .or_else(|| home.map(|home| home.join(".codex")))
 }
 
-fn hooks_path() -> Option<PathBuf> {
+pub(crate) fn hooks_path() -> Option<PathBuf> {
     codex_dir().map(|d| d.join("hooks.json"))
 }
 
@@ -98,7 +98,7 @@ fn check_at(hooks_path: &Path, config_path: &Path) -> Result<StatusCheck> {
 
 #[cfg(test)]
 fn has_status_hook(config: &Value, event: &str, status: &str) -> bool {
-    let expected = format!("workmux set-window-status {status}");
+    let expected = format!("{} set-window-status {status}", crate::bin_name::BIN);
     config["hooks"][event]
         .as_array()
         .into_iter()
@@ -127,7 +127,7 @@ fn uninstall_at(path: PathBuf) -> Result<String> {
         &JsonHookUninstallSpec {
             messages: json_config::JsonHookUninstallMessages {
                 file_missing: "No Codex hooks.json found",
-                not_found: "No workmux hooks found in Codex hooks.json",
+                not_found: crate::rebrand!("No workmux hooks found in Codex hooks.json"),
                 soft_read_error: None,
                 soft_parse_error: None,
             },
@@ -290,8 +290,9 @@ fn normalize_subagent_stop_status(config: &mut Value) -> bool {
         let Some(command) = hook.get_mut("command") else {
             continue;
         };
-        if command.as_str() == Some("workmux set-window-status done") {
-            *command = Value::String("workmux set-window-status working".to_string());
+        if command.as_str() == Some(crate::rebrand!("workmux set-window-status done")) {
+            *command =
+                Value::String(crate::rebrand!("workmux set-window-status working").to_string());
             modified = true;
         }
     }
@@ -397,16 +398,16 @@ mod tests {
 
     #[test]
     fn test_hooks_json_contains_workmux_commands() {
-        assert!(HOOKS_JSON.contains("workmux set-window-status working"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status waiting"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status done"));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status working")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status waiting")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status done")));
 
         let config: Value = serde_json::from_str(HOOKS_JSON).unwrap();
         let session_start = &config["hooks"]["SessionStart"];
         assert_eq!(session_start[0]["matcher"], "startup|resume|clear");
         assert_eq!(
             session_start[0]["hooks"][0]["command"],
-            "workmux register-agent"
+            crate::rebrand!("workmux register-agent")
         );
         assert!(
             !session_start[0]["matcher"]
@@ -435,7 +436,7 @@ mod tests {
         let path = tmp.path().join("hooks.json");
         let mut config: Value = serde_json::from_str(HOOKS_JSON).unwrap();
         config["hooks"]["SubagentStop"][0]["hooks"][0]["command"] =
-            Value::String("workmux set-window-status done".to_string());
+            Value::String(crate::rebrand!("workmux set-window-status done").to_string());
         config["hooks"]["SubagentStop"]
             .as_array_mut()
             .unwrap()
@@ -606,11 +607,11 @@ mod tests {
         let hooks_path = tmp.path().join("hooks.json");
         std::fs::write(
             &hooks_path,
-            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]},{"hooks":[{"type":"command","command":"python3 my-hook.py"}]}]}}"#,
+            crate::rebrand!(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]},{"hooks":[{"type":"command","command":"python3 my-hook.py"}]}]}}"#),
         )
         .unwrap();
         let result = uninstall_at(hooks_path.clone()).unwrap();
-        assert!(result.contains("Removed workmux hooks"));
+        assert!(result.contains(crate::rebrand!("Removed workmux hooks")));
         assert!(hooks_path.exists());
         let content = std::fs::read_to_string(&hooks_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
@@ -630,7 +631,7 @@ mod tests {
         let hooks_path = tmp.path().join("hooks.json");
         std::fs::write(
             &hooks_path,
-            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#,
+            crate::rebrand!(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#),
         )
         .unwrap();
         let result = uninstall_at(hooks_path.clone()).unwrap();
@@ -644,7 +645,7 @@ mod tests {
         let hooks_path = tmp.path().join("hooks.json");
         std::fs::write(
             &hooks_path,
-            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#,
+            crate::rebrand!(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#),
         )
         .unwrap();
         let result1 = uninstall_at(hooks_path.clone()).unwrap();

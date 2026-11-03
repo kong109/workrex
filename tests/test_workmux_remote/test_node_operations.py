@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from ..conftest import TmuxEnvironment, get_window_name, poll_until
+from ..support.bin_name import hook_bin, rebrand
 from .conftest import Node, git, local_records, wm
 from .test_homecoming import commit_on_node, configure, node_worktree
 from .test_siblings import node_pane
@@ -17,7 +18,7 @@ def type_command(node: Node, ex_id: str, command: str) -> None:
 
 
 def request(node: Node, ex_id: str, command: str) -> None:
-    type_command(node, ex_id, f"{node.root}/run/bin/workmux {command}")
+    type_command(node, ex_id, f"{node.root}/run/bin/{hook_bin()} {command}")
 
 
 def wait_message(node: Node, ex_id: str, text: str, timeout: int = 30) -> None:
@@ -121,9 +122,9 @@ def test_dirty_refuses(
     wait_message(node, ex_id, "has uncommitted changes")
     pane = node_pane(node, ex_id)
     expected = (
-        "workmux rm --force"
+        rebrand("workmux rm --force")
         if command == "rm"
-        else "workmux merge --ignore-uncommitted"
+        else rebrand("workmux merge --ignore-uncommitted")
     )
     assert expected in pane
     assert "remote logs" not in pane

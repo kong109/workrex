@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
 
@@ -49,7 +50,7 @@ pub fn open(
     let (worktree_path, branch_name) = git::find_worktree_in(name, Some(&context.execution_dir))
         .map_err(|_| {
             anyhow!(
-                "Worktree '{}' not found. Use 'workmux list' to see available worktrees.",
+                "Worktree '{}' not found. Use '{BIN} list' to see available worktrees.",
                 name
             )
         })?;

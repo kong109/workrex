@@ -9,6 +9,7 @@ from .conftest import (
     MuxEnvironment,
     run_workmux_command,
 )
+from .support.bin_name import BIN, bundled, rebrand
 from .support.setup import (
     install_opencode_version,
     run_setup_with_answers,
@@ -56,7 +57,7 @@ class TestSetupNoPrompt:
         """Claude with enabled plugin shows all-configured message."""
         claude_dir = mux_server.home_path / ".claude"
         claude_dir.mkdir()
-        settings = {"enabledPlugins": {"workmux-status@workmux": True}}
+        settings = {"enabledPlugins": {f"{BIN}-status@workmux": True}}
         (claude_dir / "settings.json").write_text(json.dumps(settings))
 
         result = run_workmux_command(
@@ -100,7 +101,7 @@ class TestSetupNoPrompt:
             / "plugins"
             / "workmux-status.ts"
         )
-        (plugin_dir / "workmux-status.ts").write_text(bundled_plugin.read_text())
+        (plugin_dir / f"{BIN}-status.ts").write_text(bundled(bundled_plugin))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -116,10 +117,10 @@ class TestSetupNoPrompt:
         """The V2 package files are recognized without prompting."""
         install_opencode_version(mux_server, "v2.0.18")
         plugin_dir = (
-            mux_server.home_path / ".config" / "opencode" / "plugins" / "workmux-status"
+            mux_server.home_path / ".config" / "opencode" / "plugins" / f"{BIN}-status"
         )
         plugin_dir.mkdir(parents=True)
-        bundled = (
+        bundled_dir = (
             Path(__file__).parent.parent
             / "resources"
             / "opencode"
@@ -127,7 +128,7 @@ class TestSetupNoPrompt:
             / "workmux-status"
         )
         for name in ("index.ts", "tui.ts", "status.ts"):
-            (plugin_dir / name).write_text((bundled / name).read_text())
+            (plugin_dir / name).write_text(bundled(bundled_dir / name))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -150,7 +151,7 @@ class TestSetupNoPrompt:
             / "extensions"
             / "workmux-status.ts"
         )
-        (extension_dir / "workmux-status.ts").write_text(bundled_extension.read_text())
+        (extension_dir / f"{BIN}-status.ts").write_text(bundled(bundled_extension))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -175,7 +176,7 @@ class TestSetupNoPrompt:
             / "plugins"
             / "workmux-status.ts"
         )
-        (plugin_dir / "workmux-status.ts").write_text(bundled_plugin.read_text())
+        (plugin_dir / f"{BIN}-status.ts").write_text(bundled(bundled_plugin))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -268,7 +269,7 @@ class TestSetupInstall:
         run_setup_with_answers(
             mux_server,
             workmux_exe_path,
-            expected_output=("workmux register-agent",),
+            expected_output=("are also installed for Claude Code",),
         )
 
     def test_outdated_opencode_plugin_explains_update_prompt(
@@ -288,17 +289,15 @@ class TestSetupInstall:
         ).read_text()
         (plugin_dir / "workmux-status.ts").write_text(historical_plugin)
 
-        # This historical version produces a long diff; its trailing added
-        # handler remains visible when the confirmation prompt is displayed.
+        # This historical version is upstream's; setup warns and leaves it in place.
         run_setup_with_answers(
             mux_server,
             workmux_exe_path,
-            expected_output=("case 'session.deleted':",),
+            expected_output=("are also installed for OpenCode",),
         )
 
-        assert (
-            "workmux register-agent" in (plugin_dir / "workmux-status.ts").read_text()
-        )
+        # The fixture is upstream workmux's plugin, which workrex leaves in place.
+        assert (plugin_dir / "workmux-status.ts").read_text() == historical_plugin
 
     def test_claude_install_accept(
         self,
@@ -366,11 +365,11 @@ class TestSetupInstall:
 
         run_setup_with_answers(mux_server, workmux_exe_path, hooks_answer="y")
 
-        plugin_path = opencode_dir / "plugins" / "workmux-status.ts"
+        plugin_path = opencode_dir / "plugins" / f"{BIN}-status.ts"
         assert plugin_path.exists()
         assert not (opencode_dir / "package.json").exists()
         plugin_text = plugin_path.read_text()
-        assert "workmux register-agent" in plugin_text
+        assert rebrand("workmux register-agent") in plugin_text
 
     @pytest.mark.parametrize(
         "v1_source",
@@ -393,7 +392,8 @@ class TestSetupInstall:
         plugins = opencode_dir / "plugins"
         plugins.mkdir(parents=True)
         bundled_v1 = Path(__file__).parent.parent / v1_source
-        (plugins / "workmux-status.ts").write_text(bundled_v1.read_text())
+        v1 = bundled_v1.read_text()
+        (plugins / f"{BIN}-status.ts").write_text(rebrand(v1) if "resources" in v1_source else v1)
         (plugins / "custom.ts").write_text("// keep me")
 
         run_setup_with_answers(mux_server, workmux_exe_path, hooks_answer="y")
@@ -405,10 +405,10 @@ class TestSetupInstall:
             / "v2"
             / "workmux-status"
         )
-        installed_v2 = plugins / "workmux-status"
+        installed_v2 = plugins / f"{BIN}-status"
         for name in ("index.ts", "tui.ts", "status.ts"):
-            assert (installed_v2 / name).read_text() == (bundled_v2 / name).read_text()
-        assert not (plugins / "workmux-status.ts").exists()
+            assert (installed_v2 / name).read_text() == bundled(bundled_v2 / name)
+        assert not (plugins / f"{BIN}-status.ts").exists()
         assert (plugins / "custom.ts").read_text() == "// keep me"
 
         result = run_workmux_command(
@@ -428,7 +428,7 @@ class TestSetupInstall:
 
         run_setup_with_answers(mux_server, workmux_exe_path, hooks_answer="y")
 
-        extension_path = omp_dir / "extensions" / "workmux-status.ts"
+        extension_path = omp_dir / "extensions" / f"{BIN}-status.ts"
         assert extension_path.exists()
         extension_text = extension_path.read_text()
         assert "@oh-my-pi/pi-coding-agent" in extension_text
@@ -461,7 +461,7 @@ class TestSetupInstall:
         assert "SessionStart" in settings["hooks"]
         assert "Stop" in settings["hooks"]
 
-        plugin_path = opencode_dir / "plugins" / "workmux-status.ts"
+        plugin_path = opencode_dir / "plugins" / f"{BIN}-status.ts"
         assert plugin_path.exists()
         assert not (opencode_dir / "package.json").exists()
 
@@ -502,12 +502,12 @@ class TestSetupInstall:
             for hook in group.get("hooks", [])
         ]
         assert "afplay /System/Library/Sounds/Glass.aiff" in stop_commands
-        assert "workmux set-window-status done" in stop_commands
+        assert rebrand("workmux set-window-status done") in stop_commands
         assert settings["hooks"]["SessionStart"][0]["matcher"] == (
             "startup|resume|clear|fork"
         )
         assert settings["hooks"]["SessionStart"][0]["hooks"][0]["command"] == (
-            "workmux register-agent"
+            rebrand("workmux register-agent")
         )
         assert "UserPromptSubmit" in settings["hooks"]
         assert "Notification" in settings["hooks"]

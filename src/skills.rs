@@ -21,27 +21,27 @@ pub struct BundledSkill {
 pub const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
         name: "merge",
-        content: include_str!("../skills/merge/SKILL.md"),
+        content: crate::rebrand_include!("../skills/merge/SKILL.md"),
     },
     BundledSkill {
         name: "rebase",
-        content: include_str!("../skills/rebase/SKILL.md"),
+        content: crate::rebrand_include!("../skills/rebase/SKILL.md"),
     },
     BundledSkill {
         name: "worktree",
-        content: include_str!("../skills/worktree/SKILL.md"),
+        content: crate::rebrand_include!("../skills/worktree/SKILL.md"),
     },
     BundledSkill {
         name: "coordinator",
-        content: include_str!("../skills/coordinator/SKILL.md"),
+        content: crate::rebrand_include!("../skills/coordinator/SKILL.md"),
     },
     BundledSkill {
         name: "open-pr",
-        content: include_str!("../skills/open-pr/SKILL.md"),
+        content: crate::rebrand_include!("../skills/open-pr/SKILL.md"),
     },
     BundledSkill {
-        name: "workmux",
-        content: include_str!("../skills/workmux/SKILL.md"),
+        name: crate::bin_name::BIN,
+        content: crate::rebrand_include!("../skills/workmux/SKILL.md"),
     },
 ];
 
@@ -126,8 +126,7 @@ pub fn install_skills(agent: Agent) -> Result<String> {
             } else {
                 print_skill_diff(skill.name, &existing, skill.content);
                 if confirm_overwrite(skill.name)? {
-                    fs::write(&path, skill.content)
-                        .with_context(|| format!("Failed to write {}", path.display()))?;
+                    crate::bin_name::skills::write(&path, skill.content, Some(existing))?;
                     println!("  {} updated {}/SKILL.md", style("✓").green(), skill.name);
                     InstallOutcome::Updated
                 } else {
@@ -137,8 +136,7 @@ pub fn install_skills(agent: Agent) -> Result<String> {
         } else {
             fs::create_dir_all(&dir)
                 .with_context(|| format!("Failed to create {}", dir.display()))?;
-            fs::write(&path, skill.content)
-                .with_context(|| format!("Failed to write {}", path.display()))?;
+            crate::bin_name::skills::write(&path, skill.content, None)?;
             println!("  {} installed {}/SKILL.md", style("✓").green(), skill.name);
             InstallOutcome::Installed
         };
@@ -218,7 +216,7 @@ pub fn remove_skills(agent: Agent) -> Result<String> {
     remove_skills_at(base_dir, agent.name())
 }
 
-fn remove_skills_at(base_dir: PathBuf, agent_name: &str) -> Result<String> {
+pub(crate) fn remove_skills_at(base_dir: PathBuf, agent_name: &str) -> Result<String> {
     if !base_dir.exists() {
         return Ok(format!(
             "No skills directory found at {}",
@@ -234,17 +232,11 @@ fn remove_skills_at(base_dir: PathBuf, agent_name: &str) -> Result<String> {
         if !path.exists() {
             continue;
         }
-        match fs::read_to_string(&path) {
-            Ok(content) if content == skill.content => {
-                let dir = path.parent().unwrap();
-                fs::remove_dir_all(dir)?;
-                removed += 1;
-            }
-            Ok(_) => {
-                // User-modified skill, leave it
-                skipped += 1;
-            }
-            Err(_) => continue,
+        if crate::bin_name::skills::remove(&path)? {
+            removed += 1;
+        } else {
+            // A skill this binary did not write, or one modified since, stays.
+            skipped += 1;
         }
     }
 
@@ -411,7 +403,7 @@ mod tests {
         assert!(names.contains(&"worktree"));
         assert!(names.contains(&"coordinator"));
         assert!(names.contains(&"open-pr"));
-        assert!(names.contains(&"workmux"));
+        assert!(names.contains(&crate::bin_name::BIN));
     }
 
     #[test]
@@ -435,6 +427,8 @@ mod tests {
         let skill_dir = skills_base.join(skill.name);
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), skill.content).unwrap();
+        crate::bin_name::skills::tests::use_manifest_in(tmp.path());
+        crate::bin_name::skills::write(&skill_dir.join("SKILL.md"), skill.content, None).unwrap();
 
         let result = remove_skills_at(skills_base, "Claude Code").unwrap();
         assert!(result.contains("1 removed"));
@@ -469,6 +463,8 @@ mod tests {
         let d1 = skills_base.join(s1.name);
         std::fs::create_dir_all(&d1).unwrap();
         std::fs::write(d1.join("SKILL.md"), s1.content).unwrap();
+        crate::bin_name::skills::tests::use_manifest_in(tmp.path());
+        crate::bin_name::skills::write(&d1.join("SKILL.md"), s1.content, None).unwrap();
 
         // Write second bundled skill modified (will be skipped)
         let s2 = &BUNDLED_SKILLS[1];

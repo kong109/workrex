@@ -644,7 +644,7 @@ class TestExistingBranch:
 
         stderr = str(excinfo.value)
         assert f"A worktree for branch '{branch_name}' already exists." in stderr
-        assert "Use 'workmux open" in stderr
+        assert "Use 'workrex open" in stderr
 
     def test_add_with_open_if_exists_opens_existing_worktree(
         self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path

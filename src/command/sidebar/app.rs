@@ -1,5 +1,6 @@
 //! Application state for the sidebar TUI.
 
+use crate::bin_name::BIN;
 use anyhow::Result;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
@@ -1371,7 +1372,7 @@ impl SidebarApp {
                 let _ = Cmd::new("tmux")
                     .args(&[
                         "display-message",
-                        &format!("workmux: open {}: {err:#}", remote.handle),
+                        &format!("{BIN}: open {}: {err:#}", remote.handle),
                     ])
                     .run();
             }

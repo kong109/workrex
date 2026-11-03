@@ -12,6 +12,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::RemoteSpec;
@@ -26,7 +27,7 @@ use crate::config::Config;
 
 pub fn run(config: &Config, record: &WorkspaceRecord, host: bool) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        bail!("workmux shell needs a terminal");
+        bail!("{BIN} shell needs a terminal");
     }
     let spec = RemoteSpec::resolve(config, &record.remote)?;
     let node = Node::connect(&spec).with_context(|| {
@@ -38,7 +39,7 @@ pub fn run(config: &Config, record: &WorkspaceRecord, host: bool) -> Result<()> 
     let ex_id = record
         .execution
         .as_ref()
-        .ok_or_else(|| anyhow!("run `workmux open {}` first", record.handle))?
+        .ok_or_else(|| anyhow!("run `{BIN} open {}` first", record.handle))?
         .ex_id
         .clone();
     let slot = super::node::shell::new_slot()?;
@@ -169,7 +170,7 @@ fn close(spec: &RemoteSpec, pin: String, ws_id: String, ex_id: String, slot: Str
 fn refusal(err: anyhow::Error, record: &WorkspaceRecord) -> anyhow::Error {
     match error_code(&err) {
         Some(code::NOT_FOUND) | Some(code::NO_WORKTREE) => {
-            anyhow!("{err}; run `workmux open {}` first", record.handle)
+            anyhow!("{err}; run `{BIN} open {}` first", record.handle)
         }
         _ => err.context(format!(
             "Failed to open a shell in '{}' on '{}'",

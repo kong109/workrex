@@ -4,6 +4,7 @@
 //! agent loop becomes fully idle. Workmux maps those signals to working and
 //! done status.
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::fs;
@@ -11,17 +12,19 @@ use std::path::{Path, PathBuf};
 
 use super::{StatusCheck, UpdatePreview};
 
-const WORKMUX_GROUP: &str = "workmux-status";
-const REGISTER_COMMAND: &str = "workmux register-agent >/dev/null 2>&1 || true; printf '{}\\n'";
+const WORKMUX_GROUP: &str = concat!(env!("CARGO_BIN_NAME"), "-status");
+const REGISTER_COMMAND: &str =
+    crate::rebrand!("workmux register-agent >/dev/null 2>&1 || true; printf '{}\\n'");
 const WORKING_COMMAND: &str =
-    "workmux set-window-status working >/dev/null 2>&1 || true; printf '{}\\n'";
-const STOP_COMMAND: &str = "workmux set-window-status done >/dev/null 2>&1 || true; printf '{}\\n'";
+    crate::rebrand!("workmux set-window-status working >/dev/null 2>&1 || true; printf '{}\\n'");
+const STOP_COMMAND: &str =
+    crate::rebrand!("workmux set-window-status done >/dev/null 2>&1 || true; printf '{}\\n'");
 
 fn gemini_dir() -> Option<PathBuf> {
     home::home_dir().map(|home| home.join(".gemini"))
 }
 
-fn hooks_path() -> Option<PathBuf> {
+pub(crate) fn hooks_path() -> Option<PathBuf> {
     gemini_dir().map(|dir| dir.join("config").join("hooks.json"))
 }
 
@@ -99,7 +102,7 @@ pub fn uninstall() -> Result<String> {
 
 fn uninstall_at(path: &Path) -> Result<String> {
     remove_workmux_group_file(path)?
-        .map_or_else(|| Ok("No Antigravity workmux hooks found".to_string()), Ok)
+        .map_or_else(|| Ok(format!("No Antigravity {BIN} hooks found")), Ok)
 }
 
 pub(crate) fn update_preview() -> Result<Option<UpdatePreview>> {
@@ -198,10 +201,7 @@ fn remove_workmux_group_file(path: &Path) -> Result<Option<String>> {
     } else {
         write_json(path, &config)?;
     }
-    Ok(Some(format!(
-        "Removed Workmux hooks from {}",
-        path.display()
-    )))
+    Ok(Some(format!("Removed {BIN} hooks from {}", path.display())))
 }
 
 fn read_json(path: &Path) -> Result<Value> {

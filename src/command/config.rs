@@ -76,7 +76,7 @@ fn run_path() -> Result<()> {
 }
 
 fn run_reference() -> Result<()> {
-    print!("{}", crate::config::EXAMPLE_PROJECT_CONFIG);
+    print!("{}", crate::rebrand!(crate::config::EXAMPLE_PROJECT_CONFIG));
     Ok(())
 }
 

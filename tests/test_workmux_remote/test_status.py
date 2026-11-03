@@ -20,6 +20,7 @@ from ..conftest import (
     poll_until,
     wait_for_pane_output,
 )
+from ..support.bin_name import hook_bin
 from ..support.codex import CODEX_SIMULATOR
 from ..test_popup_navigation import attached_client
 from .conftest import LOOPBACK, Node, git, local_records, observation_path, wm
@@ -44,7 +45,7 @@ while :; do
     case $command in
       exit) exit 0 ;;
       title) printf '\033]2;fake-title-42\007' && echo applied-title ;;
-      *) workmux set-window-status "$command" </dev/null && echo "applied-$command" ;;
+      *) {hook_bin()} set-window-status "$command" </dev/null && echo "applied-$command" ;;
     esac
   fi
   sleep 0.1
@@ -131,6 +132,7 @@ def test_remote_status_reaches_the_attach_pane(
     assert "Successfully created remote workspace" in result.stdout, result.stderr
     wait_for_pane_output(mux_server, window, "FAKE-AGENT-READY", timeout=20)
     [record] = local_records(mux_server)
+    assert (node.root / "run/bin" / hook_bin()).is_file()
 
     # The node's command line was cleared before the agent started.
     screen = mux_server.tmux(["capture-pane", "-p", "-S", "-", "-t", window]).stdout
@@ -322,7 +324,7 @@ def test_send_reaches_a_remote_agent_the_config_picks(
     # Under an interpreter, the pane does not look like Codex.
     mux_server.install_script(
         mux_server.fake_bin_dir / "codex",
-        f"#!/bin/sh\nexec python3 {simulator} workmux {ready} {submitted} {received}\n",
+        f"#!/bin/sh\nexec python3 {simulator} {hook_bin()} {ready} {submitted} {received}\n",
     )
     project = {"nerdfont": False, "agent": "codex", "panes": [{"command": "<agent>"}]}
     (repo / ".workmux.yaml").write_text(yaml.dump(project))

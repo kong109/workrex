@@ -398,7 +398,9 @@ impl DashboardConfig {
     }
 
     pub fn merge(&self) -> &str {
-        self.merge.as_deref().unwrap_or("!workmux merge")
+        self.merge
+            .as_deref()
+            .unwrap_or(crate::bin_name::MERGE_ACTION)
     }
 
     /// Get the preview size percentage (clamped to 10-90).
@@ -3628,7 +3630,7 @@ impl Config {
             ));
         }
 
-        fs::write(&config_path, EXAMPLE_PROJECT_CONFIG)?;
+        fs::write(&config_path, crate::rebrand!(EXAMPLE_PROJECT_CONFIG))?;
 
         println!("✓ Created .workmux.yaml");
         println!("\nThis file provides project-specific overrides.");
