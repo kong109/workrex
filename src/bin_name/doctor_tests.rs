@@ -11,6 +11,7 @@ fn fixes_keep_names_that_spell_workmux() {
         isolation: RemoteIsolation::Container,
         isolation_explicit: true,
         binary: None,
+        terminal: Default::default(),
     };
     let facts = parse_facts(
         "os=Linux\narch=x86_64\nuser=workmux\nhostname=box\ntmux=tmux 3.4\n\

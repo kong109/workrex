@@ -40,8 +40,7 @@ impl Node {
         let pin = Pin::for_spec(spec)?;
         match install::node_status(&transport, spec, &pin)? {
             NodeStatus::Ready(hello) => {
-                let config = crate::config::Config::load(None).unwrap_or_default();
-                let rex = super::terminal(&config, &spec.name) == RemoteTerminal::Rex;
+                let rex = spec.terminal == RemoteTerminal::Rex;
                 let missing: Vec<&str> = [
                     protocol::PROVISION_WORKSPACE,
                     protocol::START_EXECUTION,

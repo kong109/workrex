@@ -53,6 +53,8 @@ pub struct RemoteSpec {
     pub isolation_explicit: bool,
     /// Local binary to upload, with `~` expanded.
     pub binary: Option<PathBuf>,
+    /// The host new executions on the remote request for their terminals.
+    pub terminal: RemoteTerminal,
 }
 
 impl RemoteSpec {
@@ -88,6 +90,7 @@ impl RemoteSpec {
             isolation,
             isolation_explicit: remote.isolation.is_some(),
             binary,
+            terminal: remote.terminal.unwrap_or_default(),
         })
     }
 
@@ -125,15 +128,6 @@ impl RemoteSpec {
         script.push_str(body);
         script
     }
-}
-
-/// `remotes.<name>.terminal`, which new executions on the remote request.
-pub fn terminal(config: &Config, name: &str) -> RemoteTerminal {
-    config
-        .remotes
-        .get(name)
-        .and_then(|remote| remote.terminal)
-        .unwrap_or_default()
 }
 
 /// `remotes.<name>.rex_client`.
@@ -357,11 +351,9 @@ mod tests {
             "{err}"
         );
         RemoteSpec::resolve(&with(Some(RemoteIsolation::None)), "box").unwrap();
-        assert_eq!(terminal(&with(None), "box"), RemoteTerminal::Rex);
-        assert_eq!(
-            terminal(&config_with(&["box"], None), "box"),
-            RemoteTerminal::Tmux
-        );
+        let terminal = |config| RemoteSpec::resolve(&config, "box").unwrap().terminal;
+        assert_eq!(terminal(with(None)), RemoteTerminal::Rex);
+        assert_eq!(terminal(config_with(&["box"], None)), RemoteTerminal::Tmux);
     }
 
     #[test]

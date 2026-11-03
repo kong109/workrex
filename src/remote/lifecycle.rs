@@ -465,7 +465,7 @@ fn start_execution(
                 ex_id: cache::new_id('x'),
                 use_prompt,
                 run_commands,
-                terminal: super::terminal(&Config::load(None)?, &node.spec.name),
+                terminal: node.spec.terminal,
             },
             false,
         )
