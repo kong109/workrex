@@ -15,7 +15,7 @@ from typing import Callable, Generator
 
 import pytest
 
-from .conftest import rex_binary
+from .rex_env import rex_binary
 
 LUA = Path(__file__).parent.parent / "resources/rex/workrex.lua"
 SHELL = "com.superlogical.terminal.shell"
@@ -89,6 +89,10 @@ class RexServer:
     def window(self, session: str) -> dict:
         return self.api("session.view", {"session_id": session})["windows"][0]
 
+    def last_exit(self, block: str) -> object:
+        process = self.cli("block", "call", "-b", block, "process").stdout
+        return json.loads(process).get("last_exit")
+
     def screen(self, block: str) -> str:
         return self.cli("capture", "-b", block, "--trim", check=False).stdout
 
@@ -144,3 +148,18 @@ def test_action_opens_one_dashboard_layer_and_q_closes_it(rex: RexServer):
     rex.cli("send", "-b", opened["block_id"], "q")
     wait_until(lambda: not floating_layers(rex.window(session)))
     assert rex.window(session)["focused_block_id"] == shell
+
+
+def test_a_dashboard_that_exited_is_replaced_instead_of_refocused(tmp_path: Path):
+    rex = RexServer(Path("/usr/bin/false"), tmp_path)
+    try:
+        session, _ = rex.new_session()
+        dead = rex.open_dashboard(session)
+        wait_until(lambda: rex.last_exit(dead["block_id"]) is not None)
+
+        fresh = rex.open_dashboard(session)
+        assert fresh["block_id"] != dead["block_id"]
+        [layer] = floating_layers(rex.window(session))
+        assert [b["block_id"] for b in layer["blocks"]] == [fresh["block_id"]]
+    finally:
+        rex.stop()

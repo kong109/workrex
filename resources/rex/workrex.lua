@@ -35,11 +35,19 @@ local function target_window(view, block_id)
 end
 
 local function find_dashboard(window)
-  for _, block in ipairs(blocks(window)) do
-    if block.label == LABEL then
-      return block.block_id
+  for _, layer in ipairs(window.layers or {}) do
+    for _, block in ipairs(layer.blocks or {}) do
+      if block.label == LABEL then
+        return block.block_id, layer.layer_id
+      end
     end
   end
+end
+
+-- A dashboard that fails at startup leaves its block open with the error.
+local function still_running(block_id)
+  local process = rex.block.call(TERMINAL, "process", { block_id = block_id })
+  return process ~= nil and process.last_exit == nil
 end
 
 local function working_dir(block_id)
@@ -70,10 +78,13 @@ rex.action{
     if window == nil then
       error("no window to open the dashboard in", 0)
     end
-    local existing = find_dashboard(window)
+    local existing, existing_layer = find_dashboard(window)
     if existing ~= nil then
-      rex.session.focus_block{ block_id = existing }
-      return { block_id = existing }
+      if still_running(existing) then
+        rex.session.focus_block{ block_id = existing }
+        return { block_id = existing }
+      end
+      rex.session.close_layer{ layer_id = existing_layer }
     end
 
     -- REX_CLIENT makes the dashboard switch sessions through the app that
