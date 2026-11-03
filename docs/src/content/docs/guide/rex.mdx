@@ -58,7 +58,7 @@ workmux identifies the server by its address, which stays the same across restar
 - **Width.** The daemon keeps each sidebar at the configured `sidebar.width`. Without one, dragging a sidebar border saves the new width and applies it to every other sidebar. A `--width` given to `sidebar on` holds until the sidebar is turned off.
 - **Position.** The sidebar opens on the left. `--position top` and `--height` need tmux.
 - **State.** Rex has no window options, so sidebar preferences are kept in files under `~/.local/state/workmux/sidebar/`, one set per server.
-- **Daemon.** Rex has no hooks to restart the daemon. If it dies, the next `workmux sidebar` command or sidebar start brings it back.
+- **Daemon.** Rex has no hooks to restart the daemon. If it dies, the next `workmux sidebar` command or sidebar start brings it back. If its Rex server stops, the daemon exits about 15 seconds later.
 
 ## Known limitations
 
