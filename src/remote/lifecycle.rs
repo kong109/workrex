@@ -706,13 +706,24 @@ fn collect_tree(
 /// Command a window pane runs to relay pane `index` of `ex_id`.
 fn attach_command_line(remote: &str, ex_id: &str, index: usize) -> Result<String> {
     let exe = std::env::current_exe().context("Failed to locate the workmux binary")?;
-    let loopback = if std::env::var_os(super::transport::LOOPBACK_ENV).is_some_and(|v| v == "1") {
-        format!("env {}=1 ", super::transport::LOOPBACK_ENV)
-    } else {
+    let mut env: Vec<String> = Vec::new();
+    if std::env::var_os(super::transport::LOOPBACK_ENV).is_some_and(|v| v == "1") {
+        env.push(format!("{}=1", super::transport::LOOPBACK_ENV));
+    }
+    // Rex panes start with the Rex server's environment, which need not
+    // locate the config and state this command used.
+    for name in ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] {
+        if let Some(value) = std::env::var_os(name) {
+            env.push(format!("{name}={}", shell_quote(&value.to_string_lossy())));
+        }
+    }
+    let env = if env.is_empty() {
         String::new()
+    } else {
+        format!("env {} ", env.join(" "))
     };
     Ok(format!(
-        "{loopback}{} remote attach {} {ex_id} --pane {index}",
+        "{env}{} remote attach {} {ex_id} --pane {index}",
         shell_quote(&exe.to_string_lossy()),
         shell_quote(remote)
     ))
