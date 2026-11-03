@@ -100,7 +100,9 @@ class RexServer:
         if agent is None:
             agent_block = shell
         if agent_in_new_tab:
-            layouts = [{"split": {"direction": "horizontal", "before": shell, "after": shell}}]
+            layouts = [
+                {"split": {"direction": "horizontal", "before": shell, "after": shell}}
+            ]
             layouts.append(agent_block)
         else:
             split = {"direction": "horizontal", "before": shell, "after": agent_block}
@@ -219,7 +221,9 @@ def test_q_returns_focus_to_the_block_the_dashboard_opened_over(rex: RexServer):
 HINT = "Turn on Remote Control in Rex Settings to jump across tabs"
 NO_ANSWER_HINT = "Rex.app did not respond; jump not made"
 PEEK_HINT = "Peek works only for agents in this tab"
-REFUSE = "echo 'Error: Remote Control is off for this client (code=refused)' >&2; exit 1"
+REFUSE = (
+    "echo 'Error: Remote Control is off for this client (code=refused)' >&2; exit 1"
+)
 
 
 def refusing_rex(workmux: Path, tmp_path: Path, select: str = REFUSE) -> Path:
