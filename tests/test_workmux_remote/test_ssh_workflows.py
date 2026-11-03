@@ -14,6 +14,7 @@ from ..conftest import (
     poll_until,
     wait_for_pane_output,
 )
+from ..support.bin_name import hook_bin
 from .conftest import commit_project, git, local_records, wm
 from .test_remote_host import BINARY, HOST, pytestmark, remote_sh
 
@@ -154,7 +155,7 @@ def test_ssh_lifecycle_reconnect_and_remote_merge(ssh_workspace):
             "send-keys",
             "-t",
             window,
-            "workmux set-window-status working && echo STATUS-REPORTED",
+            f"{hook_bin()} set-window-status working && echo STATUS-REPORTED",
             "Enter",
         ]
     )

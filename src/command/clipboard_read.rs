@@ -1,6 +1,7 @@
 //! Read clipboard image from host via RPC and shared filesystem.
 //! Used by wl-paste/xclip shims inside the sandbox.
 
+use crate::bin_name::BIN;
 use anyhow::{Result, bail};
 use std::io::Write;
 
@@ -39,7 +40,7 @@ pub fn run(mime: &str) -> Result<i32> {
             Ok(0)
         }
         RpcResponse::Error { message } => {
-            eprintln!("workmux: {message}");
+            eprintln!("{BIN}: {message}");
             Ok(1)
         }
         _ => Ok(1),

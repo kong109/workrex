@@ -8,6 +8,7 @@
 //! container of the workspace. A container workspace's shell runs on the host
 //! only when the request asks for that.
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +136,7 @@ fn open(
         "on the host"
     };
     let banner = shell_quote(&format!(
-        "workmux: shell for '{handle}' {place}; the agent keeps running when it exits"
+        "{BIN}: shell for '{handle}' {place}; the agent keeps running when it exits"
     ));
 
     // Sessions get the environment configured panes get under the same

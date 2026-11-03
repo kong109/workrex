@@ -23,11 +23,12 @@
           nativeBuildInputs = [ pkgs.installShellFiles pkgs.git ];
           postInstall = ''
             export HOME=$TMPDIR
-            installShellCompletion --cmd workmux \
-              --bash <($out/bin/workmux completions bash) \
-              --fish <($out/bin/workmux completions fish) \
-              --zsh <($out/bin/workmux completions zsh)
+            installShellCompletion --cmd workrex \
+              --bash <($out/bin/workrex completions bash) \
+              --fish <($out/bin/workrex completions fish) \
+              --zsh <($out/bin/workrex completions zsh)
           '';
+          meta.mainProgram = "workrex";
         };
       });
     };

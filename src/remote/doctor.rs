@@ -1,5 +1,6 @@
 //! `workmux remote doctor <name>`: check that a remote can run agents.
 
+use crate::bin_name::BIN;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -128,7 +129,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
             "node",
             Level::Ok,
             format!(
-                "workmux {}, protocol {} ({})",
+                "{BIN} {}, protocol {} ({})",
                 hello.version, hello.protocol, cx.node_path
             ),
         ),
@@ -137,7 +138,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
             Level::Fail,
             format!("{} is not installed", cx.node_path),
         )
-        .fix(format!("workmux remote setup {name}")),
+        .fix(format!("{BIN} remote setup {name}")),
         NodeStatus::Mismatch(hello) => Row::new(
             "node",
             Level::Fail,
@@ -146,7 +147,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
         .fix(cx.mismatch_hint),
         NodeStatus::Broken(failure) => {
             let detail = match failure {
-                HelloFailure::PredatesNodes => "has no `workmux node` command".to_string(),
+                HelloFailure::PredatesNodes => format!("has no `{BIN} node` command"),
                 HelloFailure::NotANode { detail } => detail.clone(),
             };
             Row::new(
@@ -154,7 +155,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
                 Level::Fail,
                 format!("{} does not answer: {detail}", cx.node_path),
             )
-            .fix(format!("workmux remote setup {name}"))
+            .fix(format!("{BIN} remote setup {name}"))
         }
     });
 
@@ -503,7 +504,7 @@ fn credential_rows(
             if !configured.contains(&auth.agent) && agent.found.is_empty() {
                 return None;
             }
-            let login = format!("workmux remote login {remote} {}", auth.agent);
+            let login = format!("{BIN} remote login {remote} {}", auth.agent);
             let row = if auth.files.is_empty() {
                 Row::new(
                     auth.agent,
@@ -609,7 +610,10 @@ mod tests {
         );
         let node = row(&rows, "node");
         assert_eq!(node.level, Level::Fail);
-        assert_eq!(node.fix.as_deref(), Some("workmux remote setup hetzner"));
+        assert_eq!(
+            node.fix.as_deref(),
+            Some(crate::rebrand!("workmux remote setup hetzner"))
+        );
 
         let mut hello = Hello::local();
         hello.protocol = 999;
@@ -844,8 +848,12 @@ mod tests {
         );
         let fix = rows[1].fix.as_deref().unwrap();
         assert!(
-            fix.starts_with("workmux remote login hetzner codex"),
+            fix.starts_with(crate::rebrand!("workmux remote login hetzner codex")),
             "{fix}"
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../bin_name/doctor_tests.rs"]
+mod workrex_tests;

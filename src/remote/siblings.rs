@@ -7,6 +7,7 @@
 //! no record of is adopted again, and one it cannot adopt (unknown project,
 //! name taken) keeps running on the node until `workmux remote gc`.
 
+use crate::bin_name::BIN;
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::PathBuf;
@@ -107,7 +108,7 @@ fn adopt_one(
     let identity = &sibling.identity;
     let Some(project_root) = project_root(&identity.project_id, records) else {
         bail!(
-            "its repository has no other remote workspace on this machine; run `workmux open {}` \
+            "its repository has no other remote workspace on this machine; run `{BIN} open {}` \
              in the repository",
             identity.handle
         );
@@ -249,10 +250,10 @@ fn context(project_root: &std::path::Path) -> Result<WorkflowContext> {
     )
 }
 
-/// A node binary name as `install` makes them: `workmux-<version>` or
-/// `workmux-dev-<hash>`.
+/// A node binary name as `install` makes them: `workrex-<version>` or
+/// `workrex-dev-<hash>`.
 fn valid_pin(name: &str) -> bool {
-    name.strip_prefix("workmux-").is_some_and(|rest| {
+    crate::bin_name::pin_version(name).is_some_and(|rest| {
         !rest.is_empty()
             && rest
                 .bytes()
@@ -279,7 +280,7 @@ pub(super) fn lock(remote: &str) -> Result<File> {
 
 fn report(foreground: bool, message: &str) {
     if foreground {
-        eprintln!("workmux: {message}");
+        eprintln!("{BIN}: {message}");
     } else {
         tracing::warn!("{message}");
     }
@@ -287,7 +288,7 @@ fn report(foreground: bool, message: &str) {
 
 fn report_info(foreground: bool, message: &str) {
     if foreground {
-        eprintln!("workmux: {message}");
+        eprintln!("{BIN}: {message}");
     } else {
         tracing::info!("{message}");
     }
@@ -299,11 +300,12 @@ mod tests {
 
     #[test]
     fn pins_look_like_installed_binaries() {
-        assert!(valid_pin("workmux-0.1.80"));
-        assert!(valid_pin("workmux-dev-ba7816bf8f01"));
-        assert!(!valid_pin("workmux-"));
-        assert!(!valid_pin("workmux-x;rm -rf ~"));
-        assert!(!valid_pin("../workmux-1"));
+        assert!(valid_pin(&format!("{BIN}-0.1.80")));
+        assert!(valid_pin(&format!("{BIN}-dev-ba7816bf8f01")));
+        assert!(!valid_pin(&format!("{BIN}-")));
+        assert!(!valid_pin(&format!("{BIN}-x;rm -rf ~")));
+        assert!(!valid_pin(&format!("../{BIN}-1")));
         assert!(!valid_pin("sh"));
+        assert!(!valid_pin("workmux-0.1.278"));
     }
 }

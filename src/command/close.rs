@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use crate::multiplexer::handle::mode_label;
 use crate::multiplexer::{MuxHandle, WindowTarget, create_backend, detect_backend};
 use crate::{config, git, sandbox};
@@ -5,7 +6,7 @@ use anyhow::{Context, Result, anyhow};
 
 pub fn run(name: Option<&str>) -> Result<()> {
     if crate::remote::node::operation::in_session() {
-        anyhow::bail!("the window is on the local machine: run `workmux close <handle>` there");
+        anyhow::bail!("the window is on the local machine: run `{BIN} close <handle>` there");
     }
     if crate::sandbox::guest::is_sandbox_guest() {
         let name_to_close = super::resolve_name(name)?;
@@ -32,7 +33,7 @@ pub fn run(name: Option<&str>) -> Result<()> {
         Some(n) => {
             let (path, _branch) = git::find_worktree(n).map_err(|_| {
                 anyhow!(
-                    "Worktree '{}' not found. Use 'workmux list' to see available worktrees.",
+                    "Worktree '{}' not found. Use '{BIN} list' to see available worktrees.",
                     n
                 )
             })?;

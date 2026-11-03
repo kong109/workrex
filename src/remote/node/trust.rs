@@ -10,6 +10,7 @@
 //! - Codex looks up only the working directory and the main repository a
 //!   worktree belongs to, so each project's node repository gets an entry.
 
+use crate::bin_name::BIN;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -33,7 +34,7 @@ pub fn ensure_for_execution(root: &NodeRoot, workspace: &Workspace, config: &Con
         _ => return,
     };
     if let Err(err) = result {
-        eprintln!("workmux: could not mark the node's worktrees as trusted: {err:#}");
+        eprintln!("{BIN}: could not mark the node's worktrees as trusted: {err:#}");
     }
 }
 

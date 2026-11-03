@@ -9,6 +9,7 @@
 //! After the machine sleeps, the relay reconnects at once instead of waiting
 //! for ssh to notice that the old connection died.
 
+use crate::bin_name::BIN;
 use std::fs::File;
 use std::io::{IsTerminal, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -142,7 +143,7 @@ pub fn run(config: &Config, name: &str, ex_id: &str, pane: usize) -> Result<()> 
     };
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
-        bail!("workmux remote attach needs a terminal");
+        bail!("{BIN} remote attach needs a terminal");
     }
     let _raw = RawMode::enable()?;
     let mut relay = Relay::new(node, ex_id.to_string(), pane.to_string());

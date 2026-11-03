@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use super::{StatusCheck, UpdatePreview};
 
 /// Hooks configuration embedded at compile time.
-const HOOKS_JSON: &str = include_str!("../../resources/copilot/hooks/workmux-status/hooks.json");
-const HOOKS_FILE_NAME: &str = "workmux-status.json";
+const HOOKS_JSON: &str =
+    crate::rebrand_include!("../../resources/copilot/hooks/workmux-status/hooks.json");
+const HOOKS_FILE_NAME: &str = concat!(env!("CARGO_BIN_NAME"), "-status.json");
 
-fn copilot_dir() -> Option<PathBuf> {
+pub(crate) fn copilot_dir() -> Option<PathBuf> {
     copilot_dir_from_env(
         home::home_dir(),
         std::env::var_os("COPILOT_HOME"),
@@ -74,7 +75,8 @@ fn check_at(path: &Path) -> Result<StatusCheck> {
         ("userPromptSubmitted", "workmux set-window-status working"),
         ("postToolUse", "workmux set-window-status working"),
         ("agentStop", "workmux set-window-status done"),
-    ];
+    ]
+    .map(|(event, command)| (event, command.replacen("workmux", crate::bin_name::BIN, 1)));
     if config.get("version").and_then(Value::as_u64) == Some(1)
         && required
             .iter()
@@ -107,10 +109,7 @@ fn has_workmux_hook(config: &Value) -> bool {
         .filter_map(Value::as_array)
         .flatten()
         .filter_map(|hook| hook.get("bash").and_then(Value::as_str))
-        .any(|command| {
-            command.contains("workmux set-window-status")
-                || command.contains("workmux register-agent")
-        })
+        .any(super::hooks::is_workmux_hook_command)
 }
 
 pub(crate) fn update_preview() -> Result<Option<UpdatePreview>> {
@@ -187,8 +186,8 @@ mod tests {
 
     #[test]
     fn test_hooks_json_contains_workmux_commands() {
-        assert!(HOOKS_JSON.contains("workmux register-agent"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status"));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux register-agent")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status")));
     }
 
     #[test]
@@ -219,7 +218,7 @@ mod tests {
     #[test]
     fn personal_hooks_path_is_under_resolved_root() {
         let root = Path::new("/custom/copilot");
-        assert_eq!(hooks_file_at(root), root.join("hooks/workmux-status.json"));
+        assert_eq!(hooks_file_at(root), root.join("hooks/workrex-status.json"));
     }
 
     #[test]

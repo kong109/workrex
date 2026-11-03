@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use crate::multiplexer::{create_backend, detect_backend};
 use crate::workflow::WorkflowContext;
 use crate::{config, git, spinner, workflow};
@@ -174,7 +175,7 @@ fn remove_local(
                     (path, String::new())
                 } else {
                     return Err(anyhow!(
-                        "Worktree '{}' not found. Use 'workmux list' to see available worktrees.",
+                        "Worktree '{}' not found. Use '{BIN} list' to see available worktrees.",
                         name
                     )
                     .context(e));

@@ -436,7 +436,7 @@ pub(super) fn write_status_wrapper(root: &NodeRoot, pin: &Path) -> Result<PathBu
         shell_quote(&root.path.join("state").to_string_lossy()),
         shell_quote(&pin.to_string_lossy())
     );
-    let path = dir.join("workmux");
+    let path = dir.join(crate::bin_name::BIN);
     if fs::read_to_string(&path).ok().as_deref() != Some(script.as_str()) {
         crate::util::write_atomic(&path, script.as_bytes())?;
     }

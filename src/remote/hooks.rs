@@ -2,6 +2,7 @@
 //! report no status: installed by `workmux remote setup`, reported by
 //! `workmux remote doctor`.
 
+use crate::bin_name::BIN;
 use anyhow::{Result, bail};
 
 use super::RemoteSpec;
@@ -79,13 +80,13 @@ pub fn doctor_rows(spec: &RemoteSpec, config: &Config, ready: bool) -> Vec<Row> 
         Ok(agents) => rows(&spec.name, &agents),
         Err(err) => vec![
             Row::new("hooks", Level::Warn, format!("{err:#}"))
-                .fix(format!("workmux remote setup {}", spec.name)),
+                .fix(format!("{BIN} remote setup {}", spec.name)),
         ],
     }
 }
 
 fn rows(remote: &str, agents: &[AgentHooks]) -> Vec<Row> {
-    let setup = format!("workmux remote setup {remote}");
+    let setup = format!("{BIN} remote setup {remote}");
     if agents.is_empty() {
         return vec![
             Row::new("hooks", Level::Skip, "no agent found on the node")
@@ -191,7 +192,10 @@ mod tests {
                 (Level::Warn, "Oh My Pi: why"),
             ]
         );
-        assert_eq!(rows[1].fix.as_deref(), Some("workmux remote setup hz"));
+        assert_eq!(
+            rows[1].fix.as_deref(),
+            Some(crate::rebrand!("workmux remote setup hz"))
+        );
     }
 
     #[test]
