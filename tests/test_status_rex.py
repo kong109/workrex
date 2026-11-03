@@ -59,19 +59,35 @@ def agent_status(env: RexEnvironment, exe: Path, repo: Path, block: str) -> Opti
     return None
 
 
-def start_fake_agent(env: RexEnvironment, exe: Path, repo: Path, branch: str) -> str:
+def start_fake_agent(
+    env: RexEnvironment,
+    exe: Path,
+    repo: Path,
+    branch: str,
+    launch: str = "exec {agent}",
+    before=None,
+) -> str:
+    """Start the fake agent in a new worktree window. `launch` is the shell
+    command line, and `before` runs on the block before the agent starts."""
     write_workmux_config(repo, panes=[{"focus": True}])
     run_workmux_add(env, exe, repo, branch)
     window = get_window_name(branch)
     wait_for_window_ready(env, window)
     block = env._target_block(window)
+    if before:
+        before(block)
     script = env.tmp_path / "fake_agent.py"
     script.write_text(FAKE_AGENT)
-    env.send_keys(block, f"exec python3 -I {script}")
+    env.send_keys(block, launch.format(agent=f"python3 -I {script}"))
     assert poll_until(
         lambda: "fake agent ready" in (env.capture_pane(block) or ""), timeout=10
     ), env.capture_pane(block)
     return block
+
+
+def foreground_name(env: RexEnvironment, block: str) -> str:
+    process = env.block_call(block, "process") or {}
+    return (process.get("foreground") or {}).get("name", "")
 
 
 def report(env: RexEnvironment, block: str, body: str) -> None:
@@ -168,3 +184,81 @@ def test_a_window_prefix_ending_in_a_space_keeps_its_window(
     )
     assert hook.returncode == 0, hook.stderr
     assert window_label(rex, block) == f"💬 {prefix}nerd"
+
+
+def test_agent_run_from_the_shell_is_dropped_after_it_exits(
+    rex, workmux_exe_path, repo_path
+):
+    block = start_fake_agent(
+        rex, workmux_exe_path, repo_path, "osc-shell-exit", launch="{agent}"
+    )
+    report(rex, block, "state=done:app=fake")
+    assert agent_status(rex, workmux_exe_path, repo_path, block) == "done"
+
+    rex.send_keys(block, "exit")
+    assert poll_until(lambda: foreground_name(rex, block) == "zsh", timeout=10)
+    assert agent_status(rex, workmux_exe_path, repo_path, block) is None
+
+
+def test_a_shell_that_execs_after_the_agent_does_not_inherit_its_status(
+    rex, workmux_exe_path, repo_path
+):
+    block = start_fake_agent(
+        rex,
+        workmux_exe_path,
+        repo_path,
+        "osc-sh-exec",
+        launch="exec sh -c '{agent}; exec /bin/zsh -f'",
+    )
+    report(rex, block, "state=done:app=fake")
+    assert agent_status(rex, workmux_exe_path, repo_path, block) == "done"
+
+    rex.send_keys(block, "exit")
+    assert poll_until(lambda: foreground_name(rex, block) == "zsh", timeout=10)
+    assert agent_status(rex, workmux_exe_path, repo_path, block) is None
+
+
+def test_the_hook_status_returns_after_clear_even_after_pruning_readers(
+    rex, workmux_exe_path, repo_path
+):
+    block = start_fake_agent(
+        rex, workmux_exe_path, repo_path, "osc-clear", launch="{agent}"
+    )
+    hook = workmux(
+        rex, workmux_exe_path, repo_path, "set-window-status", "waiting", block=block
+    )
+    assert hook.returncode == 0, hook.stderr
+
+    report(rex, block, "state=working:app=fake")
+    pruning = workmux(rex, workmux_exe_path, repo_path, "list")
+    assert pruning.returncode == 0, pruning.stderr
+    assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"
+
+    report(rex, block, "state=clear")
+    pruning = workmux(rex, workmux_exe_path, repo_path, "list")
+    assert pruning.returncode == 0, pruning.stderr
+    assert agent_status(rex, workmux_exe_path, repo_path, block) == "waiting"
+
+
+def test_a_stale_hook_file_does_not_block_adoption(rex, workmux_exe_path, repo_path):
+    def shell_hook(block):
+        hook = workmux(
+            rex,
+            workmux_exe_path,
+            repo_path,
+            "set-window-status",
+            "waiting",
+            block=block,
+        )
+        assert hook.returncode == 0, hook.stderr
+
+    block = start_fake_agent(
+        rex,
+        workmux_exe_path,
+        repo_path,
+        "osc-stale-hook",
+        launch="{agent}",
+        before=shell_hook,
+    )
+    report(rex, block, "state=working:app=fake")
+    assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"

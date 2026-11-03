@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use tracing::warn;
 
-use super::{BlockId, ProcessReport, RexBackend, found};
+use super::{BlockId, ProcessEntry, ProcessReport, RexBackend, found};
 use crate::multiplexer::{AgentStatus, ReportedStatus};
 
 /// The one table from Rex program states to the status workmux shows (`None`
@@ -41,17 +41,21 @@ struct ProgramRecord {
 #[derive(Debug, Deserialize)]
 struct RecordOwner {
     pid: u32,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 impl ProgramStatusReport {
     /// Rex keeps `done`, `error` and `idle` records after their program
     /// exits. Only the program in the foreground speaks for the agent now.
-    fn owned_by_foreground(mut self, foreground: Option<u32>) -> Self {
+    /// The name matters too: a shell that `exec`s keeps the agent's pid.
+    fn owned_by_foreground(mut self, foreground: Option<(u32, &str)>) -> Self {
         self.records.retain(|record| {
-            record
-                .owner
-                .as_ref()
-                .is_none_or(|owner| Some(owner.pid) == foreground)
+            record.owner.as_ref().is_none_or(|owner| {
+                foreground.is_some_and(|(pid, name)| {
+                    owner.pid == pid && owner.name.as_deref().is_none_or(|owner| owner == name)
+                })
+            })
         });
         self
     }
@@ -144,12 +148,29 @@ fn label_with_icon(name: &str, icon: Option<&str>) -> String {
     }
 }
 
+/// A `program_status` call made beside the block's `process` call.
+pub(super) struct ProgramStatusCall(Result<Option<ProgramStatusReport>>);
+
 impl RexBackend {
-    /// Cache what `block` reports, given its foreground process. A block that
-    /// closed reports nothing; a failed call leaves the cache alone.
-    pub(super) fn observe_program_status(&self, block: &BlockId, foreground: Option<u32>) {
-        match found(self.block_call::<ProgramStatusReport>(block, "program_status", json!({}))) {
+    pub(super) fn query_program_status(&self, block: &BlockId) -> ProgramStatusCall {
+        ProgramStatusCall(found(self.block_call::<ProgramStatusReport>(
+            block,
+            "program_status",
+            json!({}),
+        )))
+    }
+
+    /// Cache what `block` reported, given its foreground process. A block
+    /// that closed reports nothing; a failed call leaves the cache alone.
+    pub(super) fn observe_program_status(
+        &self,
+        block: &BlockId,
+        call: ProgramStatusCall,
+        foreground: Option<&ProcessEntry>,
+    ) {
+        match call.0 {
             Ok(report) => {
+                let foreground = foreground.map(|fg| (fg.pid, fg.name.as_str()));
                 let reported =
                     report.and_then(|report| report.owned_by_foreground(foreground).reported());
                 self.program_status
@@ -178,7 +199,8 @@ impl RexBackend {
             .ok()
             .flatten()
             .filter(|process| !process.has_exited())?;
-        self.observe_program_status(&block, process.foreground.map(|fg| fg.pid));
+        let call = self.query_program_status(&block);
+        self.observe_program_status(&block, call, process.foreground.as_ref());
         cached(self).flatten()
     }
 
@@ -286,8 +308,12 @@ mod tests {
     #[test]
     fn records_of_a_program_that_left_the_foreground_are_ignored() {
         let left = fixture("records_left_after_exit");
-        assert!(left.owned_by_foreground(Some(4242)).reported().is_none());
-        let running = fixture("claude_code_blocked").owned_by_foreground(Some(85917));
+        assert!(
+            left.owned_by_foreground(Some((4242, "zsh")))
+                .reported()
+                .is_none()
+        );
+        let running = fixture("claude_code_blocked").owned_by_foreground(Some((85917, "claude")));
         assert!(matches!(
             running.reported(),
             Some(ReportedStatus::Agent {
@@ -300,6 +326,23 @@ mod tests {
                 .owned_by_foreground(None)
                 .reported()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn a_shell_that_took_over_the_agents_pid_does_not_inherit_its_records() {
+        let records = || fixture("records_left_after_exit");
+        assert!(
+            records()
+                .owned_by_foreground(Some((58052, "zsh")))
+                .reported()
+                .is_none()
+        );
+        assert!(
+            records()
+                .owned_by_foreground(Some((58052, "Python")))
+                .reported()
+                .is_some()
         );
     }
 

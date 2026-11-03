@@ -63,7 +63,7 @@ Under the [Rex backend](/guide/rex/), workmux also reads the status that program
 | `idle`    | none             |
 
 - When a pane reports program status, that status wins over the hook status. Hooks still track agents that do not report it.
-- A pane that reports status but was never registered by a hook counts as an agent only when its working directory is a git worktree.
+- A pane that reports status but has no hook state counts as an agent only when its working directory is a linked worktree of the repository you run workmux in.
 - A record left behind by a program that is no longer in the foreground is ignored, so an agent that exits drops out of the list.
 - Hook-reported status puts its icon in front of the Rex window label. Rex draws its own indicator on tabs for program status. The icon does not clear on window focus; it changes with the next status.
 

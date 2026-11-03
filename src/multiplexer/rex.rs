@@ -929,17 +929,25 @@ impl RexBackend {
         window: &WindowView,
         block: &BlockId,
     ) -> Result<Option<LivePaneInfo>> {
-        let Some(process) = found(self.block_call::<ProcessReport>(block, "process", json!({})))?
-        else {
+        let (process, title, program_status) = thread::scope(|scope| {
+            let title = scope.spawn(|| self.block_call::<TitleReport>(block, "title", json!({})));
+            let program_status = scope.spawn(|| self.query_program_status(block));
+            let process = self.block_call::<ProcessReport>(block, "process", json!({}));
+            let joined = "rex worker thread panicked";
+            (
+                process,
+                title.join().expect(joined),
+                program_status.join().expect(joined),
+            )
+        });
+        let Some(process) = found(process)? else {
             return Ok(None);
         };
         if process.has_exited() {
             return Ok(None);
         }
-        self.observe_program_status(block, process.foreground.as_ref().map(|fg| fg.pid));
-        let title = found(self.block_call::<TitleReport>(block, "title", json!({})))?
-            .map(|report| report.title)
-            .unwrap_or_default();
+        self.observe_program_status(block, program_status, process.foreground.as_ref());
+        let title = found(title)?.map(|report| report.title).unwrap_or_default();
         Ok(pane_info(session, window, &process, title))
     }
 
