@@ -503,6 +503,16 @@ pub trait Multiplexer: Send + Sync {
     /// switch by pane ID directly (tmux, WezTerm) ignore this parameter.
     fn switch_to_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()>;
 
+    /// Called when the dashboard quits without jumping, for backends that
+    /// must hand focus back to the pane the dashboard was opened over.
+    fn dashboard_quit(&self) {}
+
+    /// Show a pane while the dashboard keeps the keyboard. Defaults to a
+    /// switch, which a tmux popup survives.
+    fn peek_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()> {
+        self.switch_to_pane(pane_id, window_hint)
+    }
+
     /// Whether jumping to a pane should exit the dashboard.
     /// Defaults to true. Override to return false to keep the dashboard open after jumping.
     fn should_exit_on_jump(&self) -> bool {
