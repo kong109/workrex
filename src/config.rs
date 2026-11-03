@@ -398,7 +398,9 @@ impl DashboardConfig {
     }
 
     pub fn merge(&self) -> &str {
-        self.merge.as_deref().unwrap_or("!workmux merge")
+        self.merge
+            .as_deref()
+            .unwrap_or(crate::bin_name::MERGE_ACTION)
     }
 
     /// Get the preview size percentage (clamped to 10-90).
@@ -1513,7 +1515,7 @@ pub enum WindowPlacement {
 pub struct RemoteConfig {
     /// SSH destination: an alias from `~/.ssh/config` or `user@host`.
     pub host: String,
-    /// Node root on the remote (default: `~/.workmux-node`).
+    /// Node root on the remote (default: `~/.workrex-node`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Override sandbox.enabled for this remote; unset follows the effective sandbox setting.
@@ -3628,7 +3630,7 @@ impl Config {
             ));
         }
 
-        fs::write(&config_path, EXAMPLE_PROJECT_CONFIG)?;
+        fs::write(&config_path, crate::rebrand!(EXAMPLE_PROJECT_CONFIG))?;
 
         println!("✓ Created .workmux.yaml");
         println!("\nThis file provides project-specific overrides.");

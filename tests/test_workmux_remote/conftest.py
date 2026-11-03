@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 from ..conftest import TmuxEnvironment, run_workmux_command
+from ..support.bin_name import BIN
 
 
 def agent_dirs_env(home: Path) -> Dict[str, str]:
@@ -93,9 +94,9 @@ class RemoteCli:
 
 
 def dev_pin(binary: Path) -> str:
-    """Pinned file name `workmux remote setup` uses for an uploaded binary."""
+    """Pinned file name `workrex remote setup` uses for an uploaded binary."""
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-    return f"workmux-dev-{digest[:12]}"
+    return f"{BIN}-dev-{digest[:12]}"
 
 
 def write_script(path: Path, body: str) -> Path:

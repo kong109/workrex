@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use crate::config::MuxMode;
 use crate::multiplexer::handle::mode_label;
 use crate::multiplexer::{BackendType, MuxHandle, create_backend, detect_backend};
@@ -1474,7 +1475,7 @@ fn run_add_via_rpc(
     }
     if multi.count.is_some() {
         bail!(
-            "--count is not supported from inside a sandbox. Call workmux add multiple times instead."
+            "--count is not supported from inside a sandbox. Call {BIN} add multiple times instead."
         );
     }
     if multi.foreach.is_some() {

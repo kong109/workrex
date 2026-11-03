@@ -54,7 +54,7 @@ fn render_tab_header(f: &mut Frame, app: &App, area: Rect) {
         let tip_line = Line::from(vec![
             Span::styled("New: ", tip_new),
             Span::styled("Check out ", tip_text),
-            Span::styled("workmux sidebar ", tip_accent),
+            Span::styled(crate::rebrand!("workmux sidebar "), tip_accent),
         ]);
         let tip_width = 32u16;
         let cols = Layout::horizontal([Constraint::Fill(1), Constraint::Length(tip_width)])
@@ -68,6 +68,18 @@ fn render_tab_header(f: &mut Frame, app: &App, area: Rect) {
     } else {
         f.render_widget(Paragraph::new(vec![Line::from(tabs_spans), rule]), area);
     }
+}
+
+/// The footer's status message, cut at a word boundary to fit the width.
+fn render_status(f: &mut Frame, msg: &str, p: &ThemePalette, area: Rect) {
+    let msg = format::fit_words(msg, usize::from(area.width).saturating_sub(2));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            format!("  {msg}"),
+            Style::default().fg(p.text),
+        )])),
+        area,
+    );
 }
 
 /// Render the dashboard view (table + preview + footer).
@@ -107,14 +119,7 @@ pub fn render_dashboard(f: &mut Frame, app: &mut App) {
     // Footer - show status message if active, otherwise mode-specific help
     let mut remote_tip_drawn = false;
     if let Some((msg, _)) = &app.status_message {
-        let p = &app.palette;
-        f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                format!("  {msg}"),
-                Style::default().fg(p.text),
-            )])),
-            footer_area,
-        );
+        render_status(f, msg, &app.palette, footer_area);
     } else {
         match app.active_tab {
             DashboardTab::Agents => {
@@ -1058,6 +1063,37 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         ((0..width).map(|x| buffer[(x, 0)].symbol()).collect(), drawn)
+    }
+
+    fn render_footer(msg: &str, width: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|f| render_status(f, msg, &palette(), f.area()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..width).map(|x| buffer[(x, 0)].symbol()).collect()
+    }
+
+    #[test]
+    fn a_long_status_message_ends_at_a_word() {
+        let msg = crate::rebrand!(
+            "Rex.app did not switch: Remote Control is off. \
+             Turn it on in Rex Settings so workmux can switch the app."
+        );
+        assert_eq!(
+            render_footer(msg, 80).trim_end(),
+            "  Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so…"
+        );
+    }
+
+    #[test]
+    fn a_status_message_leaves_room_for_its_indent() {
+        let msg = "Peek works only for agents in this tab";
+        assert_eq!(msg.len(), 38);
+        assert_eq!(
+            render_footer(msg, 39),
+            "  Peek works only for agents in this…  "
+        );
     }
 
     #[test]

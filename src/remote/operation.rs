@@ -1,5 +1,6 @@
 //! Detached laptop workers for requests made in node panes.
 
+use crate::bin_name::BIN;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
@@ -325,22 +326,28 @@ fn resolve_into(record: &WorkspaceRecord, name: &str) -> Result<String> {
 /// Never send arbitrary git output, hook output or laptop paths to the node.
 fn refusal(err: &anyhow::Error, is_merge: bool, remote: &str, id: &str) -> String {
     let text = format!("{err:#}").to_lowercase();
-    let logs = || format!("on the local machine, run `workmux remote logs {remote} {id}`");
+    let logs = || format!("on the local machine, run `{BIN} remote logs {remote} {id}`");
     let message = if text.contains("not merged into") {
-        "has commits not merged into its base; run `workmux rm --force`"
+        crate::rebrand!("has commits not merged into its base; run `workmux rm --force`")
     } else if text.contains("uncommitted")
         || text.contains("unstaged")
         || text.contains("untracked")
     {
         if is_merge {
-            "this remote workspace has uncommitted changes; commit them and retry, or use `workmux merge --ignore-uncommitted` to merge only committed changes"
+            crate::rebrand!(
+                "this remote workspace has uncommitted changes; commit them and retry, or use `workmux merge --ignore-uncommitted` to merge only committed changes"
+            )
         } else {
-            "this remote workspace has uncommitted changes; commit them before removing it, or use `workmux rm --force` to discard them"
+            crate::rebrand!(
+                "this remote workspace has uncommitted changes; commit them before removing it, or use `workmux rm --force` to discard them"
+            )
         }
     } else if text.contains("interactive") {
         "this merge needs interaction; commit staged changes first or run merge on the local machine"
     } else if text.contains("conflict") {
-        "merge conflict; resolve it on the local machine, then run workmux merge there"
+        crate::rebrand!(
+            "merge conflict; resolve it on the local machine, then run workmux merge there"
+        )
     } else if text.contains("hook") || text.contains("post-create") {
         return format!("a local hook failed; {}", logs());
     } else if text.contains("existing local branch") {
@@ -413,12 +420,12 @@ mod tests {
         for dirty in ["uncommitted changes", "unstaged changes", "untracked files"] {
             let err = anyhow::anyhow!(dirty);
             let merge = refusal(&err, true, "vps", "r123456789abc");
-            assert!(merge.contains("workmux merge --ignore-uncommitted"));
+            assert!(merge.contains(crate::rebrand!("workmux merge --ignore-uncommitted")));
             assert!(merge.contains("only committed changes"));
             assert!(!merge.contains("remote logs"));
             assert!(!merge.contains("rm --force"));
             let remove = refusal(&err, false, "vps", "r123456789abc");
-            assert!(remove.contains("workmux rm --force"));
+            assert!(remove.contains(crate::rebrand!("workmux rm --force")));
             assert!(remove.contains("discard them"));
             assert!(!remove.contains("remote logs"));
             assert!(!remove.contains("merge --ignore-uncommitted"));
@@ -443,7 +450,7 @@ mod tests {
             "unknown failure /private/laptop/secret: token",
         ] {
             let message = refusal(&anyhow::anyhow!(text), true, "vps", "r123456789abc");
-            assert!(message.contains("workmux remote logs vps r123456789abc"));
+            assert!(message.contains(crate::rebrand!("workmux remote logs vps r123456789abc")));
             assert!(!message.contains("secret"));
             assert!(!message.contains("token"));
         }

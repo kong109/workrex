@@ -9,12 +9,14 @@ pub mod handle;
 pub mod handshake;
 pub mod kitty;
 pub mod rex;
+mod sidebar_host;
 pub mod tmux;
 pub mod types;
 pub mod util;
 pub mod wezterm;
 pub mod zellij;
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -24,6 +26,7 @@ use std::time::Duration;
 
 pub use handle::MuxHandle;
 pub use handshake::PaneHandshake;
+pub(crate) use sidebar_host::*;
 pub use tmux::TmuxBackend;
 pub use types::*;
 
@@ -522,6 +525,16 @@ pub trait Multiplexer: Send + Sync {
     /// leaves the user's view alone. `None` opens the session instead.
     fn session_pane(&self, _full_name: &str) -> Result<Option<String>> {
         Ok(None)
+    }
+
+    /// Called when the dashboard quits without jumping, for backends that
+    /// must hand focus back to the pane the dashboard was opened over.
+    fn dashboard_quit(&self) {}
+
+    /// Show a pane while the dashboard keeps the keyboard. Defaults to a
+    /// switch, which a tmux popup survives.
+    fn peek_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()> {
+        self.switch_to_pane(pane_id, window_hint)
     }
 
     /// Whether jumping to a pane should exit the dashboard.
@@ -1045,6 +1058,11 @@ pub trait Multiplexer: Send + Sync {
         Ok(None)
     }
 
+    /// The backend's own sidebar, for backends that run it without tmux.
+    fn sidebar(&self) -> Option<&dyn SidebarHost> {
+        None
+    }
+
     /// Validate if an agent is still alive and should be kept in the dashboard.
     ///
     /// Called when a pane is not found in the batched `get_all_live_pane_info()` result.
@@ -1092,7 +1110,7 @@ pub fn detect_backend() -> BackendType {
             Ok(bt) => return bt,
             Err(_) => {
                 eprintln!(
-                    "workmux: invalid WORKMUX_BACKEND={val:?}, expected {}",
+                    "{BIN}: invalid WORKMUX_BACKEND={val:?}, expected {}",
                     BackendType::expected_names()
                 );
             }

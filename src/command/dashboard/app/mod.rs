@@ -32,15 +32,22 @@ use super::keymap::Context;
 use super::ui::theme::ThemePalette;
 
 const PR_FETCH_INTERVAL: Duration = Duration::from_secs(30);
-
 const HELD_STATUS_MIN: Duration = Duration::from_secs(5);
 
-/// A status that stays until a key is pressed and `HELD_STATUS_MIN` has
-/// passed, so a refresh slower than the usual timeout cannot clear it
-/// before it is drawn.
+/// A held status stays until a key is pressed and `HELD_STATUS_MIN` has
+/// passed, so it cannot clear before anyone reads it.
 struct HeldStatus {
     set_at: std::time::Instant,
     key_pressed: bool,
+}
+
+/// Whether a status `age` old may clear. `held` is the hold that belongs to
+/// it, if any.
+fn status_expired(age: Duration, held: Option<&HeldStatus>) -> bool {
+    match held {
+        Some(held) => held.key_pressed && age >= HELD_STATUS_MIN,
+        None => age >= Duration::from_millis(1500),
+    }
 }
 
 use super::scope::ScopeMode;
@@ -177,6 +184,7 @@ pub struct App {
     worktree_preview_path: Option<PathBuf>,
     /// Temporary status message shown in the footer (auto-clears after timeout)
     pub status_message: Option<(String, std::time::Instant)>,
+    /// Keeps the status message until a key press and `HELD_STATUS_MIN`
     held_status: Option<HeldStatus>,
     /// Whether to show the "New: workmux sidebar" tip in the tab header
     pub show_sidebar_tip: bool,
@@ -461,34 +469,22 @@ impl App {
         });
     }
 
-    fn expire_status(&mut self) {
-        let expired = match self.held_status_done() {
-            Some(done) => done,
-            None => self
-                .status_message
-                .as_ref()
-                .is_some_and(|(_, created)| created.elapsed() >= Duration::from_millis(1500)),
-        };
-        if expired {
-            self.status_message = None;
-        }
-    }
-
-    /// Whether the shown status is held, and if so whether it may go.
-    fn held_status_done(&self) -> Option<bool> {
-        let (_, created) = self.status_message.as_ref()?;
-        let held = self
-            .held_status
-            .as_ref()
-            .filter(|held| held.set_at == *created)?;
-        Some(held.key_pressed && created.elapsed() >= HELD_STATUS_MIN)
-    }
-
     pub(crate) fn note_keypress(&mut self) {
         if let Some(held) = &mut self.held_status {
             held.key_pressed = true;
         }
-        if self.held_status_done() == Some(true) {
+        self.expire_status();
+    }
+
+    fn expire_status(&mut self) {
+        let Some((_, created)) = &self.status_message else {
+            return;
+        };
+        let held = self
+            .held_status
+            .as_ref()
+            .filter(|held| held.set_at == *created);
+        if status_expired(created.elapsed(), held) {
             self.status_message = None;
             self.held_status = None;
         }
@@ -549,4 +545,34 @@ fn load_sleeping_pane_ids(mux: &dyn Multiplexer) -> HashSet<String> {
         .flatten()
         .map(|value| value.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HeldStatus, status_expired};
+    use std::time::{Duration, Instant};
+
+    fn held(key_pressed: bool) -> HeldStatus {
+        HeldStatus {
+            set_at: Instant::now(),
+            key_pressed,
+        }
+    }
+
+    #[test]
+    fn a_plain_status_clears_after_its_timeout() {
+        assert!(!status_expired(Duration::from_millis(1400), None));
+        assert!(status_expired(Duration::from_millis(1500), None));
+    }
+
+    #[test]
+    fn a_held_status_needs_a_key_and_five_seconds() {
+        let secs = Duration::from_secs;
+        assert!(!status_expired(secs(60), Some(&held(false))), "no key");
+        assert!(
+            !status_expired(secs(2), Some(&held(true))),
+            "key before 5 s"
+        );
+        assert!(status_expired(secs(5), Some(&held(true))));
+    }
 }

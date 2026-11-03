@@ -1,6 +1,6 @@
 [package]
 name = "workmux"
-version = "0.1.278"
+version = "0.1.278-rex.1"
 edition = "2024"
 authors = ["workmux contributors"]
 description = "An opinionated workflow tool that orchestrates git worktrees and tmux"
@@ -22,6 +22,10 @@ include = [
     "/LICENSE",
     "/README.md",
 ]
+
+[[bin]]
+name = "workrex"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }

@@ -8,6 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from ..support.bin_name import rebrand
 from .conftest import RemoteCli, write_script
 
 TOKEN = "sk-ant-oat01-fake-token"
@@ -164,7 +165,7 @@ def test_import_copies_dummy_credentials_into_the_node_users_dirs(
     result = loopback_cli.run("remote", "login", "lo", "omp", "--import")
     assert result.returncode != 0
     assert "agent.db" in result.stderr
-    assert "workmux remote login lo omp" in result.stderr
+    assert rebrand("workmux remote login lo omp") in result.stderr
 
     result = loopback_cli.run("remote", "login", "lo", "pi", "--import")
     assert result.returncode != 0

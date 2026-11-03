@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ratatui::style::Style;
 
 use crate::github::{CheckSummary, PrSummary};
-use crate::multiplexer::rex::AppRefused;
+use crate::multiplexer::rex::{AppRefused, LayerHint};
 use crate::multiplexer::{AgentPane, AgentStatus, RemoteAgent};
 
 use super::DashboardTab;
@@ -20,6 +20,18 @@ use super::super::sort::SortMode;
 use super::super::spinner::SPINNER_FRAMES;
 use super::App;
 use crate::command::pane_history::pane_to_remember;
+
+/// The footer text for a failed jump or peek. Only errors written for the
+/// user reach the footer: Rex's refusal and the layer's hints. Any other
+/// failure stays out of it, as a missed switch always has.
+fn footer_message(err: &anyhow::Error) -> Option<String> {
+    if err.is::<AppRefused>() || err.is::<LayerHint>() {
+        Some(err.to_string())
+    } else {
+        tracing::warn!(error = %format!("{err:#}"), "dashboard: switch failed");
+        None
+    }
+}
 
 /// Selected agent pane target for multiplexer operations.
 pub(crate) struct PaneTarget {
@@ -281,12 +293,8 @@ impl App {
             .iter()
             .find(|a| a.pane_id == target_pane_id)
             .map(|a| a.window_name.as_str());
-        if let Err(error) = self.mux.switch_to_pane(target_pane_id, window_hint) {
-            if error.is::<AppRefused>() {
-                self.hold_status(error.to_string());
-            } else {
-                self.status_message = Some((error.to_string(), std::time::Instant::now()));
-            }
+        if let Err(err) = self.mux.switch_to_pane(target_pane_id, window_hint) {
+            self.show_switch_error(&err);
             return;
         }
 
@@ -297,6 +305,12 @@ impl App {
         if let Some(current) = pane_to_remember(current_pane.as_deref(), target_pane_id) {
             self.last_pane_id = Some(current.to_string());
             save_last_pane_id(current);
+        }
+    }
+
+    fn show_switch_error(&mut self, err: &anyhow::Error) {
+        if let Some(msg) = footer_message(err) {
+            self.hold_status(msg);
         }
     }
 
@@ -419,10 +433,10 @@ impl App {
         if let Some(selected) = self.table_state.selected()
             && let Some(agent) = self.agents.get(selected)
         {
-            let _ = self
-                .mux
-                .switch_to_pane(&agent.pane_id, Some(&agent.window_name));
             // Don't set should_jump - popup stays open
+            if let Err(err) = self.mux.peek_pane(&agent.pane_id, Some(&agent.window_name)) {
+                self.show_switch_error(&err);
+            }
         }
     }
 
@@ -749,7 +763,21 @@ fn open_url(url: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::should_close_after_jump;
+    use super::{AppRefused, footer_message, should_close_after_jump};
+
+    #[test]
+    fn a_refused_rex_jump_shows_the_fix() {
+        assert_eq!(
+            footer_message(&AppRefused.into()),
+            Some(AppRefused.to_string())
+        );
+    }
+
+    #[test]
+    fn a_switch_error_not_written_for_the_user_leaves_the_footer_empty() {
+        let err = anyhow::anyhow!(r#"tmux command failed: ["switch-client", "-t", "%2"]"#);
+        assert_eq!(footer_message(&err), None);
+    }
 
     #[test]
     fn jump_closes_only_when_config_and_multiplexer_allow_it() {

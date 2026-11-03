@@ -3,6 +3,7 @@
 //! This module provides TmuxBackend, which wraps all tmux-specific operations
 //! and exposes them through the Multiplexer trait interface.
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1519,7 +1520,7 @@ impl Multiplexer for TmuxBackend {
         // Window-level option for tmux status bar display (shared across panes in a window).
         if let Err(e) = self.tmux_cmd(&["set-option", "-w", "-t", pane_id, "@workmux_status", icon])
         {
-            eprintln!("workmux: failed to set window status: {}", e);
+            eprintln!("{BIN}: failed to set window status: {}", e);
         }
 
         // Pane-level option for per-agent sidebar tracking. Unlike the window option,

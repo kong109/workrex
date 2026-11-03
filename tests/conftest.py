@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 import pytest
 import yaml
 
+from .support.bin_name import BIN
 from .support.executable import SCRIPT_RUNNER, install_script
 
 
@@ -1376,7 +1377,7 @@ def workmux_exe_path() -> Path:
     """
     Returns the path to the local workmux build for testing.
     """
-    local_path = Path(__file__).parent.parent / "target/debug/workmux"
+    local_path = Path(__file__).parent.parent / f"target/debug/{BIN}"
     if not local_path.exists():
         pytest.fail("Could not find workmux executable. Run 'cargo build' first.")
     return local_path

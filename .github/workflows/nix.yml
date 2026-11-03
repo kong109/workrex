@@ -35,3 +35,5 @@ jobs:
             experimental-features = nix-command flakes
       - name: Build default package
         run: nix build .# --print-build-logs
+      - name: Run default package
+        run: nix run .# -- --version

@@ -162,7 +162,7 @@ class TestRemoveFromInsideSession:
             session_name,
             "remove -f",
             working_dir=worktree_path,
-            rust_log="workmux=debug",
+            rust_log="workrex=debug",
         )
 
         assert result.exit_code == 0, f"Remove failed: {result.stderr}"

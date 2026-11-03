@@ -1,5 +1,6 @@
 //! Application state for the sidebar TUI.
 
+use crate::bin_name::BIN;
 use anyhow::Result;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
@@ -21,7 +22,8 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use tracing::warn;
 
-use crate::multiplexer::{AgentPane, Multiplexer};
+use crate::multiplexer::rex::AppRefused;
+use crate::multiplexer::{AgentPane, Multiplexer, SidebarRequest};
 
 use crate::ui::theme::ThemePalette;
 
@@ -205,6 +207,16 @@ pub struct TemplateStrings {
     pub group_header: String,
 }
 
+const NOTICE_MIN: Duration = Duration::from_secs(5);
+
+/// A message that stays until a key is pressed and `NOTICE_MIN` has passed,
+/// so the user sees it however soon the next redraw comes.
+pub struct HeldNotice {
+    pub text: String,
+    set_at: Instant,
+    key_pressed: bool,
+}
+
 /// Latest sidebar template parsing failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateError {
@@ -341,6 +353,8 @@ pub struct SidebarApp {
     pub templates: ParsedTemplates,
     /// Most recent template parse failure, shown in the sidebar until fixed.
     pub template_error: Option<TemplateError>,
+    /// Why the last action failed, such as a jump Rex.app refused.
+    pub notice: Option<HeldNotice>,
     /// Per-agent icon and color overrides, parsed once at config load.
     pub agent_icons: ResolvedAgentIcons,
     /// Cached tile row heights, including separators, for hit testing.
@@ -435,6 +449,7 @@ impl SidebarApp {
                 group_header: parse_line(DEFAULT_GROUP_HEADER_TEMPLATE).unwrap(),
             },
             template_error: Some(template_error),
+            notice: None,
             agent_icons: ResolvedAgentIcons::default(),
             tile_heights: Vec::new(),
             horizontal_hitboxes: Vec::new(),
@@ -472,7 +487,8 @@ impl SidebarApp {
         let window_prefix = config.window_prefix().to_string();
         let status_icons = config.status_icons.clone();
 
-        let host_identity = detect_host_identity();
+        let host_identity =
+            super::host::identity(mux.as_ref()).unwrap_or_else(detect_host_identity);
 
         let template_config = config.sidebar.templates.clone();
         let current_templates = resolved_template_strings(
@@ -532,6 +548,7 @@ impl SidebarApp {
             sleeping_pane_ids: std::collections::HashSet::new(),
             templates,
             template_error,
+            notice: None,
             agent_icons,
             tile_heights: Vec::new(),
             horizontal_hitboxes: Vec::new(),
@@ -826,6 +843,41 @@ impl SidebarApp {
         self.host_window_active
     }
 
+    pub(super) fn hold_notice(&mut self, text: String) {
+        self.notice = Some(HeldNotice {
+            text,
+            set_at: Instant::now(),
+            key_pressed: false,
+        });
+    }
+
+    pub fn note_keypress(&mut self) {
+        if let Some(notice) = &mut self.notice {
+            notice.key_pressed = true;
+        }
+        self.expire_notice();
+    }
+
+    /// When the held notice may go: `NOTICE_MIN` after it was shown, once a
+    /// key has been pressed.
+    pub fn notice_deadline(&self) -> Option<Instant> {
+        self.notice
+            .as_ref()
+            .filter(|notice| notice.key_pressed)
+            .map(|notice| notice.set_at + NOTICE_MIN)
+    }
+
+    /// Drop the notice if its deadline has passed. Returns whether it went.
+    pub fn expire_notice(&mut self) -> bool {
+        let due = self
+            .notice_deadline()
+            .is_some_and(|deadline| Instant::now() >= deadline);
+        if due {
+            self.notice = None;
+        }
+        due
+    }
+
     pub fn tick(&mut self) {
         self.spinner_frame = self.spinner_frame.wrapping_add(1) % 10;
     }
@@ -1002,14 +1054,20 @@ impl SidebarApp {
         let mut labels: Vec<&str> = self.expanded_groups.iter().map(String::as_str).collect();
         labels.sort_unstable();
         let value = labels.join("\t");
-        let result = if value.is_empty() {
+        let result = if let Some(host) = self.mux.sidebar() {
+            host.handle(SidebarRequest::ExpandedGroups(
+                labels.iter().map(|label| label.to_string()).collect(),
+            ))
+        } else if value.is_empty() {
             Cmd::new("tmux")
                 .args(&["set-option", "-gu", "@workmux_sidebar_expanded"])
                 .run()
+                .map(drop)
         } else {
             Cmd::new("tmux")
                 .args(&["set-option", "-g", "@workmux_sidebar_expanded", &value])
                 .run()
+                .map(drop)
         };
         if let Err(error) = result {
             warn!(%error, "failed to persist expanded sidebar groups to tmux");
@@ -1371,7 +1429,7 @@ impl SidebarApp {
                 let _ = Cmd::new("tmux")
                     .args(&[
                         "display-message",
-                        &format!("workmux: open {}: {err:#}", remote.handle),
+                        &format!("{BIN}: open {}: {err:#}", remote.handle),
                     ])
                     .run();
             }
@@ -1379,8 +1437,13 @@ impl SidebarApp {
         });
     }
 
-    fn focus_pane(&self, pane_id: &str) {
-        let _ = self.mux.switch_to_pane(pane_id, None);
+    fn focus_pane(&mut self, pane_id: &str) {
+        // The TUI's raw mode keeps the backend from printing the fix.
+        if let Err(error) = self.mux.switch_to_pane(pane_id, None)
+            && error.is::<AppRefused>()
+        {
+            self.hold_notice(error.to_string());
+        }
         // Signal daemon directly to bypass tmux hook round-trip latency.
         super::daemon_ctrl::signal_daemon_for(self.mux.as_ref());
     }
@@ -1468,6 +1531,11 @@ impl SidebarApp {
         else {
             return;
         };
+        if super::host::forward(self.mux.as_ref(), || SidebarRequest::ToggleSleeping {
+            pane_id: pane_id.clone(),
+        }) {
+            return;
+        }
 
         // Read current set from tmux (source of truth) to avoid losing
         // toggles made by other sidebar clients since our last snapshot.
@@ -1564,6 +1632,9 @@ impl SidebarApp {
 
     /// Record a resize event for debounced manual pane resize processing.
     pub fn on_resize_event(&mut self, cols: u16, rows: u16) {
+        if self.mux.sidebar().is_some() {
+            return;
+        }
         if self.suppress_resize_once {
             self.suppress_resize_once = false;
             self.pending_resize_cols = None;
@@ -2076,6 +2147,34 @@ fn parse_host_identity(output: &str) -> Option<HostIdentity> {
 mod tests {
     use super::*;
     use crate::config::{AgentIconConfig, AgentIconDetails, CustomThemeColors, ThemeScheme};
+
+    #[test]
+    fn a_notice_stays_until_a_key_is_pressed_and_five_seconds_pass() {
+        let mut app = SidebarApp::test_with_template_error(TemplateError {
+            location: String::new(),
+            message: String::new(),
+        });
+        let shown_for = |app: &mut SidebarApp, age: u64| {
+            app.notice.as_mut().unwrap().set_at = Instant::now() - Duration::from_secs(age);
+        };
+
+        app.hold_notice("refused".to_string());
+        assert_eq!(app.notice_deadline(), None, "no key yet");
+        app.note_keypress();
+        assert!(app.notice.is_some(), "a key inside 5 s");
+        let set_at = app.notice.as_ref().unwrap().set_at;
+        assert_eq!(app.notice_deadline(), Some(set_at + NOTICE_MIN));
+        shown_for(&mut app, 5);
+        assert!(app.expire_notice(), "5 s after a key");
+        assert!(app.notice.is_none());
+
+        app.hold_notice("refused".to_string());
+        shown_for(&mut app, 60);
+        assert!(!app.expire_notice(), "no key yet");
+        assert!(app.notice.is_some());
+        app.note_keypress();
+        assert!(app.notice.is_none(), "a key after 5 s");
+    }
 
     #[test]
     fn theme_reload_uses_detected_mode_after_explicit_mode_is_removed() {
