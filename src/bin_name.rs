@@ -87,16 +87,14 @@ pub fn pin_version(name: &str) -> Option<&str> {
 /// searching; processes the binary starts later have other pids.
 const GUEST_SHIM: &str = concat!(
     "#!/bin/sh\nset -f\nIFS=:\n",
-    "[ \"$WORKREX_SHIM_PID\" = $$ ] || for dir in $PATH; do\n",
-    "  [ ! \"$dir/",
+    // The extra colon keeps a trailing empty entry, which is the current directory.
+    "entries=$PATH:\n",
+    "[ \"$WORKREX_SHIM_PID\" = $$ ] || for dir in $entries; do\n",
+    "  bin=${dir:-.}/",
     env!("CARGO_BIN_NAME"),
-    "\" -ef \"$0\" ] && [ -f \"$dir/",
-    env!("CARGO_BIN_NAME"),
-    "\" ] && [ -x \"$dir/",
-    env!("CARGO_BIN_NAME"),
-    "\" ] && WORKREX_SHIM_PID=$$ && export WORKREX_SHIM_PID && exec \"$dir/",
-    env!("CARGO_BIN_NAME"),
-    "\" \"$@\"\ndone\nexec workmux \"$@\"\n"
+    "\n  [ ! \"$bin\" -ef \"$0\" ] && [ -f \"$bin\" ] && [ -x \"$bin\" ] && ",
+    "WORKREX_SHIM_PID=$$ && export WORKREX_SHIM_PID && exec \"$bin\" \"$@\"\n",
+    "done\nexec workmux \"$@\"\n"
 );
 
 /// Write the [`GUEST_SHIM`] into a sandbox shim directory.
@@ -448,14 +446,16 @@ mod tests {
             dir
         };
         let image = fake("image", "workmux");
-        let hook = |path: String| {
+        let hook_in = |cwd: &Path, path: String| {
             let out = std::process::Command::new(shims.join(BIN))
                 .args(["set-window-status", "done"])
                 .env("PATH", path)
+                .current_dir(cwd)
                 .output()
                 .unwrap();
             String::from_utf8(out.stdout).unwrap()
         };
+        let hook = |path: String| hook_in(tmp.path(), path);
         // No /usr/bin: guest images need not ship coreutils.
         let path = format!("{}:{}", shims.display(), image.display());
         assert_eq!(hook(path.clone()), "workmux set-window-status done\n");
@@ -464,6 +464,16 @@ mod tests {
             hook(format!("{path}:{}", dev.display())),
             format!("{BIN} set-window-status done\n")
         );
+        // An empty PATH entry, inner or trailing, is the current directory.
+        for empty in [
+            format!("{}::{}", shims.display(), image.display()),
+            format!("{path}:"),
+        ] {
+            assert_eq!(
+                hook_in(&dev, empty),
+                format!("{BIN} set-window-status done\n")
+            );
+        }
         // A directory named like the binary is not one.
         let checkout = tmp.path().join("checkout");
         std::fs::create_dir_all(checkout.join(BIN)).unwrap();
