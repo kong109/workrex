@@ -754,7 +754,9 @@ impl Follower {
         Ok(())
     }
 
-    fn handle(&mut self, batch: Vec<Event>) {
+    /// Pass over the sessions `batch` touched. Returns whether the daemon
+    /// should observe at once.
+    fn handle(&mut self, batch: Vec<Event>) -> bool {
         let sidebars = sidebar_blocks(&self.plane.files.records());
         let mut sessions: Vec<String> = Vec::new();
         let mut sizes = HashMap::new();
@@ -814,9 +816,7 @@ impl Follower {
             let pass = self.pass_over(sessions, destroyed, sizes);
             self.work.settle(pass);
         }
-        if wake {
-            wake_daemon();
-        }
+        wake
     }
 
     fn pass_over(
@@ -889,8 +889,10 @@ impl Server for Follower {
                     return;
                 }
             };
-            if let Some(batch) = batch {
-                self.handle(batch);
+            if let Some(batch) = batch
+                && self.handle(batch)
+            {
+                wake_daemon();
             }
             let now = Instant::now();
             if now >= next_sweep {
@@ -945,6 +947,34 @@ mod tests {
 
         work.settle(Ok(()));
         assert!(work.created.is_empty());
+    }
+
+    /// A follower whose every Rex call fails: its server's socket does not
+    /// exist.
+    fn unreachable_follower(dir: &tempfile::TempDir) -> Follower {
+        let rex = RexBackend::for_server("unix:///nonexistent/wr6-test.sock");
+        let files = Files::at(dir.path().to_path_buf(), "test");
+        let plane = Plane::new(rex, files, Config::default()).unwrap();
+        Follower {
+            plane,
+            observed: Arc::default(),
+            stream: None,
+            work: Work::default(),
+        }
+    }
+
+    #[test]
+    fn a_failed_event_pass_schedules_a_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut follower = unreachable_follower(&dir);
+        let before = Instant::now();
+        follower.handle(vec![Event::WindowCreated {
+            session_id: "session:1".into(),
+            window_id: "window:1".into(),
+        }]);
+        assert!(follower.work.created.contains_key("window:1"));
+        let retry_at = follower.work.retry_at.expect("a retry");
+        assert!(retry_at >= before + link::backoff(1));
     }
 
     #[test]
