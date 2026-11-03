@@ -571,6 +571,22 @@ pub(crate) enum AppSwitch {
     NoApp,
 }
 
+impl AppSwitch {
+    /// Prints the fix once per process, and never under a full-screen
+    /// display such as the dashboard, which would swallow it.
+    fn hint_if_refused(self) {
+        if self == AppSwitch::Refused
+            && !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false)
+        {
+            print_once(
+                &REMOTE_CONTROL_HINT,
+                &mut std::io::stderr(),
+                REMOTE_CONTROL_FIX,
+            );
+        }
+    }
+}
+
 const REMOTE_CONTROL_FIX: &str = "Rex.app did not switch: Remote Control is off. \
      Turn it on in Rex Settings so workmux can switch the app.";
 
@@ -1609,14 +1625,9 @@ impl Multiplexer for RexBackend {
         let target = self
             .resolve("block", block.as_str())?
             .ok_or_else(|| anyhow!("Rex block {pane_id} not found"))?;
-        if self.show_on_app(&target.session_id, target.window_id.as_ref()) == AppSwitch::Refused {
-            if !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
-                print_once(
-                    &REMOTE_CONTROL_HINT,
-                    &mut std::io::stderr(),
-                    REMOTE_CONTROL_FIX,
-                );
-            }
+        let switch = self.show_on_app(&target.session_id, target.window_id.as_ref());
+        switch.hint_if_refused();
+        if switch == AppSwitch::Refused {
             return Err(anyhow!(REMOTE_CONTROL_FIX));
         }
         self.select_pane(pane_id)
