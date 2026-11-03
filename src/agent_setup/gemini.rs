@@ -102,7 +102,7 @@ fn uninstall_at(path: PathBuf) -> Result<String> {
         &JsonHookUninstallSpec {
             messages: json_config::JsonHookUninstallMessages {
                 file_missing: "No Gemini CLI settings.json found",
-                not_found: "No workmux hooks found in Gemini CLI settings",
+                not_found: crate::rebrand!("No workmux hooks found in Gemini CLI settings"),
                 soft_read_error: Some("Could not read Gemini CLI settings.json"),
                 soft_parse_error: Some("Could not parse Gemini CLI settings.json"),
             },
@@ -309,7 +309,7 @@ mod tests {
         )
         .unwrap();
         let result = uninstall_at(settings_path.clone()).unwrap();
-        assert!(result.contains("Removed workmux hooks"));
+        assert!(result.contains(crate::rebrand!("Removed workmux hooks")));
         let content = std::fs::read_to_string(&settings_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
         let after = config["hooks"]["AfterAgent"].as_array().unwrap();
@@ -332,8 +332,8 @@ mod tests {
         )
         .unwrap();
         let result1 = uninstall_at(settings_path.clone()).unwrap();
-        assert!(result1.contains("Removed workmux hooks"));
+        assert!(result1.contains(crate::rebrand!("Removed workmux hooks")));
         let result2 = uninstall_at(settings_path).unwrap();
-        assert!(result2.contains("No workmux hooks found"));
+        assert!(result2.contains(crate::rebrand!("No workmux hooks found")));
     }
 }

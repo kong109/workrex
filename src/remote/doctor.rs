@@ -129,7 +129,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
             "node",
             Level::Ok,
             format!(
-                "workmux {}, protocol {} ({})",
+                "{BIN} {}, protocol {} ({})",
                 hello.version, hello.protocol, cx.node_path
             ),
         ),
@@ -147,7 +147,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
         .fix(cx.mismatch_hint),
         NodeStatus::Broken(failure) => {
             let detail = match failure {
-                HelloFailure::PredatesNodes => "has no `workmux node` command".to_string(),
+                HelloFailure::PredatesNodes => format!("has no `{BIN} node` command"),
                 HelloFailure::NotANode { detail } => detail.clone(),
             };
             Row::new(

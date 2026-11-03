@@ -228,7 +228,7 @@ fn merge_inner(
     );
     if let Err(err) = &local {
         eprintln!(
-            "workmux: could not remove the local copy at {}: {err:#}",
+            "{BIN}: could not remove the local copy at {}: {err:#}",
             record.local_path.display()
         );
     }
@@ -296,7 +296,7 @@ pub fn pull(context: &WorkflowContext, mut record: WorkspaceRecord, run_hooks: b
     super::lifecycle::close_relay(context.mux.as_ref(), &record);
     if let Err(err) = open_local(context, &record) {
         eprintln!(
-            "workmux: could not open a window for '{}': {err:#}",
+            "{BIN}: could not open a window for '{}': {err:#}",
             record.handle
         );
     }
@@ -322,7 +322,7 @@ fn report_pull(node: &Node, mut record: WorkspaceRecord, snapshot: &Snapshot) ->
         }
         Ok(Removal::Diverged(message)) => {
             eprintln!(
-                "workmux: {message}. The local worktree has the work exported at {}; the \
+                "{BIN}: {message}. The local worktree has the work exported at {}; the \
                  remote workspace was kept (`{BIN} remove {}` deletes it)",
                 short(&snapshot.head),
                 record.handle
@@ -423,7 +423,7 @@ fn report_removal(
         }
         Ok(Removal::Diverged(message)) => {
             eprintln!(
-                "workmux: {message}. The work exported at {} is merged; the workspace was \
+                "{BIN}: {message}. The work exported at {} is merged; the workspace was \
                  kept. `{BIN} open {}` continues it, `{BIN} remove {}` deletes it",
                 short(&snapshot.head),
                 record.handle,
@@ -798,7 +798,7 @@ fn keep_branch_in_sync(
             record.branch, record.remote
         ),
         Err(err) => eprintln!(
-            "workmux: left '{}' on '{}' as it was: {err:#}",
+            "{BIN}: left '{}' on '{}' as it was: {err:#}",
             record.branch, record.remote
         ),
     }

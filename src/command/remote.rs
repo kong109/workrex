@@ -233,7 +233,7 @@ fn status(config: &Config, name: &str) -> String {
             NodeStatus::Ready(hello) => {
                 observe::current(config, name);
                 format!(
-                    "ready (workmux {}, protocol {})",
+                    "ready ({BIN} {}, protocol {})",
                     hello.version, hello.protocol
                 )
             }

@@ -4,7 +4,7 @@
 set -eu
 tag=${1:-${GITHUB_REF_NAME:-}}
 version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "${2:-Cargo.toml}" | head -n 1)
-if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rex\.[0-9]+$'; then
+if ! printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-rex\.[1-9][0-9]*$'; then
 	echo "Release tag '$tag' is not v<upstream version>-rex.<n>, for example v0.1.278-rex.1." >&2
 	echo "A plain v<upstream version> collides with upstream's tag. See RELEASE-workrex.md." >&2
 	exit 1

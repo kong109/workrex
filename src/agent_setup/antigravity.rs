@@ -100,8 +100,10 @@ pub fn uninstall() -> Result<String> {
 }
 
 fn uninstall_at(path: &Path) -> Result<String> {
-    remove_workmux_group_file(path)?
-        .map_or_else(|| Ok("No Antigravity workmux hooks found".to_string()), Ok)
+    remove_workmux_group_file(path)?.map_or_else(
+        || Ok(crate::rebrand!("No Antigravity workmux hooks found").to_string()),
+        Ok,
+    )
 }
 
 pub(crate) fn update_preview() -> Result<Option<UpdatePreview>> {
@@ -201,7 +203,8 @@ fn remove_workmux_group_file(path: &Path) -> Result<Option<String>> {
         write_json(path, &config)?;
     }
     Ok(Some(format!(
-        "Removed Workmux hooks from {}",
+        "Removed {} hooks from {}",
+        crate::bin_name::BIN,
         path.display()
     )))
 }

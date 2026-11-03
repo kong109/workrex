@@ -109,7 +109,7 @@ fn uninstall_at(path: PathBuf) -> Result<String> {
         &JsonHookUninstallSpec {
             messages: json_config::JsonHookUninstallMessages {
                 file_missing: "No Claude Code settings.json found",
-                not_found: "No workmux hooks found in Claude Code settings",
+                not_found: crate::rebrand!("No workmux hooks found in Claude Code settings"),
                 soft_read_error: None,
                 soft_parse_error: None,
             },
@@ -363,7 +363,7 @@ mod tests {
         let settings_path = tmp.path().join("settings.json");
         std::fs::write(&settings_path, r#"{"someSetting": true}"#).unwrap();
         let result = uninstall_at(settings_path).unwrap();
-        assert!(result.contains("No workmux hooks found"));
+        assert!(result.contains(crate::rebrand!("No workmux hooks found")));
     }
 
     #[test]
@@ -376,7 +376,10 @@ mod tests {
         )
         .unwrap();
         let result = uninstall_at(settings_path.clone()).unwrap();
-        assert!(result.contains("Removed workmux hooks"), "result: {result}");
+        assert!(
+            result.contains(crate::rebrand!("Removed workmux hooks")),
+            "result: {result}"
+        );
         // Verify the user hook is preserved
         let content = std::fs::read_to_string(&settings_path).unwrap();
         let settings: Value = serde_json::from_str(&content).unwrap();
@@ -401,9 +404,9 @@ mod tests {
         .unwrap();
         // First run
         let result1 = uninstall_at(settings_path.clone()).unwrap();
-        assert!(result1.contains("Removed workmux hooks"));
+        assert!(result1.contains(crate::rebrand!("Removed workmux hooks")));
         // Second run -- noop
         let result2 = uninstall_at(settings_path).unwrap();
-        assert!(result2.contains("No workmux hooks found"));
+        assert!(result2.contains(crate::rebrand!("No workmux hooks found")));
     }
 }

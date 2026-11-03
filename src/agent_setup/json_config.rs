@@ -151,7 +151,11 @@ fn finalize_uninstall(
             Ok(format!("Removed {} (no hooks remain)", path.display()))
         } else {
             write_pretty(path, settings)?;
-            Ok(format!("Removed workmux hooks from {}", path.display()))
+            Ok(format!(
+                "Removed {} hooks from {}",
+                crate::bin_name::BIN,
+                path.display()
+            ))
         }
     } else {
         Ok(spec.messages.not_found.to_string())

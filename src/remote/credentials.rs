@@ -160,7 +160,7 @@ pub fn login(
                 .map(|(_, provider)| *provider)
                 .collect();
             eprintln!(
-                "workmux: port {port} is in use on this machine, so it is not forwarded; \
+                "{BIN}: port {port} is in use on this machine, so it is not forwarded; \
                  a {} would not return to '{}'. Free the port and retry, or use a \
                  login that does not call back.",
                 users.join(" or "),
@@ -216,7 +216,7 @@ pub fn login(
         .context("Failed to run ssh")?;
     let code = status.code().unwrap_or(1);
     if let Some(failure) = node.transport.terminal_failure(status.code(), &[]) {
-        eprintln!("workmux: {failure}");
+        eprintln!("{BIN}: {failure}");
     }
     Ok(code)
 }

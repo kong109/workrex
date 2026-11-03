@@ -3636,7 +3636,8 @@ impl Config {
 
 /// Example project configuration with all options documented.
 /// Used by `workmux init` and `workmux config show`.
-pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
+pub const EXAMPLE_PROJECT_CONFIG: &str = crate::rebrand!(
+    r#"# workmux project configuration
 # For global settings, edit ~/.config/workmux/config.yaml
 # All options below are commented out - uncomment to override defaults.
 
@@ -3982,7 +3983,8 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   #   - host_path: ~/data
 #   #     guest_path: /mnt/data
 #   #     writable: true
-"#;
+"#
+);
 
 /// Resolves an executable name or path to its full absolute path.
 ///

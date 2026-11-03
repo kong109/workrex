@@ -49,3 +49,13 @@ def test_hints_name_the_binary_to_type(
         mux_server, workmux_exe_path, repo_path, "open nope", expect_fail=True
     )
     assert f"Use '{BIN} list' to see available worktrees." in result.stdout + result.stderr
+
+
+def test_init_template_names_the_binary(mux_server: MuxEnvironment, workmux_exe_path: Path):
+    result = mux_server.run_command([str(workmux_exe_path), "init"])
+    assert result.returncode == 0, result.stderr
+    content = (mux_server.tmp_path / ".workmux.yaml").read_text()
+    assert f'#   merge: "!{BIN} merge"' in content
+    assert f"`{BIN} add -A`" in content
+    assert "workmux merge" not in content
+    assert "workmux add" not in content

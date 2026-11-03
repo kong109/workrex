@@ -80,7 +80,7 @@ fn uninstall_at(path: PathBuf) -> Result<String> {
         &JsonHookUninstallSpec {
             messages: json_config::JsonHookUninstallMessages {
                 file_missing: "No Grok workmux-status.json found",
-                not_found: "No workmux hooks found in Grok hooks file",
+                not_found: crate::rebrand!("No workmux hooks found in Grok hooks file"),
                 soft_read_error: None,
                 soft_parse_error: None,
             },
@@ -251,7 +251,7 @@ mod tests {
         )
         .unwrap();
         let result = uninstall_at(hooks_path.clone()).unwrap();
-        assert!(result.contains("Removed workmux hooks"));
+        assert!(result.contains(crate::rebrand!("Removed workmux hooks")));
         assert!(hooks_path.exists());
         let content = std::fs::read_to_string(&hooks_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();

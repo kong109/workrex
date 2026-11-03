@@ -255,7 +255,7 @@ pub fn create(
             Path::new(&prepared.worktree_path),
         );
         for line in &portable.dropped {
-            eprintln!("workmux: not applied on '{}': {line}", spec.name);
+            eprintln!("{BIN}: not applied on '{}': {line}", spec.name);
         }
         for line in &portable.notes {
             tracing::info!(server = %spec.name, "remote config: {line}");
@@ -603,7 +603,7 @@ fn collect_files(
         };
         if size > budget {
             eprintln!(
-                "workmux: {setting}: not sending {} ({:.1} MB) to '{remote}': over the {} MiB \
+                "{BIN}: {setting}: not sending {} ({:.1} MB) to '{remote}': over the {} MiB \
                  limit per workspace",
                 relative.display(),
                 size as f64 / 1_000_000.0,
@@ -995,7 +995,7 @@ impl RemovalBatch {
             record.delete()?;
             forget_attachments(record);
             eprintln!(
-                "workmux: forgot remote workspace '{}' without contacting '{}' ({reason:#}); \
+                "{BIN}: forgot remote workspace '{}' without contacting '{}' ({reason:#}); \
              its worktree and agent may remain there (`{BIN} remote gc {}` removes them)",
                 record.handle, record.remote, record.remote
             );
@@ -1044,7 +1044,7 @@ impl RemovalBatch {
                     println!("Aborted.");
                     return Ok(());
                 }
-                Err(err) if options.force => eprintln!("workmux: {err:#}"),
+                Err(err) if options.force => eprintln!("{BIN}: {err:#}"),
                 Err(err) => return Err(err),
             }
         }
