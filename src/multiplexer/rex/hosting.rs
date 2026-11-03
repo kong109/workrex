@@ -493,6 +493,18 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_jump_names_the_remote_control_fix() {
+        let fake = super::super::tests::app_fake(
+            "client:a",
+            &[app_labeled("client:a", "rexbook")],
+            "!Error: Remote Control is off for this client (code=refused)",
+        );
+        let err = fake.rex.select_on_app(None, "session:hosted").unwrap_err();
+        assert_eq!(err.to_string(), super::super::REMOTE_CONTROL_FIX);
+        assert_eq!(fake.calls("session.select").len(), 1);
+    }
+
+    #[test]
     fn only_the_next_respawn_sources_the_env_file() {
         let rex = RexBackend::for_server("unix:///nonexistent/rex.sock");
         rex.source_on_respawn(PathBuf::from("/node/secrets/x1-0.env"));
