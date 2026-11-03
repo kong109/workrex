@@ -2311,21 +2311,18 @@ mod tests {
 
     #[test]
     fn an_unsupported_server_fails_every_call_after_one_version_query() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("calls");
         let program = dir.path().join("rex");
-        std::fs::write(
+        crate::test_support::write_script(
             &program,
-            format!(
+            &format!(
                 "#!/bin/sh\necho \"$*\" >> '{}'\n\
                  case \"$*\" in *server.version*) echo '{{\"rex_version\":\"0.0.1-old\",\"api_revision\":3}}';;\n\
                  *) echo 'not json';; esac\n",
                 log.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let rex = RexBackend {
             program: program.display().to_string(),
             ..RexBackend::for_server(&format!("unix://{}/s.sock", dir.path().display()))
@@ -2392,7 +2389,6 @@ mod tests {
 
     impl FakeRex {
         pub(super) fn new(cases: &[(&str, &str)]) -> Self {
-            use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             let mut arms = String::new();
             for (index, (pattern, reply)) in cases.iter().enumerate() {
@@ -2413,9 +2409,9 @@ mod tests {
                 arms.push_str(&format!("  *{pattern}*) {arm};;\n"));
             }
             let program = dir.path().join("rex");
-            std::fs::write(
+            crate::test_support::write_script(
                 &program,
-                format!(
+                &format!(
                     "#!/bin/sh\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
                      case \"$call\" in\n\
                      {arms}\
@@ -2423,9 +2419,7 @@ mod tests {
                      \x20 *) echo \"unexpected: $call\" >&2; exit 1;;\nesac\n",
                     log = dir.path().join("calls").display(),
                 ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            );
             let rex = RexBackend {
                 program: program.display().to_string(),
                 caller: Caller::default(),

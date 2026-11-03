@@ -488,7 +488,6 @@ mod tests {
 
     impl Fake {
         fn new(cases: &[(&str, &str)]) -> Self {
-            use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             // Shell builtins only: the Nix build sandbox has no `cat`.
             let mut arms = String::new();
@@ -504,9 +503,9 @@ mod tests {
                 ));
             }
             let program = dir.path().join("rex");
-            std::fs::write(
+            crate::test_support::write_script(
                 &program,
-                format!(
+                &format!(
                     "#!/bin/sh\ninput=\nwhile IFS= read -r line || [ -n \"$line\" ]; do \
                      input=\"$input$line\"; done\ncall=\"$* $input\"\n\
                      printf '%s\\036' \"$call\" >> '{}'\ncase \"$call\" in\n\
@@ -514,9 +513,7 @@ mod tests {
                      \x20 *) echo \"unexpected: $call\" >&2; exit 1;;\nesac\n",
                     dir.path().join("calls").display()
                 ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            );
             let server = format!("unix://{}/s.sock", dir.path().display());
             let host = SessionHost::Rex(Box::new(RexHost {
                 mux: RexBackend::with_program(&program, &server),
