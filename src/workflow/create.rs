@@ -1068,13 +1068,34 @@ mod tests {
             "test".to_string()
         }
 
-        fn get_live_pane_info(&self, _pane_id: &str) -> Result<Option<LivePaneInfo>> {
+        fn get_live_pane_info(&self, pane_id: &str) -> Result<Option<LivePaneInfo>> {
+            if pane_id == FAILING_PANE {
+                return Err(anyhow!("tmux call failed"));
+            }
             Ok(None)
         }
 
         fn get_all_live_pane_info(&self) -> Result<HashMap<String, LivePaneInfo>> {
             Ok(HashMap::new())
         }
+    }
+
+    /// A pane whose `get_live_pane_info` call fails.
+    const FAILING_PANE: &str = "%failing";
+
+    /// reconcile prunes an agent when the trait default's second look says
+    /// its pane is gone, so a failed call must reach it as an error.
+    #[test]
+    fn a_failed_second_look_is_an_error_not_a_dead_pane() {
+        let agent: crate::state::AgentState = serde_json::from_value(serde_json::json!({
+            "pane_key": { "backend": "tmux", "instance": "test", "pane_id": FAILING_PANE },
+            "workdir": "/private/tmp",
+            "pane_pid": 7,
+            "command": "node",
+            "updated_ts": 0,
+        }))
+        .unwrap();
+        assert!(TestMux.validate_agent_alive(&agent).is_err());
     }
 
     #[test]
