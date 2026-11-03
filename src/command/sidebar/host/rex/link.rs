@@ -250,6 +250,24 @@ mod tests {
     }
 
     #[test]
+    fn a_connection_that_held_resets_the_backoff() {
+        let connected = |held| Link::Connected {
+            boot_id: "boot-1".into(),
+            since: Instant::now() - held,
+            attempt: 6,
+        };
+        let mut fake = Fake::default();
+        assert!(matches!(
+            connected(STABLE).step(&mut fake),
+            Link::Retrying { attempt: 1, .. }
+        ));
+        assert!(matches!(
+            connected(Duration::ZERO).step(&mut fake),
+            Link::Retrying { attempt: 7, .. }
+        ));
+    }
+
+    #[test]
     fn a_stream_that_ends_at_once_backs_off() {
         let mut fake = Fake::default();
         fake.connects.extend(std::iter::repeat_n(Ok("boot-1"), 20));

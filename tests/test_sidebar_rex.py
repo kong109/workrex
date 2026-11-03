@@ -591,3 +591,79 @@ def test_an_agent_that_exits_leaves_the_running_sidebar(rex):
     assert poll_until(
         lambda: SPINNER.search(capture(env, sidebar)) is None, timeout=3
     ), capture(env, sidebar)
+
+
+def test_a_sidebar_started_without_a_server_exits_at_once(rex):
+    env = rex
+    run_env = dict(
+        env.env,
+        REX_SERVER=f"unix://{env.socket_dir / 'missing.sock'}",
+        REX_SESSION=env.session_id,
+        REX_BLOCK=env.runner_block_id,
+    )
+    done = subprocess.run(
+        [str(env.workmux), "_sidebar-run"],
+        env=run_env,
+        cwd=env.tmp_path,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=3,
+    )
+    assert done.returncode == 0, done.stderr
+
+
+def closed_windows(env: SidebarRex) -> dict:
+    [daemon] = sidebar_files(env).glob("rex-*-daemon.json")
+    return {
+        window: options["@workmux_sidebar_closed"]
+        for window, options in json.loads(daemon.read_text()).get("windows", {}).items()
+        if "@workmux_sidebar_closed" in options
+    }
+
+
+def test_a_closed_sidebar_outlasts_a_quit_elsewhere_and_goes_with_its_window(rex):
+    env = rex
+    other = env.api(
+        "session.create",
+        {
+            "label": "other",
+            "initial_windows": [{"window_label": "o", "layout": shell_layout(env)}],
+        },
+    )["session_id"]
+    closing = new_window(env, other)
+    for session, block in [
+        (env.session_id, env.runner_block_id),
+        (other, first_block(tiled(windows(env, other)[closing])["layout"])),
+    ]:
+        cli(
+            env,
+            "--session",
+            "on",
+            extra_env={"REX_SESSION": session, "REX_BLOCK": block},
+        )
+    sidebar = placed_sidebar(windows(env, other)[closing])["block_id"]
+    env.api("block.close", {"session_id": other, "block_id": sidebar})
+    assert poll_until(lambda: closing in closed_windows(env), timeout=3), (
+        "the daemon did not record the closed sidebar"
+    )
+
+    own = placed_sidebar(next(iter(windows(env, env.session_id).values())))
+    env.mux_command(["send", "-b", own["block_id"], "q"])
+    assert poll_until(
+        lambda: "Quit sidebar?" in capture(env, own["block_id"]), timeout=2
+    )
+    env.mux_command(["send", "-b", own["block_id"], "y"])
+    assert poll_until(
+        lambda: all(
+            sidebar_count(w) == 0 for w in windows(env, env.session_id).values()
+        ),
+        timeout=3,
+    )
+    after = windows(env, other)
+    assert sidebar_count(after[closing]) == 0, "the quit reopened a closed sidebar"
+    assert all(sidebar_of(w) for window_id, w in after.items() if window_id != closing)
+
+    env.api("session.close_window", {"session_id": other, "window_id": closing})
+    assert poll_until(lambda: closing not in closed_windows(env), timeout=3), (
+        "the closed record outlived its window"
+    )

@@ -660,6 +660,15 @@ impl Work {
         self.failures += 1;
         self.retry_at = Some(Instant::now() + link::backoff(self.failures));
     }
+
+    /// Settle a pass over the sessions of every owed window. A failed pass
+    /// keeps them owed.
+    fn settle(&mut self, pass: Result<()>) {
+        match pass {
+            Ok(()) => self.created.clear(),
+            Err(error) => self.failed(error),
+        }
+    }
 }
 
 /// The daemon's side of the server: the event stream and the passes it
@@ -802,11 +811,8 @@ impl Follower {
         sessions.retain(|session_id| !destroyed.contains(session_id));
 
         if !sessions.is_empty() || !destroyed.is_empty() {
-            match self.pass_over(sessions, destroyed, sizes) {
-                // Every owed window's session was in this pass.
-                Ok(()) => self.work.created.clear(),
-                Err(error) => self.work.failed(error),
-            }
+            let pass = self.pass_over(sessions, destroyed, sizes);
+            self.work.settle(pass);
         }
         if wake {
             wake_daemon();
@@ -924,6 +930,22 @@ fn wake_daemon() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_pass_keeps_its_windows_owed_and_retries_on_backoff() {
+        let mut work = Work::default();
+        work.created.insert("window:1".into(), "session:1".into());
+        let before = Instant::now();
+        work.settle(Err(anyhow::anyhow!("session.view timed out")));
+        assert!(work.created.contains_key("window:1"));
+        assert!(work.sweep);
+        let retry_at = work.retry_at.expect("a retry");
+        assert!(retry_at >= before + link::backoff(1));
+        assert!(retry_at <= Instant::now() + link::backoff(1));
+
+        work.settle(Ok(()));
+        assert!(work.created.is_empty());
+    }
 
     #[test]
     fn a_steady_event_stream_still_closes_its_batch() {

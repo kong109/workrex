@@ -253,6 +253,25 @@ mod tests {
     }
 
     #[test]
+    fn dropping_a_stream_kills_its_process() {
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id() as libc::pid_t;
+        let stream = EventStream {
+            child,
+            events: mpsc::channel().1,
+        };
+        let started = std::time::Instant::now();
+        drop(stream);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        // SAFETY: signal 0 only checks that the pid exists.
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "the process outlived its stream"
+        );
+    }
+
+    #[test]
     fn window_creation_and_view_changes_are_kept() {
         let events = parsed(WINDOW_CREATED);
         assert!(events.iter().any(|event| matches!(
