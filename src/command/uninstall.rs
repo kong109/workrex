@@ -3,7 +3,6 @@ use console::style;
 
 use crate::agent_setup::{self, Agent};
 use crate::skills;
-use crate::xdg;
 
 /// Run the uninstall process.
 ///
@@ -67,17 +66,11 @@ pub fn run(dry_run: bool) -> Result<()> {
     }
     println!();
 
-    // Phase 3: XDG dirs (only cache + state, NOT config)
+    // Phase 3: this binary's state dir; the cache and state dirs workmux shares stay
     println!("  {} Data directories", style("●").dim());
-    let dirs = [("Cache", xdg::cache_dir()), ("State", xdg::state_dir())];
-    if crate::bin_name::BIN != "workmux" {
-        println!(
-            "    {} Kept the directories workmux shares",
-            style("~").dim()
-        );
-    }
+    let dirs = [("State", crate::bin_name::state_dir())];
 
-    for (label, path_result) in dirs.iter().filter(|_| crate::bin_name::BIN == "workmux") {
+    for (label, path_result) in &dirs {
         match path_result {
             Ok(path) if path.exists() => {
                 if dry_run {
