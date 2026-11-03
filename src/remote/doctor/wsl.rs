@@ -141,12 +141,23 @@ pub(super) fn linger_row(row: Row, kernel: &str, linger: &str, user: &str) -> Ro
             ),
             ..row
         },
-        "unavailable" => row.fix(format!(
-            "enable systemd in WSL: add `[boot]` `systemd=true` to /etc/wsl.conf, run \
-             `wsl.exe --shutdown` on Windows, then `sudo loginctl enable-linger {user}`"
-        )),
+        // Without systemd, WSL keeps loginctl installed, but it fails and
+        // prints no state.
+        "" => Row {
+            detail: "loginctl printed no linger state; systemd is not running".into(),
+            ..row
+        }
+        .fix(enable_systemd(user)),
+        "unavailable" => row.fix(enable_systemd(user)),
         _ => row,
     }
+}
+
+fn enable_systemd(user: &str) -> String {
+    format!(
+        "enable systemd in WSL: add `[boot]` `systemd=true` to /etc/wsl.conf, run \
+         `wsl.exe --shutdown` on Windows, then `sudo loginctl enable-linger {user}`"
+    )
 }
 
 #[cfg(test)]
@@ -288,6 +299,28 @@ mod tests {
     }
 
     #[test]
+    fn empty_linger_on_wsl_names_systemd() {
+        let row = linger_row(
+            linger(Level::Warn, "unknown linger state \"\""),
+            WSL,
+            "",
+            "cicero",
+        );
+        assert_eq!(row.level, Level::Warn);
+        assert_eq!(
+            row.detail,
+            "loginctl printed no linger state; systemd is not running"
+        );
+        assert_eq!(
+            row.fix.as_deref(),
+            Some(
+                "enable systemd in WSL: add `[boot]` `systemd=true` to /etc/wsl.conf, run \
+                 `wsl.exe --shutdown` on Windows, then `sudo loginctl enable-linger cicero`"
+            )
+        );
+    }
+
+    #[test]
     fn linger_no_on_wsl_keeps_enable_linger() {
         let row = linger_row(
             linger(
@@ -315,6 +348,7 @@ mod tests {
         for (kernel, fact) in [
             ("6.8.0-45-generic", "no"),
             ("6.8.0-45-generic", "unavailable"),
+            ("6.8.0-45-generic", ""),
             (WSL, "yes"),
         ] {
             let row = linger_row(linger(Level::Warn, "as before"), kernel, fact, "cicero");
