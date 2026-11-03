@@ -48,6 +48,11 @@ const GIT_INTERVAL: Duration = Duration::from_secs(5);
 pub struct WatchRequest {
     #[serde(default)]
     pub stream: bool,
+    /// Only the workspaces a remote agent spawned, which is all adoption
+    /// reads. A node without any reads no agents, panes or Git status.
+    /// Older nodes ignore it and send every workspace.
+    #[serde(default)]
+    pub siblings: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -488,11 +493,21 @@ fn pane_number(id: &str) -> u64 {
     id.trim_start_matches('%').parse().unwrap_or(u64::MAX)
 }
 
-/// `watch` without `stream`.
-pub fn snapshot(root: &NodeRoot) -> Result<Snapshot> {
+/// `watch` without `stream`. See [`WatchRequest::siblings`].
+pub fn snapshot(root: &NodeRoot, siblings: bool) -> Result<Snapshot> {
+    if siblings && !root.workspaces().iter().any(|ws| sibling(ws).is_some()) {
+        return Ok(Snapshot {
+            now: now(),
+            workspaces: Vec::new(),
+        });
+    }
     let mut observer = Observer::new(root)?;
     let live = observer.live_panes()?;
-    observer.snapshot(&live)
+    let mut snapshot = observer.snapshot(&live)?;
+    if siblings {
+        snapshot.workspaces.retain(|ws| ws.sibling.is_some());
+    }
+    Ok(snapshot)
 }
 
 /// `watch` with `stream`: NDJSON frames on stdout until it is closed. A
@@ -910,6 +925,18 @@ mod tests {
         let snapshot = build_snapshot(7, &[ws], &live, &[untitled], Some("node-1"), None);
         let observed = snapshot.workspaces[0].panes[0].agent.as_ref().unwrap();
         assert_eq!(observed.title, None);
+    }
+
+    #[test]
+    fn a_sibling_snapshot_of_a_node_without_siblings_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = NodeRoot {
+            path: dir.path().to_path_buf(),
+        };
+        let ws = workspace("w0123456789ab", "x0123456789ab", &[0], Some("claude"));
+        root.save(&ws).unwrap();
+        assert_eq!(root.workspaces().len(), 1);
+        assert!(snapshot(&root, true).unwrap().workspaces.is_empty());
     }
 
     #[test]

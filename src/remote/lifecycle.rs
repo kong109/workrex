@@ -210,7 +210,7 @@ pub fn create(
     record.window_session = window_session;
     let node = Node::connect(spec)?;
     super::homecoming::finish_pending(&node, &record.ws_id);
-    super::observe::current_on(&node);
+    super::observe::adopt_on(&node);
     record.save()?;
     let (portable, provisioned) = (|| -> Result<(Portable, ProvisionResponse)> {
         let identity = WorkspaceIdentity {
@@ -933,7 +933,7 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
     };
     super::homecoming::finish_pending(&node, &record.ws_id);
     // Observing adopts siblings, which may open this window meanwhile.
-    super::observe::current_on(&node);
+    super::observe::adopt_on(&node);
     if !window && window_target(mux, &record)?.is_some() {
         return switch(&record);
     }
@@ -1121,7 +1121,7 @@ impl RemovalBatch {
                     }
                 };
                 super::homecoming::finish_pending_except(&node, |id| self.targets.contains(id));
-                super::observe::current_on(&node);
+                super::observe::adopt_on(&node);
                 entry.insert(node)
             }
         };

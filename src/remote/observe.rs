@@ -265,7 +265,10 @@ impl Drop for Child {
 /// saving it, until the stream ends or goes quiet. Returns why it ended.
 fn stream(spec: &RemoteSpec, observation: &mut Observation) -> Result<String> {
     let node = Node::connect_reader(spec, protocol::WATCH)?;
-    let request = serde_json::to_vec(&WatchRequest { stream: true })?;
+    let request = serde_json::to_vec(&WatchRequest {
+        stream: true,
+        siblings: false,
+    })?;
     let mut child = Child(
         node.transport
             .spawn(&node.verb_script(protocol::WATCH), request)?,
@@ -340,15 +343,17 @@ fn stream(spec: &RemoteSpec, observation: &mut Observation) -> Result<String> {
 pub fn current(config: &Config, name: &str) -> Observation {
     let observation = fetch(name, || {
         let spec = RemoteSpec::resolve(config, name)?;
-        watch_once(&Node::connect_reader(&spec, protocol::WATCH)?)
+        watch_once(&Node::connect_reader(&spec, protocol::WATCH)?, false)
     });
     adopt_siblings(name, observation)
 }
 
-/// [`current`] through `node`, a connection the caller already holds.
-pub fn current_on(node: &Node) -> Observation {
+/// Adopt the siblings `node`, a connection the caller already holds,
+/// reports. Without an observer this reads only the siblings, so its cost
+/// does not grow with the node's other agents.
+pub fn adopt_on(node: &Node) {
     let name = &node.spec.name;
-    adopt_siblings(name, fetch(name, || watch_once(node)))
+    adopt_siblings(name, fetch(name, || watch_once(node, true)));
 }
 
 fn adopt_siblings(name: &str, observation: Observation) -> Observation {
@@ -358,8 +363,12 @@ fn adopt_siblings(name: &str, observation: Observation) -> Observation {
     observation
 }
 
-fn watch_once(node: &Node) -> Result<Snapshot> {
-    node.call(protocol::WATCH, &WatchRequest { stream: false }, false)
+fn watch_once(node: &Node, siblings: bool) -> Result<Snapshot> {
+    let request = WatchRequest {
+        stream: false,
+        siblings,
+    };
+    node.call(protocol::WATCH, &request, false)
 }
 
 fn fetch(name: &str, snapshot: impl FnOnce() -> Result<Snapshot>) -> Observation {
