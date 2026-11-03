@@ -333,6 +333,16 @@ impl ClientList {
     }
 }
 
+/// The one rule for which app a jump may switch: `owner` holds the caller's
+/// block and is a connected app attached to the caller's session. The app
+/// keeps its claim on a block after it moves to another session, and Rex
+/// reports no session an app shows now, so this says the app showed the
+/// caller's pane last, not that it shows it now. Only an explicit jump asks
+/// it; `add` and `open` never switch the app.
+fn shows_caller(clients: &ClientList, owner: &ClientId, caller_session: &SessionId) -> bool {
+    clients.is_app_attached_to(owner, caller_session)
+}
+
 #[derive(Debug, Deserialize)]
 struct ClientInfo {
     #[serde(default)]
@@ -587,6 +597,10 @@ impl AppSwitch {
     }
 }
 
+/// A healthy Rex.app answers `session.select` in 55 to 125 ms; one that
+/// never answers would otherwise hold the command for Rex's 10 s default.
+const APP_SELECT_TIMEOUT: Duration = Duration::from_secs(1);
+
 const REMOTE_CONTROL_FIX: &str = "Rex.app did not switch: Remote Control is off. \
      Turn it on in Rex Settings so workmux can switch the app.";
 
@@ -674,6 +688,15 @@ impl RexBackend {
     }
 
     fn exec(&self, args: &[&str], stdin: Option<&str>) -> CallResult<String> {
+        self.exec_within(args, stdin, None)
+    }
+
+    fn exec_within(
+        &self,
+        args: &[&str],
+        stdin: Option<&str>,
+        timeout: Option<Duration>,
+    ) -> CallResult<String> {
         let program = &self.program;
         let mut command = Command::new(program);
         for var in Self::INHERITED_SCOPE_VARS {
@@ -700,6 +723,25 @@ impl RexBackend {
             pipe.write_all(input.as_bytes())
                 .context("Failed to write rex input")
                 .map_err(CallError::Failed)?;
+        }
+        if let Some(timeout) = timeout {
+            let deadline = std::time::Instant::now() + timeout;
+            while child
+                .try_wait()
+                .context("Failed to wait for rex")
+                .map_err(CallError::Failed)?
+                .is_none()
+            {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(CallError::Failed(anyhow!(
+                        "rex {} gave no answer within {timeout:?}",
+                        args.join(" ")
+                    )));
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
         }
         let output = child
             .wait_with_output()
@@ -1006,12 +1048,8 @@ impl RexBackend {
         Ok(pane_info(session, window, &process, title))
     }
 
-    /// The Rex.app client that owns the caller's pane. The app claims each
-    /// terminal block it shows and keeps the claim after it moves on, so the
-    /// owner is the app that showed the pane last, not one that shows it
-    /// now. It must also be attached to the caller's session, as a lost or
-    /// non-app client cannot be switched.
-    fn app_owning_caller(&self) -> Result<Option<ClientId>> {
+    /// The Rex.app client that `shows_caller` allows a jump to switch.
+    fn app_showing_caller(&self) -> Result<Option<ClientId>> {
         let (Some(session), Some(block)) = (&self.caller.session, &self.caller.block) else {
             return Ok(None);
         };
@@ -1021,7 +1059,7 @@ impl RexBackend {
             return Ok(None);
         };
         let clients: ClientList = self.api("client.list", json!({}))?;
-        Ok(clients.is_app_attached_to(&owner, session).then_some(owner))
+        Ok(shows_caller(&clients, &owner, session).then_some(owner))
     }
 
     fn select_args(app: &ClientId, session: &SessionId, window: Option<&WindowId>) -> Vec<String> {
@@ -1039,7 +1077,7 @@ impl RexBackend {
     /// Rex.app keeps its own shown tab, which `session.focus_window` and
     /// `session.focus_block` leave alone, so the app is asked to show it.
     fn show_on_app(&self, session: &SessionId, window: Option<&WindowId>) -> AppSwitch {
-        let app = match self.app_owning_caller() {
+        let app = match self.app_showing_caller() {
             Ok(Some(app)) => app,
             Ok(None) => return AppSwitch::NoApp,
             Err(error) => {
@@ -1049,7 +1087,10 @@ impl RexBackend {
         };
         let args = Self::select_args(&app, session, window);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        match self.run(&args, None) {
+        let switched = self
+            .ensure_supported()
+            .and_then(|()| self.exec_within(&args, None, Some(APP_SELECT_TIMEOUT)));
+        match switched {
             Ok(_) => AppSwitch::Shown,
             Err(error) if error.to_string().contains("(code=refused)") => AppSwitch::Refused,
             Err(error) => {
@@ -2210,6 +2251,7 @@ mod tests {
             for (index, (pattern, reply)) in cases.iter().enumerate() {
                 let file = dir.path().join(format!("reply{index}"));
                 let arm = match reply.strip_prefix('!') {
+                    _ if reply.starts_with('$') => reply[1..].to_string(),
                     Some(stderr) => {
                         std::fs::write(&file, stderr).unwrap();
                         format!("cat '{}' >&2; exit 1", file.display())
@@ -2382,6 +2424,19 @@ mod tests {
         );
         fake.rex.switch_to_pane("block:agent", None).unwrap();
         assert_eq!(fake.calls("session.select").len(), 1);
+        assert_eq!(fake.calls("session.focus_block").len(), 1);
+    }
+
+    #[test]
+    fn an_app_that_never_answers_is_given_up_on() {
+        let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "$exec sleep 30");
+        let start = std::time::Instant::now();
+        fake.rex.switch_to_pane("block:agent", None).unwrap();
+        let waited = start.elapsed();
+        assert!(
+            waited >= APP_SELECT_TIMEOUT && waited < Duration::from_secs(8),
+            "{waited:?}"
+        );
         assert_eq!(fake.calls("session.focus_block").len(), 1);
     }
 
