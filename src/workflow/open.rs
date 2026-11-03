@@ -342,6 +342,7 @@ pub fn open(
             mux_target_full_name: target.full_name(),
             resolved_handle: base_handle,
             mode,
+            view_hint: None,
         });
     }
 

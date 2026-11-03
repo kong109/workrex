@@ -24,25 +24,27 @@ workmux needs a Rex server that speaks API revision 8 or 9. On first use it read
 | Prompt delivery      | Paste buffer         | Paste event (bracketed when needed) |
 | Respawning a pane    | Same pane ID         | New block in the same place         |
 | Default mode         | Window               | Session                             |
+| View follows `add`   | Caller's session     | No                                  |
 
 - **Tabs.** A workmux window is a Rex window, labeled with the window name. New windows open right after the current one.
 - **Panes.** Each pane is a Rex block. Splits keep the configured `size` or `percentage`.
 - **Respawning.** Rex cannot restart the program in a block. When workmux needs to restart a pane, it opens a new block in the same place and closes the old one, so the pane ID changes.
 - **Capture.** `workmux capture` reads the block's full scrollback and keeps the last lines.
-- **The app.** Rex.app keeps its own shown tab. When workmux opens or switches to a window, it asks the Rex.app client that shows your pane to show that window too. Apps showing other sessions stay where they are, as tmux clients do.
+- **The app.** Rex.app keeps its own shown tab, apart from the window the Rex session makes active. Rex does not report which session an app shows now, so `add` and `open` never move the app: the new window becomes the session's active window, and the app keeps showing what it showed. You open the new tab in the app yourself. tmux instead moves every client that shows the caller's session.
+- **Jumps.** The dashboard, the sidebar, `last-agent` and `last-done` do move the app. They ask the Rex.app client that owns your pane, which is the app that last showed it, to show the target.
 - **Shells.** workmux starts each block's shell directly as a login shell (`$SHELL -l`), as tmux does. It does not go through `/usr/bin/login`, so the environment of the Rex server reaches the pane unchanged.
 
 ## Session mode
 
-Under Rex, workmux uses [session mode](/guide/session-mode/) unless you set `mode` or pass `--mode`. Each worktree gets its own Rex session, and `workmux add` switches Rex.app to it. Set `mode: window` to get tabs in the current session instead, as under tmux.
+Under Rex, workmux uses [session mode](/guide/session-mode/) unless you set `mode` or pass `--mode`. Each worktree gets its own Rex session. Set `mode: window` to get tabs in the current session instead, as under tmux.
 
-- **Switching the app.** `workmux add` asks the Rex.app client that shows your pane to show the new session. Apps showing other sessions stay where they are. `--background` switches no app. Without such an app, workmux creates the session and does not switch.
-- **Closing.** When `remove`, `close` or `merge` runs inside the session it closes, workmux first sends Rex.app to the destination and then closes the session. The destination is the managed session of the merge target, then [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session the worktree was added from. Rex does not report which session Rex.app shows, so run from any other session, workmux closes the session without moving the app.
+- **Adding.** `workmux add` creates the session and focuses its pane in that session, but leaves Rex.app where it is, because the command may run in a background agent's pane. It prints `Rex.app stays put: open wm-feat-a from its sidebar or workmux dashboard.` `--background` prints nothing.
+- **Closing.** When `remove`, `close` or `merge` closes a session that Rex.app shows, the app lands on the destination: the managed session of the merge target, then [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session the worktree was added from. Rex.app shows the first session in the order when the session it shows closes, so workmux moves the destination first for the close and then back to its place. An app showing another session stays where it is. Without a destination, the app lands on the first session.
 - **Renamed sessions.** Agents may rename their Rex session (Rex tells Claude Code to name its session after the task). workmux records each session it creates by its Rex session ID under `$XDG_STATE_HOME/workmux/rex-sessions.json`, so it still finds the session after a rename.
 
 ### Remote Control
 
-Switching the tab Rex.app shows needs Remote Control, which you turn on in Rex Settings. Without it, the app refuses the switch: workmux prints `Turn on Remote Control in Rex Settings so workrex can switch the app.` once, and the command carries on. The window or session is still created and focused in the Rex session; only the app's view stays put. In the dashboard, a refused jump shows the same fix in the status line and the dashboard stays open.
+A jump needs Remote Control, which you turn on in Rex Settings. Without it, the app refuses the jump and the target is not focused. The dashboard stays open and shows the fix in its status line; the sidebar stays open and prints nothing. `last-agent` and `last-done` print `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so workmux can switch the app.` once. `add` and closing a session do not need Remote Control.
 
 ## Requirements
 
@@ -65,5 +67,6 @@ workmux identifies the server by its address, which stays the same across restar
 
 ## Known limitations
 
+- `add` and `open` do not move Rex.app to the new window or session
 - Agent status icons do not appear in tab titles
 - Remote agents need tmux

@@ -60,14 +60,6 @@ fn update_registry(path: &Path, change: impl FnOnce(&mut Registry) -> Result<()>
     Ok(())
 }
 
-/// Whether to move the app before closing `closing`. Rex does not report
-/// which session an app shows. Run from inside the closing session, the app
-/// most likely shows it. Run from anywhere else, moving the app could pull
-/// the user away from what they are looking at, which tmux never does.
-fn moves_app(caller: Option<&SessionId>, closing: &SessionId) -> bool {
-    caller == Some(closing)
-}
-
 /// Where the app goes when the session it shows closes: the preferred
 /// session, then the session the closing one was opened from.
 fn pick_destination(
@@ -87,6 +79,32 @@ fn pick_destination(
     origin.filter(|origin| {
         other(origin) && sessions.iter().any(|session| &session.session_id == origin)
     })
+}
+
+pub(super) fn new_session_hint(full_name: &str) -> String {
+    format!("Rex.app stays put: open {full_name} from its sidebar or workmux dashboard.")
+}
+
+/// Where an app showing a closing session should land, and the destination's
+/// one-based place in the session order once the closing session is gone.
+struct Steer {
+    destination: SessionId,
+    place: usize,
+}
+
+impl Steer {
+    /// `rex session move` attaches to the session it moves, which
+    /// `session.move` requires.
+    fn move_args(&self, place: usize) -> Vec<String> {
+        let id = self.destination.as_str();
+        ["session", "move", id, "--index", &place.to_string()]
+            .map(String::from)
+            .to_vec()
+    }
+}
+
+fn as_strs(args: &[String]) -> Vec<&str> {
+    args.iter().map(String::as_str).collect()
 }
 
 fn matches_id_or_label(session: &SessionSummary, name: &str) -> bool {
@@ -219,70 +237,66 @@ impl RexBackend {
         })
     }
 
-    fn destination(
-        &self,
-        closing: &SessionId,
-        preferred: Option<&str>,
-    ) -> Result<Option<SessionId>> {
+    /// Rex.app shows the first session in the order when the session it
+    /// shows is destroyed, and an app showing another session stays put.
+    /// Rex does not say which app shows `closing`, so no app is asked to
+    /// move: the destination goes first for the destroy and then back to its
+    /// place, and only an app that showed `closing` lands on it.
+    fn steer(&self, closing: &SessionId, preferred: Option<&str>) -> Result<Option<Steer>> {
+        let mut sessions = self.raw_sessions()?;
+        let order: Vec<SessionId> = sessions
+            .iter()
+            .map(|session| session.session_id.clone())
+            .filter(|id| id != closing)
+            .collect();
+        self.apply_managed_names(&mut sessions);
         let origin = self
             .records()
             .origins
             .remove(closing.as_str())
             .map(SessionId);
-        Ok(pick_destination(
-            &self.sessions()?,
-            closing,
-            preferred,
-            origin,
-        ))
-    }
-
-    /// The `rex` arguments that move the app showing the caller off
-    /// `closing`, when it may be showing it.
-    fn relocation(
-        &self,
-        closing: &SessionId,
-        preferred: Option<&str>,
-    ) -> Result<Option<Vec<String>>> {
-        if !moves_app(self.caller.session.as_ref(), closing) {
-            return Ok(None);
-        }
-        let Some(destination) = self.destination(closing, preferred)? else {
+        let Some(destination) = pick_destination(&sessions, closing, preferred, origin) else {
             return Ok(None);
         };
-        Ok(self
-            .app_showing_caller()?
-            .map(|app| Self::select_args(&app, &destination, None)))
+        let place = order
+            .iter()
+            .position(|id| *id == destination)
+            .map_or(1, |index| index + 1);
+        Ok(Some(Steer { destination, place }))
     }
 
     pub(super) fn close_session_to(&self, full_name: &str, preferred: Option<&str>) -> Result<()> {
         if let Some(session) = self.labeled_session(full_name)? {
-            if let Some(select) = self.relocation(&session, preferred)? {
-                let select: Vec<&str> = select.iter().map(String::as_str).collect();
-                if let Err(error) = self.run(&select, None) {
-                    tracing::debug!(error = %error, "rex:relocation select failed");
+            let steer = self.steer(&session, preferred)?;
+            let move_to = |place: usize| {
+                if let Some(steer) = &steer
+                    && let Err(error) = self.run(&as_strs(&steer.move_args(place)), None)
+                {
+                    tracing::debug!(error = %error, "rex: session move failed");
                 }
-            }
+            };
+            move_to(1);
             self.destroy_session(&session)?;
+            move_to(steer.as_ref().map_or(1, |steer| steer.place));
             self.prune_records()?;
         }
         Ok(())
     }
 
-    /// Rex.app shows the first session in its sidebar when the session it
-    /// shows is destroyed, so the select runs to completion before the
-    /// destroy starts.
+    /// Each step runs to completion before the next starts, so Rex.app
+    /// sees the destination first when the destroy reaches it.
     pub(super) fn shell_close_cmd(
         &self,
         session: &SessionId,
         preferred: Option<&str>,
     ) -> Result<String> {
         let destroy = self.shell_destroy_cmd(session);
-        let script = match self.relocation(session, preferred)? {
-            Some(select) => {
-                let select: Vec<&str> = select.iter().map(String::as_str).collect();
-                format!("{}; {destroy}", self.shell_rex_cmd(&select))
-            }
+        let script = match self.steer(session, preferred)? {
+            Some(steer) => format!(
+                "{}; {destroy}; {}",
+                self.shell_rex_cmd(&as_strs(&steer.move_args(1))),
+                self.shell_rex_cmd(&as_strs(&steer.move_args(steer.place)))
+            ),
             None => destroy,
         };
         self.prune_records()?;
@@ -303,9 +317,7 @@ impl RexBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{
-        APP, CALLER_BLOCK, CALLER_SESSION, FakeRex, clients, owner, session_list,
-    };
+    use super::super::tests::{CALLER_BLOCK, CALLER_SESSION, FakeRex, session_list};
     use super::*;
 
     #[test]
@@ -351,49 +363,60 @@ mod tests {
         assert_eq!(pick(None, None), None);
     }
 
-    /// The caller's pane is in `session:b`, labeled `wm-a`, which the app
-    /// showing it is about to lose; `home` is where it should go.
+    /// The caller's pane is in `session:b`, labeled `wm-a`, which is about
+    /// to close; `home`, second once `wm-a` is gone, is where an app showing
+    /// it should land.
     fn closing_fake() -> FakeRex {
         FakeRex::new(&[
-            ("block call -b block:caller size", &owner(APP)),
-            ("client.list", &clients(&[(APP, &[CALLER_SESSION])])),
-            ("session.select", "{}"),
+            ("session move", "{}"),
             ("session.destroy", "{}"),
             (
                 "session.list",
-                &session_list(&[(CALLER_SESSION, "wm-a"), ("session:home", "home")]),
+                &session_list(&[
+                    ("session:first", "first"),
+                    (CALLER_SESSION, "wm-a"),
+                    ("session:home", "home"),
+                ]),
             ),
         ])
         .in_pane(CALLER_SESSION, CALLER_BLOCK)
     }
 
-    fn assert_select_precedes_destroy(fake: &FakeRex) {
-        let calls = fake.calls("");
-        let position = |needle: &str| {
-            calls
-                .iter()
-                .position(|call| call.contains(needle))
-                .unwrap_or_else(|| panic!("no {needle} in {calls:#?}"))
-        };
+    fn assert_destination_leads_the_destroy(fake: &FakeRex) {
+        let steps: Vec<String> = fake
+            .calls("")
+            .into_iter()
+            .filter(|call| call.contains("session move") || call.contains("session.destroy"))
+            .map(|call| call.split(" -S ").nth(1).unwrap_or(&call).to_string())
+            .collect();
+        assert_eq!(steps.len(), 3, "{steps:#?}");
         assert!(
-            calls[position("session.select")].contains("session_id=session:home"),
-            "{calls:#?}"
+            steps[0].contains("session move session:home --index 1"),
+            "{steps:#?}"
         );
+        assert!(steps[1].contains("session.destroy"), "{steps:#?}");
         assert!(
-            position("session.select") < position("session.destroy"),
-            "{calls:#?}"
+            steps[2].contains("session move session:home --index 2"),
+            "{steps:#?}"
         );
+        assert!(fake.calls(" do ").is_empty(), "no app is asked to move");
+        assert!(fake.calls("client.list").is_empty());
     }
 
     #[test]
-    fn closing_moves_the_app_before_it_destroys_the_session() {
+    fn closing_puts_the_destination_first_for_the_destroy_and_then_back() {
         let fake = closing_fake();
         fake.rex.close_session_to("wm-a", Some("home")).unwrap();
-        assert_select_precedes_destroy(&fake);
+        assert_destination_leads_the_destroy(&fake);
+
+        let mut outside = closing_fake();
+        outside.rex.caller = Default::default();
+        outside.rex.close_session_to("wm-a", Some("home")).unwrap();
+        assert_destination_leads_the_destroy(&outside);
     }
 
     #[test]
-    fn a_deferred_close_moves_the_app_before_it_destroys_the_session() {
+    fn a_deferred_close_puts_the_destination_first_for_the_destroy_and_then_back() {
         let fake = closing_fake();
         let script = fake
             .rex
@@ -406,7 +429,15 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        assert_select_precedes_destroy(&fake);
+        assert_destination_leads_the_destroy(&fake);
+    }
+
+    #[test]
+    fn closing_without_a_destination_only_destroys() {
+        let fake = closing_fake();
+        fake.rex.close_session_to("wm-a", None).unwrap();
+        assert!(fake.calls("session move").is_empty());
+        assert_eq!(fake.calls("session.destroy").len(), 1);
     }
 
     #[test]
@@ -487,15 +518,6 @@ mod tests {
         let names = a.rex.records().names;
         assert_eq!(names.get("session:a").map(String::as_str), Some("wm-a"));
         assert_eq!(names.get("session:b").map(String::as_str), Some("wm-b"));
-    }
-
-    #[test]
-    fn app_moves_only_when_it_may_show_the_closing_session() {
-        let closing = SessionId("session:closing".into());
-        let other = SessionId("session:other".into());
-        assert!(!moves_app(None, &closing));
-        assert!(moves_app(Some(&closing), &closing));
-        assert!(!moves_app(Some(&other), &closing));
     }
 
     #[test]

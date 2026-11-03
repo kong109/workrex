@@ -1296,6 +1296,9 @@ impl<'a> CreationPlan<'a> {
                 println!("  Base: {}", base);
             }
             println!("  Worktree: {}", result.worktree_path.display());
+            if let Some(hint) = &result.view_hint {
+                println!("{hint}");
+            }
         }
 
         for target in remote_wait_targets {
