@@ -366,6 +366,16 @@ enum State {
     },
 }
 
+/// Where keystrokes go.
+enum Input {
+    /// To the event loop, which only looks for `r` and `q`.
+    Dropped,
+    /// Connection `generation` has not shown output yet; still dropped.
+    Pending(u64),
+    /// To the live connection.
+    Forwarded(Arc<File>),
+}
+
 struct Connection {
     pid: libc::pid_t,
     master: Arc<File>,
@@ -379,8 +389,7 @@ struct Relay {
     slot: String,
     events: Sender<Event>,
     receiver: Receiver<Event>,
-    /// Where keystrokes go; `Some` only while attached.
-    input_target: Arc<Mutex<Option<Arc<File>>>>,
+    input: Arc<Mutex<Input>>,
     generation: u64,
     attempt: u32,
     status: Option<StatusMirror>,
@@ -400,7 +409,7 @@ impl Relay {
             slot,
             events,
             receiver,
-            input_target: Arc::new(Mutex::new(None)),
+            input: Arc::new(Mutex::new(Input::Dropped)),
             generation: 0,
             attempt: 0,
             status: None,
@@ -442,7 +451,7 @@ impl Relay {
             };
             if woke(last_turn, now) && retrying {
                 tracing::info!(ex_id = %self.ex_id, slot = %self.slot, "remote attach woke from sleep; reconnecting");
-                *self.input_target.lock().unwrap() = None;
+                *self.input.lock().unwrap() = Input::Dropped;
                 if let Some(old) = connection.take() {
                     stop(old);
                 }
@@ -463,9 +472,6 @@ impl Relay {
                 }
                 Some(Event::Output(generation)) if generation == self.generation => {
                     if matches!(state, State::Connecting) {
-                        flush_input();
-                        *self.input_target.lock().unwrap() =
-                            connection.as_ref().map(|c| c.master.clone());
                         // The remote client repaints the whole screen.
                         self.painted_row = None;
                         state = State::Attached {
@@ -476,7 +482,7 @@ impl Relay {
                 Some(Event::Exited(generation, status, stderr))
                     if generation == self.generation =>
                 {
-                    *self.input_target.lock().unwrap() = None;
+                    *self.input.lock().unwrap() = Input::Dropped;
                     if let Some(mut finished) = connection.take()
                         && let Some(output) = finished.output.take()
                     {
@@ -599,8 +605,11 @@ impl Relay {
         let mut child = cmd.spawn().context("Failed to start ssh")?;
         let pid = child.id() as libc::pid_t;
         let master = Arc::new(File::from(master));
+        *self.input.lock().unwrap() = Input::Pending(generation);
 
         let events = self.events.clone();
+        let input = self.input.clone();
+        let forward = master.clone();
         let reader = master.clone();
         let output = thread::spawn(move || {
             let mut reader = &*reader;
@@ -611,6 +620,15 @@ impl Relay {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        // Forward keystrokes before the screen shows, so
+                        // whatever is typed after seeing it gets through.
+                        if !announced {
+                            let mut input = input.lock().unwrap();
+                            if matches!(*input, Input::Pending(pending) if pending == generation) {
+                                flush_input();
+                                *input = Input::Forwarded(forward.clone());
+                            }
+                        }
                         if stdout
                             .write_all(&buf[..n])
                             .and_then(|_| stdout.flush())
@@ -649,7 +667,7 @@ impl Relay {
     /// loop, which only looks for `r` and `q`.
     fn read_input(&self) {
         let events = self.events.clone();
-        let target = self.input_target.clone();
+        let target = self.input.clone();
         thread::spawn(move || {
             let mut stdin = std::io::stdin().lock();
             let mut buf = [0u8; 4096];
@@ -661,11 +679,11 @@ impl Relay {
                     }
                     Ok(n) => {
                         let guard = target.lock().unwrap();
-                        match guard.as_ref() {
-                            Some(master) => {
+                        match &*guard {
+                            Input::Forwarded(master) => {
                                 let _ = (&**master).write_all(&buf[..n]);
                             }
-                            None => {
+                            Input::Dropped | Input::Pending(_) => {
                                 drop(guard);
                                 let _ = events.send(Event::Input(buf[..n].to_vec()));
                             }
