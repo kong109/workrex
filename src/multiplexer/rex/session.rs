@@ -426,14 +426,16 @@ impl RexBackend {
         preferred: Option<&str>,
     ) -> Result<()> {
         let mut locked = self.lock_records()?;
+        // The lock orders this close after every earlier one, and a late
+        // move lands behind the backend, so a list reused from before the
+        // lock would show an order that no longer holds.
+        self.forget_reads();
         if let Some(left) = locked.records().restore.clone() {
-            // The late landing happens behind this backend, so a list it
-            // reused from before the landing would show the order in place.
-            let settled = left.timed_out_at.is_some() && !left.may_still_land() && {
-                self.forget_reads();
-                self.raw_sessions()
-                    .is_ok_and(|live| left.is_in_place(&session_ids(&live)))
-            };
+            let settled = left.timed_out_at.is_some()
+                && !left.may_still_land()
+                && self
+                    .raw_sessions()
+                    .is_ok_and(|live| left.is_in_place(&session_ids(&live)));
             let kept = if settled {
                 None
             } else {
@@ -1278,5 +1280,47 @@ esac
             ["first", "home", "wm-v"],
             "the late landing was put back"
         );
+    }
+
+    /// Another process's close has put `home` first for its destroy when
+    /// the dashboard's poll lists the sessions. That close then puts `home`
+    /// back, and the dashboard's own close, which waited on the registry
+    /// lock, must plan from the order it left.
+    #[test]
+    fn a_close_after_another_close_keeps_its_put_back() {
+        let mut fake = ordered_fake(&[
+            ("session:first", "first"),
+            ("session:home", "home"),
+            ("session:v", "wm-v"),
+            ("session:w", "wm-w"),
+        ])
+        .reusing();
+        let order = |args: &[&str]| {
+            let out = std::process::Command::new("sh")
+                .arg(fake.dir.path().join("order.sh"))
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+        };
+        order(&["move", "session", "move", "session:home", "--index", "1"]);
+        assert_eq!(
+            labels(&fake),
+            ["home", "first", "wm-v", "wm-w"],
+            "the poll's read"
+        );
+        order(&["destroy", r#"{"session_id":"session:w"}"#]);
+        order(&[
+            "move",
+            "session",
+            "move",
+            "session:home",
+            "--after",
+            "session:first",
+        ]);
+
+        fake.rex.close_session_to("wm-v", Some("home")).unwrap();
+        reopen(&mut fake);
+        assert_eq!(labels(&fake), ["first", "home"]);
     }
 }
