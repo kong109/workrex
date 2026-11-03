@@ -226,7 +226,7 @@ const READ_ONLY_API: [&str; 5] = [
     "server.version",
     "client.list",
 ];
-const READ_ONLY_BLOCK: [&str; 4] = ["process", "title", "size", "format"];
+const READ_ONLY_BLOCK: [&str; 5] = ["process", "title", "size", "format", "program_status"];
 
 /// Calls that leave the server as it was. Any other call drops reused reads.
 fn changes_nothing(args: &[&str]) -> bool {
@@ -3043,7 +3043,25 @@ mod tests {
                 "client.list",
             ]
         );
-        assert_eq!(READ_ONLY_BLOCK, ["process", "title", "size", "format"]);
+        assert_eq!(
+            READ_ONLY_BLOCK,
+            ["process", "title", "size", "format", "program_status"]
+        );
+    }
+
+    #[test]
+    fn a_program_status_read_keeps_the_reads_before_it() {
+        let fake = FakeRex::new(&[
+            ("session.view", "{}"),
+            ("program_status", r#"{"records":[]}"#),
+        ])
+        .reusing();
+        fake.view();
+        let block = BlockId("block:01a19e59-43d8-72fd-860c-3a1d6f183cc3".into());
+        let _ = fake.rex.query_program_status(&block);
+        assert_eq!(fake.calls("program_status").len(), 1);
+        fake.view();
+        assert_eq!(fake.calls("session.view").len(), 1);
     }
 
     #[test]
