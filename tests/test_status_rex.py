@@ -51,7 +51,9 @@ def workmux(env: RexEnvironment, exe: Path, cwd: Path, *args: str, block=None):
     )
 
 
-def agent_status(env: RexEnvironment, exe: Path, repo: Path, block: str) -> Optional[str]:
+def agent_status(
+    env: RexEnvironment, exe: Path, repo: Path, block: str
+) -> Optional[str]:
     result = workmux(env, exe, repo, "status", "--json")
     assert result.returncode == 0, result.stderr
     for agent in json.loads(result.stdout)["agents"]:
@@ -134,9 +136,7 @@ def test_agent_is_dropped_after_it_exits(rex, workmux_exe_path, repo_path):
     )
 
 
-def test_program_status_wins_over_a_stale_hook_status(
-    rex, workmux_exe_path, repo_path
-):
+def test_program_status_wins_over_a_stale_hook_status(rex, workmux_exe_path, repo_path):
     block = start_fake_agent(rex, workmux_exe_path, repo_path, "osc-hooked")
     hook = workmux(
         rex, workmux_exe_path, repo_path, "set-window-status", "waiting", block=block
