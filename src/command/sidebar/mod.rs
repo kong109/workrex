@@ -25,6 +25,7 @@ mod daemon_ctrl;
 #[cfg(target_os = "macos")]
 mod fsevent;
 mod hooks;
+pub(crate) mod host;
 mod layout_tree;
 mod panes;
 mod runtime;

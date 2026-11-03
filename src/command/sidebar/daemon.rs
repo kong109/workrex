@@ -62,7 +62,7 @@ struct TmuxState {
 }
 
 /// Query all sidebar-relevant tmux state in a single server observation.
-fn query_tmux_state(tmux: &TmuxBackend) -> Result<TmuxState> {
+fn query_tmux_state(tmux: &dyn crate::multiplexer::DaemonIo) -> Result<TmuxState> {
     let snapshot = tmux.sidebar_snapshot()?;
     Ok(TmuxState {
         live_panes: snapshot.live_panes,
@@ -2229,6 +2229,7 @@ pub fn run() -> Result<()> {
     let mux = create_backend(detect_backend());
     let instance_id = mux.instance_id();
     let tmux = TmuxBackend::for_socket(&instance_id);
+    let tmux = super::host::daemon_io(mux.as_ref(), tmux)?;
     let config = Arc::new(Mutex::new(Config::load(None)?));
     let mut view_projects = super::view::ProjectCache::default();
     // Captured at startup and intentionally not live-reloaded. tmux's
@@ -2298,7 +2299,7 @@ pub fn run() -> Result<()> {
 
         if scheduler.observation_due(now) {
             scheduler.finish_observation(now);
-            match query_tmux_state(&tmux) {
+            match query_tmux_state(&*tmux) {
                 Ok(tmux_state) => {
                     if tmux_state.server_boot_id != compacted_boot_id {
                         match store.compact_context(

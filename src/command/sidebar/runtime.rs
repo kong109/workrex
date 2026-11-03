@@ -59,7 +59,8 @@ fn spawn_input_thread(tx: mpsc::Sender<AppEvent>) {
 pub fn run_sidebar() -> Result<()> {
     let mux = create_backend(detect_backend());
 
-    if !mux.is_running().unwrap_or(false) {
+    // A sidebar host's pane identity waits for a slow server instead.
+    if mux.sidebar().is_none() && !mux.is_running().unwrap_or(false) {
         tracing::info!("sidebar-run exiting: mux not running");
         return Ok(());
     }
@@ -140,10 +141,7 @@ pub fn run_sidebar() -> Result<()> {
             (None, None) => Duration::from_secs(3600),
         };
 
-        // The startup recheck has one deadline, even if snapshots are deduplicated.
-        let timeout = last_pane_check
-            .timeout(Instant::now())
-            .map_or(timeout, |grace| timeout.min(grace));
+        let timeout = until_next_deadline(timeout, &app, &last_pane_check, Instant::now());
 
         let first_event = match rx.recv_timeout(timeout) {
             Ok(ev) => Some(ev),
@@ -178,6 +176,10 @@ pub fn run_sidebar() -> Result<()> {
             );
         }
 
+        if app.expire_notice() {
+            needs_render = true;
+        }
+
         if last_pane_check.grace_expired(Instant::now())
             && last_pane_check.should_exit(app.host_identity(), sidebar_is_only_pane)
         {
@@ -199,7 +201,12 @@ pub fn run_sidebar() -> Result<()> {
                 quit_reason = app.quit_reason.as_deref().unwrap_or("unknown"),
                 "sidebar-run quitting"
             );
-            if app.quit_silent {
+            if let Some(host) = app.mux.sidebar().filter(|_| !app.quit_silent) {
+                let pane = host_identity.clone().into();
+                if let Err(error) = host.handle(crate::multiplexer::SidebarRequest::Quit { pane }) {
+                    tracing::warn!(%error, "sidebar quit failed");
+                }
+            } else if app.quit_silent {
                 schedule_pane_kill(&host_identity.pane_id);
             } else {
                 shutdown_all_sidebars(&host_identity);
@@ -210,6 +217,22 @@ pub fn run_sidebar() -> Result<()> {
 
     // _guard handles cleanup on drop (including the normal exit path)
     Ok(())
+}
+
+/// Shortens `timeout` to the startup recheck's or a held notice's deadline.
+/// Each needs a wake of its own, since snapshots are deduplicated.
+fn until_next_deadline(
+    timeout: Duration,
+    app: &SidebarApp,
+    last_pane_check: &LastPaneCheck,
+    now: Instant,
+) -> Duration {
+    let timeout = last_pane_check
+        .timeout(now)
+        .map_or(timeout, |grace| timeout.min(grace));
+    app.notice_deadline().map_or(timeout, |deadline| {
+        timeout.min(deadline.saturating_duration_since(now))
+    })
 }
 
 fn advance_refresh_if_due(
@@ -380,6 +403,7 @@ fn handle_key_press(
     code: KeyCode,
     modifiers: crossterm::event::KeyModifiers,
 ) {
+    app.note_keypress();
     if app.pending_exit {
         if code == KeyCode::Char('y') {
             app.quit_reason = Some("confirmed user exit".to_string());
@@ -540,6 +564,32 @@ mod tests {
         assert!(check.should_exit(Some(&identity), |window, pane| {
             window == "@42" && pane == "%12"
         }));
+    }
+
+    #[test]
+    fn a_keyed_notice_wakes_a_sidebar_that_has_no_refresh() {
+        let mut app = test_app();
+        let no_recheck = LastPaneCheck {
+            grace_deadline: None,
+            pane_count: None,
+        };
+        let idle = Duration::from_secs(3600);
+        let now = Instant::now();
+
+        app.hold_notice("refused".to_string());
+        assert_eq!(until_next_deadline(idle, &app, &no_recheck, now), idle);
+        app.note_keypress();
+        let deadline = app.notice_deadline().unwrap();
+        assert_eq!(
+            until_next_deadline(idle, &app, &no_recheck, now),
+            deadline - now
+        );
+        assert_eq!(
+            until_next_deadline(idle, &app, &no_recheck, deadline),
+            Duration::ZERO
+        );
+        let sooner = Duration::from_secs(1);
+        assert_eq!(until_next_deadline(sooner, &app, &no_recheck, now), sooner);
     }
 
     #[test]
