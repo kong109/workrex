@@ -834,7 +834,7 @@ mod tests {
         ]);
         let message = err(&older);
         assert!(message.contains("runs unsupported Rex t"), "{message}");
-        let refused = older.rex().mux.open_server(true).err().expect("open fails");
+        let refused = older.rex().mux.open_server(true).expect_err("open fails");
         assert!(
             format!("{refused:#}").starts_with("unsupported Rex t"),
             "{refused:#}"
