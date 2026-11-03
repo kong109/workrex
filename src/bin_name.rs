@@ -491,6 +491,41 @@ mod tests {
     }
 
     #[test]
+    fn guest_shim_lets_a_process_the_binary_starts_reach_it_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let shims = crate::sandbox::shims::create_shim_directory(tmp.path(), &[]).unwrap();
+        let dev = tmp.path().join("dev");
+        let image = tmp.path().join("image");
+        for (dir, name, script) in [
+            (
+                &dev,
+                BIN,
+                format!("echo {BIN} \"$@\"\n[ \"$1\" = child ] || {BIN} child"),
+            ),
+            (&image, "workmux", "echo workmux \"$@\"".to_string()),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(name), format!("#!/bin/sh\n{script}\n")).unwrap();
+            std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        // The child inherits the sentinel, but runs the shim under another pid.
+        let out = std::process::Command::new(shims.join(BIN))
+            .arg("parent")
+            .env(
+                "PATH",
+                format!("{}:{}:{}", shims.display(), dev.display(), image.display()),
+            )
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            format!("{BIN} parent\n{BIN} child\n")
+        );
+    }
+
+    #[test]
     fn guest_shim_reached_again_through_a_copy_falls_back_instead_of_looping() {
         use std::os::unix::fs::PermissionsExt;
         use std::time::{Duration, Instant};
