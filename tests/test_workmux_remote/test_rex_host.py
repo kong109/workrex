@@ -377,6 +377,44 @@ def test_a_start_whose_old_block_will_not_close_names_block_close(
     wm(env, workmux_exe_path, mux_repo_path, "remove --force feat")
 
 
+def test_a_hosted_pane_without_a_command_gets_the_node_bin_dir(
+    mux_server, workmux_exe_path: Path, mux_repo_path: Path, node: Node, tmp_path: Path
+):
+    """A pane with no command is a login shell. The node types the export
+    of its own bin dir there in one write, ahead of anything typed after."""
+    env = mux_server
+    claude = write_script(
+        tmp_path / "claude", "echo AGENT-UP\nwhile read -r line; do :; done\n"
+    )
+    commit_project(
+        mux_repo_path,
+        {
+            "nerdfont": False,
+            "agent": str(claude),
+            "panes": [{"command": "<agent>"}, {"split": "horizontal"}],
+        },
+    )
+    added = wm(env, workmux_exe_path, mux_repo_path, "add feat --remote lo")
+    assert "Successfully created remote workspace" in added.stdout, added.stderr
+    node.wait_for_agent(env, "feat", "AGENT-UP")
+    [record] = local_records(env)
+    shell = f"{record['execution']['ex_id']}-1"
+    [block] = blocks(node, node.rex_sessions()[shell])
+    bin_dir = (node.root / "run" / "bin").resolve()
+    # The output word is split in the typed line, so only output matches.
+    check = (
+        f'[ "$(cd "${{PATH%%:*}}" && pwd -P)" = {shlex.quote(str(bin_dir))} ]'
+        ' && echo PREFIX-O""K || echo PREFIX-N""O\r'
+    )
+    rex_of(node).block_call(block, "write", {"data": check})
+    assert poll_until(
+        lambda: any(w in node.capture(shell) for w in ("PREFIX-OK", "PREFIX-NO")),
+        timeout=20,
+    ), node.capture(shell)
+    assert "PREFIX-OK" in node.capture(shell), node.capture(shell)
+    wm(env, workmux_exe_path, mux_repo_path, "remove --force feat")
+
+
 def test_a_hosted_start_runs_four_rex_processes(
     mux_server, workmux_exe_path: Path, mux_repo_path: Path, node: Node, tmp_path: Path
 ):
