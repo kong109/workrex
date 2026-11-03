@@ -1715,6 +1715,63 @@ mod tests {
 
     const LIVE_PANE_LINE: &str = "%7\t12345\tnode\t/repo\tWorking\tmain\twork\t$1\t@2\t4";
 
+    /// A session-mode `add` moves the caller's client to the new session's
+    /// pane, the same `switch-client` a jump makes.
+    #[test]
+    fn a_new_session_moves_the_attached_client_there() {
+        if which::which("tmux").is_err() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("s").to_string_lossy().into_owned();
+        let tmux = |args: &[&str]| {
+            let output = std::process::Command::new("tmux")
+                .args(["-S", &socket, "-f", "/dev/null"])
+                .args(args)
+                .env_remove("TMUX")
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        tmux(&["new-session", "-d", "-s", "one"]);
+        let mut client = std::process::Command::new("tmux")
+            .args([
+                "-S",
+                &socket,
+                "-f",
+                "/dev/null",
+                "-C",
+                "attach",
+                "-t",
+                "one",
+            ])
+            .env_remove("TMUX")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let attached = |session: &str| {
+            (0..100).any(|_| {
+                let found = tmux(&["list-clients", "-F", "#{client_session}"]) == session;
+                if !found {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                found
+            })
+        };
+        let ready = attached("one");
+        tmux(&["new-session", "-d", "-s", "two"]);
+        let pane = tmux(&["display-message", "-p", "-t", "two", "#{pane_id}"]);
+        let hint = TmuxBackend::for_socket(&socket).focus_new_session(&pane, "two");
+        let moved = attached("two");
+        let _ = client.kill();
+        let _ = client.wait();
+        tmux(&["kill-server"]);
+        assert!(ready, "control client never attached");
+        assert_eq!(hint.unwrap(), None);
+        assert!(moved, "the client stayed on session one");
+    }
+
     #[test]
     fn run_shell_preserves_literal_tmux_formats() {
         if which::which("tmux").is_err() {

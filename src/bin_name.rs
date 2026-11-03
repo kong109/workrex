@@ -60,6 +60,14 @@ pub fn overlay_dockerfile(image: &str) -> String {
 /// root keeps each binary's pins, state and gc out of the other's.
 pub const NODE_ROOT: &str = concat!("~/.", env!("CARGO_BIN_NAME"), "-node");
 
+/// File name of the update-check cache, beside upstream's `update_check.json`.
+pub const UPDATE_CACHE_FILE: &str = concat!(env!("CARGO_BIN_NAME"), "-update_check.json");
+
+/// This binary's own state directory. Upstream's uninstall deletes the shared one.
+pub fn state_dir() -> Result<PathBuf> {
+    Ok(crate::xdg::state_dir()?.with_file_name(BIN))
+}
+
 /// Name of the node pin for `version`, a release version or `dev-<hash>`.
 pub fn pin_name(version: &str) -> String {
     format!("{BIN}-{version}")
@@ -74,13 +82,15 @@ pub fn pin_version(name: &str) -> Option<&str> {
 /// mounted agent hooks call [`BIN`]. It runs a [`BIN`] that install-dev put in the guest,
 /// else the guest's `workmux`, which speaks the same sandbox RPC.
 ///
-/// A PATH entry that spells the shim's own directory differently would exec the shim
-/// again. exec keeps the pid, so a shim that finds its own pid in the sentinel was
-/// re-entered and stops searching; processes the binary starts later have other pids.
+/// A PATH entry holding a copy of the shim would exec the shim again. exec keeps
+/// the pid, so a shim that finds its own pid in the sentinel was re-entered and stops
+/// searching; processes the binary starts later have other pids.
 const GUEST_SHIM: &str = concat!(
-    "#!/bin/sh\nself=$(dirname \"$0\")\nset -f\nIFS=:\n",
+    "#!/bin/sh\nset -f\nIFS=:\n",
     "[ \"$WORKREX_SHIM_PID\" = $$ ] || for dir in $PATH; do\n",
-    "  [ \"$dir\" != \"$self\" ] && [ -x \"$dir/",
+    "  [ ! \"$dir/",
+    env!("CARGO_BIN_NAME"),
+    "\" -ef \"$0\" ] && [ -x \"$dir/",
     env!("CARGO_BIN_NAME"),
     "\" ] && WORKREX_SHIM_PID=$$ && export WORKREX_SHIM_PID && exec \"$dir/",
     env!("CARGO_BIN_NAME"),
@@ -104,8 +114,8 @@ pub fn print_completion(script: &str) {
 /// The default dashboard merge action, sent to the agent as a shell command.
 pub const MERGE_ACTION: &str = crate::rebrand!("!workmux merge");
 
-/// Runtime [`rebrand!`](crate::rebrand) for text built at run time, such as error messages.
-pub fn rebrand_text(text: &str) -> String {
+/// Runtime [`rebrand!`](crate::rebrand) for text clap builds at run time, such as help text.
+fn rebrand_text(text: &str) -> String {
     let src = text.as_bytes();
     let mut out = Vec::with_capacity(src.len());
     let mut i = 0;
@@ -444,17 +454,25 @@ mod tests {
                 .unwrap();
             String::from_utf8(out.stdout).unwrap()
         };
-        let path = format!("{}:{}:/usr/bin:/bin", shims.display(), image.display());
+        // No /usr/bin: guest images need not ship coreutils.
+        let path = format!("{}:{}", shims.display(), image.display());
         assert_eq!(hook(path.clone()), "workmux set-window-status done\n");
         let dev = fake("dev", BIN);
         assert_eq!(
             hook(format!("{path}:{}", dev.display())),
             format!("{BIN} set-window-status done\n")
         );
+        // Another path to the shim itself is skipped, not taken for a real binary.
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&shims, &alias).unwrap();
+        assert_eq!(
+            hook(format!("{}:{path}:{}", alias.display(), dev.display())),
+            format!("{BIN} set-window-status done\n")
+        );
     }
 
     #[test]
-    fn guest_shim_reached_again_by_another_spelling_falls_back_instead_of_looping() {
+    fn guest_shim_reached_again_through_a_copy_falls_back_instead_of_looping() {
         use std::os::unix::fs::PermissionsExt;
         use std::time::{Duration, Instant};
         let tmp = tempfile::tempdir().unwrap();
@@ -467,13 +485,14 @@ mod tests {
             std::fs::Permissions::from_mode(0o755),
         )
         .unwrap();
-        let alias = tmp.path().join("alias");
-        std::os::unix::fs::symlink(&shims, &alias).unwrap();
+        let copy = tmp.path().join("copy");
+        std::fs::create_dir_all(&copy).unwrap();
+        std::fs::copy(shims.join(BIN), copy.join(BIN)).unwrap();
         let shells = ["/bin/sh", "/bin/dash", "/bin/busybox"];
         for shell in shells.iter().filter(|shell| Path::new(shell).exists()) {
             for entries in [
                 format!("{}/", shims.display()),
-                format!("{}:{}", shims.display(), alias.display()),
+                format!("{}:{}", shims.display(), copy.display()),
             ] {
                 let mut cmd = std::process::Command::new(shell);
                 if shell.ends_with("busybox") {
@@ -525,7 +544,6 @@ mod tests {
 
     #[test]
     fn update_cache_is_not_shared_with_upstream() {
-        let path = crate::command::update::update_cache_path().unwrap();
-        assert_eq!(path.file_name().unwrap(), "workrex-update_check.json");
+        assert_eq!(UPDATE_CACHE_FILE, "workrex-update_check.json");
     }
 }

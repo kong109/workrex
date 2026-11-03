@@ -8,7 +8,6 @@ import shutil
 import time
 from pathlib import Path
 
-
 from ..conftest import TmuxEnvironment
 from ..support.bin_name import BIN
 from .conftest import NODE_TERMINAL, Node, commit_project, git, local_records, wm

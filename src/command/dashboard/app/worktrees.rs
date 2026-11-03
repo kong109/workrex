@@ -986,6 +986,19 @@ impl App {
             return;
         }
 
+        // A backend whose session switch leaves the user's view alone jumps
+        // through a pane of the session instead.
+        if worktree.mode == crate::config::MuxMode::Session && worktree.has_mux_window {
+            let target_name = git::get_worktree_target_session(&worktree.handle)
+                .unwrap_or_else(|| worktree.handle.clone());
+            let full_name =
+                crate::multiplexer::util::prefixed(self.config.window_prefix(), &target_name);
+            if let Ok(Some(pane)) = self.mux.session_pane(&full_name) {
+                self.switch_to_pane_and_track(&pane);
+                return;
+            }
+        }
+
         // Fall back to workflow::open (switches to existing or creates new)
         self.open_selected_worktree();
     }

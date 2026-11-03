@@ -5,7 +5,6 @@ and the laptop sees it later still."""
 import time
 from pathlib import Path
 
-
 from ..conftest import TmuxEnvironment, poll_until
 from ..support.bin_name import rebrand
 from .conftest import Node, git, wm
