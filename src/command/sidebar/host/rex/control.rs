@@ -1054,6 +1054,23 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_program_status_wakes_the_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let mux = RexBackend::scripted(dir.path(), "cat > /dev/null\nexit 1\n".to_string());
+        let files = Files::at(dir.path().join("state"), "test");
+        let mut follower = Follower {
+            plane: Plane::new(mux.detached_for_events(), files, Config::default()).unwrap(),
+            observed: Arc::new(Observed::new(mux.program_statuses())),
+            stream: None,
+            work: Work::default(),
+        };
+        assert!(follower.handle(vec![Event::ProgramStatusRemoved {
+            session_id: "session:1".into(),
+            block_id: "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3".into(),
+        }]));
+    }
+
+    #[test]
     fn a_steady_event_stream_still_closes_its_batch() {
         // Terminals retitled every 5 ms never leave the stream quiet. A
         // window reset by each event would hold the batch for the whole 2 s.

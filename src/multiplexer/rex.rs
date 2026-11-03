@@ -2544,6 +2544,135 @@ mod tests {
         assert_eq!(shown(&fake.rex), Some(AgentStatus::Done));
     }
 
+    fn status_json(state: &str) -> String {
+        json!({ "records": [{ "state": state, "updated_at": "2026-11-03T08:00:00Z" }] }).to_string()
+    }
+
+    fn shown_status(rex: &RexBackend, block: &str) -> Option<AgentStatus> {
+        match rex.reported_status(block) {
+            Some(ReportedStatus::Agent { status, .. }) => Some(status),
+            _ => None,
+        }
+    }
+
+    /// `program_status` answers with the status it read on
+    /// entry, then blocks until the test has changed the status and dropped
+    /// the block's entry as the daemon's follower would.
+    fn overlapping_status_fake() -> FakeRex {
+        FakeRex::new(&[
+            ("target.resolve", RESOLVE),
+            ("session.view", VIEW),
+            (
+                "program_status",
+                "$s=$(cat \"$dir/status\"); : > \"$dir/entered\"; while [ ! -e \"$dir/go\" ]; do sleep 0.01; done; printf %s \"$s\"",
+            ),
+            ("process", PROCESS),
+            ("title", r#"{"title":""}"#),
+        ])
+    }
+
+    fn change_status_during_read(fake: &FakeRex, block: &str, read: impl FnOnce() + Send) {
+        let entered = fake.dir.path().join("entered");
+        thread::scope(|scope| {
+            let reader = scope.spawn(read);
+            while !entered.exists() {
+                thread::sleep(Duration::from_millis(5));
+            }
+            std::fs::write(fake.dir.path().join("status"), status_json("blocked")).unwrap();
+            fake.rex
+                .program_status
+                .apply(&events::Event::ProgramStatusChanged {
+                    session_id: "session:1".into(),
+                    block_id: block.into(),
+                    state: "blocked".into(),
+                    kind: None,
+                    app: None,
+                });
+            std::fs::write(fake.dir.path().join("go"), "").unwrap();
+            reader.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn a_followed_look_that_overlaps_a_drop_is_not_kept() {
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let fake = overlapping_status_fake();
+        fake.rex.program_status.follow(true);
+        std::fs::write(fake.dir.path().join("status"), status_json("working")).unwrap();
+        change_status_during_read(&fake, block, || {
+            assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+        });
+        assert_eq!(
+            shown_status(&fake.rex, block),
+            Some(AgentStatus::Waiting),
+            "the read that overlapped the drop was kept"
+        );
+    }
+
+    #[test]
+    fn a_followed_pane_read_that_overlaps_a_drop_is_not_kept() {
+        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
+        let fake = overlapping_status_fake();
+        fake.rex.program_status.follow(true);
+        std::fs::write(fake.dir.path().join("status"), status_json("working")).unwrap();
+        change_status_during_read(&fake, block, || {
+            assert!(fake.rex.get_live_pane_info(block).unwrap().is_some());
+        });
+        assert_eq!(
+            shown_status(&fake.rex, block),
+            Some(AgentStatus::Waiting),
+            "the pane read that overlapped the drop was kept"
+        );
+    }
+
+    #[test]
+    fn after_the_stream_ends_a_look_keeps_nothing() {
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let fake = FakeRex::new(&[
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", PROCESS),
+        ]);
+        fake.rex.program_status.follow(true);
+        fake.rex.program_status.follow(false);
+        std::fs::write(fake.dir.path().join("status"), status_json("working")).unwrap();
+        assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+        std::fs::write(fake.dir.path().join("status"), status_json("blocked")).unwrap();
+        assert_eq!(
+            shown_status(&fake.rex, block),
+            Some(AgentStatus::Waiting),
+            "a look after the stream ended was kept"
+        );
+    }
+
+    #[test]
+    fn a_scan_keeps_its_reads_for_the_reconcile_that_follows() {
+        let fake = FakeRex::new(&[
+            (
+                "session.list",
+                &session_list(&[("session:01a19e60-6410-7e09-a3ee-f675512a3a06", "fixture")]),
+            ),
+            ("session.view", VIEW),
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", PROCESS),
+            ("title", r#"{"title":""}"#),
+        ]);
+        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
+        fake.write("status", &status_json("working"));
+        assert!(
+            fake.rex
+                .get_all_live_pane_info()
+                .unwrap()
+                .contains_key(block)
+        );
+        let reads = fake.calls("program_status").len();
+        assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+        assert_eq!(
+            fake.calls("program_status").len(),
+            reads,
+            "the reconcile after a scan asked Rex again"
+        );
+    }
+
     #[test]
     fn a_look_at_one_pane_keeps_nothing_that_no_stream_drops() {
         // The sidebar daemon's backend reads this way until its event stream
