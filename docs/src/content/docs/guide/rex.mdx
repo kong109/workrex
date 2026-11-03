@@ -31,7 +31,7 @@ workmux needs a Rex server that speaks API revision 8 or 9. On first use it read
 - **Respawning.** Rex cannot restart the program in a block. When workmux needs to restart a pane, it opens a new block in the same place and closes the old one, so the pane ID changes.
 - **Capture.** `workmux capture` reads the block's full scrollback and keeps the last lines.
 - **The app.** Rex.app keeps its own shown tab, apart from the window the Rex session makes active. Rex does not report which session an app shows now, so `add` and `open` never move the app: the new window becomes the session's active window, and the app keeps showing what it showed. You open the new tab in the app yourself. tmux instead moves every client that shows the caller's session.
-- **Jumps.** The dashboard, the sidebar, `last-agent` and `last-done` do move the app. They ask the Rex.app client that owns your pane, which is the app that last showed it, to show the target.
+- **Jumps.** The dashboard, `last-agent` and `last-done` do move the app. They ask the Rex.app client that owns your pane, which is the app that last showed it, to show the target.
 - **Shells.** workmux starts each block's shell directly as a login shell (`$SHELL -l`), as tmux does. It does not go through `/usr/bin/login`, so the environment of the Rex server reaches the pane unchanged.
 
 ## Session mode
@@ -44,7 +44,7 @@ Under Rex, workmux uses [session mode](/guide/session-mode/) unless you set `mod
 
 ### Remote Control
 
-A jump needs Remote Control, which you turn on in Rex Settings. Without it, the app refuses the jump and the target is not focused. The dashboard stays open and shows the fix in its status line; the sidebar stays open and prints nothing. `last-agent` and `last-done` print `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so workmux can switch the app.` once. `add` and closing a session do not need Remote Control.
+A jump needs Remote Control, which you turn on in Rex Settings. Without it, the app refuses the jump and the target is not focused. The dashboard stays open and shows the fix in its status line. `last-agent` and `last-done` print `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so workmux can switch the app.` once. `add` and closing a session do not need Remote Control.
 
 ## Requirements
 
