@@ -503,6 +503,7 @@ mod tests {
             ex_id: "x1".into(),
             panes: vec![0, 1],
             node_bin: "workmux-1".into(),
+            rex: None,
         });
         record
     }
@@ -520,6 +521,7 @@ mod tests {
                 sibling: None,
                 operation: None,
                 ended: None,
+                rex: None,
             }],
         }
     }

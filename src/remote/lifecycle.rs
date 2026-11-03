@@ -343,6 +343,13 @@ pub fn create(
     })?;
 
     open_window(context, &record, request.options.focus_window)?;
+    if let Some(rex) = record.execution.as_ref().and_then(|ex| ex.rex.as_ref()) {
+        println!(
+            "Agent terminal hosted on Rex at {}; Rex.app lists it there (`{BIN} open {}` \
+             shows it)",
+            rex.host_label, record.handle
+        );
+    }
     Ok(record)
 }
 
@@ -453,6 +460,7 @@ fn start_execution(
                 ex_id: cache::new_id('x'),
                 use_prompt,
                 run_commands,
+                terminal: super::terminal(&Config::load(None)?, &node.spec.name),
             },
             false,
         )
@@ -461,6 +469,7 @@ fn start_execution(
         ex_id: started.ex_id.clone(),
         panes: started.panes.clone(),
         node_bin: node.pin.name.clone(),
+        rex: started.rex.clone(),
     });
     record.observed();
     record.save()?;
@@ -742,6 +751,10 @@ pub(super) fn open_window_after(
             record.handle
         )
     })?;
+    // Rex.app shows the node's Rex server directly; there is nothing to relay.
+    if execution.rex.is_some() {
+        return Ok(());
+    }
     let layout: Vec<&LayoutPane> = record
         .layout
         .iter()
@@ -839,11 +852,20 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
     };
     let target = window_target(mux, &record)?;
     let window = target.is_some();
-    let stale = super::observe::load_connected(&record.remote)
-        .and_then(|observation| Some(observation.of(&record)?.ended.is_some()))
-        .unwrap_or(window);
+    let ended = super::observe::load_connected(&record.remote)
+        .and_then(|observation| Some(observation.of(&record)?.ended.is_some()));
+    let stale = ended.unwrap_or(window);
     if window && !stale {
         return switch(&record);
+    }
+    let on_rex = |record: &WorkspaceRecord| {
+        record
+            .execution
+            .as_ref()
+            .is_some_and(|execution| execution.rex.is_some())
+    };
+    if on_rex(&record) && ended == Some(false) {
+        return show_on_rex(&record, focus);
     }
     if record.state != WorkspaceState::Ready {
         bail!(
@@ -895,6 +917,12 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
         record.window_pending = false;
         record.save()?;
     }
+    if on_rex(&record) && started.reused {
+        return show_on_rex(&record, focus);
+    }
+    if on_rex(&record) && focus {
+        warn_unshown(&record);
+    }
     if started.reused {
         println!(
             "✓ Attached to the running agent of '{}' on '{}'",
@@ -919,6 +947,23 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
         );
     }
     Ok(())
+}
+
+/// Select a Rex-hosted workspace's session on Rex.app.
+fn show_on_rex(record: &WorkspaceRecord, focus: bool) -> Result<()> {
+    if focus {
+        let config = Config::load(None)?;
+        super::rex_jump::select(&config, record)?;
+    }
+    println!("✓ Switched to remote workspace '{}' on Rex", record.handle);
+    Ok(())
+}
+
+fn warn_unshown(record: &WorkspaceRecord) {
+    let shown = Config::load(None).and_then(|config| super::rex_jump::select(&config, record));
+    if let Err(err) = shown {
+        eprintln!("warning: {err:#}");
+    }
 }
 
 /// `workmux close` of a remote workspace: the window goes, the remote

@@ -16,7 +16,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::execution::{sessions, tmux, tmux_socket};
+use super::host::{RexHost, hosted_marker};
 use super::{NodeRoot, Workspace, git};
+use crate::multiplexer::rex::HostedSession;
 use crate::remote::protocol::{RemoveRequest, session_name};
 
 /// Files younger than this may belong to a call in progress.
@@ -104,6 +106,7 @@ fn survey(
 ) -> Result<(Vec<Finding>, Vec<String>, Vec<String>)> {
     let socket = tmux_socket(root)?;
     let sessions = sessions(&socket);
+    let rex = rex_sessions(root);
     let containers = containers(root)?;
     let supervisors = supervisors(root);
     let workspaces = root.workspaces();
@@ -121,6 +124,12 @@ fn survey(
                 || sessions.iter().any(|session| {
                     super::shell::shell_session_execution(session) == Some(execution.ex_id.as_str())
                 })
+                || execution.rex.is_some()
+                    && rex.as_ref().is_none_or(|rex| {
+                        rex.iter().any(|session| {
+                            session.label.starts_with(&format!("{}-", execution.ex_id))
+                        })
+                    })
         })
     };
     let known: HashSet<&str> = request.known.iter().map(String::as_str).collect();
@@ -202,14 +211,20 @@ fn survey(
         .filter_map(|ws| Some(ws.execution.as_ref()?.ex_id.as_str()))
         .collect();
     for session in &sessions {
-        let orphan = match super::shell::shell_session_execution(session) {
-            Some(ex_id) => !executions.contains(ex_id),
-            None => is_execution_session(session) && !current.contains(session),
-        };
-        if orphan {
+        if is_orphan(session, &executions, &current) {
             findings.push(Finding {
                 id: format!("session:{session}"),
                 detail: format!("tmux session {session} of no execution"),
+                unsaved: false,
+            });
+        }
+    }
+
+    for session in rex.iter().flatten() {
+        if is_orphan(&session.label, &executions, &current) {
+            findings.push(Finding {
+                id: format!("rex-session:{}", session.id),
+                detail: format!("Rex session {} of no execution", session.label),
                 unsaved: false,
             });
         }
@@ -343,6 +358,9 @@ fn remove(root: &NodeRoot, id: &str) -> Result<()> {
             }
             super::execution::AgentMarker::sweep(root, &socket);
         }
+        "rex-session" => RexHost::open(root, false)?
+            .mux
+            .destroy_hosted_session(name)?,
         "container" => {
             let output = std::process::Command::new("docker")
                 .args(["rm", "-f", name])
@@ -387,6 +405,33 @@ fn remove(root: &NodeRoot, id: &str) -> Result<()> {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
+}
+
+/// This root's sessions on the node's Rex server, labels untagged; none
+/// when the root never hosted on Rex, and `None` when the server does not
+/// answer, so nothing is taken for an orphan or for dead.
+fn rex_sessions(root: &NodeRoot) -> Option<Vec<HostedSession>> {
+    if !hosted_marker(root).exists() {
+        return Some(Vec::new());
+    }
+    let sessions = RexHost::open(root, false).and_then(|host| host.sessions());
+    match sessions {
+        Ok(sessions) => Some(sessions),
+        Err(err) => {
+            tracing::warn!("node Rex server not surveyed: {err:#}");
+            None
+        }
+    }
+}
+
+/// Whether session `name` belongs to no current execution: a shell of
+/// none of `executions`, or an execution pane not in `current`. Names in
+/// neither form are not workmux's and never orphans.
+fn is_orphan(name: &str, executions: &HashSet<&str>, current: &HashSet<String>) -> bool {
+    match super::shell::shell_session_execution(name) {
+        Some(ex_id) => !executions.contains(ex_id),
+        None => is_execution_session(name) && !current.contains(name),
+    }
 }
 
 /// `<ex-id>-<pane>`, as [`session_name`] names them.
@@ -692,6 +737,37 @@ fn read_dir(dir: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_sessions_of_no_execution_or_pane_are_orphans() {
+        let executions = HashSet::from(["x111111111111"]);
+        let current = HashSet::from(["x111111111111-0".to_string()]);
+        let orphans: Vec<&str> = [
+            "x111111111111-0",
+            "x999999999999-0",
+            "x111111111111-7",
+            "x111111111111-shell1",
+            "x999999999999-shell2",
+            "notes",
+            "hidden-quarry",
+        ]
+        .into_iter()
+        .filter(|name| is_orphan(name, &executions, &current))
+        .collect();
+        assert_eq!(
+            orphans,
+            ["x999999999999-0", "x111111111111-7", "x999999999999-shell2"]
+        );
+    }
+
+    #[test]
+    fn a_root_that_never_hosted_on_rex_does_not_ask_rex() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = NodeRoot {
+            path: dir.path().to_path_buf(),
+        };
+        assert_eq!(rex_sessions(&root), Some(Vec::new()));
+    }
 
     #[test]
     fn execution_sessions_are_recognized() {

@@ -15,11 +15,13 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::execution::{tmux, tmux_socket};
+use super::host::RexHost;
 use super::{ExecutionState, NodeRoot, Origin, Workspace, refuse, validate_id};
 use crate::config::RemoteIsolation;
 use crate::git::{GitStatus, GitStatusCache};
 use crate::multiplexer::{
-    AgentPane, AgentStatus, EndReason, LivePaneInfo, Multiplexer, tmux::TmuxBackend,
+    AgentPane, AgentStatus, EndReason, LivePaneInfo, Multiplexer, rex::RexBackend,
+    tmux::TmuxBackend,
 };
 use crate::remote::protocol::{WorkspaceIdentity, code, session_name};
 use crate::state::{AgentStateCache, StateStore};
@@ -85,6 +87,8 @@ pub struct ObservedWorkspace {
     pub ended: Option<EndReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<super::operation::Request>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rex: Option<crate::remote::protocol::RexPlacement>,
 }
 
 /// What the laptop needs to adopt a workspace a remote agent spawned.
@@ -199,7 +203,10 @@ struct Observer {
     root: NodeRoot,
     socket: std::path::PathBuf,
     mux: TmuxBackend,
+    /// The node's Rex server, for executions hosted there.
+    rex: RexBackend,
     cache: AgentStateCache,
+    rex_cache: AgentStateCache,
     store: StateStore,
     host: Option<String>,
     git_cache: GitStatusCache,
@@ -216,7 +223,9 @@ impl Observer {
             root: root.clone(),
             mux: TmuxBackend::for_socket(&socket.to_string_lossy()),
             socket,
+            rex: RexBackend::new(),
             cache: AgentStateCache::default(),
+            rex_cache: AgentStateCache::default(),
             store: StateStore::new()?,
             host: hostname(),
             git_cache: GitStatusCache::default(),
@@ -226,16 +235,35 @@ impl Observer {
     }
 
     /// Live panes of the node tmux server; none when no server runs (tmux
-    /// exits with its last session).
+    /// exits with its last session). Then the live blocks of Rex-hosted
+    /// executions, keyed `block:<id>`; none while the Rex server is down.
     fn live_panes(&self) -> Result<HashMap<String, LivePaneInfo>> {
-        match self.mux.get_all_live_pane_info() {
-            Ok(panes) => Ok(panes),
+        let mut live = match self.mux.get_all_live_pane_info() {
+            Ok(panes) => panes,
             Err(err) if !server_running(&self.socket)? => {
                 tracing::debug!("node tmux server not running: {err:#}");
-                Ok(HashMap::new())
+                HashMap::new()
             }
-            Err(err) => Err(err),
+            Err(err) => return Err(err),
+        };
+        let hosted: Vec<_> = self
+            .root
+            .workspaces()
+            .into_iter()
+            .filter_map(|ws| ws.execution)
+            .filter(|execution| execution.rex.is_some())
+            .collect();
+        if !hosted.is_empty() {
+            match RexHost::open(&self.root, false) {
+                Ok(host) => {
+                    for execution in &hosted {
+                        live.extend(host.live_panes(execution));
+                    }
+                }
+                Err(err) => tracing::debug!("node Rex server unavailable: {err:#}"),
+            }
         }
+        Ok(live)
     }
 
     /// Agent state for `workspaces`, reconciled against the current live panes.
@@ -245,19 +273,30 @@ impl Observer {
         live: &HashMap<String, LivePaneInfo>,
         workspaces: &[Workspace],
     ) -> Result<Snapshot> {
-        let agents = if live.is_empty() {
-            Vec::new()
-        } else {
-            let boot_id = self.mux.server_boot_id().unwrap_or(None);
-            self.store
-                .load_reconciled_agents_from_snapshot_cached(
-                    &mut self.cache,
-                    &self.mux,
-                    live,
-                    boot_id.as_deref(),
-                )?
-                .0
-        };
+        let (rex_live, tmux_live): (HashMap<_, _>, HashMap<_, _>) = live
+            .iter()
+            .map(|(id, pane)| (id.clone(), pane.clone()))
+            .partition(|(id, _)| id.starts_with("block:"));
+        let mut agents = Vec::new();
+        for (mux, cache, live) in [
+            (&self.mux as &dyn Multiplexer, &mut self.cache, &tmux_live),
+            (&self.rex, &mut self.rex_cache, &rex_live),
+        ] {
+            if live.is_empty() {
+                continue;
+            }
+            let boot_id = mux.server_boot_id().unwrap_or(None);
+            agents.extend(
+                self.store
+                    .load_reconciled_agents_from_snapshot_cached(
+                        cache,
+                        mux,
+                        live,
+                        boot_id.as_deref(),
+                    )?
+                    .0,
+            );
+        }
         Ok(build_snapshot(
             now(),
             workspaces,
@@ -413,6 +452,7 @@ fn build_snapshot(
                 sibling: sibling(ws),
                 operation: ws.operation.clone().filter(|r| r.pending(now)),
                 ended,
+                rex: execution.rex.clone(),
             })
         })
         .collect();
@@ -507,7 +547,7 @@ pub fn stream(root: &NodeRoot) -> Result<()> {
 
 /// The pane a request targets.
 struct Target {
-    mux: TmuxBackend,
+    mux: Box<dyn Multiplexer>,
     /// Index of the configured pane.
     index: usize,
     /// Its tmux pane id.
@@ -574,8 +614,13 @@ fn target(root: &NodeRoot, ws_id: &str, pane: Option<usize>) -> Result<Target> {
         None => None,
     };
     let (index, pane_id, agent, started) = target.ok_or_else(not_running)?;
+    let mux: Box<dyn Multiplexer> = if pane_id.starts_with("block:") {
+        Box::new(observer.rex)
+    } else {
+        Box::new(observer.mux)
+    };
     Ok(Target {
-        mux: observer.mux,
+        mux,
         index,
         pane_id,
         agent,
@@ -759,6 +804,7 @@ mod tests {
             continues: false,
             agent_kind: None,
             closed_shells: Default::default(),
+            rex: None,
         });
         ws
     }

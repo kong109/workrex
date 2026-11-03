@@ -406,6 +406,7 @@ mod tests {
                 sibling: None,
                 operation: None,
                 ended: None,
+                rex: None,
             }],
         })
     }

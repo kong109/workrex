@@ -14,13 +14,14 @@ use std::process::Command;
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
 
+use super::host::{NewSession, SessionHost};
 use super::{
     Execution, ExecutionState, NODE_ROOT_ENV, NodeRoot, PaneProgress, refuse, secrets,
     stop_containers_mounting, validate_id,
 };
 use crate::config::{Config, PaneConfig, RemoteIsolation};
+use crate::multiplexer::PaneSetupOptions;
 use crate::multiplexer::types::ResumeMode;
-use crate::multiplexer::{Multiplexer, PaneSetupOptions, tmux::TmuxBackend};
 use crate::remote::protocol::{Secrets, StartRequest, StartResponse, code, session_name};
 use crate::shell::shell_quote;
 
@@ -258,15 +259,18 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
             format!("workspace {} is not provisioned yet", request.ws_id),
         ));
     }
-    let socket = tmux_socket(root)?;
-
     let boot_id = super::boot_id();
     let resume = match &workspace.execution {
         Some(execution) if execution.state == ExecutionState::Running => {
-            let live = execution
-                .panes
-                .iter()
-                .any(|pane| session_alive(&socket, &session_name(&execution.ex_id, pane.index)));
+            // A live execution keeps the host it started on.
+            let live = match SessionHost::for_execution(root, execution) {
+                Ok(host) => execution
+                    .panes
+                    .iter()
+                    .any(|pane| host.pane_alive(execution, pane.index)),
+                Err(_) if execution.rex.is_some() => false,
+                Err(err) => return Err(err),
+            };
             if live {
                 return Ok(StartResponse {
                     ex_id: execution.ex_id.clone(),
@@ -274,6 +278,7 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
                     reused: true,
                     after_reboot: false,
                     continued: false,
+                    rex: execution.rex.clone(),
                 });
             }
             false
@@ -281,12 +286,22 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
         Some(execution) => execution.ex_id == request.ex_id,
         None => false,
     };
+    let host = match &workspace.execution {
+        Some(execution) if resume => SessionHost::for_execution(root, execution)?,
+        _ => SessionHost::open_for_start(root, request.terminal)?,
+    };
     let pin = std::env::current_exe().context("Failed to locate the node binary")?;
     if !resume {
         let mut continues = false;
         if let Some(previous) = workspace.execution.take() {
-            continues = previous.ended_by_reboot(boot_id.as_deref());
-            kill_execution(root, &socket, &previous.ex_id);
+            // A replaced Rex server took the sessions with it, as a reboot does.
+            let rex_replaced = previous
+                .rex
+                .as_ref()
+                .zip(host.placement())
+                .is_some_and(|(then, now)| then.instance_id != now.instance_id);
+            continues = previous.ended_by_reboot(boot_id.as_deref()) || rex_replaced;
+            super::host::stop_execution(root, &previous)?;
         }
         if workspace.isolation == RemoteIsolation::Container {
             stop_containers_mounting(&workspace.worktree_path)?;
@@ -302,6 +317,7 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
             continues,
             agent_kind: None,
             closed_shells: Default::default(),
+            rex: host.placement(),
         });
         root.save(&workspace)?;
     }
@@ -342,7 +358,6 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
         .filter(|_| request.use_prompt && !workspace.prompt_file_only);
     let working_dir = workspace.working_dir().to_path_buf();
     let worktree = workspace.worktree_path.clone();
-    let backend = TmuxBackend::for_socket(&socket.to_string_lossy());
     // Containers get the workspace's secrets from their supervisor; panes
     // without one get them in their session's environment.
     let session_secrets = match workspace.isolation {
@@ -357,25 +372,33 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
             .panes
             .iter()
             .any(|recorded| recorded.index == *index);
-        if dispatched && session_alive(&socket, &name) {
+        if dispatched && host.pane_alive(execution, *index) {
             continue;
         }
-        let _ = tmux(&socket)
-            .args(["kill-session", "-t", &format!("={name}")])
-            .output();
+        host.kill_pane(execution, *index);
         let spawn_env = (workspace.isolation == RemoteIsolation::None)
             .then_some((root.path.as_path(), request.ws_id.as_str()));
-        let pane_id = new_session(
-            &socket,
-            &conf,
-            &name,
-            &working_dir,
-            &config_path,
-            spawn_env,
-            None,
+        let created = host.create(
+            root,
+            &NewSession {
+                name: &name,
+                window_label: &workspace.identity.handle,
+                conf: &conf,
+                cwd: &working_dir,
+                config_path: &config_path,
+                spawn_env,
+                secrets: &session_secrets,
+            },
         )?;
-        if !session_secrets.0.is_empty() {
-            set_session_env(root, &socket, &name, &session_secrets)?;
+        if let (Some(placement), Some(session)) = (
+            workspace
+                .execution
+                .as_mut()
+                .and_then(|execution| execution.rex.as_mut()),
+            &created.rex_session,
+        ) {
+            placement.sessions.insert(*index, session.clone());
+            root.save(&workspace)?;
         }
         let single = PaneConfig {
             split: None,
@@ -384,9 +407,9 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
             percentage: None,
             ..pane.clone()
         };
-        backend
+        host.mux()
             .setup_panes(
-                &pane_id,
+                &created.pane_id,
                 &[single],
                 &working_dir,
                 PaneSetupOptions {
@@ -402,6 +425,7 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
                 workspace.agent.as_deref(),
             )
             .with_context(|| format!("Failed to start pane {index}"))?;
+        drop(created);
         let execution = workspace.execution.as_mut().expect("execution recorded");
         execution.panes.retain(|recorded| recorded.index != *index);
         execution.panes.push(PaneProgress { index: *index });
@@ -420,6 +444,7 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
         reused: false,
         after_reboot: execution.continues,
         continued: execution.continues && request.run_commands && continue_flag,
+        rex: execution.rex.clone(),
     };
     root.save(&workspace)?;
     Ok(response)

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::RemoteIsolation;
+use crate::config::{RemoteIsolation, RemoteTerminal};
 use crate::remote::git::{Changes, Snapshot};
 
 /// Node wire protocol version.
@@ -37,6 +37,7 @@ pub const CAPABILITIES: &[&str] = &[
     DIFF,
     GC,
     SHELL,
+    TERMINAL_REX,
 ];
 
 pub const PROVISION_WORKSPACE: &str = "provision-workspace";
@@ -60,6 +61,8 @@ pub const DIFF: &str = "diff";
 pub const GC: &str = "gc";
 /// Wire types in `remote::node::shell`.
 pub const SHELL: &str = "shell";
+/// `start-execution` honors [`StartRequest::terminal`] `rex`.
+pub const TERMINAL_REX: &str = "terminal-rex";
 
 /// Error codes a node verb reports in its [`ErrorEnvelope`].
 pub mod code {
@@ -80,6 +83,8 @@ pub mod code {
     pub const DIVERGED: &str = "diverged";
     /// A source omitted after prepare disappeared before provisioning.
     pub const MISSING_SEED: &str = "missing_seed";
+    /// The node's Rex server cannot host the execution's terminals.
+    pub const REX_UNAVAILABLE: &str = "rex_unavailable";
     /// Anything else.
     pub const FAILED: &str = "failed";
 }
@@ -202,6 +207,27 @@ pub struct StartRequest {
     /// Hand the workspace prompt to the agent (only on creation).
     pub use_prompt: bool,
     pub run_commands: bool,
+    /// Where a new execution's terminals live. A live execution keeps its
+    /// own host whatever this says.
+    #[serde(default, skip_serializing_if = "is_tmux")]
+    pub terminal: RemoteTerminal,
+}
+
+fn is_tmux(terminal: &RemoteTerminal) -> bool {
+    *terminal == RemoteTerminal::Tmux
+}
+
+/// Where a Rex-hosted execution's sessions are, on the node's own Rex
+/// server. Session ids are meaningful only on that server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RexPlacement {
+    /// The server's tailnet name, which Rex.app knows it by.
+    pub host_label: String,
+    /// The server's `instance_id`; another one means the sessions are gone.
+    pub instance_id: String,
+    /// Session of each configured pane.
+    #[serde(default)]
+    pub sessions: BTreeMap<usize, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,6 +243,9 @@ pub struct StartResponse {
     /// Whether the agent was started to continue its last conversation.
     #[serde(default)]
     pub continued: bool,
+    /// Set when the execution's terminals are on the node's Rex server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rex: Option<RexPlacement>,
 }
 
 /// `remove-workspace`: stops the execution and deletes the worktree, branch,
@@ -490,6 +519,41 @@ pub fn mismatch_message(hello: &Hello, bin_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requests_without_a_terminal_are_tmux_and_old_nodes_see_the_same_bytes() {
+        let old = r#"{"ws_id":"w1","ex_id":"x1","use_prompt":true,"run_commands":true}"#;
+        let request: StartRequest = serde_json::from_str(old).unwrap();
+        assert_eq!(request.terminal, RemoteTerminal::Tmux);
+        assert_eq!(serde_json::to_string(&request).unwrap(), old);
+        let rex = StartRequest {
+            terminal: RemoteTerminal::Rex,
+            ..request
+        };
+        assert!(
+            serde_json::to_string(&rex)
+                .unwrap()
+                .contains(r#""terminal":"rex""#)
+        );
+    }
+
+    #[test]
+    fn rex_placements_round_trip_and_tmux_responses_omit_them() {
+        let old = r#"{"ex_id":"x1","panes":[0],"reused":false}"#;
+        let response: StartResponse = serde_json::from_str(old).unwrap();
+        assert_eq!(response.rex, None);
+        assert!(!serde_json::to_string(&response).unwrap().contains("rex"));
+        let placement = RexPlacement {
+            host_label: "rex.example.ts.net".into(),
+            instance_id: "i".into(),
+            sessions: BTreeMap::from([(0, "session:a".into()), (2, "session:b".into())]),
+        };
+        let text = serde_json::to_string(&placement).unwrap();
+        assert_eq!(
+            serde_json::from_str::<RexPlacement>(&text).unwrap(),
+            placement
+        );
+    }
 
     #[test]
     fn hello_round_trips() {

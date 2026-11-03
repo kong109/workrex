@@ -45,7 +45,10 @@ rex_id!(WindowId);
 rex_id!(BlockId);
 rex_id!(ClientId);
 
+mod hosting;
 mod session;
+
+pub use hosting::HostedSession;
 
 impl BlockId {
     fn parse(pane_id: &str) -> Result<Self> {
@@ -618,6 +621,8 @@ pub struct RexBackend {
     block_sessions: Mutex<HashMap<BlockId, SessionId>>,
     /// Where `session` keeps the IDs of the sessions workmux created.
     registry: Option<PathBuf>,
+    /// Env file the next respawned block sources (see `hosting`).
+    respawn_env: Mutex<Option<PathBuf>>,
 }
 
 impl RexBackend {
@@ -648,6 +653,7 @@ impl RexBackend {
             registry: crate::xdg::state_dir()
                 .ok()
                 .map(|dir| dir.join("rex-sessions.json")),
+            respawn_env: Mutex::new(None),
         }
     }
 
@@ -1719,7 +1725,7 @@ impl Multiplexer for RexBackend {
                     "anchor_id": old.as_str(),
                     "direction": "horizontal",
                     "side": "after",
-                    "layout": self.block_layout(cwd, Some(cmd))?,
+                    "layout": self.respawn_layout(cwd, cmd)?,
                 }),
             )
             .context("Failed to start the replacement Rex block")?;

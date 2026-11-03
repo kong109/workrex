@@ -13,6 +13,7 @@ use super::RemoteSpec;
 use super::install::{self, NodeStatus, Pin};
 use super::protocol::{self, ErrorEnvelope, NodeError, first_line};
 use super::transport::{Input, Output, Transport};
+use crate::config::RemoteTerminal;
 use crate::shell::shell_quote;
 
 /// Bound for verbs that never run user hooks.
@@ -39,12 +40,15 @@ impl Node {
         let pin = Pin::for_spec(spec)?;
         match install::node_status(&transport, spec, &pin)? {
             NodeStatus::Ready(hello) => {
+                let config = crate::config::Config::load(None).unwrap_or_default();
+                let rex = super::terminal(&config, &spec.name) == RemoteTerminal::Rex;
                 let missing: Vec<&str> = [
                     protocol::PROVISION_WORKSPACE,
                     protocol::START_EXECUTION,
                     protocol::REMOVE_WORKSPACE,
                 ]
                 .into_iter()
+                .chain(rex.then_some(protocol::TERMINAL_REX))
                 .filter(|verb| !hello.capabilities.iter().any(|c| c == verb))
                 .collect();
                 if !missing.is_empty() {
