@@ -325,7 +325,6 @@ class MuxEnvironment(ABC):
         raise NotImplementedError(f"{self.backend_name} has no sessions")
 
     def session_pane_path(self, session: str) -> str:
-        """Return the working directory of a session's active pane."""
         raise NotImplementedError(f"{self.backend_name} has no sessions")
 
     @abstractmethod
@@ -756,6 +755,10 @@ def assert_window_exists(env: MuxEnvironment, window_name: str) -> None:
     assert window_name in existing_windows, (
         f"Window {window_name!r} not found. Existing: {existing_windows!r}"
     )
+
+
+def switch_fails_without_client(env: "MuxEnvironment") -> bool:
+    return env.backend_name == "tmux"
 
 
 def assert_session_exists(env: "MuxEnvironment", session_name: str) -> None:
@@ -1472,8 +1475,6 @@ def write_global_workmux_config(
     """Creates the global ~/.config/workmux/config.yaml file within the isolated HOME."""
     config: Dict[str, Any] = {}
     if env.backend_name == "rex":
-        # Rex defaults to session mode; the shared suite tests window mode
-        # unless a test asks for sessions, as it does under tmux.
         config["mode"] = "window"
     if panes is not None:
         config["panes"] = panes

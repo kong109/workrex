@@ -658,7 +658,7 @@ impl RexBackend {
 
     fn sessions(&self) -> Result<Vec<SessionSummary>> {
         let mut sessions = self.raw_sessions()?;
-        self.name_sessions(&mut sessions);
+        self.apply_managed_names(&mut sessions);
         Ok(sessions)
     }
 
@@ -1080,7 +1080,7 @@ impl Multiplexer for RexBackend {
         id: &str,
         preferred_session: Option<&str>,
     ) -> Result<String> {
-        self.shell_close_session_cmd(&SessionId(id.to_string()), preferred_session)
+        self.forget_and_shell_close_cmd(&SessionId(id.to_string()), preferred_session)
     }
 
     fn current_pane_id(&self) -> Option<String> {
@@ -1381,7 +1381,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn shell_kill_session_cmd(&self, full_name: &str) -> Result<String> {
-        self.shell_close_session_cmd(&self.first_session_labeled(full_name)?, None)
+        self.forget_and_shell_close_cmd(&self.first_session_labeled(full_name)?, None)
     }
 
     fn select_window(&self, prefix: &str, name: &str) -> Result<()> {
@@ -2090,7 +2090,7 @@ mod tests {
             Some(&WindowId("window:2".into())),
         )
         .unwrap();
-        let calls = std::fs::read_to_string(dir.path().join("rex.calls")).unwrap_or_default();
+        let calls = std::fs::read_to_string(dir.path().join("rex.calls")).unwrap();
         assert_eq!(calls, "performed\n");
     }
 }

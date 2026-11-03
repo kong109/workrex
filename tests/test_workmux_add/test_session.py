@@ -3,6 +3,7 @@
 import pytest
 
 from ..conftest import (
+    switch_fails_without_client,
     assert_session_exists,
     assert_session_not_exists,
     assert_window_not_exists,
@@ -18,7 +19,6 @@ from .conftest import add_branch_and_get_worktree
 def test_add_without_mode_creates_session_under_rex(
     mux_server, workmux_exe_path, repo_path
 ):
-    """Under Rex, an unset mode defaults to session mode."""
     env = mux_server
     if env.backend_name != "rex":
         pytest.skip("only Rex defaults to session mode")
@@ -369,8 +369,7 @@ class TestSessionOpen:
             workmux_exe_path,
             repo_path,
             f"open {branch_name}",
-            # tmux fails to switch with no attached client; Rex skips the switch with no app.
-            expect_fail=env.backend_name == "tmux",
+            expect_fail=switch_fails_without_client(env),
         )
 
         # Even if switch-client fails, the session should be recreated
@@ -412,8 +411,7 @@ class TestOpenSessionFlag:
             workmux_exe_path,
             repo_path,
             f"open {branch_name} --session",
-            # tmux fails to switch with no attached client; Rex skips the switch with no app.
-            expect_fail=env.backend_name == "tmux",
+            expect_fail=switch_fails_without_client(env),
         )
 
         # The session should be created
@@ -449,8 +447,7 @@ class TestOpenSessionFlag:
             workmux_exe_path,
             repo_path,
             f"open {branch_name} --session",
-            # tmux fails to switch with no attached client; Rex skips the switch with no app.
-            expect_fail=env.backend_name == "tmux",
+            expect_fail=switch_fails_without_client(env),
         )
 
         # Close again
@@ -468,8 +465,7 @@ class TestOpenSessionFlag:
             workmux_exe_path,
             repo_path,
             f"open {branch_name}",
-            # tmux fails to switch with no attached client; Rex skips the switch with no app.
-            expect_fail=env.backend_name == "tmux",
+            expect_fail=switch_fails_without_client(env),
         )
 
         existing_sessions = env.list_sessions()
@@ -505,8 +501,7 @@ class TestOpenSessionFlag:
             workmux_exe_path,
             repo_path,
             f"open {branch_name} --session",
-            # tmux fails to switch with no attached client; Rex skips the switch with no app.
-            expect_fail=env.backend_name == "tmux",
+            expect_fail=switch_fails_without_client(env),
         )
 
         # Old window should be gone

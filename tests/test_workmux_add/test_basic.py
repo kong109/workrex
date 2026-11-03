@@ -5,6 +5,7 @@ from typing import cast
 import pytest
 
 from ..conftest import (
+    switch_fails_without_client,
     MuxEnvironment,
     TmuxEnvironment,
     assert_session_exists,
@@ -731,8 +732,7 @@ class TestExistingBranch:
             workmux_exe_path,
             mux_repo_path,
             f"add {branch_name} -o",
-            # tmux fails to switch with no attached client; Rex skips the switch with no app.
-            expect_fail=env.backend_name == "tmux",
+            expect_fail=switch_fails_without_client(env),
         )
 
         assert_session_exists(env, session_name)
@@ -765,8 +765,7 @@ class TestExistingBranch:
             workmux_exe_path,
             mux_repo_path,
             f"add {branch_name} -o --mode session",
-            # tmux fails to switch with no attached client; Rex skips the switch with no app.
-            expect_fail=env.backend_name == "tmux",
+            expect_fail=switch_fails_without_client(env),
         )
 
         assert_session_exists(env, session_name)

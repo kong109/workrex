@@ -3591,14 +3591,10 @@ impl Config {
         self.mode_for(crate::multiplexer::detect_backend())
     }
 
-    /// Remote agents open in a window, so an unset mode stays window mode
-    /// even inside Rex.
     pub fn remote_mode(&self) -> MuxMode {
-        self.mode_for(crate::multiplexer::BackendType::Tmux)
+        self.mode.unwrap_or(MuxMode::Window)
     }
 
-    /// Rex defaults to session mode because Rex.app switches between
-    /// sessions; every other backend defaults to window mode.
     pub fn mode_for(&self, backend: crate::multiplexer::BackendType) -> MuxMode {
         self.mode.unwrap_or(match backend {
             crate::multiplexer::BackendType::Rex => MuxMode::Session,

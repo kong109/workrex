@@ -1,6 +1,3 @@
-//! Session mode under Rex: which Rex.app client to switch, where to send it
-//! before a session closes, and which Rex session belongs to a workmux name.
-//!
 //! Rex session labels are not stable. Rex's Claude Code hook tells the agent
 //! to rename its session on the first request, so a managed session is
 //! tracked by the ID it was created with, in a small registry under the
@@ -13,17 +10,15 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
-use std::os::fd::AsRawFd;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::super::Multiplexer;
 use super::super::types::CreateSessionParams;
 use super::super::util;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{ClientInfo, RexBackend, SessionId, SessionSummary, SessionView, WindowId};
 
-/// A client connected to the Rex server, such as Rex.app or the rex CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(transparent)]
 pub(super) struct ClientId(String);
@@ -68,10 +63,8 @@ fn app_clients(list: ClientList) -> Vec<ClientId> {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ServerRecords {
-    /// Managed session ID to its workmux name, such as `wm-feat-a`.
     #[serde(default)]
     names: HashMap<String, String>,
-    /// Managed session ID to the session the app showed when it was opened.
     #[serde(default)]
     origins: HashMap<String, String>,
 }
@@ -89,8 +82,8 @@ impl ServerRecords {
     }
 }
 
-/// Registry records per Rex server, keyed by its address.
-type Registry = HashMap<String, ServerRecords>;
+type ServerAddress = String;
+type Registry = HashMap<ServerAddress, ServerRecords>;
 
 fn registry_path() -> Result<PathBuf> {
     Ok(crate::xdg::state_dir()?.join("rex-sessions.json"))
@@ -104,18 +97,12 @@ fn read_registry() -> Registry {
         .unwrap_or_default()
 }
 
-/// Read, change and write the registry under an exclusive lock, so
-/// concurrent `add` and `rm` runs do not drop each other's records.
 fn update_registry(change: impl FnOnce(&mut Registry)) -> Result<()> {
     let path = registry_path()?;
     let dir = path.parent().context("Rex registry path has no parent")?;
     fs::create_dir_all(dir)?;
     let lock = File::create(path.with_extension("lock"))?;
-    // SAFETY: the descriptor stays open for the whole call, and the lock is
-    // released when `lock` is dropped.
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("Failed to lock the Rex registry");
-    }
+    lock.lock().context("Failed to lock the Rex registry")?;
     let mut registry = read_registry();
     change(&mut registry);
     let mut file = tempfile::NamedTempFile::new_in(dir)?;
@@ -155,9 +142,7 @@ fn select_args(app: &ClientId, session: &SessionId, window: Option<&WindowId>) -
     })
 }
 
-/// Whether `name` is the session's Rex ID or its workmux name. Deferred
-/// cleanup waits on the ID, and the label may have been renamed since.
-fn names_session(session: &SessionSummary, name: &str) -> bool {
+fn matches_id_or_label(session: &SessionSummary, name: &str) -> bool {
     session.session_id.as_str() == name || session.label == name
 }
 
@@ -166,7 +151,7 @@ impl RexBackend {
         Ok(self
             .sessions()?
             .iter()
-            .any(|session| names_session(session, name)))
+            .any(|session| matches_id_or_label(session, name)))
     }
 
     fn server_key(&self) -> String {
@@ -186,10 +171,7 @@ impl RexBackend {
         update_registry(|registry| change(registry.entry(key).or_default()))
     }
 
-    /// Report managed sessions under their workmux names, whatever their
-    /// current label, and list them before unmanaged sessions that happen to
-    /// carry the same label.
-    pub(super) fn name_sessions(&self, sessions: &mut [SessionSummary]) {
+    pub(super) fn apply_managed_names(&self, sessions: &mut [SessionSummary]) {
         let names = self.managed_names();
         if names.is_empty() {
             return;
@@ -325,8 +307,6 @@ impl RexBackend {
         Ok(())
     }
 
-    /// A shell command that asks the caller's app to show `session`, or `true`
-    /// when no app is connected.
     pub(super) fn shell_select_on_app_cmd(&self, session: &SessionId) -> Result<String> {
         Ok(
             match self.app_clients_for(Self::env_session().as_ref())?.first() {
@@ -336,8 +316,6 @@ impl RexBackend {
         )
     }
 
-    /// The session the app goes to before `closing` closes: the preferred
-    /// session by name, else the session `closing` was opened from.
     fn destination(
         &self,
         closing: &SessionId,
@@ -361,7 +339,6 @@ impl RexBackend {
         }))
     }
 
-    /// The app and session to select before `closing` closes, if it should move.
     fn relocation(
         &self,
         closing: &SessionId,
@@ -380,9 +357,6 @@ impl RexBackend {
             .map(|app| (app, destination)))
     }
 
-    /// Close the session named `full_name` (the caller's when several share
-    /// the name), first sending the app to the destination. Rex.app shows the first session in its sidebar when the
-    /// session it shows is destroyed, so the order matters.
     pub(super) fn close_session_to(&self, full_name: &str, preferred: Option<&str>) -> Result<()> {
         if let Some(session) = self.labeled_session(full_name)? {
             if let Some((app, destination)) = self.relocation(&session, preferred)?
@@ -400,8 +374,7 @@ impl RexBackend {
         self.update_records(|records| records.forget(session))
     }
 
-    /// The deferred form of `close_session_to` for one session.
-    pub(super) fn shell_close_session_cmd(
+    pub(super) fn forget_and_shell_close_cmd(
         &self,
         session: &SessionId,
         preferred: Option<&str>,
@@ -411,7 +384,6 @@ impl RexBackend {
             .map(|(app, destination)| {
                 self.shell_api_cmd("client.perform", select_args(&app, &destination, None))
             });
-        // The script outlives this process, so forget the session now.
         self.forget_session(session)?;
         Ok(select_then_destroy(select, self.shell_destroy_cmd(session)))
     }
@@ -422,7 +394,7 @@ impl RexBackend {
         preferred: Option<&str>,
     ) -> Result<String> {
         Ok(match self.labeled_session(full_name)? {
-            Some(session) => self.shell_close_session_cmd(&session, preferred)?,
+            Some(session) => self.forget_and_shell_close_cmd(&session, preferred)?,
             None => String::new(),
         })
     }
@@ -452,9 +424,9 @@ mod tests {
         let session: SessionSummary =
             serde_json::from_value(json!({"session_id": "session:1", "label": "write-date-file"}))
                 .unwrap();
-        assert!(names_session(&session, "session:1"));
-        assert!(names_session(&session, "write-date-file"));
-        assert!(!names_session(&session, "session:2"));
+        assert!(matches_id_or_label(&session, "session:1"));
+        assert!(matches_id_or_label(&session, "write-date-file"));
+        assert!(!matches_id_or_label(&session, "session:2"));
     }
 
     fn apps(fixture: &str) -> Vec<String> {
