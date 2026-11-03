@@ -578,6 +578,35 @@ def test_a_refused_jump_shows_the_fix_in_the_sidebar_until_a_key(rex):
     assert jump.stderr.count(REMOTE_CONTROL_FIX) == 1, jump.stderr
 
 
+def test_a_keyed_notice_clears_at_its_deadline_in_a_window_that_is_not_active(rex):
+    env = rex
+    refusing_app(env)
+    start_agent(env)
+    set_status(env, "waiting")
+    # Only the active window gets refreshes, so nothing but the notice
+    # deadline wakes this sidebar.
+    quiet = new_window(env, env.session_id)
+    cli(env, "on")
+    assert poll_until(lambda: all_have_sidebars(env, env.session_id), timeout=5)
+    assert view(env, env.session_id)["active_window_id"] != quiet
+    sidebar = placed_sidebar(windows(env, env.session_id)[quiet])["block_id"]
+    assert poll_until(lambda: "· main" in capture(env, sidebar), timeout=3), capture(
+        env, sidebar
+    )
+
+    def held() -> bool:
+        return REMOTE_CONTROL_FIX in wrapped_text(capture(env, sidebar))
+
+    env.mux_command(["send-key", "-b", sidebar, "enter"])
+    assert poll_until(held, timeout=5), capture(env, sidebar)
+    shown = time.monotonic()
+    time.sleep(1)
+    env.mux_command(["send-key", "-b", sidebar, "k"])
+    assert poll_until(lambda: not held(), timeout=shown + 6.5 - time.monotonic()), (
+        capture(env, sidebar)
+    )
+
+
 def test_an_agent_that_exits_leaves_the_running_sidebar(rex):
     env = rex
     go = env.tmp_path / "go"
