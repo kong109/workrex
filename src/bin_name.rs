@@ -515,6 +515,15 @@ mod tests {
     }
 
     #[test]
+    fn node_root_and_pins_are_not_upstreams() {
+        assert_eq!(crate::remote::DEFAULT_NODE_PATH, "~/.workrex-node");
+        assert_eq!(pin_name("dev-ba7816bf8f01"), "workrex-dev-ba7816bf8f01");
+        assert_eq!(pin_version("workrex-0.1.278"), Some("0.1.278"));
+        assert_eq!(pin_version("workmux-0.1.278"), None);
+        assert_eq!(pin_version("workmux-dev-ba7816bf8f01"), None);
+    }
+
+    #[test]
     fn update_cache_is_not_shared_with_upstream() {
         let path = crate::command::update::update_cache_path().unwrap();
         assert_eq!(path.file_name().unwrap(), "workrex-update_check.json");
