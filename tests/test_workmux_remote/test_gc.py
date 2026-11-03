@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from ..conftest import TmuxEnvironment, get_window_name, wait_for_pane_output
+from ..conftest import TmuxEnvironment
 from ..support.bin_name import BIN
-from .conftest import Node, commit_project, git, local_records, wm
+from .conftest import NODE_TERMINAL, Node, commit_project, git, local_records, wm
 
 
 ORPHAN_WS = "wdeadbeef0000"
@@ -36,9 +36,7 @@ def test_gc_lists_and_removes_orphans(
     for branch in ["healthy", "forgotten", "dirty"]:
         added = wm(mux_server, workmux_exe_path, repo, f"add {branch} --remote lo")
         assert "Successfully created remote workspace" in added.stdout, added.stderr
-    wait_for_pane_output(
-        mux_server, get_window_name("healthy"), "AGENT-READY", timeout=20
-    )
+    node.wait_for_agent(mux_server, "healthy", "AGENT-READY")
     records = {r["branch"]: r for r in local_records(mux_server)}
     by_branch = {ws["branch"]: ws for ws in node.workspaces()}
     healthy = by_branch["healthy"]
@@ -46,14 +44,15 @@ def test_gc_lists_and_removes_orphans(
 
     # Workspaces the laptop forgot, one of them with work only on the node.
     for branch in ["forgotten", "dirty"]:
-        wm(mux_server, workmux_exe_path, repo, f"close {branch}")
+        if NODE_TERMINAL != "rex":
+            wm(mux_server, workmux_exe_path, repo, f"close {branch}")
         (records_dir / f"{records[branch]['ws_id']}.json").unlink()
     (Path(by_branch["dirty"]["worktree_path"]) / "notes.txt").write_text("unsaved\n")
 
     # Leftovers of interrupted calls.
     node_repo = Path(healthy["repo_path"])
     git(node_repo, "update-ref", f"refs/workmux/base/{ORPHAN_WS}", healthy["base_sha"])
-    node.tmux("new-session", "-d", "-s", "x0123456789ab-0")
+    node.plant_session("x0123456789ab-0")
     side = node.root / "state" / "workspaces" / f"{ORPHAN_WS}.config.json"
     side.write_text("{}")
     age(side)
@@ -99,7 +98,7 @@ def test_gc_lists_and_removes_orphans(
         "workspace 'forgotten'",
         "workspace 'dirty'",
         "(kept without --force)",
-        "tmux session x0123456789ab-0",
+        f"{'Rex' if NODE_TERMINAL == 'rex' else 'tmux'} session x0123456789ab-0",
         f"refs/workmux/base/{ORPHAN_WS}",
         f"state/workspaces/{ORPHAN_WS}.config.json",
         "secrets/x0123456789ab-0.tmux",

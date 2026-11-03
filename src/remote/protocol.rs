@@ -226,8 +226,33 @@ pub struct RexPlacement {
     /// The server's `instance_id`; another one means the sessions are gone.
     pub instance_id: String,
     /// Session of each configured pane.
-    #[serde(default)]
+    #[serde(default, with = "pane_keys")]
     pub sessions: BTreeMap<usize, String>,
+}
+
+/// Pane-indexed maps with the indices as JSON object keys, read through
+/// strings: a map inside an internally tagged enum, as in a `watch`
+/// snapshot, cannot take integer keys directly.
+mod pane_keys {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(
+        map: &BTreeMap<usize, String>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        map.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<usize, String>, D::Error> {
+        BTreeMap::<String, String>::deserialize(d)?
+            .into_iter()
+            .map(|(index, id)| Ok((index.parse().map_err(D::Error::custom)?, id)))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -553,6 +578,15 @@ mod tests {
             serde_json::from_str::<RexPlacement>(&text).unwrap(),
             placement
         );
+        // As in a `watch` snapshot line.
+        #[derive(Deserialize)]
+        #[serde(tag = "type")]
+        enum Tagged {
+            Line { rex: RexPlacement },
+        }
+        let line = format!(r#"{{"type":"Line","rex":{text}}}"#);
+        let Tagged::Line { rex } = serde_json::from_str(&line).unwrap();
+        assert_eq!(rex, placement);
     }
 
     #[test]

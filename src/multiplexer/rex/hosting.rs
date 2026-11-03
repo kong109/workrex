@@ -14,9 +14,11 @@ use serde_json::{Value, json};
 use super::super::LivePaneInfo;
 use super::{CreatedWindow, RexBackend, SessionId, found, parallel_map, shell_block};
 
-/// Sources the env file in `$1`, removes it, and runs the script in `$2`.
-/// The block's command line names the file, never a value in it.
-const SOURCE_ENV: &str = ". \"$1\" && rm -f \"$1\" && exec sh -c \"$2\"";
+/// Reads the env file in `$1`, removes it, evaluates it and runs the script
+/// in `$2`. The block's command line names the file, never a value in it.
+/// The file is a named pipe, which macOS `sh` (bash 3.2) cannot source:
+/// `.` reads a file's stat size, zero for a pipe.
+const SOURCE_ENV: &str = "env=$(cat \"$1\") && rm -f \"$1\" && eval \"$env\" && exec sh -c \"$2\"";
 
 /// A jump to a session on a server reached over the tailnet; an unknown
 /// session id takes the app about five seconds to refuse.

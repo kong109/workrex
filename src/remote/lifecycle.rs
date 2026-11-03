@@ -857,8 +857,11 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
     };
     let target = window_target(mux, &record)?;
     let window = target.is_some();
-    let ended = super::observe::load_connected(&record.remote)
-        .and_then(|observation| Some(observation.of(&record)?.ended.is_some()));
+    let observed = super::observe::load_connected(&record.remote);
+    let observed = observed
+        .as_ref()
+        .and_then(|observation| observation.of(&record));
+    let ended = observed.map(|workspace| workspace.ended.is_some());
     let stale = ended.unwrap_or(window);
     if window && !stale {
         return switch(&record);
@@ -869,7 +872,10 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
             .as_ref()
             .is_some_and(|execution| execution.rex.is_some())
     };
-    if on_rex(&record) && ended == Some(false) {
+    // A replaced Rex server ends no execution, but leaves its panes dead.
+    if on_rex(&record)
+        && observed.is_some_and(|ws| ws.ended.is_none() && ws.panes.iter().any(|pane| pane.alive))
+    {
         return show_on_rex(&record, focus);
     }
     if record.state != WorkspaceState::Ready {
@@ -974,6 +980,15 @@ fn warn_unshown(record: &WorkspaceRecord) {
 /// `workmux close` of a remote workspace: the window goes, the remote
 /// sessions keep running.
 pub fn close(mux: &dyn Multiplexer, record: &WorkspaceRecord) -> Result<()> {
+    if let Some(rex) = record.execution.as_ref().and_then(|ex| ex.rex.as_ref()) {
+        bail!(
+            "Remote workspace '{}' has no local window: its agent terminal is on Rex at {} \
+             (`{BIN} remove {}` to end it)",
+            record.handle,
+            rex.host_label,
+            record.handle
+        );
+    }
     let Some(target) = window_target(mux, record)? else {
         bail!(
             "No open window for remote workspace '{}' on '{}'",

@@ -20,7 +20,7 @@ use crate::remote::protocol::{RexPlacement, Secrets, code, session_name};
 
 pub enum SessionHost {
     Tmux { socket: PathBuf, mux: TmuxBackend },
-    Rex(RexHost),
+    Rex(Box<RexHost>),
 }
 
 pub struct RexHost {
@@ -44,7 +44,7 @@ impl SessionHost {
     /// The host `execution` was started on.
     pub fn for_execution(root: &NodeRoot, execution: &Execution) -> Result<Self> {
         match execution.rex {
-            Some(_) => Ok(Self::Rex(RexHost::open(root, false)?)),
+            Some(_) => Ok(Self::Rex(Box::new(RexHost::open(root, false)?))),
             None => Self::tmux(root),
         }
     }
@@ -57,7 +57,7 @@ impl SessionHost {
             RemoteTerminal::Rex => {
                 let host = RexHost::open(root, true)?;
                 crate::util::write_atomic(&hosted_marker(root), b"")?;
-                Ok(Self::Rex(host))
+                Ok(Self::Rex(Box::new(host)))
             }
         }
     }
@@ -406,12 +406,12 @@ mod tests {
             .unwrap();
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
             let server = format!("unix://{}/s.sock", dir.path().display());
-            let host = SessionHost::Rex(RexHost {
+            let host = SessionHost::Rex(Box::new(RexHost {
                 mux: RexBackend::with_program(&program, &server),
                 tag: TAG.into(),
                 host_label: "rex.example.ts.net".into(),
                 instance_id: "instance-1".into(),
-            });
+            }));
             Self { dir, host }
         }
 
