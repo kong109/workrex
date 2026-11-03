@@ -58,7 +58,7 @@ pub fn run(dry_run: bool) -> Result<()> {
     for (candidate, ended) in &remote_candidates {
         let status = match &candidate.action {
             ResurrectAction::Restore if *ended => {
-                "skipping (agents exited; `workmux open` starts them)"
+                crate::rebrand!("skipping (agents exited; `workmux open` starts them)")
             }
             ResurrectAction::Restore => "restoring",
             ResurrectAction::SkipAlreadyOpen => "skipping (already open)",

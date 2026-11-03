@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use anyhow::{Result, anyhow, bail};
 
 use crate::config::Config;
@@ -13,7 +14,7 @@ pub fn run(name: Option<&str>, host: bool) -> Result<()> {
     let record = match name {
         Some(name) => named(name)?,
         None => current_window().ok_or_else(|| {
-            anyhow!("not in the window of a remote workspace; name one: `workmux shell <handle>`")
+            anyhow!("not in the window of a remote workspace; name one: `{BIN} shell <handle>`")
         })?,
     };
     let config = Config::load(None)?;
@@ -26,11 +27,11 @@ fn named(name: &str) -> Result<WorkspaceRecord> {
     }
     if crate::git::find_worktree(name).is_ok() {
         bail!(
-            "'{name}' is a local worktree; `workmux shell` opens shells on remote servers. \
-             Use `cd \"$(workmux path {name})\"`"
+            "'{name}' is a local worktree; `{BIN} shell` opens shells on remote servers. \
+             Use `cd \"$({BIN} path {name})\"`"
         );
     }
-    bail!("no remote workspace named '{name}'; `workmux list` shows this repository's workspaces")
+    bail!("no remote workspace named '{name}'; `{BIN} list` shows this repository's workspaces")
 }
 
 /// The remote workspace with a relay pane in the current window, such as

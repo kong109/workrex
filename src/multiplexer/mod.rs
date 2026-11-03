@@ -14,6 +14,7 @@ pub mod util;
 pub mod wezterm;
 pub mod zellij;
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1068,7 +1069,7 @@ pub fn detect_backend() -> BackendType {
             Ok(bt) => return bt,
             Err(_) => {
                 eprintln!(
-                    "workmux: invalid WORKMUX_BACKEND={val:?}, expected tmux|wezterm|kitty|zellij"
+                    "{BIN}: invalid WORKMUX_BACKEND={val:?}, expected tmux|wezterm|kitty|zellij"
                 );
             }
         }

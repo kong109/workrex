@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from ..conftest import TmuxEnvironment, get_window_name, wait_for_pane_output
+from ..support.bin_name import BIN
 from .conftest import Node, commit_project, git, local_records, wm
 
 pytestmark = pytest.mark.tmux_only
@@ -79,7 +80,7 @@ def test_gc_lists_and_removes_orphans(
         "-m",
         "only here",
     )
-    old_pin = node.root / "bin" / "workmux-0.0.1"
+    old_pin = node.root / "bin" / f"{BIN}-0.0.1"
     shutil.copy(
         node.root / "bin" / records["healthy"]["execution"]["node_bin"], old_pin
     )
@@ -104,7 +105,7 @@ def test_gc_lists_and_removes_orphans(
         f"state/workspaces/{ORPHAN_WS}.config.json",
         "secrets/x0123456789ab-0.tmux",
         "worktrees/ghost",
-        "bin/workmux-0.0.1",
+        f"bin/{BIN}-0.0.1",
         "local record of 'stale'",
     ]:
         assert expected in out, (expected, out, listing.stderr)

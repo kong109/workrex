@@ -17,6 +17,7 @@ from typing import Iterator
 import pytest
 import yaml
 
+from ..support.bin_name import BIN, rebrand
 from .conftest import RemoteCli, dev_pin, write_script
 
 HOST = os.environ.get("WORKMUX_REMOTE_TEST_HOST")
@@ -85,7 +86,7 @@ def node(tmp_path: Path, workmux_exe_path: Path) -> Iterator[Node]:
 def test_setup_installs_then_reruns_as_noop(node: Node):
     first = node.cli.run("remote", "setup", "e2e")
     assert first.returncode == 0, first.stderr
-    assert "installed workmux" in first.stdout
+    assert f"installed {BIN}" in first.stdout
     before = remote_sh(f"stat -c '%i %Y' {node.pin}").stdout
 
     second = node.cli.run("remote", "setup", "e2e")
@@ -151,7 +152,7 @@ def test_protocol_mismatch_is_clear(node: Node, tmp_path: Path):
     result = node.cli.run("remote", "setup", "e2e")
 
     assert result.returncode == 1
-    assert "speaks protocol 999 (workmux 9.9.9)" in result.stderr
+    assert rebrand("speaks protocol 999 (workmux 9.9.9)") in result.stderr
     assert node.ls_bin() == []
 
 
@@ -180,8 +181,6 @@ def test_interrupted_setup_recovers(node: Node):
     result = node.cli.run("remote", "setup", "e2e")
 
     assert result.returncode == 0, result.stderr
-    assert "installed workmux" in result.stdout
+    assert f"installed {BIN}" in result.stdout
     sums = remote_sh(f"sha256sum {node.pin}").stdout.split()
-    assert sums and sums[0].startswith(
-        dev_pin(node.binary).removeprefix("workmux-dev-")
-    )
+    assert sums and sums[0].startswith(dev_pin(node.binary).removeprefix(f"{BIN}-dev-"))

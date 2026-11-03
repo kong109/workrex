@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const REPO: &str = "raine/workmux";
+use crate::bin_name::BIN;
+
+const REPO: &str = crate::bin_name::REPO;
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 const NOTIFY_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
@@ -137,7 +139,7 @@ fn verify_checksum(file: &std::path::Path, expected_line: &str) -> Result<()> {
     Ok(())
 }
 
-/// Download release `version` of `artifact_name` (e.g. `workmux-linux-arm64`)
+/// Download release `version` of `artifact_name` (e.g. `workrex-linux-arm64`)
 /// into `dir`, verify its published sha256, and return the extracted binary.
 pub(crate) fn fetch_release_binary(
     version: &str,
@@ -148,7 +150,7 @@ pub(crate) fn fetch_release_binary(
     let tar_path = dir.join(format!("{artifact_name}.tar.gz"));
     let sha_path = dir.join(format!("{artifact_name}.sha256"));
 
-    let base_url = format!("https://github.com/{REPO}/releases/download/v{version}");
+    let base_url = crate::bin_name::release_base(version);
 
     download(&format!("{base_url}/{artifact_name}.tar.gz"), &tar_path)?;
     download(&format!("{base_url}/{artifact_name}.sha256"), &sha_path)?;
@@ -161,9 +163,9 @@ pub(crate) fn fetch_release_binary(
     std::fs::create_dir(&extract_dir)?;
     extract_tar(&tar_path, &extract_dir)?;
 
-    let binary = extract_dir.join("workmux");
+    let binary = extract_dir.join(BIN);
     if !binary.exists() {
-        bail!("Extracted archive does not contain 'workmux' binary");
+        bail!("Extracted archive does not contain '{BIN}' binary");
     }
     Ok(binary)
 }
@@ -218,7 +220,7 @@ fn do_update(
     replace_binary(&new_binary, current_exe)?;
 
     Ok(format!(
-        "Updated workmux v{CURRENT_VERSION} -> v{latest_version}"
+        "Updated {BIN} v{CURRENT_VERSION} -> v{latest_version}"
     ))
 }
 
@@ -233,7 +235,7 @@ pub fn run() -> Result<()> {
     }
 
     let platform = platform_suffix()?;
-    let artifact_name = format!("workmux-{platform}");
+    let artifact_name = crate::bin_name::release_artifact(platform)?;
 
     let pb = indicatif::ProgressBar::new_spinner();
     pb.set_style(
@@ -268,9 +270,9 @@ struct UpdateCache {
 }
 
 fn update_cache_path() -> Option<std::path::PathBuf> {
-    let dir = crate::xdg::cache_dir().ok()?;
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join("update_check.json"))
+    let path = crate::bin_name::update_cache_file().ok()?;
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    Some(path)
 }
 
 fn now_secs() -> u64 {
@@ -294,8 +296,8 @@ fn save_cache(path: &std::path::Path, cache: &UpdateCache) {
 }
 
 /// Compare two version strings as numeric tuples (e.g. "0.1.10" > "0.1.9").
-fn is_newer_version(latest: &str, current: &str) -> bool {
-    let parse = |v: &str| -> Vec<u64> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
+pub(crate) fn is_newer_version(latest: &str, current: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> { v.split(['.', '-']).flat_map(str::parse).collect() };
     let l = parse(latest);
     let c = parse(current);
     l > c
@@ -373,11 +375,11 @@ pub fn check_and_notify(config: &crate::config::Config) {
             let update_cmd = if is_brew {
                 "brew upgrade workmux"
             } else {
-                "workmux update"
+                crate::rebrand!("workmux update")
             };
 
             eprintln!(
-                "Update available: workmux v{CURRENT_VERSION} -> v{latest} (run `{update_cmd}`)"
+                "Update available: {BIN} v{CURRENT_VERSION} -> v{latest} (run `{update_cmd}`)"
             );
 
             cache.last_notified = Some(now);

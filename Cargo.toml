@@ -23,6 +23,10 @@ include = [
     "/README.md",
 ]
 
+[[bin]]
+name = "workrex"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
 clap_complete = "4.6"

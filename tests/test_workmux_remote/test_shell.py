@@ -13,6 +13,7 @@ from ..conftest import (
     get_window_name,
     poll_until,
 )
+from ..support.bin_name import rebrand
 from .conftest import LOOPBACK, Node, agent_dirs_env, commit_project, wm
 
 pytestmark = pytest.mark.tmux_only
@@ -122,7 +123,7 @@ def test_shell_names_what_it_cannot_open(
         mux_server, workmux_exe_path, mux_repo_path, "shell here", expect_fail=True
     )
     assert "'here' is a local worktree" in local.stderr
-    assert 'cd "$(workmux path here)"' in local.stderr
+    assert rebrand('cd "$(workmux path here)"') in local.stderr
     missing = wm(
         mux_server, workmux_exe_path, mux_repo_path, "shell nope", expect_fail=True
     )

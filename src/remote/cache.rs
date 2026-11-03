@@ -5,6 +5,7 @@
 //! first provisioning call until the node acknowledges removal, whether or
 //! not a local window is attached. Nothing here prunes records on its own.
 
+use crate::bin_name::BIN;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -481,7 +482,7 @@ fn local_handle_exists(project_root: &Path, name: &str) -> bool {
 pub fn reject_remote_handle(name: &str, command: &str) -> Result<()> {
     match find_here(name) {
         Some(record) => Err(anyhow!(
-            "'{}' is a remote workspace on '{}'; `workmux {command}` does not support \
+            "'{}' is a remote workspace on '{}'; `{BIN} {command}` does not support \
              remote workspaces yet",
             record.handle,
             record.remote

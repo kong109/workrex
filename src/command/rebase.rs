@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow};
 
 use crate::{config, git};
@@ -11,7 +12,7 @@ pub fn run(name: Option<&str>) -> Result<()> {
 
     let (worktree_path, branch_to_rebase) = git::find_worktree(&name_to_rebase).map_err(|_| {
         anyhow!(
-            "Worktree '{}' not found. Use 'workmux list' to see available worktrees.",
+            "Worktree '{}' not found. Use '{BIN} list' to see available worktrees.",
             name_to_rebase
         )
     })?;

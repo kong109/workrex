@@ -12,6 +12,7 @@
 //! `workmux rebase` goes the other way: the laptop's base branch goes to the
 //! node, which rebases the workspace onto it.
 
+use crate::bin_name::BIN;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -169,8 +170,8 @@ fn merge_inner(
                 });
                 record.save()?;
                 eprintln!(
-                    "workmux: '{}' on '{}' is untouched; after resolving the conflict in {}, \
-                     run `workmux merge {}` again",
+                    "{BIN}: '{}' on '{}' is untouched; after resolving the conflict in {}, \
+                     run `{BIN} merge {}` again",
                     record.handle,
                     record.remote,
                     record.local_path.display(),
@@ -227,7 +228,7 @@ fn merge_inner(
     );
     if let Err(err) = &local {
         eprintln!(
-            "workmux: could not remove the local copy at {}: {err:#}",
+            "{BIN}: could not remove the local copy at {}: {err:#}",
             record.local_path.display()
         );
     }
@@ -251,12 +252,12 @@ pub fn pull(context: &WorkflowContext, mut record: WorkspaceRecord, run_hooks: b
             return report_pull(&node, record, &snapshot);
         }
         Some(Homecoming::Merged { .. }) => bail!(
-            "'{}' is already merged; `workmux merge {}` finishes removing its remote workspace",
+            "'{}' is already merged; `{BIN} merge {}` finishes removing its remote workspace",
             record.handle,
             record.handle
         ),
         Some(Homecoming::Conflicted { .. }) if record.local_path.join(".git").exists() => bail!(
-            "'{}' has a merge in progress in {}; finish it with `workmux merge {}`",
+            "'{}' has a merge in progress in {}; finish it with `{BIN} merge {}`",
             record.handle,
             record.local_path.display(),
             record.handle
@@ -272,7 +273,7 @@ pub fn pull(context: &WorkflowContext, mut record: WorkspaceRecord, run_hooks: b
     finish_pending(&node, &record.ws_id);
     let export = export(&node, &mut record, true)?;
     let stopped = format!(
-        "its agent on '{}' is stopped; `workmux open {}` restarts it there",
+        "its agent on '{}' is stopped; `{BIN} open {}` restarts it there",
         record.remote, record.handle
     );
     let created_branch = hydrate(context, &node, &mut record, &export)
@@ -295,7 +296,7 @@ pub fn pull(context: &WorkflowContext, mut record: WorkspaceRecord, run_hooks: b
     super::lifecycle::close_relay(context.mux.as_ref(), &record);
     if let Err(err) = open_local(context, &record) {
         eprintln!(
-            "workmux: could not open a window for '{}': {err:#}",
+            "{BIN}: could not open a window for '{}': {err:#}",
             record.handle
         );
     }
@@ -321,8 +322,8 @@ fn report_pull(node: &Node, mut record: WorkspaceRecord, snapshot: &Snapshot) ->
         }
         Ok(Removal::Diverged(message)) => {
             eprintln!(
-                "workmux: {message}. The local worktree has the work exported at {}; the \
-                 remote workspace was kept (`workmux remove {}` deletes it)",
+                "{BIN}: {message}. The local worktree has the work exported at {}; the \
+                 remote workspace was kept (`{BIN} remove {}` deletes it)",
                 short(&snapshot.head),
                 record.handle
             );
@@ -337,12 +338,12 @@ fn report_pull(node: &Node, mut record: WorkspaceRecord, snapshot: &Snapshot) ->
 pub fn rebase(config: &crate::config::Config, mut record: WorkspaceRecord) -> Result<()> {
     match record.homecoming {
         Some(Homecoming::Merged { .. }) => bail!(
-            "'{}' is already merged; `workmux merge {}` finishes removing its remote workspace",
+            "'{}' is already merged; `{BIN} merge {}` finishes removing its remote workspace",
             record.handle,
             record.handle
         ),
         Some(_) => bail!(
-            "'{}' is being merged or pulled; `workmux merge {}` or `workmux remote pull {}` \
+            "'{}' is being merged or pulled; `{BIN} merge {}` or `{BIN} remote pull {}` \
              finishes that first",
             record.handle,
             record.handle,
@@ -422,8 +423,8 @@ fn report_removal(
         }
         Ok(Removal::Diverged(message)) => {
             eprintln!(
-                "workmux: {message}. The work exported at {} is merged; the workspace was \
-                 kept. `workmux open {}` continues it, `workmux remove {}` deletes it",
+                "{BIN}: {message}. The work exported at {} is merged; the workspace was \
+                 kept. `{BIN} open {}` continues it, `{BIN} remove {}` deletes it",
                 short(&snapshot.head),
                 record.handle,
                 record.handle
@@ -473,7 +474,7 @@ fn pending(record: &WorkspaceRecord, err: anyhow::Error) -> anyhow::Error {
         .map(ToString::to_string)
         .unwrap_or_else(|| node_message(&err));
     anyhow!(
-        "{done}; remote cleanup pending on '{remote}' ({cause}). `workmux {retry} {handle}`, or \
+        "{done}; remote cleanup pending on '{remote}' ({cause}). `{BIN} {retry} {handle}`, or \
          the next merge, remove, open, add, rebase or `remote pull` that reaches '{remote}', \
          finishes it",
         cause = cause.lines().next().unwrap_or_default(),
@@ -541,7 +542,7 @@ pub(super) fn finish_pending_except(node: &Node, skip: impl Fn(&str) -> bool) {
                 record.handle, record.remote
             ),
             Ok(Removal::Diverged(message)) => eprintln!(
-                "workmux: {message}; kept the workspace (`workmux open {}` or `workmux remove {}`)",
+                "{BIN}: {message}; kept the workspace (`{BIN} open {}` or `{BIN} remove {}`)",
                 record.handle, record.handle
             ),
             Err(err) => tracing::debug!(handle = %record.handle, "cleanup still pending: {err:#}"),
@@ -716,7 +717,7 @@ fn check_copy(record: &WorkspaceRecord, options: &MergeOptions, resumed: bool) -
     }
     if let Some(reason) = git::unexportable(copy, &record.branch)? {
         bail!(
-            "{reason} in {}; finish it there, then run `workmux merge {}` again",
+            "{reason} in {}; finish it there, then run `{BIN} merge {}` again",
             copy.display(),
             record.handle
         );
@@ -743,7 +744,7 @@ fn check_copy(record: &WorkspaceRecord, options: &MergeOptions, resumed: bool) -
     }
     bail!(
         "Remote workspace '{}' on '{}' has {}. Please stage or stash them there \
-         (`workmux open {}`), or use --ignore-uncommitted.",
+         (`{BIN} open {}`), or use --ignore-uncommitted.",
         record.handle,
         record.remote,
         issues.join(" and "),
@@ -797,7 +798,7 @@ fn keep_branch_in_sync(
             record.branch, record.remote
         ),
         Err(err) => eprintln!(
-            "workmux: left '{}' on '{}' as it was: {err:#}",
+            "{BIN}: left '{}' on '{}' as it was: {err:#}",
             record.branch, record.remote
         ),
     }
