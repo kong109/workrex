@@ -231,7 +231,11 @@ def test_skills_taken_back_after_upstream_setup_are_restored_on_uninstall(
 ):
     home = mux_server.home_path
     install_opencode_version(mux_server, "v1.18.29")
+    for skills_dir in SKILL_DIRS:
+        (home / skills_dir).parent.mkdir(parents=True, exist_ok=True)
     run_setup_overwriting_skills(mux_server, workmux_exe_path)
+    for skills_dir in SKILL_DIRS:
+        assert (home / skills_dir / BIN / "SKILL.md").exists(), skills_dir
     upstream = write_upstream_skills(home)
 
     assert run_setup_overwriting_skills(mux_server, workmux_exe_path) > 0
