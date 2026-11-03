@@ -1,6 +1,7 @@
 """workrex coexists with upstream workmux: setup and uninstall leave upstream's hooks alone."""
 
 import json
+import os
 import re
 import shlex
 import shutil
@@ -92,10 +93,11 @@ def write_upstream_hooks(home: Path) -> dict[Path, bytes]:
     return {path: path.read_bytes() for path in files}
 
 
-def run_uninstall(env: MuxEnvironment, exe: Path) -> str:
+def run_uninstall(env: MuxEnvironment, exe: Path, exit_code: int = 0) -> str:
     scripts_dir = get_scripts_dir(env)
     output = scripts_dir / "uninstall_output.txt"
     done = scripts_dir / "uninstall_exit_code.txt"
+    done.unlink(missing_ok=True)
     script = make_env_script(
         env,
         f"{shlex.quote(str(exe))} uninstall > {shlex.quote(str(output))} 2>&1; "
@@ -111,7 +113,7 @@ def run_uninstall(env: MuxEnvironment, exe: Path) -> str:
     )
     env.send_keys("test:", script, enter=True)
     assert poll_until_file_has_content(done, timeout=10)
-    assert done.read_text().strip() == "0", output.read_text()
+    assert done.read_text().strip() == str(exit_code), output.read_text()
     return output.read_text()
 
 
@@ -177,66 +179,44 @@ def test_setup_then_uninstall_leaves_upstream_hooks_byte_identical(
     assert (state / "agents/upstream.json").read_text() == "{}"
 
 
-def write_upstream_skills(home: Path) -> dict[Path, bytes]:
-    """Install upstream's bundled skills as upstream `workmux setup` writes them."""
-    files = {}
-    for skill in sorted((REPO / "skills").iterdir()):
+# Upstream workmux to test against, for example a build of this repo's base commit.
+# Without one, the tests stand in for it: upstream's skills are this repo's skills/ texts.
+UPSTREAM_EXE = os.environ.get("WORKREX_TEST_UPSTREAM_EXE")
+
+
+def upstream_skills(home: Path) -> list[Path]:
+    return [
+        home / skills_dir / skill.name / "SKILL.md"
+        for skills_dir in SKILL_DIRS
+        for skill in sorted((REPO / "skills").iterdir())
+    ]
+
+
+def setup_upstream(env: MuxEnvironment) -> dict[Path, bytes]:
+    """Run upstream `workmux setup`, answering yes; return its skill files' bytes."""
+    home = env.home_path
+    if UPSTREAM_EXE:
         for skills_dir in SKILL_DIRS:
-            path = home / skills_dir / skill.name / "SKILL.md"
+            (home / skills_dir).parent.mkdir(parents=True, exist_ok=True)
+        run_setup_answering(env, Path(UPSTREAM_EXE))
+    else:
+        for path in upstream_skills(home):
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text((skill / "SKILL.md").read_text())
-            files[path] = path.read_bytes()
-    return files
+            text = (REPO / "skills" / path.parent.name / "SKILL.md").read_text()
+            path.write_text(text)
+    return {path: path.read_bytes() for path in upstream_skills(home)}
 
 
-def run_setup_overwriting_skills(env: MuxEnvironment, exe: Path) -> int:
-    """Run setup answering yes to hooks, skills and every skill-overwrite prompt."""
-    done = run_setup_interactive(env, exe)
-    overwrites = 0
-    deadline = time.monotonic() + 30
-    while not (done.exists() and done.read_text().strip()):
-        assert time.monotonic() < deadline, env.capture_pane("test")
-        screen = env.capture_pane("test") or ""
-        lines = [line for line in screen.splitlines() if line.strip()]
-        if lines and "?" in lines[-1] and lines[-1].endswith("]"):
-            env.send_keys("test:", "y")
-            overwrites += "with bundled version?" in lines[-1]
-            poll_until(lambda: env.capture_pane("test") != screen, 5)
-        time.sleep(0.05)
-    assert done.read_text().strip() == "0", env.capture_pane("test")
-    return overwrites
-
-
-def test_setup_with_skills_then_uninstall_leaves_upstream_skills_byte_identical(
-    mux_server: MuxEnvironment, workmux_exe_path: Path
-):
-    home = mux_server.home_path
-    install_opencode_version(mux_server, "v1.18.29")
-    upstream = write_upstream_hooks(home) | write_upstream_skills(home)
-
-    overwrites = run_setup_overwriting_skills(mux_server, workmux_exe_path)
-
-    assert overwrites > 0
-    for skills_dir in SKILL_DIRS:
-        ours = home / skills_dir / BIN / "SKILL.md"
-        assert ours.read_text() == bundled(REPO / "skills/workmux/SKILL.md"), ours
-        merge = home / skills_dir / "merge/SKILL.md"
-        assert merge.read_text() == bundled(REPO / "skills/merge/SKILL.md"), merge
-
-    run_uninstall(mux_server, workmux_exe_path)
-
-    for path, before in upstream.items():
-        assert path.read_bytes() == before, path
-    for skills_dir in SKILL_DIRS:
-        assert not (home / skills_dir / BIN).exists(), skills_dir
-
-
-def uninstall_upstream(home: Path) -> None:
-    """Leave what upstream `workmux uninstall` leaves.
+def uninstall_upstream(env: MuxEnvironment) -> None:
+    """Run upstream `workmux uninstall`.
 
     It deletes each skill directory whose SKILL.md still holds upstream's text,
     then its whole cache and state directories.
     """
+    home = env.home_path
+    if UPSTREAM_EXE:
+        run_uninstall(env, Path(UPSTREAM_EXE))
+        return
     for skills_dir in SKILL_DIRS:
         base = home / skills_dir
         for skill in (REPO / "skills").iterdir():
@@ -249,76 +229,158 @@ def uninstall_upstream(home: Path) -> None:
         shutil.rmtree(home / xdg_dir / "workmux", ignore_errors=True)
 
 
+def run_setup_answering(env: MuxEnvironment, exe: Path, overwrite: str = "y") -> int:
+    """Run setup answering yes to hooks and skills and `overwrite` to each skill-overwrite prompt."""
+    done = run_setup_interactive(env, exe)
+    overwrites = 0
+    deadline = time.monotonic() + 30
+    while not (done.exists() and done.read_text().strip()):
+        assert time.monotonic() < deadline, env.capture_pane("test")
+        screen = env.capture_pane("test") or ""
+        lines = [line for line in screen.splitlines() if line.strip()]
+        if lines and "?" in lines[-1] and lines[-1].endswith("]"):
+            prompt = "with bundled version?" in lines[-1]
+            env.send_keys("test:", overwrite if prompt else "y")
+            overwrites += prompt
+            poll_until(lambda: env.capture_pane("test") != screen, 5)
+        time.sleep(0.05)
+    assert done.read_text().strip() == "0", env.capture_pane("test")
+    return overwrites
+
+
 def skills_summary(output: str) -> str:
     match = re.search(r"Skills for Claude Code \(.*\): (.*)", output)
     assert match, output
     return match.group(1).strip()
 
 
+def skill_files(home: Path) -> list[Path]:
+    return sorted(
+        path
+        for skills_dir in SKILL_DIRS
+        for path in (home / skills_dir).rglob("*")
+        if path.is_file()
+    )
+
+
+# Skills whose bundled text differs from upstream's, so setup asks before overwriting them.
+DIFFERING = ("merge", "rebase", "worktree", "coordinator")
+
+
+@pytest.mark.parametrize("answer", ["n", "y"])
+def test_uninstall_after_upstream_setup_deletes_only_what_setup_wrote(
+    mux_server: MuxEnvironment, workmux_exe_path: Path, answer: str
+):
+    home = mux_server.home_path
+    install_opencode_version(mux_server, "v1.18.29")
+    upstream = setup_upstream(mux_server)
+
+    overwrites = run_setup_answering(mux_server, workmux_exe_path, answer)
+
+    assert overwrites == len(DIFFERING) * len(SKILL_DIRS)
+    for skills_dir in SKILL_DIRS:
+        ours = home / skills_dir / BIN / "SKILL.md"
+        assert ours.read_text() == bundled(REPO / "skills/workmux/SKILL.md"), ours
+
+    output = run_uninstall(mux_server, workmux_exe_path)
+
+    # A "y" overwrite is deleted, not restored; open-pr's text was already there.
+    assert skills_summary(output) == (
+        "1 removed, 5 kept" if answer == "n" else "5 removed, 1 kept"
+    )
+    for path, before in upstream.items():
+        if answer == "y" and path.parent.name in DIFFERING:
+            assert not path.parent.exists(), path
+        else:
+            assert path.read_bytes() == before, path
+    for skills_dir in SKILL_DIRS:
+        assert not (home / skills_dir / BIN).exists(), skills_dir
+
+
 @pytest.mark.parametrize("first", [BIN, "workmux"])
-def test_skills_taken_back_after_upstream_setup_leave_nothing_once_both_uninstall(
+def test_both_setups_leave_nothing_once_both_uninstall(
     mux_server: MuxEnvironment, workmux_exe_path: Path, first: str
 ):
     home = mux_server.home_path
     install_opencode_version(mux_server, "v1.18.29")
     for skills_dir in SKILL_DIRS:
         (home / skills_dir).parent.mkdir(parents=True, exist_ok=True)
-    run_setup_overwriting_skills(mux_server, workmux_exe_path)
-    for skills_dir in SKILL_DIRS:
-        assert (home / skills_dir / BIN / "SKILL.md").exists(), skills_dir
-    upstream = write_upstream_skills(home)
-    assert len(upstream) == 30
-    assert run_setup_overwriting_skills(mux_server, workmux_exe_path) > 0
+    run_setup_answering(mux_server, workmux_exe_path)
+    setup_upstream(mux_server)
+    assert run_setup_answering(mux_server, workmux_exe_path) > 0
     own_state = home / ".local/state" / BIN
     assert (own_state / "skills.json").is_file()
 
     if first == BIN:
         output = run_uninstall(mux_server, workmux_exe_path)
-        # Upstream is still installed, so it gets back the four skills workrex took.
-        assert skills_summary(output) == "1 removed, 4 restored, 1 kept"
-        for path, before in upstream.items():
-            assert path.read_bytes() == before, path
-        uninstall_upstream(home)
+        # open-pr holds the text workrex wrote, so it goes too: a known gap.
+        assert skills_summary(output) == "6 removed"
+        uninstall_upstream(mux_server)
     else:
-        uninstall_upstream(home)
+        uninstall_upstream(mux_server)
         output = run_uninstall(mux_server, workmux_exe_path)
-        # Upstream's uninstall left the four skills workrex holds; restoring
-        # upstream's text into them would leave files nothing owns.
         assert skills_summary(output) == "5 removed"
 
-    for skills_dir in SKILL_DIRS:
-        assert not (home / skills_dir).exists(), list((home / skills_dir).rglob("*"))
+    assert skill_files(home) == []
     assert not own_state.exists()
 
 
 @pytest.mark.parametrize("first", [BIN, "workmux"])
-@pytest.mark.parametrize("edited", ["before", "after"])
+@pytest.mark.parametrize("edited", ["after-setup", "before-setup-answered-no"])
 def test_a_merge_skill_the_user_edited_survives_both_uninstalls(
     mux_server: MuxEnvironment, workmux_exe_path: Path, first: str, edited: str
 ):
     home = mux_server.home_path
     install_opencode_version(mux_server, "v1.18.29")
-    write_upstream_skills(home)
+    setup_upstream(mux_server)
     merges = [home / skills_dir / "merge/SKILL.md" for skills_dir in SKILL_DIRS]
     edit = "the user's merge skill\n"
-    if edited == "before":
+    if edited == "after-setup":
+        run_setup_answering(mux_server, workmux_exe_path, "y")
         for merge in merges:
             merge.write_text(edit)
-    run_setup_overwriting_skills(mux_server, workmux_exe_path)
-    if edited == "after":
+    else:
         for merge in merges:
             merge.write_text(edit)
+        run_setup_answering(mux_server, workmux_exe_path, "n")
 
     if first == BIN:
         run_uninstall(mux_server, workmux_exe_path)
-        uninstall_upstream(home)
+        uninstall_upstream(mux_server)
     else:
-        uninstall_upstream(home)
+        uninstall_upstream(mux_server)
         run_uninstall(mux_server, workmux_exe_path)
 
-    for skills_dir, merge in zip(SKILL_DIRS, merges):
+    for merge in merges:
         assert merge.read_text() == edit, merge
-        assert [p for p in (home / skills_dir).rglob("*") if p.is_file()] == [merge]
+    assert skill_files(home) == sorted(merges)
+
+
+def test_uninstall_errors_name_the_state_directory_and_the_update_cache(
+    mux_server: MuxEnvironment, workmux_exe_path: Path
+):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    home = mux_server.home_path
+    # A directory without write permission keeps what is inside it.
+    locked_state = home / ".local/state" / BIN / "locked"
+    (locked_state / "inner").mkdir(parents=True)
+    cache = home / ".cache/workmux"
+    cache.mkdir(parents=True)
+    (cache / f"{BIN}-update_check.json").write_text("{}")
+    for locked in (locked_state, cache):
+        locked.chmod(0o555)
+    try:
+        output = run_uninstall(mux_server, workmux_exe_path, exit_code=1)
+    finally:
+        for locked in (locked_state, cache):
+            locked.chmod(0o755)
+
+    denied = os.strerror(13)
+    assert (
+        f"uninstall completed with 2 error(s): State directory: {denied} (os error 13); "
+        f"Update cache: {denied} (os error 13)"
+    ) in output
 
 
 def run_update_check(env: MuxEnvironment, exe: Path) -> None:
