@@ -175,6 +175,11 @@ def test_rex_hosted_agent_gets_the_node_environment(
     node_env = {"WR8_NODE_ONLY": "from-node", "PATH": f"{node_bin}:{env.env['PATH']}"}
     added = wm(env, workmux_exe_path, mux_repo_path, "add feat --remote lo", node_env)
     assert "Successfully created remote workspace" in added.stdout, added.stderr
+    # One pane, one session on the node's Rex server.
+    assert (
+        "Successfully created remote workspace and Rex session for 'feat' on 'lo'"
+        in added.stdout
+    ), added.stdout
 
     node.wait_for_agent(env, "feat", "AGENT-UP only:from-node")
     node.wait_for_agent(env, "feat", "NODE-PATH")
