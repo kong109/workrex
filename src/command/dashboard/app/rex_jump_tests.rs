@@ -13,7 +13,8 @@ use crate::workflow::types::WorktreeInfo;
 
 /// The caller's pane is `block:caller` in `session:b`, labeled `wm-feat`,
 /// whose active window focuses `block:agent`; `client:app-1` owns the
-/// caller's pane. `session.select` is refused while `refuse` exists.
+/// caller's pane. The app refuses `client.perform` while `refuse` exists,
+/// with Rex.app's own refusal text.
 const FAKE_REX: &str = r#"#!/bin/sh
 dir=$(dirname "$0")
 call="$* $(cat)"
@@ -22,11 +23,11 @@ case "$call" in
   *server.version*) echo '{"rex_version":"t","api_revision":8}';;
   *block?call?-b?block:caller?size*) echo '{"columns":80,"rows":24,"owner":"client:app-1"}';;
   *client.list*) echo '{"clients":[{"client_id":"client:app-1","info":{"kind":"app"},"connection_state":"connected","session_ids":["session:b"]}]}';;
-  *session.select*)
+  *client.perform*)
     if [ -e "$dir/refuse" ]; then
-      echo 'Error: Remote Control is off for this client (code=refused)' >&2; exit 1
+      echo 'Error: stream response "control-1" failed: Rex.app is not accepting actions. Turn on Remote Control in its Settings under Rex Server. (status=403 code=refused)' >&2; exit 1
     fi
-    echo '{}';;
+    echo '{"performed_by":"client:app-1"}';;
   *target.resolve*) echo '{"results":[{"status":"resolved","target":{"session_id":"session:b","window_id":"window:w"}}]}';;
   *session.view*) echo '{"session_id":"session:b","label":"wm-feat","active_window_id":"window:w","windows":[{"window_id":"window:w","label":"wm-feat","focused_block_id":"block:agent","layers":[]}]}';;
   *session.list*) echo '{"sessions":[{"session_id":"session:b","label":"wm-feat"}]}';;
@@ -81,7 +82,7 @@ fn selects(calls: &Path) -> Vec<String> {
     std::fs::read_to_string(calls)
         .unwrap_or_default()
         .lines()
-        .filter(|call| call.contains(" do session.select "))
+        .filter(|call| call.contains(" api call client.perform - "))
         .map(str::to_string)
         .collect()
 }
@@ -177,7 +178,9 @@ fn enter_on_a_session_worktree_without_an_agent_moves_the_app_there() {
             let selects = selects(calls);
             assert_eq!(selects.len(), 1, "{selects:#?}");
             assert!(
-                selects[0].contains("-C client:app-1 do session.select session_id=session:b"),
+                selects[0].ends_with(
+                    r#"{"action":"session.select","args":{"session_id":"session:b","window_id":"window:w"},"client_id":"client:app-1","timeout_ms":1000}"#
+                ),
                 "{selects:#?}"
             );
             assert!(app.status_message.is_none(), "{:?}", app.status_message);

@@ -594,8 +594,8 @@ impl AppSwitch {
 /// never answers would otherwise hold the command for Rex's 10 s default.
 const APP_SELECT_TIMEOUT: Duration = Duration::from_secs(1);
 
-const REMOTE_CONTROL_FIX: &str = "Rex.app did not switch: Remote Control is off. \
-     Turn it on in Rex Settings so workmux can switch the app.";
+const REMOTE_CONTROL_FIX: &str =
+    "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings.";
 
 /// The error a jump returns when Rex.app refused it. The backend has already
 /// told the user how to fix it, so callers stay quiet.
@@ -1078,16 +1078,39 @@ impl RexBackend {
         Ok(shows_caller(&clients, &owner, session).then_some(owner))
     }
 
-    fn select_args(app: &ClientId, session: &SessionId, window: Option<&WindowId>) -> Vec<String> {
-        let mut args = vec![
-            "-C".to_string(),
-            app.as_str().to_string(),
-            "do".to_string(),
-            "session.select".to_string(),
-            format!("session_id={}", session.as_str()),
-        ];
-        args.extend(window.map(|window| format!("window_id={}", window.as_str())));
-        args
+    /// Asks `app` to show `session`, at `window` if given. A refusal comes
+    /// back as [`AppRefused`]. The call goes through `client.perform` rather
+    /// than `rex -C <app> do`, whose error drops the documented
+    /// `code=refused`.
+    fn ask_app_to_show(
+        &self,
+        app: &ClientId,
+        session: &SessionId,
+        window: Option<&WindowId>,
+        timeout: Duration,
+    ) -> Result<()> {
+        let mut args = json!({ "session_id": session.as_str() });
+        if let Some(window) = window {
+            args["window_id"] = json!(window.as_str());
+        }
+        let request = json!({
+            "client_id": app.as_str(),
+            "action": "session.select",
+            "args": args,
+            "timeout_ms": timeout.as_millis(),
+        })
+        .to_string();
+        match self.ensure_supported().and_then(|()| {
+            self.exec_within(
+                &["api", "call", "client.perform", "-"],
+                Some(&request),
+                Some(timeout),
+            )
+        }) {
+            Ok(_) => Ok(()),
+            Err(error) if error.to_string().contains("code=refused") => Err(AppRefused.into()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Rex.app keeps its own shown tab, which `session.focus_window` and
@@ -1101,14 +1124,9 @@ impl RexBackend {
                 return AppSwitch::NoApp;
             }
         };
-        let args = Self::select_args(&app, session, window);
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let switched = self
-            .ensure_supported()
-            .and_then(|()| self.exec_within(&args, None, Some(APP_SELECT_TIMEOUT)));
-        match switched {
-            Ok(_) => AppSwitch::Shown,
-            Err(error) if error.to_string().contains("(code=refused)") => AppSwitch::Refused,
+        match self.ask_app_to_show(&app, session, window, APP_SELECT_TIMEOUT) {
+            Ok(()) => AppSwitch::Shown,
+            Err(error) if error.is::<AppRefused>() => AppSwitch::Refused,
             Err(error) => {
                 tracing::warn!(%error, "rex: app switch failed");
                 AppSwitch::NoApp
@@ -2383,6 +2401,13 @@ mod tests {
         json!({ "columns": 80, "rows": 24, "owner": client }).to_string()
     }
 
+    /// Rex.app's answer to `client.perform` with Remote Control off.
+    const REFUSED: &str = "!Error: stream response \"control-1\" failed: Rex.app is not \
+         accepting actions. Turn on Remote Control in its Settings under Rex Server. \
+         (status=403 code=refused)";
+    const UNAVAILABLE: &str = "!Error: stream response \"control-1\" failed: client \
+         client:app-1 is not connected (status=503 code=client_unavailable)";
+
     /// The caller's pane is in session B, window W, the pane `block:agent`
     /// is in the same window, and `clients` are connected.
     fn app_fake(owner_id: &str, clients: &[Value], select: &str) -> FakeRex {
@@ -2400,7 +2425,7 @@ mod tests {
         FakeRex::new(&[
             ("block call -b block:caller size", &owner(owner_id)),
             ("client.list", &json!({ "clients": clients }).to_string()),
-            ("session.select", select),
+            ("client.perform", select),
             ("target.resolve", &resolved),
             ("session.view", &view),
             ("session.focus_block", "{}"),
@@ -2465,7 +2490,7 @@ mod tests {
         fake.rex.select_window("", "wm-feat").unwrap();
         fake.rex.switch_to_session("", "b").unwrap();
         assert_eq!(fake.rex.shell_switch_session_cmd("b").unwrap(), "true");
-        assert!(fake.calls(" do ").is_empty(), "{:?}", fake.calls(" do "));
+        assert!(fake.calls("client.perform").is_empty());
         assert!(fake.calls("client.list").is_empty());
         assert_eq!(fake.calls("session.focus_block").len(), 1);
         assert_eq!(fake.calls("session.focus_window").len(), 2);
@@ -2476,10 +2501,11 @@ mod tests {
         let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
         fake.rex.switch_to_pane("block:agent", None).unwrap();
         assert_eq!(
-            fake.calls("session.select"),
+            fake.calls("client.perform"),
             [format!(
-                "--autostart=false -S unix://{}/s.sock -C client:app-1 do session.select \
-                 session_id=session:b window_id=window:w ",
+                "--autostart=false -S unix://{}/s.sock api call client.perform - \
+                 {{\"action\":\"session.select\",\"args\":{{\"session_id\":\"session:b\",\
+                 \"window_id\":\"window:w\"}},\"client_id\":\"client:app-1\",\"timeout_ms\":1000}}",
                 fake.dir.path().display()
             )]
         );
@@ -2488,27 +2514,19 @@ mod tests {
 
     #[test]
     fn a_refused_jump_fails_and_leaves_the_pane_unfocused() {
-        let fake = app_fake(
-            APP,
-            &[app(APP, &[CALLER_SESSION])],
-            "!Error: Remote Control is off for this client (code=refused)",
-        );
+        let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], REFUSED);
         let error = fake.rex.switch_to_pane("block:agent", None).unwrap_err();
         assert!(error.is::<AppRefused>());
         assert_eq!(error.to_string(), REMOTE_CONTROL_FIX);
-        assert_eq!(fake.calls("session.select").len(), 1);
+        assert_eq!(fake.calls("client.perform").len(), 1);
         assert!(fake.calls("session.focus_block").is_empty());
     }
 
     #[test]
     fn a_jump_the_app_fails_for_another_reason_still_focuses_the_pane() {
-        let fake = app_fake(
-            APP,
-            &[app(APP, &[CALLER_SESSION])],
-            "!Error: the client did not answer (code=timeout)",
-        );
+        let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], UNAVAILABLE);
         fake.rex.switch_to_pane("block:agent", None).unwrap();
-        assert_eq!(fake.calls("session.select").len(), 1);
+        assert_eq!(fake.calls("client.perform").len(), 1);
         assert_eq!(fake.calls("session.focus_block").len(), 1);
     }
 
@@ -2533,10 +2551,8 @@ mod tests {
                 "!Error: the client did not answer (code=timeout)",
                 String::new(),
             ),
-            (
-                "!Error: Remote Control is off for this client (code=refused)",
-                format!("{REMOTE_CONTROL_FIX}\n"),
-            ),
+            (UNAVAILABLE, String::new()),
+            (REFUSED, format!("{REMOTE_CONTROL_FIX}\n")),
         ] {
             let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], select);
             let printed = AtomicBool::new(false);
@@ -2567,10 +2583,10 @@ mod tests {
             "{}",
         );
         fake.rex.switch_to_pane("block:agent", None).unwrap();
-        let selects = fake.calls(" do ");
+        let selects = fake.calls("client.perform");
         assert_eq!(selects.len(), 1, "{selects:?}");
         assert!(
-            selects[0].contains("-C client:app-2 do session.select"),
+            selects[0].contains(r#""client_id":"client:app-2""#),
             "{selects:?}"
         );
     }
@@ -2591,7 +2607,10 @@ mod tests {
         for (owner, clients) in owners {
             let fake = app_fake(owner, &clients, "{}");
             fake.rex.switch_to_pane("block:agent", None).unwrap();
-            assert!(fake.calls(" do ").is_empty(), "{owner} {clients:?}");
+            assert!(
+                fake.calls("client.perform").is_empty(),
+                "{owner} {clients:?}"
+            );
             assert_eq!(fake.calls("session.focus_block").len(), 1);
         }
     }
@@ -2601,7 +2620,7 @@ mod tests {
         let mut fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
         fake.rex.caller = Caller::default();
         fake.rex.switch_to_pane("block:agent", None).unwrap();
-        assert!(fake.calls("session.select").is_empty());
+        assert!(fake.calls("client.perform").is_empty());
         assert!(fake.calls("client.list").is_empty());
     }
 
@@ -2628,14 +2647,16 @@ mod tests {
         };
         assert_eq!(outcome(APP, "{}"), AppSwitch::Shown);
         assert_eq!(outcome("client:cli", "{}"), AppSwitch::NoApp);
+        assert_eq!(outcome(APP, REFUSED), AppSwitch::Refused);
         assert_eq!(
-            outcome(APP, "!Error: Remote Control is off (code=refused)"),
-            AppSwitch::Refused
-        );
-        assert_eq!(
-            outcome(APP, "!Error: gone (code=not_found)"),
+            outcome(
+                APP,
+                "!Error: stream response \"control-1\" failed: client client:app-1 \
+                 not found (status=404 code=not_found)"
+            ),
             AppSwitch::NoApp
         );
+        assert_eq!(outcome(APP, UNAVAILABLE), AppSwitch::NoApp);
     }
 
     #[test]
@@ -2646,7 +2667,11 @@ mod tests {
             hint.as_deref(),
             Some("Rex.app stays put: to see feat-a, press Enter on its row in workmux dashboard.")
         );
-        assert!(fake.calls(" do ").is_empty(), "{:?}", fake.calls(" do "));
+        assert!(
+            fake.calls("client.perform").is_empty(),
+            "{:?}",
+            fake.calls("client.perform")
+        );
         assert_eq!(fake.calls("session.focus_block").len(), 1);
     }
 

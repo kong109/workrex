@@ -544,7 +544,10 @@ mod tests {
         assert!(steps[1].contains("session.destroy"), "{steps:#?}");
         // Back next to its neighbor, not to an index a concurrent change can shift.
         assert_eq!(steps[2], "session move session:home --after session:first");
-        assert!(fake.calls(" do ").is_empty(), "no app is asked to move");
+        assert!(
+            fake.calls("client.perform").is_empty(),
+            "no app is asked to move"
+        );
         assert!(fake.calls("client.list").is_empty());
         assert_eq!(fake.rex.records().restore, None);
     }
