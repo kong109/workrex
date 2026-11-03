@@ -283,6 +283,100 @@ def test_open_restarts_an_agent_whose_session_closed_since_the_observation(
     wm(env, exe, repo, "remove --force feat")
 
 
+def test_a_start_ends_a_session_left_under_its_pane_name(
+    mux_server, workmux_exe_path: Path, mux_repo_path: Path, node: Node, tmp_path: Path
+):
+    """A start that dies after creating a pane's session leaves it behind
+    unrecorded, and a retry of that start names the pane the same. The node
+    ends a session under the pane's name before it creates the pane's own."""
+    env, exe, repo = mux_server, workmux_exe_path, mux_repo_path
+    claude = write_script(
+        tmp_path / "claude", "echo AGENT-UP\nwhile read -r line; do :; done\n"
+    )
+    commit_project(
+        repo,
+        {"nerdfont": False, "agent": str(claude), "panes": [{"command": "<agent>"}]},
+    )
+    added = wm(env, exe, repo, "add feat --remote lo")
+    assert "Successfully created remote workspace" in added.stdout, added.stderr
+    node.wait_for_agent(env, "feat", "AGENT-UP")
+    [record] = local_records(env)
+    [session] = record["execution"]["rex"]["sessions"].values()
+    rex_of(node).api("session.destroy", {"session_id": session})
+
+    ex_id = "x0123456789ab"
+    label = f"{node.tag}{ex_id}-0"
+
+    def named_for_the_pane() -> list:
+        sessions = rex_of(node).api("session.list")["sessions"]
+        return [s["session_id"] for s in sessions if s["label"] == label]
+
+    node.plant_session(f"{ex_id}-0")
+    [orphan] = named_for_the_pane()
+    start = {"ws_id": record["ws_id"], "ex_id": ex_id, "use_prompt": False}
+    started = subprocess.run(
+        [str(node.root / "bin" / record["execution"]["node_bin"]), "node"]
+        + ["start-execution", "--json"],
+        input=json.dumps({**start, "run_commands": True, "terminal": "rex"}),
+        env={
+            **env.env,
+            **LOOPBACK,
+            "WORKMUX_NODE_ROOT": str(node.root),
+            "XDG_STATE_HOME": str(node.root / "state"),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert started.returncode == 0, started.stdout + started.stderr
+    [own] = json.loads(started.stdout.splitlines()[-1])["rex"]["sessions"].values()
+    assert own != orphan
+    assert named_for_the_pane() == [own]
+    wm(env, exe, repo, "remove --force feat")
+
+
+def test_a_start_whose_old_block_will_not_close_names_block_close(
+    mux_server, workmux_exe_path: Path, mux_repo_path: Path, node: Node, tmp_path: Path
+):
+    """The agent's block replaces the session's first block. A close Rex
+    refuses fails the start and names `block.close`, not the script."""
+    env = mux_server
+    shim = tmp_path / "rex-shim"
+    shim.mkdir()
+    nil = "block:00000000-0000-0000-0000-000000000000"
+    write_script(
+        shim / "rex",
+        # Close a block that names nothing in place of the old one.
+        "for a do\n"
+        "  shift\n"
+        '  case "$a" in *"block_id = a.old"*)\n'
+        f"    a=$(printf '%s' \"$a\" | sed 's/block_id = a\\.old/block_id = \"{nil}\"/');;\n"
+        "  esac\n"
+        '  set -- "$@" "$a"\n'
+        "done\n"
+        f'exec {shlex.quote(str(rex_of(node).rex))} "$@"\n',
+    )
+    claude = write_script(
+        tmp_path / "claude", "echo AGENT-UP\nwhile read -r line; do :; done\n"
+    )
+    commit_project(
+        mux_repo_path,
+        {"nerdfont": False, "agent": str(claude), "panes": [{"command": "<agent>"}]},
+    )
+    added = wm(
+        env,
+        workmux_exe_path,
+        mux_repo_path,
+        "add feat --remote lo",
+        {"REX_BIN_DIR": str(shim)},
+        expect_fail=True,
+    )
+    assert "Successfully created remote workspace" not in added.stdout, added.stdout
+    assert "rex block.close failed" in added.stderr, added.stdout + added.stderr
+    assert "code=bad_request" in added.stderr, added.stderr
+    wm(env, workmux_exe_path, mux_repo_path, "remove --force feat")
+
+
 def test_a_hosted_start_runs_four_rex_processes(
     mux_server, workmux_exe_path: Path, mux_repo_path: Path, node: Node, tmp_path: Path
 ):

@@ -142,7 +142,7 @@ impl SessionHost {
             Self::Rex(rex) => {
                 // The shell flavor takes no environment, so each block sources
                 // it from its own read-once file.
-                let env = block_env(spec);
+                let env = block_env(spec, std::env::vars());
                 let shell_env = secrets::export_file(root, &format!("{}.shell", spec.name), &env)?;
                 let label = rex.label(spec.name);
                 let (session, block) = rex.mux.create_hosted_session(
@@ -216,9 +216,10 @@ fn session_env(spec: &NewSession) -> Secrets {
 /// otherwise run with the Rex server's environment, which differs from the
 /// node's; on WSL it carries the Windows PATH, whose drvfs directories make
 /// shell startup files that search PATH take a second.
-fn block_env(spec: &NewSession) -> Secrets {
+fn block_env(spec: &NewSession, node_env: impl IntoIterator<Item = (String, String)>) -> Secrets {
     let mut env = Secrets(
-        std::env::vars()
+        node_env
+            .into_iter()
             .filter(|(name, value)| {
                 !super::execution::SESSION_EXCLUDED_ENV.contains(&name.as_str())
                     && !block_own_env(name)
@@ -952,6 +953,12 @@ mod tests {
                 Some("handshake"),
             );
             assert_eq!(respawned.is_ok(), ok, "{close_error}: {respawned:?}");
+            if let Err(err) = respawned {
+                assert_eq!(
+                    format!("{err:#}"),
+                    format!("rex block.close failed: {close_error}")
+                );
+            }
         }
     }
 
@@ -1086,15 +1093,18 @@ mod tests {
             assert!(!block_own_env(name), "{name}");
         }
         let root = Path::new("/node");
-        let env = block_env(&NewSession {
-            name: "x0123456789ab-0",
-            window_label: "feat-r",
-            conf: Path::new("/unused"),
-            cwd: Path::new("/work"),
-            config_path: Path::new("/node/config.json"),
-            spawn_env: Some((root, "w0123456789ab")),
-            secrets: &Secrets::default(),
-        });
+        let env = block_env(
+            &NewSession {
+                name: "x0123456789ab-0",
+                window_label: "feat-r",
+                conf: Path::new("/unused"),
+                cwd: Path::new("/work"),
+                config_path: Path::new("/node/config.json"),
+                spawn_env: Some((root, "w0123456789ab")),
+                secrets: &Secrets::default(),
+            },
+            std::env::vars(),
+        );
         assert_eq!(
             env.0
                 .get(super::super::spawn::SESSION_ROOT_ENV)
@@ -1106,6 +1116,43 @@ mod tests {
             "{:?}",
             env.0.keys()
         );
+    }
+
+    #[test]
+    fn a_block_gets_none_of_the_variables_a_tmux_session_is_kept_from() {
+        let node = |name: &str, value: &str| (name.to_string(), value.to_string());
+        let env = block_env(
+            &NewSession {
+                name: "x0123456789ab-0",
+                window_label: "feat-r",
+                conf: Path::new("/unused"),
+                cwd: Path::new("/work"),
+                config_path: Path::new("/node/config.json"),
+                spawn_env: None,
+                secrets: &Secrets::default(),
+            },
+            [
+                node("PATH", "/usr/bin"),
+                node("TMUX", "/tmp/tmux-1000/default,1,0"),
+                node("XDG_STATE_HOME", "/node/state"),
+                node(super::super::NODE_ROOT_ENV, "/node"),
+                node(super::super::spawn::SESSION_ROOT_ENV, "/node"),
+                node(super::super::spawn::SESSION_WORKSPACE_ENV, "w999999999999"),
+                node(crate::frozen_config::FROZEN_CONFIG_ENV, "/node/other.json"),
+            ],
+        );
+        assert_eq!(env.0.get("PATH").map(String::as_str), Some("/usr/bin"));
+        for name in super::super::execution::SESSION_EXCLUDED_ENV {
+            if name == crate::frozen_config::FROZEN_CONFIG_ENV {
+                // The session's own config replaces the node's.
+                assert_eq!(
+                    env.0.get(name).map(String::as_str),
+                    Some("/node/config.json")
+                );
+            } else {
+                assert!(!env.0.contains_key(name), "{name}: {:?}", env.0);
+            }
+        }
     }
 
     #[test]

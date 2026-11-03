@@ -2465,8 +2465,23 @@ mod tests {
             "{write:?}"
         );
         // An agent may take text and Enter that arrive together as a paste.
-        fake.rex.send_keys(block, "do it").unwrap();
+        fake.rex
+            .send_keys_to_agent(block, "do it", Some("claude"))
+            .unwrap();
         assert_eq!(fake.calls("write").len(), 3);
+    }
+
+    #[test]
+    fn a_script_never_reaches_an_unsupported_server() {
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let fake = FakeRex::new(&[("server.version", r#"{"rex_version":"t","api_revision":3}"#)])
+            .in_pane("session:s", block);
+        let err = fake
+            .rex
+            .respawn_pane(block, Path::new("/work"), Some("handshake"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("unsupported Rex t"), "{err:#}");
+        assert!(fake.calls(" do ").is_empty(), "{:?}", fake.calls(""));
     }
 
     #[test]
