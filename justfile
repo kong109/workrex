@@ -62,7 +62,7 @@ install-release:
 
 # Install debug binary globally via symlink
 install-dev:
-    cargo build && ln -sf $(pwd)/target/debug/workrex ~/.cargo/bin/workrex
+    cargo build && ln -sf $(pwd)/target/debug/workmux ~/.cargo/bin/workmux
 
 # Build this tree on a Linux remote for `remotes.<name>.binary` (HANDLE: ~/src/HANDLE)
 remote-dev-binary host handle="dev":

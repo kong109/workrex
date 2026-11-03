@@ -72,7 +72,7 @@ impl Row {
     }
 
     pub(super) fn fix(mut self, fix: impl Into<String>) -> Self {
-        self.fix = Some(fix.into());
+        self.fix = Some(crate::bin_name::rebrand_text(&fix.into()));
         self
     }
 }
@@ -609,7 +609,10 @@ mod tests {
         );
         let node = row(&rows, "node");
         assert_eq!(node.level, Level::Fail);
-        assert_eq!(node.fix.as_deref(), Some("workmux remote setup hetzner"));
+        assert_eq!(
+            node.fix.as_deref(),
+            Some(crate::rebrand!("workmux remote setup hetzner"))
+        );
 
         let mut hello = Hello::local();
         hello.protocol = 999;
@@ -844,7 +847,7 @@ mod tests {
         );
         let fix = rows[1].fix.as_deref().unwrap();
         assert!(
-            fix.starts_with("workmux remote login hetzner codex"),
+            fix.starts_with(crate::rebrand!("workmux remote login hetzner codex")),
             "{fix}"
         );
     }

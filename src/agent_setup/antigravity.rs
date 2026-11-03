@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use super::{StatusCheck, UpdatePreview};
 
-const WORKMUX_GROUP: &str = "workmux-status";
+const WORKMUX_GROUP: &str = concat!(env!("CARGO_BIN_NAME"), "-status");
 const REGISTER_COMMAND: &str =
     crate::rebrand!("workmux register-agent >/dev/null 2>&1 || true; printf '{}\\n'");
 const WORKING_COMMAND: &str =
@@ -23,7 +23,7 @@ fn gemini_dir() -> Option<PathBuf> {
     home::home_dir().map(|home| home.join(".gemini"))
 }
 
-fn hooks_path() -> Option<PathBuf> {
+pub(crate) fn hooks_path() -> Option<PathBuf> {
     gemini_dir().map(|dir| dir.join("config").join("hooks.json"))
 }
 

@@ -398,7 +398,9 @@ impl DashboardConfig {
     }
 
     pub fn merge(&self) -> &str {
-        self.merge.as_deref().unwrap_or("!workmux merge")
+        self.merge
+            .as_deref()
+            .unwrap_or(crate::bin_name::MERGE_ACTION)
     }
 
     /// Get the preview size percentage (clamped to 10-90).

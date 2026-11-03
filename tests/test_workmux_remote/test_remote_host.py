@@ -17,6 +17,7 @@ from typing import Iterator
 import pytest
 import yaml
 
+from ..support.bin_name import rebrand
 from .conftest import RemoteCli, dev_pin, write_script
 
 HOST = os.environ.get("WORKMUX_REMOTE_TEST_HOST")
@@ -151,7 +152,7 @@ def test_protocol_mismatch_is_clear(node: Node, tmp_path: Path):
     result = node.cli.run("remote", "setup", "e2e")
 
     assert result.returncode == 1
-    assert "speaks protocol 999 (workmux 9.9.9)" in result.stderr
+    assert rebrand("speaks protocol 999 (workmux 9.9.9)") in result.stderr
     assert node.ls_bin() == []
 
 

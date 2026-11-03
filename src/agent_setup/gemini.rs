@@ -16,7 +16,7 @@ use crate::agent_setup::json_config::{
 };
 
 /// Hooks configuration embedded at compile time.
-const HOOKS_JSON: &str = crate::rebrand!(include_str!("../../resources/gemini/settings.json"));
+const HOOKS_JSON: &str = crate::rebrand_include!("../../resources/gemini/settings.json");
 
 fn gemini_dir() -> Option<PathBuf> {
     gemini_dir_from_env(
@@ -40,7 +40,7 @@ fn gemini_dir_from_env(
         .or_else(|| home.map(|home| home.join(".gemini")))
 }
 
-fn settings_path() -> Option<PathBuf> {
+pub(crate) fn settings_path() -> Option<PathBuf> {
     gemini_dir().map(|d| d.join("settings.json"))
 }
 
@@ -305,7 +305,7 @@ mod tests {
         let settings_path = tmp.path().join("settings.json");
         std::fs::write(
             &settings_path,
-            r#"{"hooks":{"AfterAgent":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]},{"hooks":[{"type":"command","command":"python3 my-hook.py"}]}]}}"#,
+            crate::rebrand!(r#"{"hooks":{"AfterAgent":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]},{"hooks":[{"type":"command","command":"python3 my-hook.py"}]}]}}"#),
         )
         .unwrap();
         let result = uninstall_at(settings_path.clone()).unwrap();
@@ -328,7 +328,7 @@ mod tests {
         let settings_path = tmp.path().join("settings.json");
         std::fs::write(
             &settings_path,
-            r#"{"hooks":{"AfterAgent":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#,
+            crate::rebrand!(r#"{"hooks":{"AfterAgent":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#),
         )
         .unwrap();
         let result1 = uninstall_at(settings_path.clone()).unwrap();

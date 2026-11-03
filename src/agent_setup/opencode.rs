@@ -19,9 +19,8 @@ use std::process::Command;
 use super::{StatusCheck, UpdatePreview};
 
 /// OpenCode distribution files, embedded at compile time.
-const PLUGIN_SOURCE: &str = crate::rebrand!(include_str!(
-    "../../resources/opencode/plugins/workmux-status.ts"
-));
+const PLUGIN_SOURCE: &str =
+    crate::rebrand_include!("../../resources/opencode/plugins/workmux-status.ts");
 const PACKAGE_JSON: &str = include_str!("../../resources/opencode/package.json");
 const MANIFEST_FILE: &str = ".workmux-status.json";
 // SHA-256 of shipped sources before installation manifests were introduced.
@@ -36,21 +35,15 @@ const V1_FINGERPRINTS: &[&str] = &[
 const V2_FILES: &[(&str, &str)] = &[
     (
         "index.ts",
-        crate::rebrand!(include_str!(
-            "../../resources/opencode/v2/workmux-status/index.ts"
-        )),
+        crate::rebrand_include!("../../resources/opencode/v2/workmux-status/index.ts"),
     ),
     (
         "tui.ts",
-        crate::rebrand!(include_str!(
-            "../../resources/opencode/v2/workmux-status/tui.ts"
-        )),
+        crate::rebrand_include!("../../resources/opencode/v2/workmux-status/tui.ts"),
     ),
     (
         "status.ts",
-        crate::rebrand!(include_str!(
-            "../../resources/opencode/v2/workmux-status/status.ts"
-        )),
+        crate::rebrand_include!("../../resources/opencode/v2/workmux-status/status.ts"),
     ),
 ];
 

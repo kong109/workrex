@@ -64,7 +64,7 @@ fn main() -> Result<()> {
             if !deferred_cleanup_worker {
                 error!(error = ?err, "workmux failed");
             }
-            Err(err)
+            Err(bin_name::rebrand_error(err))
         }
     }
 }

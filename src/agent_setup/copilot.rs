@@ -12,12 +12,11 @@ use std::path::{Path, PathBuf};
 use super::{StatusCheck, UpdatePreview};
 
 /// Hooks configuration embedded at compile time.
-const HOOKS_JSON: &str = crate::rebrand!(include_str!(
-    "../../resources/copilot/hooks/workmux-status/hooks.json"
-));
-const HOOKS_FILE_NAME: &str = "workmux-status.json";
+const HOOKS_JSON: &str =
+    crate::rebrand_include!("../../resources/copilot/hooks/workmux-status/hooks.json");
+const HOOKS_FILE_NAME: &str = concat!(env!("CARGO_BIN_NAME"), "-status.json");
 
-fn copilot_dir() -> Option<PathBuf> {
+pub(crate) fn copilot_dir() -> Option<PathBuf> {
     copilot_dir_from_env(
         home::home_dir(),
         std::env::var_os("COPILOT_HOME"),
@@ -72,20 +71,12 @@ fn check_at(path: &Path) -> Result<StatusCheck> {
         .with_context(|| format!("Copilot hooks file is not valid JSON: {}", path.display()))?;
 
     let required = [
-        ("sessionStart", crate::rebrand!("workmux register-agent")),
-        (
-            "userPromptSubmitted",
-            crate::rebrand!("workmux set-window-status working"),
-        ),
-        (
-            "postToolUse",
-            crate::rebrand!("workmux set-window-status working"),
-        ),
-        (
-            "agentStop",
-            crate::rebrand!("workmux set-window-status done"),
-        ),
-    ];
+        ("sessionStart", "workmux register-agent"),
+        ("userPromptSubmitted", "workmux set-window-status working"),
+        ("postToolUse", "workmux set-window-status working"),
+        ("agentStop", "workmux set-window-status done"),
+    ]
+    .map(|(event, command)| (event, command.replacen("workmux", crate::bin_name::BIN, 1)));
     if config.get("version").and_then(Value::as_u64) == Some(1)
         && required
             .iter()
@@ -227,7 +218,7 @@ mod tests {
     #[test]
     fn personal_hooks_path_is_under_resolved_root() {
         let root = Path::new("/custom/copilot");
-        assert_eq!(hooks_file_at(root), root.join("hooks/workmux-status.json"));
+        assert_eq!(hooks_file_at(root), root.join("hooks/workrex-status.json"));
     }
 
     #[test]

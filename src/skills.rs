@@ -21,27 +21,27 @@ pub struct BundledSkill {
 pub const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
         name: "merge",
-        content: crate::rebrand!(include_str!("../skills/merge/SKILL.md")),
+        content: crate::rebrand_include!("../skills/merge/SKILL.md"),
     },
     BundledSkill {
         name: "rebase",
-        content: crate::rebrand!(include_str!("../skills/rebase/SKILL.md")),
+        content: crate::rebrand_include!("../skills/rebase/SKILL.md"),
     },
     BundledSkill {
         name: "worktree",
-        content: crate::rebrand!(include_str!("../skills/worktree/SKILL.md")),
+        content: crate::rebrand_include!("../skills/worktree/SKILL.md"),
     },
     BundledSkill {
         name: "coordinator",
-        content: crate::rebrand!(include_str!("../skills/coordinator/SKILL.md")),
+        content: crate::rebrand_include!("../skills/coordinator/SKILL.md"),
     },
     BundledSkill {
         name: "open-pr",
-        content: crate::rebrand!(include_str!("../skills/open-pr/SKILL.md")),
+        content: crate::rebrand_include!("../skills/open-pr/SKILL.md"),
     },
     BundledSkill {
         name: crate::bin_name::BIN,
-        content: crate::rebrand!(include_str!("../skills/workmux/SKILL.md")),
+        content: crate::rebrand_include!("../skills/workmux/SKILL.md"),
     },
 ];
 

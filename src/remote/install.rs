@@ -173,7 +173,7 @@ pub fn setup(spec: &RemoteSpec) -> Result<()> {
             println!("Downloading workmux v{version} for {platform}...");
             crate::command::update::fetch_release_binary(
                 version,
-                &crate::command::update::release_artifact(platform),
+                &crate::bin_name::release_artifact(platform)?,
                 temp_dir.path(),
                 &|_| {},
             )

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 import pytest
 import yaml
 
+from .support.bin_name import BIN
 from .support.executable import SCRIPT_RUNNER, install_script
 
 
@@ -1333,16 +1334,6 @@ class WorkmuxCommandResult:
     exit_code: int
     stdout: str
     stderr: str
-
-
-BIN = "workrex"
-
-
-def rebrand(text: str) -> str:
-    """Apply the binary rename that `rebrand!` applies to embedded hook and skill text."""
-    return re.sub(
-        r"(?:(?<![\w./@:-])|(?<=[\s\"'`(]/))workmux(?![\w/@:-]|\.[^\W_])", BIN, text
-    )
 
 
 @pytest.fixture(scope="session")

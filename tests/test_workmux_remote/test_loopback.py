@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ..conftest import rebrand
+from ..support.bin_name import BIN, hook_bin, rebrand
 from .conftest import RemoteCli, dev_pin, write_script
 
 FAKE_PROTOCOL_999 = (
@@ -163,7 +163,7 @@ def test_setup_rejects_protocol_mismatch(loopback_cli: RemoteCli, tmp_path: Path
     result = loopback_cli.run("remote", "setup", "lo")
 
     assert result.returncode == 1
-    assert "speaks protocol 999 (workmux 9.9.9)" in result.stderr
+    assert rebrand("speaks protocol 999 (workmux 9.9.9)") in result.stderr
     assert "speaks protocol 1" in result.stderr
     assert "remotes.lo.binary" in result.stderr
     assert list(bin_dir.iterdir()) == []
@@ -196,7 +196,7 @@ def test_setup_rejects_binary_that_is_not_a_node(
     result = loopback_cli.run("remote", "setup", "lo")
 
     assert result.returncode == 1
-    assert "does not run as workmux" in result.stderr
+    assert rebrand("does not run as workmux") in result.stderr
     assert "hello world" in result.stderr
     assert list(bin_dir.iterdir()) == []
 
@@ -326,13 +326,13 @@ def test_setup_installs_status_hooks_where_containers_mount_them(
     assert "installed status hooks for Claude Code, Codex, Gemini CLI" in result.stdout
     for settings in [".claude/settings.json", ".gemini/settings.json"]:
         hooks = json.loads((home / settings).read_text())["hooks"]
-        assert rebrand("workmux set-window-status") in json.dumps(hooks), settings
+        assert f"{hook_bin()} set-window-status" in json.dumps(hooks), settings
     assert (
         rebrand("workmux set-window-status") in (home / ".codex/hooks.json").read_text()
     )
     assert "hooks = true" in (home / ".codex/config.toml").read_text()
     for agent_dir in [".pi/agent", ".omp/agent"]:
-        assert (home / agent_dir / "extensions/workmux-status.ts").is_file()
+        assert (home / agent_dir / f"extensions/{BIN}-status.ts").is_file()
     claude = (home / ".claude/settings.json").stat()
 
     again = loopback_cli.run("remote", "setup", "lo")
@@ -365,7 +365,7 @@ def test_doctor_reports_status_hooks(loopback_cli: RemoteCli, workmux_exe_path: 
 
     assert "✓ hooks      installed for Claude Code" in ready.stdout, ready.stdout
     assert "! hooks      missing for Claude Code" in missing.stdout, missing.stdout
-    assert "fix: workmux remote setup lo" in missing.stdout
+    assert rebrand("fix: workmux remote setup lo") in missing.stdout
     assert loopback_cli.run("remote", "setup", "lo").returncode == 0
     assert json.loads(settings.read_text())["theme"] == "dark"
     assert "✓ hooks" in loopback_cli.run("remote", "doctor", "lo").stdout

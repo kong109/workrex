@@ -82,6 +82,7 @@ fn run_hooks_setup(checks: &[agent_setup::AgentCheck]) -> Result<()> {
         }
     }
 
+    crate::bin_name::warn_upstream_hooks(checks.iter().map(|check| check.agent));
     if !any_needed {
         println!(
             "  {}",

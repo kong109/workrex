@@ -994,7 +994,7 @@ fn should_announce_remotes(cmd: &Commands) -> bool {
 
 // --- Public Entry Point ---
 pub fn run() -> Result<()> {
-    let cli = match Cli::try_parse() {
+    let cli = match crate::bin_name::parse::<Cli>() {
         Ok(cli) => cli,
         Err(mut e) => {
             // Filter hidden (underscore-prefixed) commands from "similar subcommands" suggestions.
@@ -1446,7 +1446,7 @@ fn prune_claude_config() -> Result<()> {
 }
 
 fn generate_completions(shell: Shell) {
-    let mut cmd = Cli::command();
+    let mut cmd = crate::bin_name::rebrand_command(Cli::command());
     let name = cmd.get_name().to_string();
 
     // Generate base completions
@@ -1506,27 +1506,15 @@ fn prepare_zsh_base(script: &str, name: &str) -> String {
 }
 
 fn print_zsh_dynamic_completion() {
-    print!(
-        "{}",
-        include_str!("scripts/completions/zsh_dynamic.zsh")
-            .replace("workmux", crate::bin_name::BIN)
-    );
+    crate::bin_name::print_completion(include_str!("scripts/completions/zsh_dynamic.zsh"));
 }
 
 fn print_bash_dynamic_completion() {
-    print!(
-        "{}",
-        include_str!("scripts/completions/bash_dynamic.bash")
-            .replace("workmux", crate::bin_name::BIN)
-    );
+    crate::bin_name::print_completion(include_str!("scripts/completions/bash_dynamic.bash"));
 }
 
 fn print_fish_dynamic_completion() {
-    print!(
-        "{}",
-        include_str!("scripts/completions/fish_dynamic.fish")
-            .replace("workmux", crate::bin_name::BIN)
-    );
+    crate::bin_name::print_completion(include_str!("scripts/completions/fish_dynamic.fish"));
 }
 
 #[cfg(test)]

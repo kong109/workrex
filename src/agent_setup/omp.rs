@@ -13,9 +13,8 @@ use super::{StatusCheck, UpdatePreview};
 use crate::agent_setup::extension_file;
 
 /// The OMP extension source, embedded at compile time.
-const EXTENSION_SOURCE: &str = crate::rebrand!(include_str!(
-    "../../resources/omp/extensions/workmux-status.ts"
-));
+const EXTENSION_SOURCE: &str =
+    crate::rebrand_include!("../../resources/omp/extensions/workmux-status.ts");
 
 fn omp_agent_dir() -> Option<PathBuf> {
     let home = home::home_dir()?;
@@ -46,7 +45,7 @@ pub(crate) fn extension_path() -> Option<PathBuf> {
 }
 
 fn extension_path_in(agent_dir: &Path) -> PathBuf {
-    agent_dir.join("extensions/workmux-status.ts")
+    agent_dir.join(concat!("extensions/", env!("CARGO_BIN_NAME"), "-status.ts"))
 }
 
 /// Detect if OMP is present via filesystem.

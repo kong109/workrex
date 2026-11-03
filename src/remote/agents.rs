@@ -253,7 +253,9 @@ pub fn label(worktree: &str, remote: &str) -> String {
 pub fn connectivity(remote: &RemoteAgent, now: u64) -> Option<String> {
     if remote.connected {
         return remote.ended.map(|reason| match reason {
-            EndReason::HostReboot => "exited · host rebooted · `workmux open` resumes".to_string(),
+            EndReason::HostReboot => {
+                crate::rebrand!("exited · host rebooted · `workmux open` resumes").to_string()
+            }
         });
     }
     Some(match remote.last_seen {
@@ -303,7 +305,7 @@ pub fn open_window(remote: &RemoteAgent) -> Result<()> {
         stderr
             .lines()
             .rfind(|line| !line.trim().is_empty())
-            .unwrap_or("workmux open failed")
+            .unwrap_or(crate::rebrand!("workmux open failed"))
     ))
 }
 

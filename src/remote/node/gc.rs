@@ -655,8 +655,8 @@ fn unused_pins(
             }
         }
     }
-    let wrapper =
-        fs::read_to_string(root.path.join("run").join("bin").join("workmux")).unwrap_or_default();
+    let wrapper = fs::read_to_string(root.path.join("run").join("bin").join(crate::bin_name::BIN))
+        .unwrap_or_default();
     let bin = root.path.join("bin");
     for entry in read_dir(Path::new("/proc")) {
         if let Ok(exe) = fs::read_link(entry.join("exe"))

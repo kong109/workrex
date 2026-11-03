@@ -9,9 +9,9 @@ from ..conftest import (
     get_scripts_dir,
     make_env_script,
     poll_until_file_has_content,
-    rebrand,
     wait_for_pane_output,
 )
+from .bin_name import rebrand
 
 
 def write_claude_manual_status_hook(claude_dir: Path) -> None:

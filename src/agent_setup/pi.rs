@@ -12,9 +12,8 @@ use super::{StatusCheck, UpdatePreview};
 use crate::agent_setup::extension_file;
 
 /// The pi extension source, embedded at compile time.
-const EXTENSION_SOURCE: &str = crate::rebrand!(include_str!(
-    "../../resources/pi/extensions/workmux-status.ts"
-));
+const EXTENSION_SOURCE: &str =
+    crate::rebrand_include!("../../resources/pi/extensions/workmux-status.ts");
 
 fn pi_agent_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
@@ -28,7 +27,7 @@ pub(crate) fn extension_path() -> Option<PathBuf> {
 }
 
 fn extension_path_in(agent_dir: &Path) -> PathBuf {
-    agent_dir.join("extensions/workmux-status.ts")
+    agent_dir.join(concat!("extensions/", env!("CARGO_BIN_NAME"), "-status.ts"))
 }
 
 /// Detect if pi is present via filesystem.

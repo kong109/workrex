@@ -1286,7 +1286,7 @@ pub fn deny_mode_run_flags() -> Vec<String> {
 use crate::shell::shell_escape;
 
 /// Shell words that start the sandbox supervisor, resolved through `PATH`.
-const DEFAULT_SUPERVISOR: &str = "workmux sandbox run";
+const DEFAULT_SUPERVISOR: &str = crate::rebrand!("workmux sandbox run");
 
 /// Wrap a command to run inside a Docker/Podman container via the sandbox supervisor.
 ///
@@ -2154,7 +2154,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(result.starts_with(" workmux sandbox run"));
+        assert!(result.starts_with(crate::rebrand!(" workmux sandbox run")));
         assert!(result.contains("'/tmp/project'"));
         assert!(result.contains("-- 'claude'"));
         // Should NOT contain --worktree-root when paths are equal

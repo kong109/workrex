@@ -191,7 +191,10 @@ mod tests {
                 (Level::Warn, "Oh My Pi: why"),
             ]
         );
-        assert_eq!(rows[1].fix.as_deref(), Some("workmux remote setup hz"));
+        assert_eq!(
+            rows[1].fix.as_deref(),
+            Some(crate::rebrand!("workmux remote setup hz"))
+        );
     }
 
     #[test]

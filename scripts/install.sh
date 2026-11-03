@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# workrex installation script
-# Usage: curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/install.sh | bash
+# workmux installation script
+# Usage: curl -fsSL https://raw.githubusercontent.com/raine/workmux/main/scripts/install.sh | bash
 #
 # Environment variables:
 #   WORKMUX_VERSION      - Pin a specific version (e.g., v0.1.96)
@@ -56,9 +56,9 @@ detect_platform() {
 	*)
 		log_error "Unsupported operating system: $(uname -s)"
 		echo ""
-		echo "workrex supports macOS and Linux."
+		echo "workmux supports macOS and Linux."
 		echo "For other platforms, try building from source with Cargo:"
-		echo "  cargo install --git https://github.com/kong109/workrex"
+		echo "  cargo install workmux"
 		echo ""
 		exit 1
 		;;
@@ -74,9 +74,9 @@ detect_platform() {
 	*)
 		log_error "Unsupported architecture: $(uname -m)"
 		echo ""
-		echo "workrex prebuilt binaries are available for amd64 and arm64."
+		echo "workmux prebuilt binaries are available for amd64 and arm64."
 		echo "For other architectures, try building from source with Cargo:"
-		echo "  cargo install --git https://github.com/kong109/workrex"
+		echo "  cargo install workmux"
 		echo ""
 		exit 1
 		;;
@@ -100,20 +100,20 @@ check_dependencies() {
 	if [ ${#missing[@]} -gt 0 ]; then
 		log_warning "Missing required dependencies: ${missing[*]}"
 		echo ""
-		echo "workrex requires git and tmux to function."
+		echo "workmux requires git and tmux to function."
 		echo "Please install them first:"
 		echo "  - macOS: brew install git tmux"
 		echo "  - Ubuntu/Debian: sudo apt install git tmux"
 		echo "  - Other Linux: Use your distro's package manager"
 		echo ""
-		echo "Installation will continue, but workrex won't work until dependencies are installed."
+		echo "Installation will continue, but workmux won't work until dependencies are installed."
 		echo ""
 	fi
 }
 
 # Download and install from GitHub releases
 install_from_release() {
-	log_info "Installing workrex from GitHub releases..."
+	log_info "Installing workmux from GitHub releases..."
 
 	local platform=$1
 	local tmp_dir
@@ -125,7 +125,7 @@ install_from_release() {
 
 	if [ -z "$version" ]; then
 		log_info "Fetching latest release..."
-		local latest_url="https://api.github.com/repos/kong109/workrex/releases/latest"
+		local latest_url="https://api.github.com/repos/raine/workmux/releases/latest"
 		local release_json
 
 		if command -v curl &>/dev/null; then
@@ -153,8 +153,8 @@ install_from_release() {
 	log_info "Installing version: $version"
 
 	# Download URL
-	local archive_name="workrex-${platform}.tar.gz"
-	local download_url="https://github.com/kong109/workrex/releases/download/${version}/${archive_name}"
+	local archive_name="workmux-${platform}.tar.gz"
+	local download_url="https://github.com/raine/workmux/releases/download/${version}/${archive_name}"
 
 	log_info "Downloading $archive_name..."
 
@@ -165,7 +165,7 @@ install_from_release() {
 			echo ""
 			echo "The release may not have a prebuilt binary for your platform."
 			echo "Try installing with Cargo instead:"
-			echo "  cargo install --git https://github.com/kong109/workrex"
+			echo "  cargo install workmux"
 			echo ""
 			cd - >/dev/null || cd "$HOME"
 			exit 1
@@ -176,7 +176,7 @@ install_from_release() {
 			echo ""
 			echo "The release may not have a prebuilt binary for your platform."
 			echo "Try installing with Cargo instead:"
-			echo "  cargo install --git https://github.com/kong109/workrex"
+			echo "  cargo install workmux"
 			echo ""
 			cd - >/dev/null || cd "$HOME"
 			exit 1
@@ -186,7 +186,7 @@ install_from_release() {
 	# Download and verify checksum
 	log_info "Verifying checksum..."
 	local checksum_file="${archive_name%.tar.gz}.sha256"
-	local checksum_url="https://github.com/kong109/workrex/releases/download/${version}/${checksum_file}"
+	local checksum_url="https://github.com/raine/workmux/releases/download/${version}/${checksum_file}"
 
 	if command -v curl &>/dev/null; then
 		if ! curl -fsSL --retry 3 --retry-connrefused --connect-timeout 10 --max-time 30 -o "$checksum_file" "$checksum_url"; then
@@ -248,36 +248,36 @@ install_from_release() {
 	fi
 
 	# Check for existing installation
-	if [ -f "$install_dir/workrex" ]; then
+	if [ -f "$install_dir/workmux" ]; then
 		local existing_version
-		existing_version=$("$install_dir/workrex" --version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+		existing_version=$("$install_dir/workmux" --version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
 		log_info "Existing installation found: $existing_version"
 		log_info "Upgrading to: $version"
 	fi
 
 	# Install binary atomically
 	log_info "Installing to $install_dir..."
-	local tmp_binary="$install_dir/workrex.tmp.$$"
+	local tmp_binary="$install_dir/workmux.tmp.$$"
 
 	if [[ -w "$install_dir" ]]; then
-		cp workrex "$tmp_binary"
+		cp workmux "$tmp_binary"
 		chmod +x "$tmp_binary"
-		mv -f "$tmp_binary" "$install_dir/workrex"
+		mv -f "$tmp_binary" "$install_dir/workmux"
 	else
-		if ! sudo cp workrex "$tmp_binary"; then
+		if ! sudo cp workmux "$tmp_binary"; then
 			log_error "Failed to install to $install_dir (sudo required)"
 			exit 1
 		fi
 		sudo chmod +x "$tmp_binary"
-		sudo mv -f "$tmp_binary" "$install_dir/workrex"
+		sudo mv -f "$tmp_binary" "$install_dir/workmux"
 	fi
 
 	# Remove macOS quarantine attribute if present
 	if [[ "$(uname -s)" == "Darwin" ]] && command -v xattr &>/dev/null; then
-		xattr -d com.apple.quarantine "$install_dir/workrex" 2>/dev/null || true
+		xattr -d com.apple.quarantine "$install_dir/workmux" 2>/dev/null || true
 	fi
 
-	log_success "workrex installed to $install_dir/workrex"
+	log_success "workmux installed to $install_dir/workmux"
 
 	# Check if install_dir is in PATH
 	if [[ ":$PATH:" != *":$install_dir:"* ]]; then
@@ -299,24 +299,24 @@ verify_installation() {
 	local install_dir="$1"
 
 	# Verify the binary exists and is executable
-	if [ ! -x "$install_dir/workrex" ]; then
-		log_error "workrex binary not found or not executable at $install_dir/workrex"
+	if [ ! -x "$install_dir/workmux" ]; then
+		log_error "workmux binary not found or not executable at $install_dir/workmux"
 		exit 1
 	fi
 
 	# Test the binary works
-	if ! "$install_dir/workrex" --version &>/dev/null; then
-		log_error "workrex binary exists but failed to run"
+	if ! "$install_dir/workmux" --version &>/dev/null; then
+		log_error "workmux binary exists but failed to run"
 		exit 1
 	fi
 
-	log_success "workrex is installed and ready!"
+	log_success "workmux is installed and ready!"
 	echo ""
-	"$install_dir/workrex" --version
+	"$install_dir/workmux" --version
 	echo ""
 
 	# Check if install_dir is in PATH
-	if ! command -v workrex &>/dev/null; then
+	if ! command -v workmux &>/dev/null; then
 		log_warning "$install_dir is not in your PATH"
 		echo ""
 		echo "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
@@ -326,11 +326,11 @@ verify_installation() {
 
 	echo "Get started:"
 	echo "  cd your-project"
-	echo "  workrex init         # (optional) create .workmux.yaml config"
-	echo "  workrex add feature  # create a worktree and tmux window"
+	echo "  workmux init         # (optional) create .workmux.yaml config"
+	echo "  workmux add feature  # create a worktree and tmux window"
 	echo ""
 	echo "Recommended:"
-	echo "  alias wm='workrex'   # add to your shell profile for faster typing"
+	echo "  alias wm='workmux'   # add to your shell profile for faster typing"
 	echo ""
 	echo "Documentation: https://workmux.dev"
 	echo ""
@@ -339,7 +339,7 @@ verify_installation() {
 # Main installation flow
 main() {
 	echo ""
-	echo "🚀 workrex installer"
+	echo "🚀 workmux installer"
 	echo ""
 
 	log_info "Detecting platform..."
