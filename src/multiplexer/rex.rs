@@ -240,7 +240,7 @@ fn changes_nothing(args: &[&str]) -> bool {
 }
 
 /// Session reads a command can reuse. `writes` counts the writes that have
-/// returned, so a read that overlapped one is not stored.
+/// returned and each forget, so a read that overlapped one is not stored.
 #[derive(Debug, Default)]
 struct Reads {
     writes: u64,
@@ -786,11 +786,17 @@ impl RexBackend {
     ) -> CallResult<String> {
         let result = self.spawn(args, stdin, timeout);
         if !changes_nothing(args) {
-            let mut reads = self.reads.lock().unwrap();
-            reads.writes += 1;
-            reads.answers.clear();
+            self.forget_reads();
         }
         result
+    }
+
+    /// Drops every reused read, and keeps a read already under way from
+    /// being stored.
+    fn forget_reads(&self) {
+        let mut reads = self.reads.lock().unwrap();
+        reads.writes += 1;
+        reads.answers.clear();
     }
 
     fn spawn(
@@ -3099,7 +3105,7 @@ mod tests {
 
     impl FakeRex {
         /// Reuses reads for as long as a test runs, so only writes drop them.
-        fn reusing(mut self) -> Self {
+        pub(super) fn reusing(mut self) -> Self {
             self.rex.reuse = Duration::from_secs(3600);
             self
         }

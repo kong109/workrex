@@ -427,11 +427,13 @@ impl RexBackend {
     ) -> Result<()> {
         let mut locked = self.lock_records()?;
         if let Some(left) = locked.records().restore.clone() {
-            let settled = left.timed_out_at.is_some()
-                && !left.may_still_land()
-                && self
-                    .raw_sessions()
-                    .is_ok_and(|live| left.is_in_place(&session_ids(&live)));
+            // The late landing happens behind this backend, so a list it
+            // reused from before the landing would show the order in place.
+            let settled = left.timed_out_at.is_some() && !left.may_still_land() && {
+                self.forget_reads();
+                self.raw_sessions()
+                    .is_ok_and(|live| left.is_in_place(&session_ids(&live)))
+            };
             let kept = if settled {
                 None
             } else {
@@ -1217,6 +1219,50 @@ esac
             fake.rex.records().restore,
             None,
             "found in place, so cleared"
+        );
+    }
+
+    /// The dashboard keeps one backend for its whole run, and its poll
+    /// lists the sessions shortly before the user closes one. A move that
+    /// lands after that list is still put back.
+    #[test]
+    fn a_late_landing_after_a_read_on_the_same_backend_is_put_back() {
+        let mut fake = ordered_fake(&[
+            ("session:first", "first"),
+            ("session:home", "home"),
+            ("session:v", "wm-v"),
+        ])
+        .reusing();
+        fake.rex
+            .update_records(|records| {
+                records.restore = Some(Restore {
+                    destination: "session:home".to_string(),
+                    order: vec![
+                        "session:first".to_string(),
+                        "session:home".to_string(),
+                        "session:v".to_string(),
+                    ],
+                    timed_out_at: Some(unix_millis() - 11_000),
+                });
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(labels(&fake), ["first", "home", "wm-v"], "the poll's read");
+        let landed = std::process::Command::new("sh")
+            .arg(fake.dir.path().join("order.sh"))
+            .args(["move", "session", "move", "session:home", "--index", "1"])
+            .output()
+            .unwrap();
+        assert!(landed.status.success(), "{landed:?}");
+
+        fake.rex
+            .close_session_with_id("session:gone", None)
+            .unwrap();
+        reopen(&mut fake);
+        assert_eq!(
+            labels(&fake),
+            ["first", "home", "wm-v"],
+            "the late landing was put back"
         );
     }
 }
