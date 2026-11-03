@@ -685,6 +685,7 @@ impl Follower {
     fn disconnect(&mut self) {
         self.observed.events_pid.store(0, Ordering::Relaxed);
         self.stream = None;
+        self.observed.program_status.follow(false);
     }
 
     /// Run owed work if there is any, keeping it on failure.
@@ -858,6 +859,7 @@ impl Server for Follower {
             .events_pid
             .store(stream.pid(), Ordering::Relaxed);
         self.stream = Some(stream);
+        self.observed.program_status.follow(true);
         Ok(boot_id)
     }
 
@@ -933,6 +935,7 @@ fn wake_daemon() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::multiplexer::{AgentStatus, Multiplexer, ReportedStatus};
 
     #[test]
     fn a_failed_pass_keeps_its_windows_owed_and_retries_on_backoff() {
@@ -986,6 +989,68 @@ mod tests {
             session_id: "session:1".into(),
             block_id: "block:1".into(),
         }]));
+    }
+
+    /// The daemon's tick reads program status through its own backend,
+    /// `mux`, and the follower's events keep what that backend read current.
+    #[test]
+    fn a_program_status_event_wakes_the_daemon_to_read_the_new_status() {
+        const PROCESS: &str = include_str!("../../../../multiplexer/testdata/rex_process.json");
+        let dir = tempfile::tempdir().unwrap();
+        let status = dir.path().join("status");
+        let process = dir.path().join("process");
+        std::fs::write(&process, PROCESS).unwrap();
+        let mux = RexBackend::scripted(
+            dir.path(),
+            format!(
+                "cat > /dev/null\ncase \"$*\" in\n\
+                 \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
+                 \x20 *whoami*) echo '{{\"endpoint\":\"unix:///s.sock\",\"instance_id\":\"boot\"}}';;\n\
+                 \x20 *events*) exec sleep 60;;\n\
+                 \x20 *program_status*) cat '{}';;\n\
+                 \x20 *process*) cat '{}';;\n\
+                 \x20 *) exit 1;;\nesac\n",
+                status.display(),
+                process.display(),
+            ),
+        );
+        let files = Files::at(dir.path().join("state"), "test");
+        let mut follower = Follower {
+            plane: Plane::new(mux.detached_for_events(), files, Config::default()).unwrap(),
+            observed: Arc::new(Observed::new(mux.program_statuses())),
+            stream: None,
+            work: Work::default(),
+        };
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let report = |state: &str| {
+            let record = format!(r#"{{"state":"{state}","updated_at":"2026-11-03T08:00:00Z"}}"#);
+            std::fs::write(&status, format!(r#"{{"records":[{record}]}}"#)).unwrap();
+        };
+        let shown = || match mux.reported_status(block) {
+            Some(ReportedStatus::Agent { status, .. }) => Some(status),
+            _ => None,
+        };
+
+        assert!(follower.connect().is_ok());
+        report("working");
+        assert_eq!(shown(), Some(AgentStatus::Working));
+        report("blocked");
+        assert_eq!(shown(), Some(AgentStatus::Working), "kept until an event");
+        assert!(follower.handle(vec![Event::ProgramStatusChanged {
+            session_id: "session:1".into(),
+            block_id: block.into(),
+            state: "blocked".into(),
+            kind: None,
+            app: None,
+        }]));
+        assert_eq!(shown(), Some(AgentStatus::Waiting));
+        report("done");
+        follower.disconnect();
+        assert_eq!(
+            shown(),
+            Some(AgentStatus::Done),
+            "kept past the stream's end"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,8 @@ mod status;
 
 pub use layer::LayerHint;
 use layer::LayerKind;
+pub(crate) use status::ProgramStatuses;
+use status::Read;
 
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
 const TERMINAL_CREATOR: &str = "com.superlogical.terminal";
@@ -676,7 +678,7 @@ pub struct RexBackend {
     caller: Caller,
     endpoint: OnceLock<String>,
     block_sessions: Mutex<HashMap<BlockId, SessionId>>,
-    program_status: Mutex<HashMap<BlockId, Option<ReportedStatus>>>,
+    program_status: Arc<ProgramStatuses>,
 }
 
 impl RexBackend {
@@ -709,7 +711,7 @@ impl RexBackend {
             caller: Caller::from_env(),
             endpoint: OnceLock::new(),
             block_sessions: Mutex::new(HashMap::new()),
-            program_status: Mutex::new(HashMap::new()),
+            program_status: Arc::default(),
         }
     }
 
@@ -1137,7 +1139,9 @@ impl RexBackend {
         session: &SessionView,
         window: &WindowView,
         block: &BlockId,
+        read: Read,
     ) -> Result<Option<LivePaneInfo>> {
+        let reading = self.program_status.begin(read);
         let (process, title, program_status) = thread::scope(|scope| {
             let title = scope.spawn(|| self.block_call::<TitleReport>(block, "title", json!({})));
             let program_status = scope.spawn(|| self.query_program_status(block));
@@ -1155,7 +1159,7 @@ impl RexBackend {
         if process.has_exited() {
             return Ok(None);
         }
-        self.observe_program_status(block, program_status, process.foreground.as_ref());
+        self.observe_program_status(block, reading, program_status, process.foreground.as_ref());
         let title = found(title)?.map(|report| report.title).unwrap_or_default();
         Ok(pane_info(session, window, &process, title))
     }
@@ -2049,7 +2053,7 @@ impl Multiplexer for RexBackend {
         let Some((window, _)) = view.terminal_blocks().find(|(_, id)| **id == block) else {
             return Ok(None);
         };
-        self.live_pane(&view, window, &block)
+        self.live_pane(&view, window, &block, Read::Look)
     }
 
     fn get_all_live_pane_info(&self) -> Result<HashMap<String, LivePaneInfo>> {
@@ -2062,7 +2066,7 @@ impl Multiplexer for RexBackend {
             })
             .collect();
         let panes = parallel_map(&blocks, |(view, window, block)| {
-            self.live_pane(view, window, block)
+            self.live_pane(view, window, block, Read::Scan)
                 .map(|pane| pane.map(|pane| (block.as_str().to_string(), pane)))
         });
         Ok(panes
@@ -2538,6 +2542,45 @@ mod tests {
         assert_eq!(shown(&fake.rex), Some(AgentStatus::Waiting));
         fake.write("status", &status("done"));
         assert_eq!(shown(&fake.rex), Some(AgentStatus::Done));
+    }
+
+    #[test]
+    fn a_look_at_one_pane_keeps_nothing_that_no_stream_drops() {
+        // The sidebar daemon's backend reads this way until its event stream
+        // connects and between streams. Reconcile's validate_agent_alive
+        // asks get_live_pane_info for a hooked agent whose pane the
+        // event-built snapshot lacks.
+        let fake = FakeRex::new(&[
+            ("target.resolve", RESOLVE),
+            ("session.view", VIEW),
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", PROCESS),
+            ("title", r#"{"title":""}"#),
+        ]);
+        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
+        let status = |state: &str| {
+            json!({ "records": [{ "state": state, "updated_at": "2026-11-03T08:00:00Z" }] })
+                .to_string()
+        };
+        let shown = |rex: &RexBackend| match rex.reported_status(block) {
+            Some(ReportedStatus::Agent { status, .. }) => Some(status),
+            _ => None,
+        };
+        fake.write("status", &status("working"));
+        assert!(fake.rex.get_live_pane_info(block).unwrap().is_some());
+        assert_eq!(shown(&fake.rex), Some(AgentStatus::Working));
+        fake.write("status", &status("blocked"));
+        assert_eq!(
+            shown(&fake.rex),
+            Some(AgentStatus::Waiting),
+            "after one validation"
+        );
+        fake.write("status", &status("done"));
+        assert_eq!(
+            shown(&fake.rex),
+            Some(AgentStatus::Done),
+            "after one validation"
+        );
     }
 
     const APP: &str = "client:app-1";

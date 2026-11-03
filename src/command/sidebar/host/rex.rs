@@ -72,7 +72,7 @@ impl SidebarHost for RexBackend {
         let instance = self.resolve_instance_id()?;
         let files = Files::for_instance(&instance)?;
         let plane = daemon_plane(self, files.clone(), Config::load(None)?)?;
-        let observed = Arc::new(Observed::default());
+        let observed = Arc::new(Observed::new(self.program_statuses()));
         // The first tick must see the server, or the daemon would treat
         // every agent's pane as gone.
         let sidebars = control::sidebar_blocks(&files.records());

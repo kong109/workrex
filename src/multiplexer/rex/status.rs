@@ -4,8 +4,11 @@
 use anyhow::Result;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tracing::warn;
 
+use super::events::Event;
 use super::{BlockId, ProcessEntry, ProcessReport, RexBackend, found};
 use crate::multiplexer::{AgentStatus, ReportedStatus};
 
@@ -172,6 +175,84 @@ impl ProgramStatusCall {
     }
 }
 
+/// What each block reported, as its backend last read it.
+#[derive(Debug, Default)]
+pub(crate) struct ProgramStatuses(Mutex<Statuses>);
+
+#[derive(Debug, Default)]
+struct Statuses {
+    /// Set while an event stream drops a block's entry each time the block
+    /// may have changed, so every read is kept. Otherwise only a pane scan's
+    /// reads are kept, for a command that scans again before it reads again.
+    followed: bool,
+    /// Counts drops, so a read that overlapped one is not kept.
+    drops: u64,
+    reported: HashMap<BlockId, Option<ReportedStatus>>,
+}
+
+/// How a read reached a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Read {
+    /// Part of a scan of every pane.
+    Scan,
+    /// A look at one block.
+    Look,
+}
+
+/// A read of one block's status, begun before its calls.
+pub(super) struct Reading {
+    read: Read,
+    drops: u64,
+}
+
+impl ProgramStatuses {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Statuses> {
+        self.0.lock().expect("rex program status cache poisoned")
+    }
+
+    fn get(&self, block: &BlockId) -> Option<Option<ReportedStatus>> {
+        self.lock().reported.get(block).copied()
+    }
+
+    pub(super) fn begin(&self, read: Read) -> Reading {
+        Reading {
+            read,
+            drops: self.lock().drops,
+        }
+    }
+
+    fn keep(&self, block: &BlockId, reading: Reading, reported: Option<ReportedStatus>) {
+        let mut statuses = self.lock();
+        if statuses.drops == reading.drops && (statuses.followed || reading.read == Read::Scan) {
+            statuses.reported.insert(block.clone(), reported);
+        }
+    }
+
+    /// Start or stop following events. Either way, drop every entry and
+    /// every read under way: an entry holds only while one stream follows it.
+    pub(crate) fn follow(&self, followed: bool) {
+        let mut statuses = self.lock();
+        statuses.followed = followed;
+        statuses.drops += 1;
+        statuses.reported.clear();
+    }
+
+    /// Drop the entry of a block whose status `event` may have changed.
+    pub(crate) fn apply(&self, event: &Event) {
+        let (Event::ProgramStatusChanged { block_id, .. }
+        | Event::ProgramStatusRemoved { block_id, .. }
+        | Event::ProcessChanged { block_id, .. }
+        | Event::ChildExited { block_id, .. }
+        | Event::BlockClosed { block_id, .. }) = event
+        else {
+            return;
+        };
+        let mut statuses = self.lock();
+        statuses.drops += 1;
+        statuses.reported.remove(&BlockId(block_id.clone()));
+    }
+}
+
 impl RexBackend {
     pub(super) fn query_program_status(&self, block: &BlockId) -> ProgramStatusCall {
         ProgramStatusCall(found(self.block_call::<ProgramStatusReport>(
@@ -181,45 +262,40 @@ impl RexBackend {
         )))
     }
 
-    /// Cache what `block` reported, given its foreground process. A block
-    /// that closed reports nothing; a failed call leaves the cache alone.
+    /// What `block` reported, given its foreground process, kept when
+    /// `reading` allows. A block that closed reports nothing, and a failed
+    /// call keeps nothing.
     pub(super) fn observe_program_status(
         &self,
         block: &BlockId,
+        reading: Reading,
         call: ProgramStatusCall,
         foreground: Option<&ProcessEntry>,
-    ) {
-        if let Some(reported) = call.reported(block, foreground) {
-            self.program_status
-                .lock()
-                .expect("rex program status cache poisoned")
-                .insert(block.clone(), reported);
-        }
+    ) -> Option<ReportedStatus> {
+        let reported = call.reported(block, foreground)?;
+        self.program_status.keep(block, reading, reported);
+        reported
     }
 
-    /// What the pane scan cached for `pane_id`, or else a fresh answer that
-    /// is not cached: nothing would refresh it in a backend that never scans,
-    /// such as the sidebar daemon's, which reads again on each status event.
+    /// What this backend keeps for `pane_id`, or else what Rex says now.
     pub(super) fn program_status_of(&self, pane_id: &str) -> Option<ReportedStatus> {
         let block = BlockId::parse(pane_id).ok()?;
-        let cached = |backend: &Self| {
-            backend
-                .program_status
-                .lock()
-                .expect("rex program status cache poisoned")
-                .get(&block)
-                .copied()
-        };
-        if let Some(reported) = cached(self) {
+        if let Some(reported) = self.program_status.get(&block) {
             return reported;
         }
+        let reading = self.program_status.begin(Read::Look);
         let process = found(self.block_call::<ProcessReport>(&block, "process", json!({})))
             .ok()
             .flatten()
             .filter(|process| !process.has_exited())?;
-        self.query_program_status(&block)
-            .reported(&block, process.foreground.as_ref())
-            .flatten()
+        let call = self.query_program_status(&block);
+        self.observe_program_status(&block, reading, call, process.foreground.as_ref())
+    }
+
+    /// The statuses this backend keeps, for the event stream that follows
+    /// them.
+    pub(crate) fn program_statuses(&self) -> Arc<ProgramStatuses> {
+        self.program_status.clone()
     }
 
     /// Show `icon` in front of the label of the window holding `pane_id`, or
@@ -253,6 +329,76 @@ impl RexBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn working() -> Option<ReportedStatus> {
+        Some(ReportedStatus::Agent {
+            status: AgentStatus::Working,
+            since: 1,
+        })
+    }
+
+    fn block_event(name: &str, block: &str) -> Event {
+        let line = format!(
+            r#"{{"type":"session_event","payload":{{"session_id":"session:1","event":{{"type":"block_event","payload":{{"block_id":"{block}","name":"{name}","payload":{{"record":{{"state":"done"}},"title":"t"}}}}}}}}}}"#
+        );
+        Event::parse(&line).unwrap_or_else(|| panic!("{name} parses"))
+    }
+
+    #[test]
+    fn without_a_stream_only_a_scan_is_kept() {
+        let statuses = ProgramStatuses::default();
+        let block = BlockId("block:1".into());
+        statuses.keep(&block, statuses.begin(Read::Look), working());
+        assert_eq!(statuses.get(&block), None);
+        statuses.keep(&block, statuses.begin(Read::Scan), working());
+        assert_eq!(statuses.get(&block), Some(working()));
+    }
+
+    #[test]
+    fn a_followed_entry_lasts_until_its_block_may_have_changed() {
+        let statuses = ProgramStatuses::default();
+        statuses.follow(true);
+        let (block, other) = (BlockId("block:1".into()), BlockId("block:2".into()));
+        statuses.keep(&other, statuses.begin(Read::Look), working());
+        for name in [
+            "program_status_changed",
+            "program_status_removed",
+            "process_changed",
+            "child_exited",
+        ] {
+            statuses.keep(&block, statuses.begin(Read::Look), working());
+            statuses.apply(&block_event("title_changed", "block:1"));
+            assert_eq!(statuses.get(&block), Some(working()), "after title_changed");
+            statuses.apply(&block_event(name, "block:1"));
+            assert_eq!(statuses.get(&block), None, "after {name}");
+        }
+        statuses.keep(&block, statuses.begin(Read::Look), working());
+        statuses.apply(&Event::BlockClosed {
+            session_id: "session:1".into(),
+            block_id: "block:1".into(),
+        });
+        assert_eq!(statuses.get(&block), None, "after block_closed");
+        assert_eq!(statuses.get(&other), Some(working()));
+    }
+
+    #[test]
+    fn a_read_across_a_drop_or_a_change_of_stream_is_not_kept() {
+        let statuses = ProgramStatuses::default();
+        let block = BlockId("block:1".into());
+        statuses.follow(true);
+        let reading = statuses.begin(Read::Look);
+        statuses.apply(&block_event("program_status_changed", "block:1"));
+        statuses.keep(&block, reading, working());
+        assert_eq!(statuses.get(&block), None, "across an event");
+
+        statuses.keep(&block, statuses.begin(Read::Look), working());
+        statuses.follow(false);
+        assert_eq!(statuses.get(&block), None, "past the stream's end");
+        let reading = statuses.begin(Read::Scan);
+        statuses.follow(true);
+        statuses.keep(&block, reading, working());
+        assert_eq!(statuses.get(&block), None, "across a new stream");
+    }
 
     const FIXTURES: &str = include_str!("../testdata/rex_program_status.json");
 
