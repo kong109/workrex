@@ -6,6 +6,7 @@
 //! version changes only when the wire contract changes and must match
 //! exactly; it is independent of the crate version.
 
+use crate::bin_name::BIN;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -478,7 +479,7 @@ pub(super) fn first_line(text: &str) -> Option<&str> {
 /// Explain that the node binary at `bin_path` speaks another protocol.
 pub fn mismatch_message(hello: &Hello, bin_path: &str) -> String {
     format!(
-        "node binary {bin_path} speaks protocol {} (workmux {}), but this workmux {} \
+        "node binary {bin_path} speaks protocol {} ({BIN} {}), but this {BIN} {} \
          speaks protocol {NODE_PROTOCOL}",
         hello.protocol,
         hello.version,
@@ -575,9 +576,9 @@ mod tests {
         hello.version = "0.0.1".into();
         let message = mismatch_message(&hello, "~/.workmux-node/bin/workmux-x");
         assert!(
-            message.starts_with(
+            message.starts_with(crate::rebrand!(
                 "node binary ~/.workmux-node/bin/workmux-x speaks protocol 999 (workmux 0.0.1)"
-            ),
+            )),
             "{message}"
         );
         assert!(

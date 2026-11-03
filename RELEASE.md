@@ -1,5 +1,7 @@
 # Releasing
 
+For workrex fork releases, see [RELEASE-workrex.md](RELEASE-workrex.md).
+
 Requires [rust-release-tools](https://github.com/raine/rust-release-tools):
 
 ```bash

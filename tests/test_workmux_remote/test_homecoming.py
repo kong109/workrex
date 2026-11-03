@@ -15,6 +15,7 @@ from ..conftest import (
     get_window_name,
     get_worktree_path,
 )
+from ..support.bin_name import rebrand
 from .conftest import Node, git, local_records, wm, write_script
 
 pytestmark = pytest.mark.tmux_only
@@ -73,7 +74,7 @@ def test_merge_brings_remote_work_home(
     # and leaves nothing behind.
     refused = wm(mux_server, workmux_exe_path, repo, "merge feat", expect_fail=True)
     assert "untracked files" in refused.stderr
-    assert "workmux open feat" in refused.stderr
+    assert rebrand("workmux open feat") in refused.stderr
     assert not copy.exists()
     assert git(repo, "branch", "--list", "feat") == ""
     assert stage_of(mux_server, "feat") is None
@@ -140,7 +141,7 @@ def test_rebase_conflict_is_resolved_on_the_laptop(
         mux_server, workmux_exe_path, repo, "merge --rebase feat", expect_fail=True
     )
     assert "Rebase failed" in failed.stderr, failed.stderr
-    assert "run `workmux merge feat` again" in failed.stderr
+    assert rebrand("run `workmux merge feat` again") in failed.stderr
     assert stage_of(mux_server, "feat") == "conflicted"
     assert (copy / "shared.txt").exists()
     assert len(node.workspaces()) == 1
@@ -207,8 +208,8 @@ def test_keep_then_cleanup_pending_never_merges_twice(
     [message] = [line for line in pending.stderr.splitlines() if "pending" in line]
     assert "merged; remote cleanup pending on 'lo' (" in message, pending.stderr
     assert message.endswith(
-        "`workmux merge feat`, or the next merge, remove, open, add, rebase or "
-        "`remote pull` that reaches 'lo', finishes it"
+        rebrand("`workmux merge feat`, or the next merge, remove, open, add, rebase ")
+        + "or `remote pull` that reaches 'lo', finishes it"
     ), message
     assert "Caused by" not in pending.stderr
     assert stage_of(mux_server, "feat") == "merged"
@@ -219,7 +220,9 @@ def test_keep_then_cleanup_pending_never_merges_twice(
     reopened = wm(mux_server, workmux_exe_path, repo, "open feat", expect_fail=True)
     assert "remote cleanup pending" in reopened.stderr, reopened.stderr
     rebased = wm(mux_server, workmux_exe_path, repo, "rebase feat", expect_fail=True)
-    assert "`workmux merge feat` finishes removing" in rebased.stderr, rebased.stderr
+    assert rebrand("`workmux merge feat` finishes removing") in rebased.stderr, (
+        rebased.stderr
+    )
     assert git(repo, "rev-list", "--count", "main") == merges
 
     # A retry only cleans up.
@@ -289,7 +292,7 @@ def test_remote_pull_brings_the_workspace_home(
     )
     assert "Brought 'feat' home" in pulled.stdout, pulled.stderr
     assert "pulled; remote cleanup pending on 'lo' (" in pulled.stderr, pulled.stderr
-    assert "`workmux remote pull feat`, or the next merge" in pulled.stderr
+    assert rebrand("`workmux remote pull feat`, or the next merge") in pulled.stderr
     assert stage_of(mux_server, "feat") == "pulled"
     block.unlink()
     again = wm(mux_server, workmux_exe_path, repo, "remote pull feat")

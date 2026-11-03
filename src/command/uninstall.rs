@@ -3,7 +3,6 @@ use console::style;
 
 use crate::agent_setup::{self, Agent};
 use crate::skills;
-use crate::xdg;
 
 /// Run the uninstall process.
 ///
@@ -67,9 +66,12 @@ pub fn run(dry_run: bool) -> Result<()> {
     }
     println!();
 
-    // Phase 3: XDG dirs (only cache + state, NOT config)
+    // Phase 3: this binary's state dir and update cache; the dirs it shares with workmux stay
     println!("  {} Data directories", style("●").dim());
-    let dirs = [("Cache", xdg::cache_dir()), ("State", xdg::state_dir())];
+    let dirs = [
+        ("State directory", crate::bin_name::state_dir()),
+        ("Update cache", crate::bin_name::update_cache_file()),
+    ];
 
     for (label, path_result) in &dirs {
         match path_result {
@@ -82,7 +84,12 @@ pub fn run(dry_run: bool) -> Result<()> {
                         path.display()
                     );
                 } else {
-                    match std::fs::remove_dir_all(path) {
+                    let removed = if path.is_dir() {
+                        std::fs::remove_dir_all(path)
+                    } else {
+                        std::fs::remove_file(path)
+                    };
+                    match removed {
                         Ok(()) => println!(
                             "    {} Removed {} ({})",
                             style("~").dim(),
@@ -96,16 +103,12 @@ pub fn run(dry_run: bool) -> Result<()> {
                                 label.to_lowercase(),
                                 e
                             );
-                            errors.push(format!("{label} directory: {e}"));
+                            errors.push(format!("{label}: {e}"));
                         }
                     }
                 }
             }
-            Ok(_path) => println!(
-                "    {} No {} directory",
-                style("~").dim(),
-                label.to_lowercase()
-            ),
+            Ok(_path) => println!("    {} No {}", style("~").dim(), label.to_lowercase()),
             Err(e) => println!("    {} Could not resolve: {}", style("~").yellow(), e),
         }
     }

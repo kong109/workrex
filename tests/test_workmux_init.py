@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from .conftest import MuxEnvironment
+from .support.bin_name import rebrand
 
 
 def test_init_creates_config_file_on_success(
@@ -30,7 +31,7 @@ def test_init_creates_config_file_on_success(
     except yaml.YAMLError as e:
         pytest.fail(f"Generated .workmux.yaml is not valid YAML: {e}")
 
-    assert "# workmux project configuration" in content
+    assert rebrand("# workmux project configuration") in content
     assert "symlink:" in content
     assert '"<global>"' in content
     assert "post_create:" in content

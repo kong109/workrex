@@ -10,8 +10,9 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use crate::bin_name::BIN;
 use crate::config::SplitDirection;
 
 use super::Multiplexer;
@@ -19,7 +20,13 @@ use super::agent::shell_quote;
 use super::types::*;
 use super::util;
 
+pub(crate) mod events;
+mod layer;
+pub(crate) mod sidebar_api;
 mod status;
+
+pub use layer::LayerHint;
+use layer::LayerKind;
 
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
 const TERMINAL_CREATOR: &str = "com.superlogical.terminal";
@@ -94,7 +101,7 @@ struct WindowView {
 #[derive(Debug, Deserialize)]
 struct LayerView {
     #[serde(default)]
-    kind: String,
+    kind: LayerKind,
     #[serde(default)]
     blocks: Vec<BlockView>,
 }
@@ -124,7 +131,7 @@ impl WindowView {
     fn terminal_block_ids(&self) -> impl Iterator<Item = &BlockId> {
         self.layers
             .iter()
-            .filter(|layer| layer.kind == "tiled")
+            .filter(|layer| layer.kind == LayerKind::Tiled)
             .flat_map(|layer| layer.blocks.iter())
             .filter(|block| block.is_terminal())
             .map(|block| &block.block_id)
@@ -188,7 +195,7 @@ impl ServerVersion {
             return Ok(());
         }
         Err(format!(
-            "unsupported Rex {} (API revisions {} to {}), workmux supports Rex API revisions {} to {}",
+            "unsupported Rex {} (API revisions {} to {}), {BIN} supports Rex API revisions {} to {}",
             self.rex_version,
             theirs.start(),
             theirs.end(),
@@ -205,6 +212,39 @@ type Verdict = std::result::Result<(), String>;
 /// canonical address so every spelling of one socket shares it.
 static SERVER_VERDICTS: LazyLock<Mutex<HashMap<Option<String>, Verdict>>> =
     LazyLock::new(Default::default);
+
+/// How long a command reuses a session list or view it already fetched. A
+/// loop that polls for a change made outside workmux sees it within this time.
+/// `WORKMUX_REX_READ_REUSE_MS` overrides it, so a test can count calls that
+/// load cannot change.
+const READ_REUSE: Duration = Duration::from_millis(250);
+
+const READ_ONLY_API: [&str; 5] = [
+    "session.list",
+    "session.view",
+    "target.resolve",
+    "server.version",
+    "client.list",
+];
+const READ_ONLY_BLOCK: [&str; 4] = ["process", "title", "size", "format"];
+
+/// Calls that leave the server as it was. Any other call drops reused reads.
+fn changes_nothing(args: &[&str]) -> bool {
+    match args {
+        ["api", "call", method, ..] => READ_ONLY_API.contains(method),
+        ["block", "call", "-b", _, method, ..] => READ_ONLY_BLOCK.contains(method),
+        ["whoami", ..] => true,
+        _ => false,
+    }
+}
+
+/// Session reads a command can reuse. `writes` counts the writes that have
+/// returned, so a read that overlapped one is not stored.
+#[derive(Debug, Default)]
+struct Reads {
+    writes: u64,
+    answers: HashMap<String, (Instant, String)>,
+}
 
 #[derive(Debug, Deserialize)]
 struct Whoami {
@@ -557,6 +597,8 @@ pub fn in_rex_terminal() -> bool {
 struct Caller {
     session: Option<SessionId>,
     block: Option<BlockId>,
+    /// The block a dashboard layer was opened over.
+    origin: Option<BlockId>,
 }
 
 impl Caller {
@@ -569,6 +611,7 @@ impl Caller {
             block: std::env::var("REX_BLOCK")
                 .ok()
                 .and_then(|id| BlockId::parse(&id).ok()),
+            origin: layer::origin_block(),
         }
     }
 }
@@ -599,8 +642,8 @@ impl AppSwitch {
 /// never answers would otherwise hold the command for Rex's 10 s default.
 const APP_SELECT_TIMEOUT: Duration = Duration::from_secs(1);
 
-const REMOTE_CONTROL_FIX: &str = "Rex.app did not switch: Remote Control is off. \
-     Turn it on in Rex Settings so workmux can switch the app.";
+const REMOTE_CONTROL_FIX: &str =
+    "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings.";
 
 /// The error a jump returns when Rex.app refused it. The backend has already
 /// told the user how to fix it, so callers stay quiet.
@@ -627,6 +670,8 @@ fn print_once(printed: &AtomicBool, out: &mut impl Write, text: &str) {
 #[derive(Debug)]
 pub struct RexBackend {
     program: String,
+    reads: Mutex<Reads>,
+    reuse: Duration,
     server: Option<String>,
     caller: Caller,
     endpoint: OnceLock<String>,
@@ -655,6 +700,11 @@ impl RexBackend {
             .unwrap_or_else(|| "rex".to_string());
         Self {
             program,
+            reads: Mutex::default(),
+            reuse: std::env::var("WORKMUX_REX_READ_REUSE_MS")
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .map_or(READ_REUSE, Duration::from_millis),
             server,
             caller: Caller::from_env(),
             endpoint: OnceLock::new(),
@@ -677,7 +727,32 @@ impl RexBackend {
 
     fn run(&self, args: &[&str], stdin: Option<&str>) -> CallResult<String> {
         self.ensure_supported()?;
-        self.exec(args, stdin)
+        let [
+            "api",
+            "call",
+            method @ ("session.list" | "session.view"),
+            "-",
+        ] = args
+        else {
+            return self.exec(args, stdin);
+        };
+        let key = format!("{method} {}", stdin.unwrap_or_default());
+        let writes = {
+            let reads = self.reads.lock().unwrap();
+            if let Some((fetched, output)) = reads.answers.get(&key)
+                && fetched.elapsed() < self.reuse
+            {
+                return Ok(output.clone());
+            }
+            reads.writes
+        };
+        let started = Instant::now();
+        let output = self.exec(args, stdin)?;
+        let mut reads = self.reads.lock().unwrap();
+        if reads.writes == writes {
+            reads.answers.insert(key, (started, output.clone()));
+        }
+        Ok(output)
     }
 
     /// Fails every call on a server whose API this backend does not speak,
@@ -705,6 +780,21 @@ impl RexBackend {
     }
 
     fn exec_within(
+        &self,
+        args: &[&str],
+        stdin: Option<&str>,
+        timeout: Option<Duration>,
+    ) -> CallResult<String> {
+        let result = self.spawn(args, stdin, timeout);
+        if !changes_nothing(args) {
+            let mut reads = self.reads.lock().unwrap();
+            reads.writes += 1;
+            reads.answers.clear();
+        }
+        result
+    }
+
+    fn spawn(
         &self,
         args: &[&str],
         stdin: Option<&str>,
@@ -852,7 +942,7 @@ impl RexBackend {
             return Ok(self.view(&session)?);
         }
         Err(anyhow!(
-            "Cannot tell which Rex session to use. Run workmux inside a Rex pane \
+            "Cannot tell which Rex session to use. Run {BIN} inside a Rex pane \
              or set REX_SESSION."
         ))
     }
@@ -1084,16 +1174,39 @@ impl RexBackend {
         Ok(shows_caller(&clients, &owner, session).then_some(owner))
     }
 
-    fn select_args(app: &ClientId, session: &SessionId, window: Option<&WindowId>) -> Vec<String> {
-        let mut args = vec![
-            "-C".to_string(),
-            app.as_str().to_string(),
-            "do".to_string(),
-            "session.select".to_string(),
-            format!("session_id={}", session.as_str()),
-        ];
-        args.extend(window.map(|window| format!("window_id={}", window.as_str())));
-        args
+    /// Asks `app` to show `session`, at `window` if given. A refusal comes
+    /// back as [`AppRefused`]. The call goes through `client.perform` rather
+    /// than `rex -C <app> do`, whose error drops the documented
+    /// `code=refused`.
+    fn ask_app_to_show(
+        &self,
+        app: &ClientId,
+        session: &SessionId,
+        window: Option<&WindowId>,
+        timeout: Duration,
+    ) -> Result<()> {
+        let mut args = json!({ "session_id": session.as_str() });
+        if let Some(window) = window {
+            args["window_id"] = json!(window.as_str());
+        }
+        let request = json!({
+            "client_id": app.as_str(),
+            "action": "session.select",
+            "args": args,
+            "timeout_ms": timeout.as_millis(),
+        })
+        .to_string();
+        match self.ensure_supported().and_then(|()| {
+            self.exec_within(
+                &["api", "call", "client.perform", "-"],
+                Some(&request),
+                Some(timeout),
+            )
+        }) {
+            Ok(_) => Ok(()),
+            Err(error) if error.to_string().contains("code=refused") => Err(AppRefused.into()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Rex.app keeps its own shown tab, which `session.focus_window` and
@@ -1107,14 +1220,9 @@ impl RexBackend {
                 return AppSwitch::NoApp;
             }
         };
-        let args = Self::select_args(&app, session, window);
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let switched = self
-            .ensure_supported()
-            .and_then(|()| self.exec_within(&args, None, Some(APP_SELECT_TIMEOUT)));
-        match switched {
-            Ok(_) => AppSwitch::Shown,
-            Err(error) if error.to_string().contains("(code=refused)") => AppSwitch::Refused,
+        match self.ask_app_to_show(&app, session, window, APP_SELECT_TIMEOUT) {
+            Ok(()) => AppSwitch::Shown,
+            Err(error) if error.is::<AppRefused>() => AppSwitch::Refused,
             Err(error) => {
                 tracing::warn!(%error, "rex: app switch failed");
                 AppSwitch::NoApp
@@ -1248,7 +1356,7 @@ impl Multiplexer for RexBackend {
     fn is_running(&self) -> Result<bool> {
         // An unsupported server is running, so a command that acts on it
         // goes on to a call that names why workmux cannot use it.
-        match self.run(&["api", "call", "session.list"], None) {
+        match self.run(&["api", "call", "session.list", "-"], Some("{}")) {
             Ok(_) | Err(CallError::Unsupported(_)) => Ok(true),
             Err(_) => Ok(false),
         }
@@ -1304,11 +1412,12 @@ impl Multiplexer for RexBackend {
     /// the app, so the server's focus is often a pane the user never saw.
     fn active_pane_id(&self) -> Option<String> {
         let view = self.current_or_only_view().ok()?;
-        let block = match &self.caller.block {
-            Some(caller) if view.window_of(caller).is_some() => caller,
-            _ => view.active_window()?.focused_block_id.as_ref()?,
-        };
-        Some(block.as_str().to_string())
+        layer::active_block(
+            &view,
+            self.caller.block.as_ref(),
+            self.caller.origin.clone(),
+        )
+        .map(|block| block.0)
     }
 
     fn get_client_active_pane_path(&self) -> Result<PathBuf> {
@@ -1708,7 +1817,21 @@ impl Multiplexer for RexBackend {
     /// owns it. A refused jump fails, so the dashboard stays open, and only
     /// a command outside a full-screen display prints the fix.
     fn switch_to_pane(&self, pane_id: &str, _window_hint: Option<&str>) -> Result<()> {
+        if self.caller.origin.is_some() {
+            return self.jump_to_block(&BlockId::parse(pane_id)?);
+        }
         self.jump_to_pane(pane_id, &REMOTE_CONTROL_HINT, &mut std::io::stderr())
+    }
+
+    fn dashboard_quit(&self) {
+        self.return_to_origin()
+    }
+
+    fn peek_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()> {
+        if self.caller.origin.is_some() {
+            return self.peek_block(&BlockId::parse(pane_id)?);
+        }
+        self.switch_to_pane(pane_id, window_hint)
     }
 
     fn kill_pane(&self, pane_id: &str) -> Result<()> {
@@ -1953,6 +2076,10 @@ impl Multiplexer for RexBackend {
     fn server_boot_id(&self) -> Result<Option<String>> {
         Ok(Some(self.whoami()?.boot_id))
     }
+
+    fn sidebar(&self) -> Option<&dyn super::SidebarHost> {
+        Some(self)
+    }
 }
 
 #[cfg(test)]
@@ -2188,9 +2315,10 @@ mod tests {
             serde_json::from_str(r#"{"rex_version":"0.0.1-old"}"#).unwrap();
         assert_eq!(
             ancient.check(),
-            Err("unsupported Rex 0.0.1-old (API revisions 0 to 0), \
-                 workmux supports Rex API revisions 8 to 9"
-                .to_string())
+            Err(format!(
+                "unsupported Rex 0.0.1-old (API revisions 0 to 0), \
+                 {BIN} supports Rex API revisions 8 to 9"
+            ))
         );
         let future: ServerVersion = serde_json::from_str(
             r#"{"rex_version":"0.1.0","api_min_revision":10,"api_revision":11}"#,
@@ -2204,13 +2332,33 @@ mod tests {
         );
     }
 
+    /// Writes a fake `rex` from a child process. On Linux, a script this
+    /// process wrote can fail to start with ETXTBSY: a test on another thread
+    /// that forks while the file is open for writing keeps a writable copy
+    /// of its descriptor until that child execs.
+    fn write_script(path: &Path, content: String) -> std::io::Result<()> {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "cat > \"$0\""])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()?;
+        child.stdin.take().unwrap().write_all(content.as_bytes())?;
+        let status = child.wait()?;
+        assert!(
+            status.success(),
+            "writing {} failed: {status}",
+            path.display()
+        );
+        Ok(())
+    }
+
     #[test]
     fn an_unsupported_server_fails_every_call_after_one_version_query() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("calls");
         let program = dir.path().join("rex");
-        std::fs::write(
+        write_script(
             &program,
             format!(
                 "#!/bin/sh\necho \"$*\" >> '{}'\n\
@@ -2307,10 +2455,10 @@ mod tests {
                 arms.push_str(&format!("  *{pattern}*) {arm};;\n"));
             }
             let program = dir.path().join("rex");
-            std::fs::write(
+            write_script(
                 &program,
                 format!(
-                    "#!/bin/sh\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
+                    "#!/bin/sh\ndir=$(dirname \"$0\")\ncall=\"$* $(cat)\"\necho \"$call\" >> '{log}'\n\
                      case \"$call\" in\n\
                      {arms}\
                      \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
@@ -2332,6 +2480,7 @@ mod tests {
             self.rex.caller = Caller {
                 session: Some(SessionId(session.into())),
                 block: Some(BlockId(block.into())),
+                origin: None,
             };
             self
         }
@@ -2376,6 +2525,21 @@ mod tests {
         json!({ "columns": 80, "rows": 24, "owner": client }).to_string()
     }
 
+    /// Rex.app's answer to `client.perform` with Remote Control off.
+    const REFUSED: &str = "!Error: stream response \"control-1\" failed: Rex.app is not \
+         accepting actions. Turn on Remote Control in its Settings under Rex Server. \
+         (status=403 code=refused)";
+    const UNAVAILABLE: &str = "!Error: stream response \"control-1\" failed: client \
+         client:app-1 is not connected (status=503 code=client_unavailable)";
+    /// Rex's real answers when the app is slow or lacks the action.
+    const TIMEOUT: &str = "!Error: stream response \"control-1\" failed: \"rexbook\" did \
+         not answer within 1ms (status=504 code=timeout)";
+    const NOT_SUPPORTED: &str = "!Error: stream response \"control-1\" failed: \"rexbook\" \
+         does not offer \"wr.no_such_action\" (status=400 code=not_supported)";
+    /// The refusal as `rex do` prints it, with no code: only the code counts.
+    const REFUSED_WITHOUT_CODE: &str = "!Error: Rex.app is not accepting actions. Turn on \
+         Remote Control in its Settings under Rex Server.";
+
     /// The caller's pane is in session B, window W, the pane `block:agent`
     /// is in the same window, and `clients` are connected.
     fn app_fake(owner_id: &str, clients: &[Value], select: &str) -> FakeRex {
@@ -2393,7 +2557,7 @@ mod tests {
         FakeRex::new(&[
             ("block call -b block:caller size", &owner(owner_id)),
             ("client.list", &json!({ "clients": clients }).to_string()),
-            ("session.select", select),
+            ("client.perform", select),
             ("target.resolve", &resolved),
             ("session.view", &view),
             ("session.focus_block", "{}"),
@@ -2458,7 +2622,7 @@ mod tests {
         fake.rex.select_window("", "wm-feat").unwrap();
         fake.rex.switch_to_session("", "b").unwrap();
         assert_eq!(fake.rex.shell_switch_session_cmd("b").unwrap(), "true");
-        assert!(fake.calls(" do ").is_empty(), "{:?}", fake.calls(" do "));
+        assert!(fake.calls("client.perform").is_empty());
         assert!(fake.calls("client.list").is_empty());
         assert_eq!(fake.calls("session.focus_block").len(), 1);
         assert_eq!(fake.calls("session.focus_window").len(), 2);
@@ -2469,10 +2633,11 @@ mod tests {
         let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
         fake.rex.switch_to_pane("block:agent", None).unwrap();
         assert_eq!(
-            fake.calls("session.select"),
+            fake.calls("client.perform"),
             [format!(
-                "--autostart=false -S unix://{}/s.sock -C client:app-1 do session.select \
-                 session_id=session:b window_id=window:w ",
+                "--autostart=false -S unix://{}/s.sock api call client.perform - \
+                 {{\"action\":\"session.select\",\"args\":{{\"session_id\":\"session:b\",\
+                 \"window_id\":\"window:w\"}},\"client_id\":\"client:app-1\",\"timeout_ms\":1000}}",
                 fake.dir.path().display()
             )]
         );
@@ -2481,27 +2646,19 @@ mod tests {
 
     #[test]
     fn a_refused_jump_fails_and_leaves_the_pane_unfocused() {
-        let fake = app_fake(
-            APP,
-            &[app(APP, &[CALLER_SESSION])],
-            "!Error: Remote Control is off for this client (code=refused)",
-        );
+        let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], REFUSED);
         let error = fake.rex.switch_to_pane("block:agent", None).unwrap_err();
         assert!(error.is::<AppRefused>());
         assert_eq!(error.to_string(), REMOTE_CONTROL_FIX);
-        assert_eq!(fake.calls("session.select").len(), 1);
+        assert_eq!(fake.calls("client.perform").len(), 1);
         assert!(fake.calls("session.focus_block").is_empty());
     }
 
     #[test]
     fn a_jump_the_app_fails_for_another_reason_still_focuses_the_pane() {
-        let fake = app_fake(
-            APP,
-            &[app(APP, &[CALLER_SESSION])],
-            "!Error: the client did not answer (code=timeout)",
-        );
+        let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], UNAVAILABLE);
         fake.rex.switch_to_pane("block:agent", None).unwrap();
-        assert_eq!(fake.calls("session.select").len(), 1);
+        assert_eq!(fake.calls("client.perform").len(), 1);
         assert_eq!(fake.calls("session.focus_block").len(), 1);
     }
 
@@ -2522,14 +2679,12 @@ mod tests {
     fn only_a_refused_jump_prints_the_fix() {
         for (select, expected) in [
             ("{}", String::new()),
-            (
-                "!Error: the client did not answer (code=timeout)",
-                String::new(),
-            ),
-            (
-                "!Error: Remote Control is off for this client (code=refused)",
-                format!("{REMOTE_CONTROL_FIX}\n"),
-            ),
+            (TIMEOUT, String::new()),
+            (NOT_SUPPORTED, String::new()),
+            (UNAVAILABLE, String::new()),
+            (REFUSED_WITHOUT_CODE, String::new()),
+            ("!Error: connection reset by peer", String::new()),
+            (REFUSED, format!("{REMOTE_CONTROL_FIX}\n")),
         ] {
             let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], select);
             let printed = AtomicBool::new(false);
@@ -2537,6 +2692,16 @@ mod tests {
             let _ = fake.rex.jump_to_pane("block:agent", &printed, &mut out);
             assert_eq!(String::from_utf8(out).unwrap(), expected, "{select}");
         }
+    }
+
+    #[test]
+    fn the_remote_control_fix_matches_the_docs() {
+        assert_eq!(
+            REMOTE_CONTROL_FIX,
+            "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings."
+        );
+        let doc = include_str!("../../docs/src/content/docs/guide/rex.mdx");
+        assert!(doc.contains(&format!("`{REMOTE_CONTROL_FIX}`")));
     }
 
     #[test]
@@ -2560,10 +2725,10 @@ mod tests {
             "{}",
         );
         fake.rex.switch_to_pane("block:agent", None).unwrap();
-        let selects = fake.calls(" do ");
+        let selects = fake.calls("client.perform");
         assert_eq!(selects.len(), 1, "{selects:?}");
         assert!(
-            selects[0].contains("-C client:app-2 do session.select"),
+            selects[0].contains(r#""client_id":"client:app-2""#),
             "{selects:?}"
         );
     }
@@ -2584,7 +2749,10 @@ mod tests {
         for (owner, clients) in owners {
             let fake = app_fake(owner, &clients, "{}");
             fake.rex.switch_to_pane("block:agent", None).unwrap();
-            assert!(fake.calls(" do ").is_empty(), "{owner} {clients:?}");
+            assert!(
+                fake.calls("client.perform").is_empty(),
+                "{owner} {clients:?}"
+            );
             assert_eq!(fake.calls("session.focus_block").len(), 1);
         }
     }
@@ -2594,7 +2762,7 @@ mod tests {
         let mut fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
         fake.rex.caller = Caller::default();
         fake.rex.switch_to_pane("block:agent", None).unwrap();
-        assert!(fake.calls("session.select").is_empty());
+        assert!(fake.calls("client.perform").is_empty());
         assert!(fake.calls("client.list").is_empty());
     }
 
@@ -2798,5 +2966,148 @@ mod tests {
             rex.sessions().unwrap();
         }
         assert_eq!(fake.calls("server.version").len(), 1);
+    }
+
+    const SESSION_VIEW: [&str; 4] = ["api", "call", "session.view", "-"];
+    const CLOSE: [&str; 4] = ["api", "call", "session.close_window", "-"];
+
+    impl FakeRex {
+        /// Reuses reads for as long as a test runs, so only writes drop them.
+        fn reusing(mut self) -> Self {
+            self.rex.reuse = Duration::from_secs(3600);
+            self
+        }
+
+        fn write(&self, name: &str, text: &str) {
+            std::fs::write(self.dir.path().join(name), text).unwrap();
+        }
+
+        fn wait_for(&self, name: &str) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !self.dir.path().join(name).exists() {
+                assert!(Instant::now() < deadline, "the fake rex never wrote {name}");
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn view(&self) -> String {
+            self.rex.run(&SESSION_VIEW, Some("{}")).unwrap()
+        }
+    }
+
+    #[test]
+    fn the_reads_a_command_reuses_are_these() {
+        assert_eq!(
+            READ_ONLY_API,
+            [
+                "session.list",
+                "session.view",
+                "target.resolve",
+                "server.version",
+                "client.list",
+            ]
+        );
+        assert_eq!(READ_ONLY_BLOCK, ["process", "title", "size", "format"]);
+    }
+
+    #[test]
+    fn every_write_drops_the_reads_before_it() {
+        let block = |method| vec!["block", "call", "-b", "block:x", method, "-"];
+        let api = |method| vec!["api", "call", method, "-"];
+        let mut writes: Vec<Vec<&str>> = [
+            "session.create",
+            "session.destroy",
+            "session.new_window",
+            "session.move_window",
+            "session.close_window",
+            "session.focus_window",
+            "session.set_window_label",
+            "session.set_label",
+            "session.new_split",
+            "session.focus_block",
+            "session.zoom_block",
+            "session.set_block_label",
+            "block.close",
+            "block.event",
+            "client.perform",
+        ]
+        .into_iter()
+        .map(api)
+        .collect();
+        writes.push(block("write"));
+        writes.push(vec!["send-key", "-b", "block:x", "Enter"]);
+        let mut reads: Vec<Vec<&str>> = READ_ONLY_API.into_iter().map(api).collect();
+        reads.extend(READ_ONLY_BLOCK.map(block));
+        reads.push(vec!["whoami", "--json"]);
+
+        for (call, drops) in writes
+            .iter()
+            .map(|call| (call, true))
+            .chain(reads.iter().map(|call| (call, false)))
+        {
+            let fake = FakeRex::new(&[
+                ("session.view", "{}"),
+                ("server.version", r#"{"rex_version":"t","api_revision":8}"#),
+                ("", "{}"),
+            ])
+            .reusing();
+            fake.view();
+            fake.rex.run(call, Some("{}")).unwrap();
+            fake.view();
+            let views = if drops { 2 } else { 1 };
+            assert_eq!(fake.calls("session.view").len(), views, "{call:?}");
+        }
+    }
+
+    #[test]
+    fn a_read_that_spans_a_write_is_not_reused() {
+        let fake = FakeRex::new(&[
+            (
+                "session.view",
+                "$s=$(cat \"$dir/state\"); touch \"$dir/started\"; \
+                 while [ ! -e \"$dir/release\" ]; do sleep 0.01; done; printf %s \"$s\"",
+            ),
+            ("session.close_window", "$echo new > \"$dir/state\""),
+        ])
+        .reusing();
+        fake.write("state", "old");
+        thread::scope(|scope| {
+            let reader = scope.spawn(|| fake.view());
+            fake.wait_for("started");
+            fake.rex.run(&CLOSE, Some("{}")).unwrap();
+            fake.write("release", "");
+            assert_eq!(reader.join().unwrap(), "old");
+        });
+        assert_eq!(fake.view().trim(), "new");
+    }
+
+    #[test]
+    fn a_read_made_during_a_write_is_not_reused_after_it() {
+        let fake = FakeRex::new(&[
+            ("session.view", "$cat \"$dir/state\""),
+            (
+                "session.close_window",
+                "$touch \"$dir/writing\"; while [ ! -e \"$dir/read\" ]; do sleep 0.01; done; \
+                 echo new > \"$dir/state\"",
+            ),
+        ])
+        .reusing();
+        fake.write("state", "old");
+        thread::scope(|scope| {
+            let writer = scope.spawn(|| fake.rex.run(&CLOSE, Some("{}")).unwrap());
+            fake.wait_for("writing");
+            assert_eq!(fake.view(), "old");
+            fake.write("read", "");
+            writer.join().unwrap();
+        });
+        assert_eq!(fake.view().trim(), "new");
+    }
+
+    #[test]
+    fn outside_changes_show_within_a_quarter_second() {
+        assert_eq!(
+            RexBackend::with_server(None).reuse,
+            Duration::from_millis(250)
+        );
     }
 }

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from ..support.bin_name import BIN, hook_bin, rebrand
 from .conftest import RemoteCli, dev_pin, write_script
 
 FAKE_PROTOCOL_999 = (
@@ -107,7 +108,7 @@ def test_setup_installs_pinned_binary(loopback_cli: RemoteCli, workmux_exe_path:
     result = loopback_cli.run("remote", "setup", "lo")
 
     assert result.returncode == 0, result.stderr
-    assert "installed workmux" in result.stdout
+    assert f"installed {BIN}" in result.stdout
     pinned = bin_dir / dev_pin(workmux_exe_path)
     assert pinned.read_bytes() == workmux_exe_path.read_bytes()
     assert pinned.stat().st_mode & 0o777 == 0o755
@@ -149,7 +150,7 @@ def test_setup_recovers_from_interrupted_installs(
     result = loopback_cli.run("remote", "setup", "lo")
 
     assert result.returncode == 0, result.stderr
-    assert "installed workmux" in result.stdout
+    assert f"installed {BIN}" in result.stdout
     assert pinned.read_bytes() == workmux_exe_path.read_bytes()
     assert not stale.exists()
     assert fresh.exists()
@@ -162,7 +163,7 @@ def test_setup_rejects_protocol_mismatch(loopback_cli: RemoteCli, tmp_path: Path
     result = loopback_cli.run("remote", "setup", "lo")
 
     assert result.returncode == 1
-    assert "speaks protocol 999 (workmux 9.9.9)" in result.stderr
+    assert rebrand("speaks protocol 999 (workmux 9.9.9)") in result.stderr
     assert "speaks protocol 1" in result.stderr
     assert "remotes.lo.binary" in result.stderr
     assert list(bin_dir.iterdir()) == []
@@ -195,7 +196,7 @@ def test_setup_rejects_binary_that_is_not_a_node(
     result = loopback_cli.run("remote", "setup", "lo")
 
     assert result.returncode == 1
-    assert "does not run as workmux" in result.stderr
+    assert rebrand("does not run as workmux") in result.stderr
     assert "hello world" in result.stderr
     assert list(bin_dir.iterdir()) == []
 
@@ -298,7 +299,7 @@ def test_remote_list_reports_each_remote(
 
     assert result.returncode == 0, result.stderr
     lines = {line.split()[0]: line for line in result.stdout.splitlines()[1:]}
-    assert "ready (workmux" in lines["ready"]
+    assert f"ready ({BIN}" in lines["ready"]
     assert "(default)" in lines["ready"]
     assert "not set up" in lines["fresh"]
     assert "invalid config" in lines["broken"]
@@ -325,11 +326,13 @@ def test_setup_installs_status_hooks_where_containers_mount_them(
     assert "installed status hooks for Claude Code, Codex, Gemini CLI" in result.stdout
     for settings in [".claude/settings.json", ".gemini/settings.json"]:
         hooks = json.loads((home / settings).read_text())["hooks"]
-        assert "workmux set-window-status" in json.dumps(hooks), settings
-    assert "workmux set-window-status" in (home / ".codex/hooks.json").read_text()
+        assert f"{hook_bin()} set-window-status" in json.dumps(hooks), settings
+    assert (
+        rebrand("workmux set-window-status") in (home / ".codex/hooks.json").read_text()
+    )
     assert "hooks = true" in (home / ".codex/config.toml").read_text()
     for agent_dir in [".pi/agent", ".omp/agent"]:
-        assert (home / agent_dir / "extensions/workmux-status.ts").is_file()
+        assert (home / agent_dir / f"extensions/{BIN}-status.ts").is_file()
     claude = (home / ".claude/settings.json").stat()
 
     again = loopback_cli.run("remote", "setup", "lo")
@@ -354,7 +357,7 @@ def test_doctor_reports_status_hooks(loopback_cli: RemoteCli, workmux_exe_path: 
     settings = loopback_cli.home / ".claude" / "settings.json"
     settings.parent.mkdir()
     assert loopback_cli.run("remote", "setup", "lo").returncode == 0
-    assert "workmux set-window-status" in settings.read_text()
+    assert rebrand("workmux set-window-status") in settings.read_text()
 
     ready = loopback_cli.run("remote", "doctor", "lo")
     settings.write_text('{"theme": "dark"}\n')
@@ -362,7 +365,7 @@ def test_doctor_reports_status_hooks(loopback_cli: RemoteCli, workmux_exe_path: 
 
     assert "✓ hooks      installed for Claude Code" in ready.stdout, ready.stdout
     assert "! hooks      missing for Claude Code" in missing.stdout, missing.stdout
-    assert "fix: workmux remote setup lo" in missing.stdout
+    assert rebrand("fix: workmux remote setup lo") in missing.stdout
     assert loopback_cli.run("remote", "setup", "lo").returncode == 0
     assert json.loads(settings.read_text())["theme"] == "dark"
     assert "✓ hooks" in loopback_cli.run("remote", "doctor", "lo").stdout
@@ -408,4 +411,4 @@ def test_host_setup_opencode_requires_an_installed_version(
     if program is None:
         assert sorted(p.name for p in config_dir.iterdir()) == ["user-config.json"]
     elif success:
-        assert (config_dir / "plugins/workmux-status/index.ts").is_file()
+        assert (config_dir / f"plugins/{BIN}-status/index.ts").is_file()

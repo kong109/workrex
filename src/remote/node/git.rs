@@ -1,6 +1,7 @@
 //! Node verbs that move work between the node and the laptop: `export`,
 //! `checkout`, `rebase` and `diff`.
 
+use crate::bin_name::BIN;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -80,7 +81,7 @@ fn take_snapshot(workspace: &Workspace) -> Result<Snapshot> {
             code::CONFLICT,
             format!(
                 "{reason} in the worktree of '{handle}' on the node; finish it there \
-                 (`workmux open {handle}`)"
+                 (`{BIN} open {handle}`)"
             ),
         ));
     }
@@ -90,7 +91,7 @@ fn take_snapshot(workspace: &Workspace) -> Result<Snapshot> {
             format!(
                 "'{path}' in the worktree of '{handle}' on the node is a separate git \
                  repository, which cannot be brought home; move it out of the worktree or \
-                 ignore it there (`workmux open {handle}`)"
+                 ignore it there (`{BIN} open {handle}`)"
             ),
         ));
     }
@@ -234,7 +235,7 @@ pub fn rebase(root: &NodeRoot, request: RebaseRequest) -> Result<RebaseResponse>
         let message = if rebasing {
             format!(
                 "the rebase of '{handle}' stopped on conflicts on the node. Resolve them there \
-                 (`workmux open {handle}`), then run `git rebase --continue`, or \
+                 (`{BIN} open {handle}`), then run `git rebase --continue`, or \
                  `git rebase --abort` to cancel\n{detail}"
             )
         } else {
