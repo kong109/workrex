@@ -10,13 +10,14 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::super::Multiplexer;
 use super::super::types::CreateSessionParams;
 use super::super::util;
 
-use super::{RexBackend, SessionId, SessionSummary, SessionView};
+use super::super::agent::shell_quote;
+use super::{RexBackend, SessionId, SessionSummary, SessionView, found};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ServerRecords {
@@ -24,6 +25,36 @@ struct ServerRecords {
     names: HashMap<String, String>,
     #[serde(default)]
     origins: HashMap<String, String>,
+    /// The order a close moved out of place, until that close puts it back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restore: Option<Restore>,
+}
+
+/// Where a closing session's destination goes back to once the close is
+/// done: next to its neighbors in the order taken before the first move.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Restore {
+    destination: String,
+    /// The session order without the closing session.
+    order: Vec<String>,
+}
+
+impl Restore {
+    /// `rex session move` places that put the destination back, nearest
+    /// neighbor first, so a neighbor closed meanwhile yields to the next.
+    fn places(&self) -> Vec<[&str; 2]> {
+        let Some(index) = self.order.iter().position(|id| *id == self.destination) else {
+            return Vec::new();
+        };
+        let successors = self.order[index + 1..]
+            .iter()
+            .map(|id| ["--before", id.as_str()]);
+        let predecessors = self.order[..index]
+            .iter()
+            .rev()
+            .map(|id| ["--after", id.as_str()]);
+        successors.chain(predecessors).collect()
+    }
 }
 
 impl ServerRecords {
@@ -44,20 +75,54 @@ fn read_registry(path: &Path) -> Registry {
         .unwrap_or_default()
 }
 
-/// Every read that feeds `change` must run inside `change`, under the lock:
-/// a session list taken before it can miss a session that a concurrent `add`
-/// records meanwhile, and pruning with it would drop that record.
-fn update_registry(path: &Path, change: impl FnOnce(&mut Registry) -> Result<()>) -> Result<()> {
-    let dir = path.parent().context("Rex registry path has no parent")?;
-    fs::create_dir_all(dir)?;
-    let lock = File::create(path.with_extension("lock"))?;
-    lock.lock().context("Failed to lock the Rex registry")?;
-    let mut registry = read_registry(path);
-    change(&mut registry)?;
-    let mut file = tempfile::NamedTempFile::new_in(dir)?;
-    file.write_all(serde_json::to_string(&registry)?.as_bytes())?;
-    file.persist(path)?;
-    Ok(())
+/// The registry under its cross-process lock, held until this is dropped.
+/// Every read that feeds a change must happen while it is held: a session
+/// list taken before it can miss a session that a concurrent `add` records
+/// meanwhile, and pruning with it would drop that record.
+struct LockedRegistry {
+    path: PathBuf,
+    _lock: File,
+    registry: Registry,
+}
+
+impl LockedRegistry {
+    fn open(path: &Path) -> Result<Self> {
+        let dir = path.parent().context("Rex registry path has no parent")?;
+        fs::create_dir_all(dir)?;
+        let lock = File::create(path.with_extension("lock"))?;
+        lock.lock().context("Failed to lock the Rex registry")?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            _lock: lock,
+            registry: read_registry(path),
+        })
+    }
+
+    fn save(&self) -> Result<()> {
+        let dir = self
+            .path
+            .parent()
+            .context("Rex registry path has no parent")?;
+        let mut file = tempfile::NamedTempFile::new_in(dir)?;
+        file.write_all(serde_json::to_string(&self.registry)?.as_bytes())?;
+        file.persist(&self.path)?;
+        Ok(())
+    }
+}
+
+struct LockedRecords {
+    locked: LockedRegistry,
+    key: ServerAddress,
+}
+
+impl LockedRecords {
+    fn records(&mut self) -> &mut ServerRecords {
+        self.locked.registry.entry(self.key.clone()).or_default()
+    }
+
+    fn save(&self) -> Result<()> {
+        self.locked.save()
+    }
 }
 
 /// Where the app goes when the session it shows closes: the preferred
@@ -81,30 +146,16 @@ fn pick_destination(
     })
 }
 
-pub(super) fn new_session_hint(full_name: &str) -> String {
-    format!("Rex.app stays put: open {full_name} from its sidebar or workmux dashboard.")
+/// Names the worktree, not the Rex session: an agent renames its session.
+pub(super) fn new_session_hint(worktree: &str) -> String {
+    format!("Rex.app stays put: to see {worktree}, press Enter on its row in workmux dashboard.")
 }
 
-/// Where an app showing a closing session should land, and the destination's
-/// one-based place in the session order once the closing session is gone.
-struct Steer {
-    destination: SessionId,
-    place: usize,
-}
-
-impl Steer {
-    /// `rex session move` attaches to the session it moves, which
-    /// `session.move` requires.
-    fn move_args(&self, place: usize) -> Vec<String> {
-        let id = self.destination.as_str();
-        ["session", "move", id, "--index", &place.to_string()]
-            .map(String::from)
-            .to_vec()
-    }
-}
-
-fn as_strs(args: &[String]) -> Vec<&str> {
-    args.iter().map(String::as_str).collect()
+fn session_ids(sessions: &[SessionSummary]) -> Vec<SessionId> {
+    sessions
+        .iter()
+        .map(|session| session.session_id.clone())
+        .collect()
 }
 
 fn matches_id_or_label(session: &SessionSummary, name: &str) -> bool {
@@ -132,13 +183,21 @@ impl RexBackend {
             .unwrap_or_default()
     }
 
-    fn update_records(&self, change: impl FnOnce(&mut ServerRecords) -> Result<()>) -> Result<()> {
+    fn lock_records(&self) -> Result<LockedRecords> {
         let path = self
             .registry
             .as_deref()
             .context("No state directory for the Rex registry")?;
-        let key = self.server_key();
-        update_registry(path, |registry| change(registry.entry(key).or_default()))
+        Ok(LockedRecords {
+            locked: LockedRegistry::open(path)?,
+            key: self.server_key(),
+        })
+    }
+
+    fn update_records(&self, change: impl FnOnce(&mut ServerRecords) -> Result<()>) -> Result<()> {
+        let mut locked = self.lock_records()?;
+        change(locked.records())?;
+        locked.save()
     }
 
     pub(super) fn apply_managed_names(&self, sessions: &mut [SessionSummary]) {
@@ -222,85 +281,130 @@ impl RexBackend {
         })
     }
 
-    /// Drops the records of sessions that are gone, listing them under the
-    /// registry lock. Closing prunes rather than forgetting the closing
-    /// session itself, so a close that never ran leaves its record intact.
-    fn prune_records(&self) -> Result<()> {
-        self.update_records(|records| {
-            let live: Vec<SessionId> = self
-                .raw_sessions()?
-                .into_iter()
-                .map(|session| session.session_id)
-                .collect();
-            records.retain_live(&live);
-            Ok(())
-        })
-    }
-
     /// Rex.app shows the first session in the order when the session it
     /// shows is destroyed, and an app showing another session stays put.
     /// Rex does not say which app shows `closing`, so no app is asked to
-    /// move: the destination goes first for the destroy and then back to its
-    /// place, and only an app that showed `closing` lands on it.
-    fn steer(&self, closing: &SessionId, preferred: Option<&str>) -> Result<Option<Steer>> {
+    /// move: the destination goes first for the destroy and then back next
+    /// to its neighbors, and only an app that showed `closing` lands on it.
+    fn plan_restore(
+        &self,
+        closing: &SessionId,
+        preferred: Option<&str>,
+        origins: &HashMap<String, String>,
+    ) -> Result<Option<Restore>> {
         let mut sessions = self.raw_sessions()?;
-        let order: Vec<SessionId> = sessions
-            .iter()
-            .map(|session| session.session_id.clone())
+        let order = session_ids(&sessions)
+            .into_iter()
             .filter(|id| id != closing)
+            .map(|id| id.as_str().to_string())
             .collect();
         self.apply_managed_names(&mut sessions);
-        let origin = self
-            .records()
-            .origins
-            .remove(closing.as_str())
-            .map(SessionId);
-        let Some(destination) = pick_destination(&sessions, closing, preferred, origin) else {
-            return Ok(None);
+        let origin = origins.get(closing.as_str()).cloned().map(SessionId);
+        Ok(
+            pick_destination(&sessions, closing, preferred, origin).map(|destination| Restore {
+                destination: destination.as_str().to_string(),
+                order,
+            }),
+        )
+    }
+
+    /// `rex session move` attaches to the session it moves, which
+    /// `session.move` requires.
+    fn move_session(&self, session: &str, place: [&str; 2]) -> bool {
+        let moved = self.run(&["session", "move", session, place[0], place[1]], None);
+        if let Err(error) = &moved {
+            tracing::debug!(error = %error, "rex: session move failed");
+        }
+        moved.is_ok()
+    }
+
+    fn put_back(&self, restore: &Restore) {
+        restore
+            .places()
+            .into_iter()
+            .any(|place| self.move_session(&restore.destination, place));
+    }
+
+    /// The whole close runs under the registry lock, so two closes, or a
+    /// close and a deferred one, never interleave their moves. The order is
+    /// recorded before the first move and cleared after the move back, so a
+    /// close killed in between leaves the next close the order to put back
+    /// before it reads the order itself.
+    fn close_locked(
+        &self,
+        find: impl FnOnce() -> Result<Option<SessionId>>,
+        preferred: Option<&str>,
+    ) -> Result<()> {
+        let mut locked = self.lock_records()?;
+        if let Some(left) = locked.records().restore.take() {
+            self.put_back(&left);
+            locked.save()?;
+        }
+        let Some(session) = find()? else {
+            return Ok(());
         };
-        let place = order
-            .iter()
-            .position(|id| *id == destination)
-            .map_or(1, |index| index + 1);
-        Ok(Some(Steer { destination, place }))
+        let restore = self.plan_restore(&session, preferred, &locked.records().origins)?;
+        if let Some(restore) = &restore {
+            locked.records().restore = Some(restore.clone());
+            locked.save()?;
+            self.move_session(&restore.destination, ["--index", "1"]);
+        }
+        let destroyed = self.destroy_session(&session);
+        if let Some(restore) = &restore {
+            self.put_back(restore);
+        }
+        // Closing prunes rather than forgetting the closing session itself,
+        // so a close that never ran leaves its record intact.
+        let live = self.raw_sessions();
+        let records = locked.records();
+        records.restore = None;
+        if let Ok(live) = &live {
+            records.retain_live(&session_ids(live));
+        }
+        locked.save()?;
+        destroyed?;
+        live.map(drop)
     }
 
     pub(super) fn close_session_to(&self, full_name: &str, preferred: Option<&str>) -> Result<()> {
-        if let Some(session) = self.labeled_session(full_name)? {
-            let steer = self.steer(&session, preferred)?;
-            let move_to = |place: usize| {
-                if let Some(steer) = &steer
-                    && let Err(error) = self.run(&as_strs(&steer.move_args(place)), None)
-                {
-                    tracing::debug!(error = %error, "rex: session move failed");
-                }
-            };
-            move_to(1);
-            self.destroy_session(&session)?;
-            move_to(steer.as_ref().map_or(1, |steer| steer.place));
-            self.prune_records()?;
-        }
-        Ok(())
+        self.close_locked(|| self.labeled_session(full_name), preferred)
     }
 
-    /// Each step runs to completion before the next starts, so Rex.app
-    /// sees the destination first when the destroy reaches it.
+    /// What `_session-close` runs: the deferred half of a close, for a
+    /// session that may be gone by the time it runs.
+    pub fn close_session_with_id(&self, id: &str, preferred: Option<&str>) -> Result<()> {
+        let session = SessionId(id.to_string());
+        self.close_locked(
+            || {
+                let live = session_ids(&self.raw_sessions()?);
+                Ok(live.contains(&session).then_some(session))
+            },
+            preferred,
+        )
+    }
+
+    /// A shell has no portable flock, so a deferred close runs the hidden
+    /// `_session-close` command, which takes the registry lock like any
+    /// other close.
     pub(super) fn shell_close_cmd(
         &self,
         session: &SessionId,
         preferred: Option<&str>,
     ) -> Result<String> {
-        let destroy = self.shell_destroy_cmd(session);
-        let script = match self.steer(session, preferred)? {
-            Some(steer) => format!(
-                "{}; {destroy}; {}",
-                self.shell_rex_cmd(&as_strs(&steer.move_args(1))),
-                self.shell_rex_cmd(&as_strs(&steer.move_args(steer.place)))
-            ),
-            None => destroy,
-        };
-        self.prune_records()?;
-        Ok(script)
+        let exe = std::env::current_exe().context("Failed to locate the workmux executable")?;
+        let mut words = vec!["env".to_string()];
+        for var in Self::INHERITED_SCOPE_VARS {
+            words.extend(["-u".to_string(), var.to_string()]);
+        }
+        if let Some(server) = &self.server {
+            words.push(shell_quote(&format!("REX_SERVER={server}")));
+        }
+        words.push(shell_quote(&exe.to_string_lossy()));
+        words.extend(["_session-close".to_string(), shell_quote(session.as_str())]);
+        if let Some(preferred) = preferred {
+            words.extend(["--to".to_string(), shell_quote(preferred)]);
+        }
+        Ok(format!("{} >/dev/null 2>&1 || true", words.join(" ")))
     }
 
     pub(super) fn shell_close_session_named_cmd(
@@ -312,6 +416,17 @@ impl RexBackend {
             Some(session) => self.shell_close_cmd(&session, preferred)?,
             None => String::new(),
         })
+    }
+
+    /// The pane a dashboard jump to the session `full_name` lands on: the
+    /// focused block of its active window.
+    pub(super) fn session_pane(&self, full_name: &str) -> Result<Option<String>> {
+        let Some(session) = self.labeled_session(full_name)? else {
+            return Ok(None);
+        };
+        Ok(found(self.view(&session))?
+            .and_then(|view| view.active_window()?.focused_block_id.clone())
+            .map(|block| block.as_str().to_string()))
     }
 }
 
@@ -382,25 +497,32 @@ mod tests {
         .in_pane(CALLER_SESSION, CALLER_BLOCK)
     }
 
-    fn assert_destination_leads_the_destroy(fake: &FakeRex) {
-        let steps: Vec<String> = fake
-            .calls("")
+    /// The `session move` and `session.destroy` calls, in order, without
+    /// the global arguments.
+    fn steps(fake: &FakeRex) -> Vec<String> {
+        fake.calls("")
             .into_iter()
             .filter(|call| call.contains("session move") || call.contains("session.destroy"))
-            .map(|call| call.split(" -S ").nth(1).unwrap_or(&call).to_string())
-            .collect();
+            .map(|call| {
+                let call = call.split(" -S ").nth(1).unwrap_or(&call);
+                call.split_once(' ')
+                    .map_or(call, |(_, rest)| rest)
+                    .trim()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn assert_destination_leads_the_destroy(fake: &FakeRex) {
+        let steps = steps(fake);
         assert_eq!(steps.len(), 3, "{steps:#?}");
-        assert!(
-            steps[0].contains("session move session:home --index 1"),
-            "{steps:#?}"
-        );
+        assert_eq!(steps[0], "session move session:home --index 1");
         assert!(steps[1].contains("session.destroy"), "{steps:#?}");
-        assert!(
-            steps[2].contains("session move session:home --index 2"),
-            "{steps:#?}"
-        );
+        // Back next to its neighbor, not to an index a concurrent change can shift.
+        assert_eq!(steps[2], "session move session:home --after session:first");
         assert!(fake.calls(" do ").is_empty(), "no app is asked to move");
         assert!(fake.calls("client.list").is_empty());
+        assert_eq!(fake.rex.records().restore, None);
     }
 
     #[test]
@@ -416,20 +538,37 @@ mod tests {
     }
 
     #[test]
-    fn a_deferred_close_puts_the_destination_first_for_the_destroy_and_then_back() {
+    fn a_deferred_close_runs_the_locked_close_later() {
         let fake = closing_fake();
         let script = fake
             .rex
             .shell_close_session_named_cmd("wm-a", Some("home"))
             .unwrap();
-        assert!(fake.calls("session.destroy").is_empty());
-        let status = std::process::Command::new("sh")
-            .args(["-c", &script])
-            .stdin(std::process::Stdio::null())
-            .status()
+        assert!(steps(&fake).is_empty(), "scheduling moves nothing");
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(
+            script,
+            format!(
+                "env -u REX_SESSION -u REX_BLOCK 'REX_SERVER=unix://{}/s.sock' {} \
+                 _session-close {CALLER_SESSION} --to home >/dev/null 2>&1 || true",
+                fake.dir.path().display(),
+                shell_quote(&exe.to_string_lossy())
+            )
+        );
+
+        fake.rex
+            .close_session_with_id(CALLER_SESSION, Some("home"))
             .unwrap();
-        assert!(status.success());
         assert_destination_leads_the_destroy(&fake);
+    }
+
+    #[test]
+    fn a_deferred_close_of_a_gone_session_does_nothing() {
+        let fake = closing_fake();
+        fake.rex
+            .close_session_with_id("session:gone", Some("home"))
+            .unwrap();
+        assert!(steps(&fake).is_empty());
     }
 
     #[test]
@@ -438,6 +577,155 @@ mod tests {
         fake.rex.close_session_to("wm-a", None).unwrap();
         assert!(fake.calls("session move").is_empty());
         assert_eq!(fake.calls("session.destroy").len(), 1);
+    }
+
+    #[test]
+    fn a_failed_destroy_still_moves_the_destination_back() {
+        let fake = FakeRex::new(&[
+            ("session move", "{}"),
+            ("session.destroy", "!Error: destroy failed"),
+            (
+                "session.list",
+                &session_list(&[
+                    ("session:first", "first"),
+                    (CALLER_SESSION, "wm-a"),
+                    ("session:home", "home"),
+                ]),
+            ),
+        ]);
+        let error = fake.rex.close_session_to("wm-a", Some("home")).unwrap_err();
+        assert!(format!("{error:#}").contains("destroy failed"), "{error:#}");
+        let steps = steps(&fake);
+        assert_eq!(steps.len(), 3, "{steps:#?}");
+        assert_eq!(steps[2], "session move session:home --after session:first");
+        assert_eq!(fake.rex.records().restore, None);
+    }
+
+    #[test]
+    fn the_order_is_recorded_before_the_first_move() {
+        let state = tempfile::tempdir().unwrap();
+        let registry = state.path().join("rex-sessions.json");
+        let seen = state.path().join("seen");
+        // The move to the front snapshots the registry as a close killed
+        // right after it would leave it.
+        let mut fake = FakeRex::new(&[
+            (
+                "session move session:home --index 1",
+                &format!(
+                    "$cp '{}' '{}' 2>/dev/null; echo '{{}}'",
+                    registry.display(),
+                    seen.display()
+                ),
+            ),
+            ("session move", "{}"),
+            ("session.destroy", "{}"),
+            (
+                "session.list",
+                &session_list(&[
+                    ("session:first", "first"),
+                    (CALLER_SESSION, "wm-a"),
+                    ("session:home", "home"),
+                ]),
+            ),
+        ]);
+        fake.rex.registry = Some(registry);
+        fake.rex.close_session_to("wm-a", Some("home")).unwrap();
+        let left: Registry =
+            serde_json::from_str(&std::fs::read_to_string(&seen).unwrap()).unwrap();
+        assert_eq!(
+            left.into_values().next().unwrap().restore,
+            Some(Restore {
+                destination: "session:home".into(),
+                order: vec!["session:first".into(), "session:home".into()],
+            })
+        );
+        assert_eq!(fake.rex.records().restore, None);
+    }
+
+    #[test]
+    fn a_close_first_puts_back_an_order_a_killed_close_left() {
+        let fake = closing_fake();
+        fake.rex
+            .update_records(|records| {
+                records.restore = Some(Restore {
+                    destination: "session:home".into(),
+                    order: vec![
+                        "session:gone".into(),
+                        "session:home".into(),
+                        "session:first".into(),
+                    ],
+                });
+                Ok(())
+            })
+            .unwrap();
+        fake.rex.close_session_to("wm-a", None).unwrap();
+        let steps = steps(&fake);
+        assert_eq!(steps[0], "session move session:home --before session:first");
+        assert!(steps[1].contains("session.destroy"), "{steps:#?}");
+        assert_eq!(steps.len(), 2, "{steps:#?}");
+        assert_eq!(fake.rex.records().restore, None);
+    }
+
+    #[test]
+    fn the_destination_goes_back_next_to_its_nearest_surviving_neighbor() {
+        let restore = Restore {
+            destination: "d".into(),
+            order: ["a", "b", "d", "e", "f"].map(String::from).to_vec(),
+        };
+        assert_eq!(
+            restore.places(),
+            [
+                ["--before", "e"],
+                ["--before", "f"],
+                ["--after", "b"],
+                ["--after", "a"]
+            ]
+        );
+        let fake = FakeRex::new(&[
+            ("session move d --before e", "!Error: session e not found"),
+            ("session move d --before f", "{}"),
+        ]);
+        fake.rex.put_back(&restore);
+        assert_eq!(fake.calls("session move").len(), 2);
+    }
+
+    #[test]
+    fn concurrent_closes_do_not_interleave() {
+        let fake = FakeRex::new(&[
+            ("session move", "$sleep 0.2; echo '{}'"),
+            ("session.destroy", "{}"),
+            (
+                "session.list",
+                &session_list(&[
+                    ("session:first", "first"),
+                    ("session:a", "wm-a"),
+                    ("session:b", "wm-b"),
+                    ("session:home", "home"),
+                ]),
+            ),
+        ]);
+        std::thread::scope(|scope| {
+            for name in ["wm-a", "wm-b"] {
+                let rex = &fake.rex;
+                scope.spawn(move || rex.close_session_to(name, Some("home")).unwrap());
+            }
+        });
+        let kinds: Vec<&str> = steps(&fake)
+            .iter()
+            .map(|step| {
+                if step.contains("destroy") {
+                    "destroy"
+                } else {
+                    "move"
+                }
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["move", "destroy", "move", "move", "destroy", "move"],
+            "{:#?}",
+            steps(&fake)
+        );
     }
 
     #[test]
@@ -458,11 +746,25 @@ mod tests {
         );
     }
 
-    /// Each fake creates its own session, then lists the sessions both have
-    /// created so far, taking `delay` to answer: a slow list taken before the
-    /// registry lock is stale once a faster `add` has recorded its session.
-    fn adding_fake(dir: &Path, session: &str, delay: &str) -> FakeRex {
+    /// Each fake creates its own session and, if `create_managed_session`
+    /// lists sessions, lists the ones created so far. File gates fix the
+    /// interleaving: `b` creates only after `a` listed (or finished), and a
+    /// list by `a` answers only after `b` recorded, so a list taken before
+    /// the registry lock is always stale.
+    fn adding_fake(dir: &Path, session: &str, create_gate: &str, list_gate: &str) -> FakeRex {
         let live = dir.join("live");
+        let wait = |gate: &str| {
+            if gate.is_empty() {
+                String::new()
+            } else {
+                let gates = gate
+                    .split('|')
+                    .map(|gate| format!("[ -e '{}' ]", dir.join(gate).display()))
+                    .collect::<Vec<_>>()
+                    .join(" || ");
+                format!("i=0; until {gates} || [ $i -ge 200 ]; do sleep 0.05; i=$((i+1)); done\n")
+            }
+        };
         let create = dir.join(format!("create-{session}.sh"));
         let created = json!({
             "session_id": session,
@@ -471,15 +773,21 @@ mod tests {
         let entry = json!({ "session_id": session, "label": "wm" });
         std::fs::write(
             &create,
-            format!("echo '{entry}' >> '{}'\necho '{created}'\n", live.display()),
+            format!(
+                "{}echo '{entry}' >> '{}'\necho '{created}'\n",
+                wait(create_gate),
+                live.display()
+            ),
         )
         .unwrap();
         let list = dir.join(format!("list-{session}.sh"));
         std::fs::write(
             &list,
             format!(
-                "list=$(paste -sd, '{}')\nsleep {delay}\nprintf '{{\"sessions\":[%s]}}\\n' \"$list\"\n",
-                live.display()
+                "list=$(paste -sd, '{}')\ntouch '{}'\n{}printf '{{\"sessions\":[%s]}}\\n' \"$list\"\n",
+                live.display(),
+                dir.join(format!("listed-{session}")).display(),
+                wait(list_gate),
             ),
         )
         .unwrap();
@@ -495,8 +803,8 @@ mod tests {
     #[test]
     fn concurrent_adds_keep_both_sessions_recorded() {
         let shared = tempfile::tempdir().unwrap();
-        let a = adding_fake(shared.path(), "session:a", "0.6");
-        let b = adding_fake(shared.path(), "session:b", "0");
+        let a = adding_fake(shared.path(), "session:a", "", "recorded-b");
+        let b = adding_fake(shared.path(), "session:b", "listed-session:a|added-a", "");
         let cwd = shared.path().to_path_buf();
         let add = |fake: &FakeRex, name: &str| {
             fake.rex
@@ -507,13 +815,14 @@ mod tests {
                     initial_window_name: None,
                 })
                 .unwrap();
+            std::fs::write(shared.path().join(format!("added-{name}")), "").unwrap();
+            if name == "b" {
+                std::fs::write(shared.path().join("recorded-b"), "").unwrap();
+            }
         };
         std::thread::scope(|scope| {
             scope.spawn(|| add(&a, "a"));
-            scope.spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(150));
-                add(&b, "b");
-            });
+            scope.spawn(|| add(&b, "b"));
         });
         let names = a.rex.records().names;
         assert_eq!(names.get("session:a").map(String::as_str), Some("wm-a"));

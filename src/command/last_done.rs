@@ -3,6 +3,7 @@ use std::cmp::Reverse;
 use anyhow::Result;
 use tracing::debug;
 
+use crate::multiplexer::rex::AppRefused;
 use crate::multiplexer::{AgentStatus, create_backend, detect_backend};
 use crate::state::{AgentState, LastDoneCycleState, PaneKey, StateStore};
 
@@ -68,31 +69,60 @@ pub fn run() -> Result<()> {
     let target_idx = pick_target(current_idx, done_agents.len(), is_cycling);
     debug!(current_idx = ?current_idx, target_idx, "target selection");
 
-    // Try to switch, skipping dead panes
-    for i in 0..done_agents.len() {
-        let idx = (target_idx + i) % done_agents.len();
-        let agent = &done_agents[idx];
+    let jump = first_reachable(&done_agents, target_idx, |agent| {
         let pane_id = &agent.pane_key.pane_id;
-        let window_hint = agent.window_name.as_deref();
-
         debug!(
             pane_id,
             status = ?agent.status,
             status_ts = ?agent.status_ts,
             "trying agent"
         );
+        mux.switch_to_pane(pane_id, agent.window_name.as_deref())
+    });
+    // Persist cycle state so next invocation can continue the cycle
+    if let Jump::To(agent) = jump {
+        save_cycle_state(&store, &agent.pane_key, head_ts);
+    }
+    if let Some(message) = jump.message() {
+        println!("{message}");
+    }
+    Ok(())
+}
 
-        if let Err(e) = mux.switch_to_pane(pane_id, window_hint) {
-            debug!(pane_id, error = %e, "pane dead, trying next");
-        } else {
-            // Persist cycle state so next invocation can continue the cycle
-            save_cycle_state(&store, &agent.pane_key, head_ts);
-            return Ok(());
+enum Jump<'a> {
+    To(&'a AgentState),
+    Refused,
+    NoneLive,
+}
+
+impl Jump<'_> {
+    /// A refused jump says nothing: the backend already printed the fix.
+    fn message(&self) -> Option<&'static str> {
+        match self {
+            Jump::NoneLive => Some("No active completed or waiting agents found"),
+            Jump::To(_) | Jump::Refused => None,
         }
     }
+}
 
-    println!("No active completed or waiting agents found");
-    Ok(())
+/// Tries agents in order from `start`, skipping dead panes. A refused jump
+/// ends the search: the app would refuse every other pane too.
+fn first_reachable(
+    agents: &[AgentState],
+    start: usize,
+    mut switch: impl FnMut(&AgentState) -> Result<()>,
+) -> Jump<'_> {
+    for i in 0..agents.len() {
+        let agent = &agents[(start + i) % agents.len()];
+        match switch(agent) {
+            Ok(()) => return Jump::To(agent),
+            Err(e) if e.is::<AppRefused>() => return Jump::Refused,
+            Err(e) => {
+                debug!(pane_id = agent.pane_key.pane_id, error = %e, "pane dead, trying next")
+            }
+        }
+    }
+    Jump::NoneLive
 }
 
 /// Check if the user is in an active last-done cycle.
@@ -193,6 +223,39 @@ mod tests {
             target: make_key(pane_id),
             head_ts: Some(head_ts),
         }
+    }
+
+    // -- jump tests --
+
+    #[test]
+    fn a_refused_jump_stops_without_trying_other_agents() {
+        let agents = [
+            make_agent("%1", AgentStatus::Done, 2, 2),
+            make_agent("%2", AgentStatus::Done, 1, 1),
+        ];
+        let mut tried = Vec::new();
+        let jump = first_reachable(&agents, 0, |agent| {
+            tried.push(agent.pane_key.pane_id.clone());
+            Err(AppRefused.into())
+        });
+        assert!(matches!(jump, Jump::Refused));
+        assert_eq!(jump.message(), None);
+        assert_eq!(tried, ["%1"]);
+    }
+
+    #[test]
+    fn dead_panes_are_skipped_until_one_is_reached() {
+        let agents = [
+            make_agent("%1", AgentStatus::Done, 2, 2),
+            make_agent("%2", AgentStatus::Done, 1, 1),
+        ];
+        let jump = first_reachable(&agents, 0, |agent| match agent.pane_key.pane_id.as_str() {
+            "%1" => Err(anyhow::anyhow!("pane dead")),
+            _ => Ok(()),
+        });
+        assert!(matches!(jump, Jump::To(agent) if agent.pane_key.pane_id == "%2"));
+        let none = first_reachable(&agents, 1, |_| Err(anyhow::anyhow!("pane dead")));
+        assert!(matches!(none, Jump::NoneLive));
     }
 
     // -- sort tests --

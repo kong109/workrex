@@ -337,7 +337,7 @@ pub fn setup_environment(
                 // Using select_pane + switch_to_session would lose the window
                 // selection because switch_to_session targets the session by
                 // name, defaulting to its first window.
-                view_hint = mux.focus_new_session(&focus_pane_id, &mux_target_full_name)?;
+                view_hint = mux.focus_new_session(&focus_pane_id, handle)?;
             }
         }
     }
