@@ -83,6 +83,38 @@ class RexServer:
         )
         return created["session_id"], created["initial_windows"][0]["block_ids"][0]
 
+    def split_session(
+        self, agent: list[str] | None = None, agent_in_new_tab: bool = False
+    ) -> tuple[str, str, str]:
+        """A session whose first tab holds a shell beside a second block, which
+        runs `agent` when given. With `agent_in_new_tab` the agent gets a
+        second tab instead. Returns the session, the shell and the agent."""
+        shell = {"block": {"flavor": SHELL}}
+        agent_block = {"block": {"flavor": SHELL, "options": {"command": agent}}}
+        if agent is None:
+            agent_block = shell
+        if agent_in_new_tab:
+            layouts = [{"split": {"direction": "horizontal", "before": shell, "after": shell}}]
+            layouts.append(agent_block)
+        else:
+            split = {"direction": "horizontal", "before": shell, "after": agent_block}
+            layouts = [{"split": split}]
+        created = self.api(
+            "session.create",
+            {
+                "label": "test",
+                "initial_windows": [{"layout": layout} for layout in layouts],
+            },
+        )
+        blocks = [b for w in created["initial_windows"] for b in w["block_ids"]]
+        return created["session_id"], blocks[0], blocks[-1]
+
+    def focus(self, session: str, block: str) -> None:
+        self.api("session.focus_block", {"session_id": session, "block_id": block})
+
+    def focused(self, session: str) -> str:
+        return self.window(session)["focused_block_id"]
+
     def open_dashboard(self, session: str) -> dict:
         return json.loads(self.cli("do", "-s", session, "workrex_dashboard").stdout)
 
@@ -163,3 +195,104 @@ def test_a_dashboard_that_exited_is_replaced_instead_of_refocused(tmp_path: Path
         assert [b["block_id"] for b in layer["blocks"]] == [fresh["block_id"]]
     finally:
         rex.stop()
+
+
+def test_q_returns_focus_to_the_block_the_dashboard_opened_over(rex: RexServer):
+    # Rex hands focus to the tab's last block when a layer's program exits.
+    session, shell, _ = rex.split_session()
+    rex.focus(session, shell)
+
+    opened = rex.open_dashboard(session)
+    wait_until(lambda: "Agents" in rex.screen(opened["block_id"]))
+    rex.cli("send", "-b", opened["block_id"], "q")
+    wait_until(lambda: not floating_layers(rex.window(session)))
+
+    assert rex.focused(session) == shell
+
+
+HINT = "Turn on Remote Control in Rex Settings to jump across tabs"
+
+
+def refusing_rex(workmux: Path, tmp_path: Path) -> Path:
+    """A workmux whose rex reports a connected app and fails session.select,
+    as Rex.app does with Remote Control off. Rex sets REX_BIN_DIR in every
+    block, so the wrapper overrides it."""
+    bin_dir = tmp_path / "refusing-rex"
+    bin_dir.mkdir()
+    app = '{"clients":[{"client_id":"client:app","info":{"kind":"app"}}]}'
+    (bin_dir / "rex").write_text(
+        f"""#!/bin/sh
+case "$*" in
+  *session.select*) echo 'Error: client refused session.select' >&2; exit 1 ;;
+  *client.list*) echo '{app}'; exit 0 ;;
+esac
+exec '{rex_binary()}' "$@"
+"""
+    )
+    (bin_dir / "workmux").write_text(
+        f"#!/bin/sh\nREX_BIN_DIR='{bin_dir}' exec '{workmux}' \"$@\"\n"
+    )
+    for program in ("rex", "workmux"):
+        (bin_dir / program).chmod(0o755)
+    return bin_dir / "workmux"
+
+
+@pytest.fixture
+def refusing(
+    workmux_exe_path: Path, tmp_path: Path
+) -> Generator[RexServer, None, None]:
+    server = RexServer(refusing_rex(workmux_exe_path, tmp_path), tmp_path)
+    try:
+        yield server
+    finally:
+        server.stop()
+
+
+def agent_command(rex: RexServer) -> list[str]:
+    """A program that reports itself as a working agent and keeps running,
+    which keeps it listed."""
+    repo = Path(rex.env["XDG_STATE_HOME"]).parent / "repo"
+    repo.mkdir(exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    script = 'cd "$1" && "$WORKREX_BIN" set-window-status working && read x'
+    return ["sh", "-c", script, "sh", str(repo)]
+
+
+def open_dashboard_over(rex: RexServer, session: str, shell: str) -> str:
+    """Opens the dashboard over `shell` and returns its block once it lists
+    the agent."""
+    rex.focus(session, shell)
+    dashboard = rex.open_dashboard(session)["block_id"]
+    wait_until(lambda: "repo" in rex.screen(dashboard), 20)
+    return dashboard
+
+
+def test_refused_jump_within_the_tab_still_lands_and_closes(refusing: RexServer):
+    session, shell, agent = refusing.split_session(agent_command(refusing))
+    dashboard = open_dashboard_over(refusing, session, shell)
+
+    refusing.cli("send-key", "-b", dashboard, "Enter")
+    wait_until(lambda: not floating_layers(refusing.window(session)))
+
+    assert refusing.focused(session) == agent
+
+
+def test_refused_jump_to_another_tab_keeps_the_dashboard_and_its_hint(
+    refusing: RexServer,
+):
+    session, shell, _ = refusing.split_session(
+        agent_command(refusing), agent_in_new_tab=True
+    )
+    dashboard = open_dashboard_over(refusing, session, shell)
+
+    refusing.cli("send-key", "-b", dashboard, "Enter")
+    wait_until(lambda: HINT in refusing.screen(dashboard))
+    time.sleep(2)
+
+    assert HINT in refusing.screen(dashboard)
+    assert refusing.focused(session) == dashboard
+    assert len(floating_layers(refusing.window(session))) == 1
+
+    refusing.cli("send", "-b", dashboard, "j")
+    wait_until(lambda: HINT not in refusing.screen(dashboard))
+    assert refusing.focused(session) == dashboard

@@ -20,7 +20,7 @@ use super::util;
 
 mod layer;
 
-use layer::{LayerKind, RemoteControlHint};
+use layer::LayerKind;
 
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
 const TERMINAL_CREATOR: &str = "com.superlogical.terminal";
@@ -534,7 +534,6 @@ pub struct RexBackend {
     server: Option<String>,
     endpoint: OnceLock<String>,
     block_sessions: Mutex<HashMap<BlockId, SessionId>>,
-    remote_control_hint: Mutex<RemoteControlHint>,
 }
 
 impl RexBackend {
@@ -561,7 +560,6 @@ impl RexBackend {
             server,
             endpoint: OnceLock::new(),
             block_sessions: Mutex::new(HashMap::new()),
-            remote_control_hint: Mutex::default(),
         }
     }
 
@@ -1518,8 +1516,8 @@ impl Multiplexer for RexBackend {
         self.select_pane(pane_id)
     }
 
-    fn take_notice(&self) -> Option<String> {
-        self.take_remote_control_hint()
+    fn dashboard_quit(&self) {
+        self.return_to_origin()
     }
 
     fn kill_pane(&self, pane_id: &str) -> Result<()> {

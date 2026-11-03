@@ -264,6 +264,10 @@ pub fn run(
 
     terminal_session.restore()?;
 
+    if app.should_quit && !app.should_jump {
+        app.mux.dashboard_quit();
+    }
+
     Ok(())
 }
 
@@ -318,6 +322,11 @@ fn handle_terminal_event(
     let Event::Key(key) = event else { return };
     if key.kind != KeyEventKind::Press {
         return;
+    }
+
+    if app.status_until_key {
+        app.status_until_key = false;
+        app.status_message = None;
     }
 
     // Help overlay handling - close on any key if open

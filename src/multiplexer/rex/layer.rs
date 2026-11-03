@@ -4,8 +4,7 @@ use serde_json::json;
 
 use super::{BlockId, ClientEntry, ClientList, RexBackend, SessionView, WindowId};
 
-const REMOTE_CONTROL_HINT: &str = "Rex.app did not switch tabs, so jumps stay in this tab. \
-     Turn on Remote Control in Rex Settings to jump to any agent";
+const REMOTE_CONTROL_HINT: &str = "Turn on Remote Control in Rex Settings to jump across tabs";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,15 +14,6 @@ pub(super) enum LayerKind {
     #[default]
     #[serde(other)]
     Other,
-}
-
-/// Whether the user has been told that Rex.app refuses to switch tabs.
-#[derive(Debug, Default)]
-pub(super) enum RemoteControlHint {
-    #[default]
-    Unneeded,
-    Pending,
-    Shown,
 }
 
 impl ClientEntry {
@@ -77,7 +67,6 @@ pub(super) fn active_block(
 }
 
 impl RexBackend {
-    // replace with rex::session app-client selector once WR-3 lands
     pub(super) fn app_client(&self) -> Result<Option<String>> {
         let list: ClientList = self.api("client.list", json!({}))?;
         Ok(pick_app(
@@ -89,7 +78,7 @@ impl RexBackend {
     /// Shows the block's tab on the app, then focuses the block. `here` is
     /// the block the user is in, whose tab the app shows. When the app
     /// refuses to switch tabs (Remote Control off), a block in that same tab
-    /// is still focused, and the user is told once how to jump anywhere.
+    /// is still focused; any other jump fails and leaves focus alone.
     pub(super) fn jump_to_block(&self, block: &BlockId, here: Option<&BlockId>) -> Result<()> {
         let target = self
             .resolve("block", block.as_str())?
@@ -98,14 +87,10 @@ impl RexBackend {
             .lock()
             .unwrap()
             .insert(block.clone(), target.session_id.clone());
-        if let Err(refused) = self.show_on_app(&target.session_id, target.window_id.as_ref()) {
-            if target.window_id.is_none() || target.window_id != self.window_of(here)? {
-                return Err(refused);
-            }
-            let mut hint = self.remote_control_hint.lock().unwrap();
-            if matches!(*hint, RemoteControlHint::Unneeded) {
-                *hint = RemoteControlHint::Pending;
-            }
+        if let Err(refused) = self.show_on_app(&target.session_id, target.window_id.as_ref())
+            && (target.window_id.is_none() || target.window_id != self.window_of(here)?)
+        {
+            return Err(refused.context(REMOTE_CONTROL_HINT));
         }
         self.block_session_call(
             "session.focus_block",
@@ -124,13 +109,16 @@ impl RexBackend {
             .and_then(|target| target.window_id))
     }
 
-    pub(super) fn take_remote_control_hint(&self) -> Option<String> {
-        let mut hint = self.remote_control_hint.lock().unwrap();
-        if !matches!(*hint, RemoteControlHint::Pending) {
-            return None;
+    /// Focuses the block the dashboard was opened over. A layer whose
+    /// program exits hands focus to the last block of the tab instead.
+    pub(super) fn return_to_origin(&self) {
+        if let Some(origin) = origin_block() {
+            let _ = self.block_session_call(
+                "session.focus_block",
+                &origin,
+                json!({ "block_id": origin.as_str() }),
+            );
         }
-        *hint = RemoteControlHint::Shown;
-        Some(REMOTE_CONTROL_HINT.to_string())
     }
 }
 
@@ -276,34 +264,43 @@ esac
     }
 
     #[test]
-    fn refused_select_still_focuses_a_block_in_the_users_tab_and_hints_once() {
+    fn refused_select_still_focuses_a_block_in_the_users_tab() {
         let rex = FakeRex::refusing_select(APP_CLIENTS);
-        let backend = rex.backend();
         let here = block(HERE_IN_AGENT_TAB);
 
-        backend.jump_to_block(&block(AGENT), Some(&here)).unwrap();
+        rex.backend()
+            .jump_to_block(&block(AGENT), Some(&here))
+            .unwrap();
         let calls = rex.calls();
         assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls[0].ends_with(&select_call(APP)), "{calls:?}");
         assert_focuses_agent(&calls[1]);
-        let hint = backend.take_remote_control_hint().expect("a hint");
-        assert!(hint.contains("Turn on Remote Control"), "{hint}");
+    }
 
-        backend.jump_to_block(&block(AGENT), Some(&here)).unwrap();
-        assert_eq!(backend.take_remote_control_hint(), None);
+    fn assert_refused_without_focus(rex: &FakeRex, here: Option<&BlockId>) {
+        let err = rex
+            .backend()
+            .jump_to_block(&block(AGENT), here)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Turn on Remote Control in Rex Settings to jump across tabs"
+        );
+        let calls = rex.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].ends_with(&select_call(APP)), "{calls:?}");
     }
 
     #[test]
     fn refused_select_for_another_tab_fails_with_the_hint_and_keeps_focus() {
         let rex = FakeRex::refusing_select(APP_CLIENTS);
-        let backend = rex.backend();
+        assert_refused_without_focus(&rex, Some(&block(HERE_ELSEWHERE)));
+    }
 
-        let err = backend
-            .jump_to_block(&block(AGENT), Some(&block(HERE_ELSEWHERE)))
-            .unwrap_err();
-        assert!(err.to_string().contains("Turn on Remote Control"), "{err}");
-        let calls = rex.calls();
-        assert_eq!(calls.len(), 1, "{calls:?}");
-        assert!(calls[0].contains("session.select"), "{calls:?}");
+    #[test]
+    fn refused_select_from_an_unknown_tab_fails_and_keeps_focus() {
+        let rex = FakeRex::refusing_select(APP_CLIENTS);
+        assert_refused_without_focus(&rex, None);
     }
 
     #[test]
