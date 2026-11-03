@@ -169,8 +169,13 @@ fn merge_inner(
                 });
                 record.save()?;
                 eprintln!(
-                    "workmux: '{}' on '{}' is untouched; after resolving the conflict in {}, \
-                     run `workmux merge {}` again",
+                    concat!(
+                        env!("CARGO_BIN_NAME"),
+                        ": '{}' on '{}' is untouched; after resolving the conflict in {}, \
+                         run `",
+                        env!("CARGO_BIN_NAME"),
+                        " merge {}` again"
+                    ),
                     record.handle,
                     record.remote,
                     record.local_path.display(),
