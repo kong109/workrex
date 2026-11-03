@@ -129,9 +129,17 @@ fn is_wsl(kernel: &str) -> bool {
 }
 
 /// `row` for the linger fact, with the WSL fix when the kernel is WSL's.
-pub(super) fn linger_row(row: Row, kernel: &str, linger: &str, user: &str) -> Row {
+/// `systemd` is whether `/run/systemd/system` exists, the test sd_booted(3) uses.
+pub(super) fn linger_row(row: Row, kernel: &str, linger: &str, systemd: bool, user: &str) -> Row {
     if !is_wsl(kernel) {
         return row;
+    }
+    if !systemd {
+        return Row {
+            detail: "systemd is not running, so nothing keeps agents alive".into(),
+            ..row
+        }
+        .fix(enable_systemd(user));
     }
     match linger {
         "no" => Row {
@@ -141,14 +149,15 @@ pub(super) fn linger_row(row: Row, kernel: &str, linger: &str, user: &str) -> Ro
             ),
             ..row
         },
-        // Without systemd, WSL keeps loginctl installed, but it fails and
-        // prints no state.
+        // logind fails `show-user` for a user with neither linger nor a session.
         "" => Row {
-            detail: "loginctl printed no linger state; systemd is not running".into(),
+            level: Level::Fail,
+            detail: format!(
+                "disabled for {user}: logind has no linger or session for {user}, and WSL \
+                 stops agents when the distro shuts down"
+            ),
             ..row
-        }
-        .fix(enable_systemd(user)),
-        "unavailable" => row.fix(enable_systemd(user)),
+        },
         _ => row,
     }
 }
@@ -280,48 +289,66 @@ mod tests {
         assert_eq!(row.fix, None);
     }
 
+    const ENABLE_SYSTEMD: &str = "enable systemd in WSL: add `[boot]` `systemd=true` to \
+                                  /etc/wsl.conf, run `wsl.exe --shutdown` on Windows, then \
+                                  `sudo loginctl enable-linger cicero`";
+
     #[test]
-    fn linger_unavailable_on_wsl_names_systemd() {
-        let row = linger_row(
-            Row::new("linger", Level::Warn, "loginctl not found; cannot check"),
-            WSL,
-            "unavailable",
-            "cicero",
-        );
-        assert_eq!(row.level, Level::Warn);
-        assert_eq!(
-            row.fix.as_deref(),
-            Some(
-                "enable systemd in WSL: add `[boot]` `systemd=true` to /etc/wsl.conf, run \
-                 `wsl.exe --shutdown` on Windows, then `sudo loginctl enable-linger cicero`"
-            )
-        );
+    fn wsl_without_systemd_names_systemd() {
+        for (fact, row) in [
+            ("", linger(Level::Warn, "unknown linger state \"\"")),
+            (
+                "unavailable",
+                Row::new("linger", Level::Warn, "loginctl not found; cannot check"),
+            ),
+        ] {
+            let row = linger_row(row, WSL, fact, false, "cicero");
+            assert_eq!(row.level, Level::Warn, "{fact:?}");
+            assert_eq!(
+                row.detail,
+                "systemd is not running, so nothing keeps agents alive"
+            );
+            assert_eq!(row.fix.as_deref(), Some(ENABLE_SYSTEMD), "{fact:?}");
+        }
     }
 
     #[test]
-    fn empty_linger_on_wsl_names_systemd() {
+    fn wsl_with_systemd_and_linger_is_ok() {
+        let row = linger_row(
+            Row::new("linger", Level::Ok, "enabled for cicero"),
+            WSL,
+            "yes",
+            true,
+            "cicero",
+        );
+        assert_eq!(row.level, Level::Ok);
+        assert_eq!(row.detail, "enabled for cicero");
+        assert_eq!(row.fix, None);
+    }
+
+    #[test]
+    fn wsl_with_systemd_and_no_session_keeps_enable_linger() {
         let row = linger_row(
             linger(Level::Warn, "unknown linger state \"\""),
             WSL,
             "",
+            true,
             "cicero",
         );
-        assert_eq!(row.level, Level::Warn);
+        assert_eq!(row.level, Level::Fail);
         assert_eq!(
             row.detail,
-            "loginctl printed no linger state; systemd is not running"
+            "disabled for cicero: logind has no linger or session for cicero, and WSL \
+             stops agents when the distro shuts down"
         );
         assert_eq!(
             row.fix.as_deref(),
-            Some(
-                "enable systemd in WSL: add `[boot]` `systemd=true` to /etc/wsl.conf, run \
-                 `wsl.exe --shutdown` on Windows, then `sudo loginctl enable-linger cicero`"
-            )
+            Some("sudo loginctl enable-linger cicero")
         );
     }
 
     #[test]
-    fn linger_no_on_wsl_keeps_enable_linger() {
+    fn wsl_with_systemd_and_a_session_keeps_enable_linger() {
         let row = linger_row(
             linger(
                 Level::Fail,
@@ -329,6 +356,7 @@ mod tests {
             ),
             WSL,
             "no",
+            true,
             "cicero",
         );
         assert_eq!(row.level, Level::Fail);
@@ -345,18 +373,22 @@ mod tests {
 
     #[test]
     fn non_wsl_rows_unchanged() {
-        for (kernel, fact) in [
-            ("6.8.0-45-generic", "no"),
-            ("6.8.0-45-generic", "unavailable"),
-            ("6.8.0-45-generic", ""),
-            (WSL, "yes"),
-        ] {
-            let row = linger_row(linger(Level::Warn, "as before"), kernel, fact, "cicero");
-            assert_eq!(row.detail, "as before");
-            assert_eq!(
-                row.fix.as_deref(),
-                Some("sudo loginctl enable-linger cicero")
-            );
+        for fact in ["no", "unavailable", ""] {
+            for systemd in [true, false] {
+                let row = linger_row(
+                    linger(Level::Warn, "as before"),
+                    "6.8.0-45-generic",
+                    fact,
+                    systemd,
+                    "cicero",
+                );
+                assert_eq!(row.level, Level::Warn);
+                assert_eq!(row.detail, "as before");
+                assert_eq!(
+                    row.fix.as_deref(),
+                    Some("sudo loginctl enable-linger cicero")
+                );
+            }
         }
     }
 }

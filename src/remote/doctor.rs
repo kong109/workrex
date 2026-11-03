@@ -35,6 +35,7 @@ if command -v loginctl >/dev/null 2>&1; then
 else
   fact linger unavailable
 fi
+if [ -d /run/systemd/system ]; then fact systemd yes; else fact systemd no; fi
 "#;
 
 const RUNTIME_FACTS_SCRIPT: &str = r#"if command -v docker >/dev/null 2>&1; then
@@ -191,6 +192,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
         linger,
         fact(facts, "kernel"),
         fact(facts, "linger"),
+        fact(facts, "systemd") == "yes",
         user,
     ));
 
@@ -777,6 +779,7 @@ mod tests {
         assert!(!fact(&facts, "os").is_empty());
         assert!(!fact(&facts, "user").is_empty());
         assert!(facts.contains_key("linger"));
+        assert!(["yes", "no"].contains(&fact(&facts, "systemd")));
     }
 
     #[test]

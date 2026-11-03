@@ -79,7 +79,7 @@ A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside
        host: winbox-wsl-ssh
    ```
 
-`workmux remote doctor winbox` names the WSL fix when the connection fails: Windows OpenSSH answering on the configured port, or nothing answering because the distro or its `ssh.socket` is down. It also names the systemd fix when linger can't be checked.
+`workmux remote doctor winbox` names the WSL fix when the connection fails: Windows OpenSSH answering on the configured port, or nothing answering because the distro or its `ssh.socket` is down. It also names the systemd fix when systemd is not running in the distro, and `loginctl enable-linger` when systemd runs but linger is off.
 
 Remote agents run under the tmux and Rex backends. Under Rex, where workmux defaults to sessions, each remote agent's relay window opens in a Rex session of its own, and closing the window closes the session.
 
