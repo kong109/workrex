@@ -40,16 +40,7 @@ impl Node {
         let pin = Pin::for_spec(spec)?;
         match install::node_status(&transport, spec, &pin)? {
             NodeStatus::Ready(hello) => {
-                let rex = spec.terminal == RemoteTerminal::Rex;
-                let missing: Vec<&str> = [
-                    protocol::PROVISION_WORKSPACE,
-                    protocol::START_EXECUTION,
-                    protocol::REMOVE_WORKSPACE,
-                ]
-                .into_iter()
-                .chain(rex.then_some(protocol::TERMINAL_REX))
-                .filter(|verb| !hello.capabilities.iter().any(|c| c == verb))
-                .collect();
+                let missing = missing_capabilities(spec, &hello.capabilities);
                 if !missing.is_empty() {
                     bail!(
                         "the {BIN} {} on '{}' cannot run remote agents (missing {}). {}",
@@ -425,6 +416,20 @@ fn served_command(command: &str) -> Result<(&'static str, String)> {
     }
 }
 
+/// What a node serving `capabilities` lacks to run `spec`'s agents.
+fn missing_capabilities(spec: &RemoteSpec, capabilities: &[String]) -> Vec<&'static str> {
+    let rex = spec.terminal == RemoteTerminal::Rex;
+    [
+        protocol::PROVISION_WORKSPACE,
+        protocol::START_EXECUTION,
+        protocol::REMOVE_WORKSPACE,
+    ]
+    .into_iter()
+    .chain(rex.then_some(protocol::TERMINAL_REX))
+    .filter(|verb| !capabilities.iter().any(|c| c == verb))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +440,40 @@ mod tests {
             stdout: stdout.as_bytes().to_vec(),
             stderr: stderr.as_bytes().to_vec(),
         }
+    }
+
+    #[test]
+    fn a_rex_terminal_needs_a_node_that_hosts_on_rex() {
+        let verbs = [
+            protocol::PROVISION_WORKSPACE,
+            protocol::START_EXECUTION,
+            protocol::REMOVE_WORKSPACE,
+        ]
+        .map(String::from);
+        let spec = |terminal| RemoteSpec {
+            name: "box".into(),
+            host: "box".into(),
+            path: "~/.workrex-node".into(),
+            isolation: crate::config::RemoteIsolation::None,
+            isolation_explicit: false,
+            binary: None,
+            terminal,
+        };
+        assert_eq!(
+            missing_capabilities(&spec(RemoteTerminal::Rex), &verbs),
+            [protocol::TERMINAL_REX]
+        );
+        assert!(missing_capabilities(&spec(RemoteTerminal::Tmux), &verbs).is_empty());
+        let with_rex = [&verbs[..], &[protocol::TERMINAL_REX.to_string()]].concat();
+        assert!(missing_capabilities(&spec(RemoteTerminal::Rex), &with_rex).is_empty());
+        assert_eq!(
+            missing_capabilities(&spec(RemoteTerminal::Tmux), &[]),
+            [
+                protocol::PROVISION_WORKSPACE,
+                protocol::START_EXECUTION,
+                protocol::REMOVE_WORKSPACE
+            ]
+        );
     }
 
     #[test]

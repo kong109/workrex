@@ -2392,7 +2392,7 @@ mod tests {
 
     /// The caller's pane is in session B, window W, the pane `block:agent`
     /// is in the same window, and `clients` are connected.
-    fn app_fake(owner_id: &str, clients: &[Value], select: &str) -> FakeRex {
+    pub(super) fn app_fake(owner_id: &str, clients: &[Value], select: &str) -> FakeRex {
         let resolved = json!({ "results": [{
             "status": "resolved",
             "target": { "session_id": "session:b", "window_id": "window:w" },

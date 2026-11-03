@@ -431,6 +431,68 @@ mod tests {
     }
 
     #[test]
+    fn a_sourced_block_keeps_only_its_rex_variables_and_the_env_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("x1-0.env");
+        let path = std::env::var("PATH").unwrap();
+        std::fs::write(
+            &file,
+            format!(
+                "export PATH={}\nexport WR8_FROM_FILE='from file'\n",
+                crate::shell::shell_quote(&path)
+            ),
+        )
+        .unwrap();
+        let output = std::process::Command::new("sh")
+            .args(["-c", SOURCE_ENV, "sh", &file.to_string_lossy(), "env"])
+            .env_clear()
+            .env("PATH", &path)
+            .env("WR8_FROM_SERVER", "server only")
+            .env("REX_BLOCK", "block:b")
+            .env("TERM", "xterm-256color")
+            .output()
+            .unwrap();
+        let env = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{env}");
+        for kept in [
+            "WR8_FROM_FILE=from file",
+            "REX_BLOCK=block:b",
+            "TERM=xterm-256color",
+        ] {
+            assert!(env.lines().any(|line| line == kept), "{kept}: {env}");
+        }
+        assert!(!env.contains("WR8_FROM_SERVER"), "{env}");
+        assert!(!file.exists());
+    }
+
+    fn app_labeled(id: &str, label: &str) -> Value {
+        json!({
+            "client_id": id,
+            "connection_state": "connected",
+            "info": { "kind": "app", "label": label },
+        })
+    }
+
+    #[test]
+    fn a_jump_selects_the_session_on_the_app_rex_client_names() {
+        let apps = [
+            app_labeled("client:a", "rexbook"),
+            app_labeled("client:b", "studio"),
+        ];
+        let fake = super::super::tests::app_fake("client:a", &apps, "{}");
+        fake.rex
+            .select_on_app(Some("studio"), "session:hosted")
+            .unwrap();
+        let selects = fake.calls("session.select");
+        let [select] = &selects[..] else {
+            panic!("{selects:?}")
+        };
+        assert!(select.contains("client:b"), "{select}");
+        assert!(select.contains("session:hosted"), "{select}");
+        assert!(!select.contains("client:a"), "{select}");
+    }
+
+    #[test]
     fn only_the_next_respawn_sources_the_env_file() {
         let rex = RexBackend::for_server("unix:///nonexistent/rex.sock");
         rex.source_on_respawn(PathBuf::from("/node/secrets/x1-0.env"));
