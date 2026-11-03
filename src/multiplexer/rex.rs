@@ -792,14 +792,6 @@ impl RexBackend {
         result
     }
 
-    /// Drops every reused read, and keeps a read already under way from
-    /// being stored.
-    fn forget_reads(&self) {
-        let mut reads = self.reads.lock().unwrap();
-        reads.writes += 1;
-        reads.answers.clear();
-    }
-
     fn spawn(
         &self,
         args: &[&str],
@@ -1575,6 +1567,13 @@ impl Multiplexer for RexBackend {
     fn switch_to_session(&self, prefix: &str, name: &str) -> Result<()> {
         self.first_session_labeled(&util::prefixed(prefix, name))?;
         Ok(())
+    }
+
+    /// Also keeps a read already under way from being stored.
+    fn forget_reads(&self) {
+        let mut reads = self.reads.lock().unwrap();
+        reads.writes += 1;
+        reads.answers.clear();
     }
 
     fn session_exists(&self, full_name: &str) -> Result<bool> {
