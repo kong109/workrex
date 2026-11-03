@@ -120,3 +120,30 @@ def test_rex_hosted_agent_lifecycle(
     assert "Removed remote workspace 'feat'" in removed.stdout, removed.stderr
     assert node.sessions() == []
     assert local_records(env) == []
+
+
+def test_rex_hosted_agent_gets_the_node_environment(
+    mux_server, workmux_exe_path: Path, mux_repo_path: Path, node: Node, tmp_path: Path
+):
+    """The agent block runs with the node's environment, as a tmux session
+    the node starts does, not with the environment of the Rex server."""
+    env = mux_server
+    node_bin = tmp_path / "node-only-bin"
+    node_bin.mkdir()
+    claude = write_script(
+        tmp_path / "claude",
+        'echo "AGENT-UP only:${WR8_NODE_ONLY:-unset}"\n'
+        f'case ":$PATH:" in *":{node_bin}:"*) echo NODE-PATH;; *) echo SERVER-PATH;; esac\n'
+        "exec cat > /dev/null\n",
+    )
+    commit_project(
+        mux_repo_path,
+        {"nerdfont": False, "agent": str(claude), "panes": [{"command": "<agent>"}]},
+    )
+    node_env = {"WR8_NODE_ONLY": "from-node", "PATH": f"{node_bin}:{env.env['PATH']}"}
+    added = wm(env, workmux_exe_path, mux_repo_path, "add feat --remote lo", node_env)
+    assert "Successfully created remote workspace" in added.stdout, added.stderr
+
+    node.wait_for_agent(env, "feat", "AGENT-UP only:from-node")
+    node.wait_for_agent(env, "feat", "NODE-PATH")
+    wm(env, workmux_exe_path, mux_repo_path, "remove --force feat")

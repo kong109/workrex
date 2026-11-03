@@ -11,14 +11,19 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::super::LivePaneInfo;
+use super::super::{LivePaneInfo, Multiplexer};
 use super::{CreatedWindow, RexBackend, SessionId, found, parallel_map, shell_block};
 
-/// Reads the env file in `$1`, removes it, evaluates it and runs the script
-/// in `$2`. The block's command line names the file, never a value in it.
-/// The file is a named pipe, which macOS `sh` (bash 3.2) cannot source:
-/// `.` reads a file's stat size, zero for a pipe.
-const SOURCE_ENV: &str = "env=$(cat \"$1\") && rm -f \"$1\" && eval \"$env\" && exec sh -c \"$2\"";
+/// Reads the env file in `$1`, removes it, replaces the environment the
+/// block inherited from the Rex server with it and runs the script in `$2`.
+/// Only the variables Rex sets for the block itself stay. The block's command
+/// line names the file, never a value in it. The file is a named pipe, which
+/// macOS `sh` (bash 3.2) cannot source: `.` reads a file's stat size, zero
+/// for a pipe.
+const SOURCE_ENV: &str = "env=$(cat \"$1\") && rm -f \"$1\" && \
+    for v in $(env | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p'); do \
+    case $v in REX_*|TERM|TERM_PROGRAM|TERM_PROGRAM_VERSION) ;; *) unset \"$v\" ;; esac; done; \
+    eval \"$env\" && exec sh -c \"$2\"";
 
 /// A jump to a session on a server reached over the tailnet; an unknown
 /// session id takes the app about five seconds to refuse.
@@ -142,13 +147,19 @@ impl RexBackend {
     }
 
     /// Create session `label` with one window `window_label` running the
-    /// login shell in `cwd`; returns the session and its block.
+    /// login shell in `cwd` with the environment in `env_file`; returns the
+    /// session and its block.
     pub fn create_hosted_session(
         &self,
         label: &str,
         window_label: &str,
         cwd: &Path,
+        env_file: &Path,
     ) -> Result<(String, String)> {
+        let shell = format!(
+            "exec {} -l",
+            crate::shell::shell_quote(&self.get_default_shell()?)
+        );
         let created: CreatedSession = self
             .api(
                 "session.create",
@@ -156,7 +167,7 @@ impl RexBackend {
                     "label": label,
                     "initial_windows": [{
                         "window_label": window_label,
-                        "layout": self.block_layout(cwd, None)?,
+                        "layout": sourcing(cwd, env_file, &shell),
                     }],
                 }),
             )
@@ -201,17 +212,7 @@ impl RexBackend {
 
     pub(super) fn respawn_layout(&self, cwd: &Path, script: &str) -> Result<Value> {
         match self.respawn_env.lock().unwrap().take() {
-            Some(file) => Ok(shell_block(
-                cwd,
-                &[
-                    "sh",
-                    "-c",
-                    SOURCE_ENV,
-                    "sh",
-                    &file.to_string_lossy(),
-                    script,
-                ],
-            )),
+            Some(file) => Ok(sourcing(cwd, &file, script)),
             None => self.block_layout(cwd, Some(script)),
         }
     }
@@ -248,6 +249,21 @@ impl RexBackend {
         })?;
         Ok(())
     }
+}
+
+/// A block that runs `script` with the environment in `env_file`.
+fn sourcing(cwd: &Path, env_file: &Path, script: &str) -> Value {
+    shell_block(
+        cwd,
+        &[
+            "sh",
+            "-c",
+            SOURCE_ENV,
+            "sh",
+            &env_file.to_string_lossy(),
+            script,
+        ],
+    )
 }
 
 #[cfg(test)]

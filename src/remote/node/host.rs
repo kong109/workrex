@@ -126,22 +126,27 @@ impl SessionHost {
                 Ok(Created {
                     pane_id,
                     rex_session: None,
-                    _env: None,
+                    _env: Vec::new(),
                 })
             }
             Self::Rex(rex) => {
+                // The shell flavor takes no environment, so each block sources
+                // it from its own read-once file.
+                let env = block_env(spec);
+                let shell_env = secrets::export_file(root, &format!("{}.shell", spec.name), &env)?;
                 let label = rex.label(spec.name);
-                let (session, block) =
-                    rex.mux
-                        .create_hosted_session(&label, spec.window_label, spec.cwd)?;
-                // The shell flavor takes no environment, so the respawned
-                // agent block sources it from a read-once file.
-                let env = secrets::export_file(root, spec.name, &session_env(spec))?;
-                rex.mux.source_on_respawn(env.to_path_buf());
+                let (session, block) = rex.mux.create_hosted_session(
+                    &label,
+                    spec.window_label,
+                    spec.cwd,
+                    &shell_env,
+                )?;
+                let agent_env = secrets::export_file(root, spec.name, &env)?;
+                rex.mux.source_on_respawn(agent_env.to_path_buf());
                 Ok(Created {
                     pane_id: block,
                     rex_session: Some(session),
-                    _env: Some(env),
+                    _env: vec![shell_env, agent_env],
                 })
             }
         }
@@ -168,12 +173,12 @@ pub struct NewSession<'a> {
     pub secrets: &'a Secrets,
 }
 
-/// A started session. Holds the env file a Rex block reads until the pane's
+/// A started session. Holds the env files Rex blocks read until the pane's
 /// program has started.
 pub struct Created {
     pub pane_id: String,
     pub rex_session: Option<String>,
-    _env: Option<TempPath>,
+    _env: Vec<TempPath>,
 }
 
 /// What a tmux session of `spec` gets through `new_session` and
@@ -194,6 +199,31 @@ fn session_env(spec: &NewSession) -> Secrets {
             .insert(super::spawn::SESSION_WORKSPACE_ENV.into(), ws_id.into());
     }
     env
+}
+
+/// The environment of a Rex block of `spec`: the node's own, as a tmux
+/// server the node starts inherits it, under `session_env`. Rex blocks would
+/// otherwise run with the Rex server's environment, which differs from the
+/// node's; on WSL it carries the Windows PATH, whose drvfs directories make
+/// shell startup files that search PATH take a second.
+fn block_env(spec: &NewSession) -> Secrets {
+    let mut env = Secrets(
+        std::env::vars()
+            .filter(|(name, value)| {
+                !super::execution::SESSION_EXCLUDED_ENV.contains(&name.as_str())
+                    && !block_own_env(name)
+                    && crate::config::is_valid_env_name(name)
+                    && secrets::representable(value)
+            })
+            .collect(),
+    );
+    env.0.extend(session_env(spec).0);
+    env
+}
+
+/// Variables Rex sets for each block, which `SOURCE_ENV` keeps.
+fn block_own_env(name: &str) -> bool {
+    name.starts_with("REX_") || matches!(name, "TERM" | "TERM_PROGRAM" | "TERM_PROGRAM_VERSION")
 }
 
 /// End `execution`'s sessions on its own host. A Rex server that does not
@@ -501,18 +531,27 @@ mod tests {
             .unwrap();
         assert_eq!(respawned, "block:agent");
 
-        let env_path = created._env.as_ref().unwrap().to_path_buf();
-        let env = std::fs::read_to_string(&env_path).unwrap();
-        assert!(env.contains("export WR8_SECRET='s3cr3t value'\n"), "{env}");
-        assert!(env.contains("export COLORTERM=truecolor\n"), "{env}");
-        assert!(env.contains(&format!("{}=", crate::frozen_config::FROZEN_CONFIG_ENV)));
+        let [shell_path, agent_path] = [0, 1].map(|i| created._env[i].to_path_buf());
+        for path in [&shell_path, &agent_path] {
+            let env = std::fs::read_to_string(path).unwrap();
+            assert!(env.contains("export WR8_SECRET='s3cr3t value'\n"), "{env}");
+            assert!(env.contains("export COLORTERM=truecolor\n"), "{env}");
+            assert!(env.contains(&format!("{}=", crate::frozen_config::FROZEN_CONFIG_ENV)));
+            // The node's own environment, which a tmux session inherits.
+            let path_line = format!(
+                "export PATH={}\n",
+                crate::shell::shell_quote(&std::env::var("PATH").unwrap())
+            );
+            assert!(env.contains(&path_line), "{env}");
+        }
 
         let calls = fake.calls();
         let create = calls.iter().find(|c| c.contains("session.create")).unwrap();
         assert!(create.contains(&format!("\"label\":\"{TAG}x0123456789ab-0\"")));
         assert!(create.contains("\"window_label\":\"feat-r\""));
+        assert!(create.contains(&*shell_path.to_string_lossy()), "{create}");
         let split = calls.iter().find(|c| c.contains("new_split")).unwrap();
-        assert!(split.contains(&*env_path.to_string_lossy()), "{split}");
+        assert!(split.contains(&*agent_path.to_string_lossy()), "{split}");
         assert!(split.contains("handshake"));
         for call in &calls {
             assert!(call.starts_with("--autostart=false -S unix://"), "{call}");
@@ -552,6 +591,43 @@ mod tests {
                 "{id}: {destroyed:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_block_keeps_only_the_variables_rex_sets_for_it() {
+        for name in [
+            "REX_BLOCK",
+            "REX_SERVER",
+            "TERM",
+            "TERM_PROGRAM",
+            "TERM_PROGRAM_VERSION",
+        ] {
+            assert!(block_own_env(name), "{name}");
+        }
+        for name in ["PATH", "TERMINFO", "DISPLAY"] {
+            assert!(!block_own_env(name), "{name}");
+        }
+        let root = Path::new("/node");
+        let env = block_env(&NewSession {
+            name: "x0123456789ab-0",
+            window_label: "feat-r",
+            conf: Path::new("/unused"),
+            cwd: Path::new("/work"),
+            config_path: Path::new("/node/config.json"),
+            spawn_env: Some((root, "w0123456789ab")),
+            secrets: &Secrets::default(),
+        });
+        assert_eq!(
+            env.0
+                .get(super::super::spawn::SESSION_ROOT_ENV)
+                .map(String::as_str),
+            Some("/node")
+        );
+        assert!(
+            env.0.keys().all(|name| !block_own_env(name)),
+            "{:?}",
+            env.0.keys()
+        );
     }
 
     #[test]

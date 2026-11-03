@@ -470,6 +470,17 @@ pub(super) fn write_status_wrapper(root: &NodeRoot, pin: &Path) -> Result<PathBu
     Ok(dir)
 }
 
+/// Node variables a session does not inherit: those that steer node verbs,
+/// and the node's own tmux client.
+pub(super) const SESSION_EXCLUDED_ENV: [&str; 6] = [
+    crate::frozen_config::FROZEN_CONFIG_ENV,
+    super::spawn::SESSION_ROOT_ENV,
+    super::spawn::SESSION_WORKSPACE_ENV,
+    NODE_ROOT_ENV,
+    "XDG_STATE_HOME",
+    "TMUX",
+];
+
 /// Create a detached session and return its pane. The variables that steer
 /// node verbs are kept out of the server's global environment; the session
 /// gets its workspace config explicitly, and with `spawn_env` the node root
@@ -501,13 +512,10 @@ pub(super) fn new_session(
             "{}={}",
             crate::frozen_config::FROZEN_CONFIG_ENV,
             config_path.display()
-        ))
-        .env_remove(crate::frozen_config::FROZEN_CONFIG_ENV)
-        .env_remove(super::spawn::SESSION_ROOT_ENV)
-        .env_remove(super::spawn::SESSION_WORKSPACE_ENV)
-        .env_remove(NODE_ROOT_ENV)
-        .env_remove("XDG_STATE_HOME")
-        .env_remove("TMUX");
+        ));
+    for name in SESSION_EXCLUDED_ENV {
+        cmd.env_remove(name);
+    }
     if let Some((root, ws_id)) = spawn_env {
         cmd.arg("-e")
             .arg(format!(
