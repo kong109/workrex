@@ -109,7 +109,7 @@ pub fn run(
 
     let preliminary_mode = context.config.mode();
     if let Some(record) = remote_records.iter().flatten().next()
-        && mode_override.unwrap_or(preliminary_mode) == MuxMode::Session
+        && mode_override.unwrap_or(context.config.remote_mode()) == MuxMode::Session
     {
         bail!(
             "Session mode cannot be used with remote workspace '{}' on '{}'; remote agents \

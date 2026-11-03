@@ -160,9 +160,9 @@ fn create_impl(
             placement_window_id =
                 setup::resolve_window_placement_target(context.mux.as_ref(), &context.config)?;
         }
-        if options.mode == MuxMode::Session && context.mux.name() != "tmux" {
+        if options.mode == MuxMode::Session && !matches!(context.mux.name(), "tmux" | "rex") {
             return Err(anyhow!(
-                "Session mode (--mode session / --session) is only supported with tmux.\n\
+                "Session mode (--mode session / --session) is only supported with tmux and Rex.\n\
                  Current backend: {}. Use window mode instead.",
                 context.mux.name()
             ));

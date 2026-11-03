@@ -4,7 +4,7 @@ description: Use Rex as an alternative multiplexer backend
 ---
 
 :::caution[Experimental]
-The Rex backend is new. It supports window mode. Session mode is not supported yet.
+The Rex backend is new.
 :::
 
 Rex can be used as an alternative to tmux. workmux detects it automatically from `$REX_BLOCK` or `$REX_SESSION`, which Rex sets in every pane. To force it, set `WORKMUX_BACKEND=rex`.
@@ -21,13 +21,25 @@ If you run tmux inside a Rex pane, workmux uses tmux, because `$TMUX` is checked
 | Pane IDs             | `%12`                | `block:<uuid>`                      |
 | Prompt delivery      | Paste buffer         | Paste event (bracketed when needed) |
 | Respawning a pane    | Same pane ID         | New block in the same place         |
-| Session mode         | Yes                  | Not yet                             |
+| Default mode         | Window               | Session                             |
 
 - **Tabs.** A workmux window is a Rex window, labeled with the window name. New windows open right after the current one.
 - **Panes.** Each pane is a Rex block. Splits keep the configured `size` or `percentage`.
 - **Respawning.** Rex cannot restart the program in a block. When workmux needs to restart a pane, it opens a new block in the same place and closes the old one, so the pane ID changes.
 - **Capture.** `workmux capture` reads the block's full scrollback and keeps the last lines.
 - **Shells.** workmux starts each block's shell directly as a login shell (`$SHELL -l`), as tmux does. It does not go through `/usr/bin/login`, so the environment of the Rex server reaches the pane unchanged.
+
+## Session mode
+
+Under Rex, workmux uses [session mode](/guide/session-mode/) unless you set `mode` or pass `--mode`. Each worktree gets its own Rex session, and `workmux add` switches Rex.app to it. Set `mode: window` to get tabs in the current session instead, as under tmux.
+
+- **Switching the app.** workmux asks Rex.app to show the new session. With more than one Rex.app connected, it asks the one that connected last. Without a connected Rex.app, it creates the session and does not switch.
+- **Closing.** When `remove`, `close` or `merge` runs inside the session it closes, workmux first sends Rex.app to the destination and then closes the session. The destination is the managed session of the merge target, then [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session the worktree was added from. Rex does not report which session Rex.app shows, so run from any other session, workmux closes the session without moving the app.
+- **Renamed sessions.** Agents may rename their Rex session (Rex tells Claude Code to name its session after the task). workmux records each session it creates by its Rex session ID under `$XDG_STATE_HOME/workmux/rex-sessions.json`, so it still finds the session after a rename.
+
+### Remote Control
+
+Rex.app switches sessions only when **Remote Control** is on in Rex.app Settings under Rex Server. When it is off, `workmux add` still creates the session, prints the fix once and exits 0.
 
 ## Requirements
 
@@ -50,6 +62,5 @@ workmux identifies the server by its address, which stays the same across restar
 
 ## Known limitations
 
-- Session mode (`--session` or `mode: session`) is not supported yet
 - Agent status icons do not appear in tab titles
 - Window ownership tracking and remote agents need tmux

@@ -554,7 +554,11 @@ pub fn run(
     } else {
         None
     };
-    let mode = mode_override.unwrap_or(initial_config.mode());
+    let mode = mode_override.unwrap_or(if remote.is_some() {
+        initial_config.remote_mode()
+    } else {
+        initial_config.mode()
+    });
     if let Some(spec) = &remote {
         check_remote_options(spec, &[(mode == MuxMode::Session, "Session mode")])?;
     }

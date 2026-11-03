@@ -37,6 +37,8 @@ rex_id!(SessionId);
 rex_id!(WindowId);
 rex_id!(BlockId);
 
+mod session;
+
 impl BlockId {
     fn parse(pane_id: &str) -> Result<Self> {
         if pane_id.starts_with("block:") {
@@ -189,12 +191,6 @@ struct CreatedWindow {
 }
 
 #[derive(Debug, Deserialize)]
-struct CreatedSession {
-    #[serde(default)]
-    initial_windows: Vec<CreatedWindow>,
-}
-
-#[derive(Debug, Deserialize)]
 struct CreatedSplit {
     block_ids: Vec<BlockId>,
 }
@@ -216,18 +212,6 @@ struct ResolvedTarget {
     session_id: SessionId,
     #[serde(default)]
     window_id: Option<WindowId>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClientList {
-    #[serde(default)]
-    clients: Vec<ClientEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClientEntry {
-    #[serde(default)]
-    info: Option<ClientInfo>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -470,12 +454,21 @@ impl RexBackend {
         Ok(Self::parse("whoami", &output)?)
     }
 
-    fn sessions(&self) -> Result<Vec<SessionSummary>> {
+    fn raw_sessions(&self) -> Result<Vec<SessionSummary>> {
         Ok(self.api::<SessionList>("session.list", json!({}))?.sessions)
     }
 
+    fn sessions(&self) -> Result<Vec<SessionSummary>> {
+        let mut sessions = self.raw_sessions()?;
+        self.name_sessions(&mut sessions);
+        Ok(sessions)
+    }
+
     fn view(&self, session: &SessionId) -> CallResult<SessionView> {
-        self.api("session.view", json!({ "session_id": session.as_str() }))
+        let mut view: SessionView =
+            self.api("session.view", json!({ "session_id": session.as_str() }))?;
+        self.name_view(&mut view);
+        Ok(view)
     }
 
     fn views(&self) -> Result<Vec<SessionView>> {
@@ -738,21 +731,8 @@ impl RexBackend {
         }))
     }
 
-    fn app_attached(&self) -> Result<bool> {
-        let clients: ClientList = self.api("client.list", json!({}))?;
-        Ok(clients
-            .clients
-            .iter()
-            .any(|client| client.info.as_ref().is_some_and(|info| info.kind == "app")))
-    }
-
     fn select_session(&self, session: &SessionId) -> Result<()> {
-        if !self.app_attached()? {
-            return Ok(());
-        }
-        let selector = format!("session_id={}", session.as_str());
-        self.run(&["do", "session.select", &selector], None)?;
-        Ok(())
+        self.select_on_app(session)
     }
 
     fn shell_select_session_cmd(&self, session: &SessionId) -> String {
@@ -809,9 +789,9 @@ impl Multiplexer for RexBackend {
     fn shell_close_session_by_id_guard_cmd(
         &self,
         id: &str,
-        _preferred_session: Option<&str>,
+        preferred_session: Option<&str>,
     ) -> Result<String> {
-        Ok(self.shell_destroy_cmd(&SessionId(id.to_string())))
+        self.shell_close_session_cmd(&SessionId(id.to_string()), preferred_session)
     }
 
     fn current_pane_id(&self) -> Option<String> {
@@ -875,24 +855,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn create_session(&self, params: CreateSessionParams) -> Result<String> {
-        let full_name = util::prefixed(params.prefix, params.name);
-        let mut window = json!({ "layout": self.block_layout(params.cwd, None)? });
-        if let Some(label) = params.initial_window_name {
-            window["window_label"] = json!(label);
-        }
-        let created: CreatedSession = self
-            .api(
-                "session.create",
-                json!({ "label": full_name, "initial_windows": [window] }),
-            )
-            .context("Failed to create Rex session")?;
-        created
-            .initial_windows
-            .into_iter()
-            .next()
-            .and_then(|window| window.block_ids.into_iter().next())
-            .map(|block| block.0)
-            .ok_or_else(|| anyhow!("Rex created a session without a block"))
+        self.create_managed_session(params)
     }
 
     fn create_window_in_session(&self, params: CreateWindowInSessionParams) -> Result<String> {
@@ -926,10 +889,15 @@ impl Multiplexer for RexBackend {
     }
 
     fn kill_session(&self, full_name: &str) -> Result<()> {
-        for session in self.sessions_labeled(full_name)? {
-            self.destroy_session(&session)?;
-        }
-        Ok(())
+        self.close_sessions_to(full_name, None)
+    }
+
+    fn kill_session_to(&self, full_name: &str, destination: Option<&str>) -> Result<()> {
+        self.close_sessions_to(full_name, destination)
+    }
+
+    fn session_close_handles_navigation(&self) -> bool {
+        true
     }
 
     fn kill_window(&self, full_name: &str) -> Result<()> {
@@ -982,12 +950,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn rename_session(&self, old_full_name: &str, new_full_name: &str) -> Result<()> {
-        let session = self.first_session_labeled(old_full_name)?;
-        self.api::<Value>(
-            "session.set_label",
-            json!({ "session_id": session.as_str(), "label": new_full_name }),
-        )?;
-        Ok(())
+        self.rename_managed_session(old_full_name, new_full_name)
     }
 
     fn schedule_window_close(&self, full_name: &str, delay: Duration) -> Result<()> {
@@ -1001,13 +964,19 @@ impl Multiplexer for RexBackend {
     }
 
     fn schedule_session_close(&self, full_name: &str, delay: Duration) -> Result<()> {
-        let commands = self
-            .sessions_labeled(full_name)?
-            .iter()
-            .map(|session| self.shell_destroy_cmd(session))
-            .collect::<Vec<_>>()
-            .join("; ");
-        Self::schedule(delay, &commands)
+        self.schedule_session_close_to(full_name, None, delay)
+    }
+
+    fn schedule_session_close_to(
+        &self,
+        full_name: &str,
+        destination: Option<&str>,
+        delay: Duration,
+    ) -> Result<()> {
+        Self::schedule(
+            delay,
+            &self.shell_close_sessions_to_cmd(full_name, destination)?,
+        )
     }
 
     fn run_deferred_script(&self, script: &str) -> Result<()> {
@@ -1047,7 +1016,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn shell_kill_session_cmd(&self, full_name: &str) -> Result<String> {
-        Ok(self.shell_destroy_cmd(&self.first_session_labeled(full_name)?))
+        self.shell_close_session_cmd(&self.first_session_labeled(full_name)?, None)
     }
 
     fn select_window(&self, prefix: &str, name: &str) -> Result<()> {

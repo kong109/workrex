@@ -77,9 +77,9 @@ pub fn open(
         MuxMode::Session => cli_target_session_name.as_deref(),
     };
 
-    if mode == MuxMode::Session && context.mux.name() != "tmux" {
+    if mode == MuxMode::Session && !matches!(context.mux.name(), "tmux" | "rex") {
         anyhow::bail!(
-            "Session mode (--mode session / --session) is only supported with tmux.\n\
+            "Session mode (--mode session / --session) is only supported with tmux and Rex.\n\
              Current backend: {}. Use window mode instead.",
             context.mux.name()
         );

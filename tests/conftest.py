@@ -259,6 +259,18 @@ class MuxEnvironment(ABC):
         """Return a list of all window/tab names."""
         pass
 
+    def list_sessions(self) -> list[str]:
+        """Return the names of all sessions."""
+        raise NotImplementedError(f"{self.backend_name} has no sessions")
+
+    def list_windows_in(self, session: str) -> list[str]:
+        """Return the window names of one session."""
+        raise NotImplementedError(f"{self.backend_name} has no sessions")
+
+    def session_pane_path(self, session: str) -> str:
+        """Return the working directory of a session's active pane."""
+        raise NotImplementedError(f"{self.backend_name} has no sessions")
+
     @abstractmethod
     def list_window_ids(self) -> list[str]:
         """Return stable window/tab identities, independent of automatic titles."""
@@ -382,6 +394,19 @@ class TmuxEnvironment(MuxEnvironment):
         """List all tmux window names."""
         result = self.mux_command(["list-windows", "-F", "#{window_name}"])
         return [w for w in result.stdout.strip().split("\n") if w]
+
+    def list_sessions(self) -> list[str]:
+        result = self.mux_command(["list-sessions", "-F", "#{session_name}"], check=False)
+        return [s for s in result.stdout.strip().split("\n") if s]
+
+    def list_windows_in(self, session: str) -> list[str]:
+        result = self.mux_command(["list-windows", "-t", f"{session}:", "-F", "#{window_name}"])
+        return [w for w in result.stdout.strip().split("\n") if w]
+
+    def session_pane_path(self, session: str) -> str:
+        return self.mux_command(
+            ["display-message", "-t", f"={session}:", "-p", "#{pane_current_path}"]
+        ).stdout
 
     def list_window_ids(self) -> list[str]:
         """List tmux window IDs, which survive automatic renaming."""
@@ -715,6 +740,9 @@ class RexEnvironment(MuxEnvironment):
         ):
             self.env.pop(name, None)
         self.env["PATH"] = f"{Path(self.rex).parent}:{self.env['PATH']}"
+        # Rex defaults to session mode. The shared suite tests window mode
+        # unless a test asks for sessions, as it does under tmux.
+        write_global_workmux_config(self)
 
     @property
     def backend_name(self) -> str:
@@ -889,6 +917,27 @@ class RexEnvironment(MuxEnvironment):
     def list_windows(self) -> list[str]:
         return [w["label"] for w in self._test_view().get("windows", [])]
 
+    def list_sessions(self) -> list[str]:
+        return [s["label"] for s in self.api("session.list").get("sessions", [])]
+
+    def list_windows_in(self, session: str) -> list[str]:
+        return [
+            window["label"]
+            for view in self.views()
+            if view["label"] == session
+            for window in view.get("windows", [])
+        ]
+
+    def session_pane_path(self, session: str) -> str:
+        view = next(v for v in self.views() if v["label"] == session)
+        window = next(
+            w for w in view["windows"] if w["window_id"] == view["active_window_id"]
+        )
+        block = window.get("focused_block_id") or self._window_block(window)
+        report = self.block_call(block, "process", {})
+        processes = [report.get("foreground"), *report.get("ancestors", []), report.get("child")]
+        return next((p["cwd"] for p in processes if p and p.get("cwd")), "")
+
     def list_window_ids(self) -> list[str]:
         return [w["window_id"] for w in self._test_view().get("windows", [])]
 
@@ -1008,34 +1057,25 @@ def assert_window_exists(env: MuxEnvironment, window_name: str) -> None:
     )
 
 
-def assert_session_exists(env: "TmuxEnvironment", session_name: str) -> None:
-    """Ensure a tmux session with the provided name exists."""
-    result = env.tmux(["list-sessions", "-F", "#{session_name}"])
-    existing_sessions = [s for s in result.stdout.strip().split("\n") if s]
+def assert_session_exists(env: MuxEnvironment, session_name: str) -> None:
+    """Ensure a session with the provided name exists."""
+    existing_sessions = env.list_sessions()
     assert session_name in existing_sessions, (
         f"Session {session_name!r} not found. Existing: {existing_sessions!r}"
     )
 
 
-def assert_session_not_exists(env: "TmuxEnvironment", session_name: str) -> None:
-    """Ensure a tmux session with the provided name does NOT exist."""
-    result = env.tmux(["list-sessions", "-F", "#{session_name}"], check=False)
-    if result.returncode != 0:
-        # No sessions exist at all
-        return
-    existing_sessions = [s for s in result.stdout.strip().split("\n") if s]
+def assert_session_not_exists(env: MuxEnvironment, session_name: str) -> None:
+    """Ensure a session with the provided name does NOT exist."""
+    existing_sessions = env.list_sessions()
     assert session_name not in existing_sessions, (
         f"Session {session_name!r} should not exist but was found. Existing: {existing_sessions!r}"
     )
 
 
-def assert_window_not_exists(env: "TmuxEnvironment", window_name: str) -> None:
-    """Ensure a tmux window with the provided name does NOT exist."""
-    result = env.tmux(["list-windows", "-F", "#{window_name}"], check=False)
-    if result.returncode != 0:
-        # No windows exist at all
-        return
-    existing_windows = [w for w in result.stdout.strip().split("\n") if w]
+def assert_window_not_exists(env: MuxEnvironment, window_name: str) -> None:
+    """Ensure a window with the provided name does NOT exist."""
+    existing_windows = env.list_windows()
     assert window_name not in existing_windows, (
         f"Window {window_name!r} should not exist but was found. Existing: {existing_windows!r}"
     )
@@ -1746,6 +1786,8 @@ def write_global_workmux_config(
         config["agents"] = agents
     if auto_name is not None:
         config["auto_name"] = auto_name
+    if env.backend_name == "rex":
+        config["mode"] = "window"
 
     config_dir = env.home_path / ".config" / "workmux"
     config_dir.mkdir(parents=True, exist_ok=True)
