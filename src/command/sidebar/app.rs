@@ -2164,13 +2164,13 @@ mod tests {
         let set_at = app.notice.as_ref().unwrap().set_at;
         assert_eq!(app.notice_deadline(), Some(set_at + NOTICE_MIN));
         shown_for(&mut app, 5);
-        app.expire_notice();
-        assert!(app.notice.is_none(), "5 s after a key");
+        assert!(app.expire_notice(), "5 s after a key");
+        assert!(app.notice.is_none());
 
         app.hold_notice("refused".to_string());
         shown_for(&mut app, 60);
-        app.expire_notice();
-        assert!(app.notice.is_some(), "no key yet");
+        assert!(!app.expire_notice(), "no key yet");
+        assert!(app.notice.is_some());
         app.note_keypress();
         assert!(app.notice.is_none(), "a key after 5 s");
     }

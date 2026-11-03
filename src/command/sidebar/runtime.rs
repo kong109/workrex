@@ -141,15 +141,7 @@ pub fn run_sidebar() -> Result<()> {
             (None, None) => Duration::from_secs(3600),
         };
 
-        // The startup recheck and a held notice have deadlines of their own,
-        // since snapshots are deduplicated.
-        let now = Instant::now();
-        let timeout = last_pane_check
-            .timeout(now)
-            .map_or(timeout, |grace| timeout.min(grace));
-        let timeout = app.notice_deadline().map_or(timeout, |deadline| {
-            timeout.min(deadline.saturating_duration_since(now))
-        });
+        let timeout = until_next_deadline(timeout, &app, &last_pane_check, Instant::now());
 
         let first_event = match rx.recv_timeout(timeout) {
             Ok(ev) => Some(ev),
@@ -225,6 +217,22 @@ pub fn run_sidebar() -> Result<()> {
 
     // _guard handles cleanup on drop (including the normal exit path)
     Ok(())
+}
+
+/// Shortens `timeout` to the startup recheck's or a held notice's deadline.
+/// Each needs a wake of its own, since snapshots are deduplicated.
+fn until_next_deadline(
+    timeout: Duration,
+    app: &SidebarApp,
+    last_pane_check: &LastPaneCheck,
+    now: Instant,
+) -> Duration {
+    let timeout = last_pane_check
+        .timeout(now)
+        .map_or(timeout, |grace| timeout.min(grace));
+    app.notice_deadline().map_or(timeout, |deadline| {
+        timeout.min(deadline.saturating_duration_since(now))
+    })
 }
 
 fn advance_refresh_if_due(
@@ -556,6 +564,32 @@ mod tests {
         assert!(check.should_exit(Some(&identity), |window, pane| {
             window == "@42" && pane == "%12"
         }));
+    }
+
+    #[test]
+    fn a_keyed_notice_wakes_a_sidebar_that_has_no_refresh() {
+        let mut app = test_app();
+        let no_recheck = LastPaneCheck {
+            grace_deadline: None,
+            pane_count: None,
+        };
+        let idle = Duration::from_secs(3600);
+        let now = Instant::now();
+
+        app.hold_notice("refused".to_string());
+        assert_eq!(until_next_deadline(idle, &app, &no_recheck, now), idle);
+        app.note_keypress();
+        let deadline = app.notice_deadline().unwrap();
+        assert_eq!(
+            until_next_deadline(idle, &app, &no_recheck, now),
+            deadline - now
+        );
+        assert_eq!(
+            until_next_deadline(idle, &app, &no_recheck, deadline),
+            Duration::ZERO
+        );
+        let sooner = Duration::from_secs(1);
+        assert_eq!(until_next_deadline(sooner, &app, &no_recheck, now), sooner);
     }
 
     #[test]
