@@ -173,6 +173,7 @@ pub fn create_shim_directory(state_dir: &Path, commands: &[String]) -> Result<Pa
 
         fs::rename(&tmp, &link).with_context(|| format!("Failed to rename shim for: {}", cmd))?;
     }
+    crate::bin_name::write_guest_shim(&shim_bin)?;
 
     Ok(shim_bin)
 }

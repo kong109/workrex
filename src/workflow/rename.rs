@@ -1,3 +1,4 @@
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
 use tracing::{info, warn};
@@ -25,7 +26,7 @@ pub fn rename(
     //    migrations consistent regardless of what the user typed.
     let (old_path, branch_name) = git::find_worktree(user_target).with_context(|| {
         format!(
-            "Worktree '{}' not found. Use 'workmux list' to see available worktrees.",
+            "Worktree '{}' not found. Use '{BIN} list' to see available worktrees.",
             user_target
         )
     })?;

@@ -1,5 +1,6 @@
 //! Laptop side of the node verbs.
 
+use crate::bin_name::BIN;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Duration;
@@ -48,7 +49,7 @@ impl Node {
                 .collect();
                 if !missing.is_empty() {
                     bail!(
-                        "the workmux {} on '{}' cannot run remote agents (missing {}). {}",
+                        "the {BIN} {} on '{}' cannot run remote agents (missing {}). {}",
                         hello.version,
                         spec.name,
                         missing.join(", "),
@@ -109,7 +110,7 @@ impl Node {
             }
         }
         bail!(
-            "no workmux on '{}' supports {verb}; run `workmux remote setup {}`",
+            "no {BIN} on '{}' supports {verb}; run `{BIN} remote setup {}`",
             spec.name,
             spec.name
         )
@@ -360,7 +361,7 @@ fn parse_reply<Resp: DeserializeOwned>(name: &str, verb: &str, output: &Output) 
         .into());
     }
     if output.status == Some(MISSING_STATUS) {
-        bail!("the workmux node binary is missing on '{name}'; run `workmux remote setup {name}`");
+        bail!("the {BIN} node binary is missing on '{name}'; run `{BIN} remote setup {name}`");
     }
     let detail = first_line(&String::from_utf8_lossy(&output.stderr))
         .map(str::to_string)

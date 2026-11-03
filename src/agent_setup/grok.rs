@@ -16,7 +16,7 @@ use crate::agent_setup::json_config::{
     self, EmptyJsonRoot, JsonHookInstallSpec, JsonHookUninstallSpec,
 };
 
-const HOOKS_JSON: &str = include_str!("../../.grok/hooks/workmux-status.json");
+const HOOKS_JSON: &str = crate::rebrand_include!("../../.grok/hooks/workmux-status.json");
 
 fn grok_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("GROK_HOME")
@@ -27,12 +27,12 @@ fn grok_dir() -> Option<PathBuf> {
     home::home_dir().map(|h| h.join(".grok"))
 }
 
-fn hooks_dir() -> Option<PathBuf> {
+pub(crate) fn hooks_dir() -> Option<PathBuf> {
     grok_dir().map(|d| d.join("hooks"))
 }
 
 fn hooks_path() -> Option<PathBuf> {
-    hooks_dir().map(|d| d.join("workmux-status.json"))
+    hooks_dir().map(|d| d.join(concat!(env!("CARGO_BIN_NAME"), "-status.json")))
 }
 
 pub fn detect() -> Option<&'static str> {
@@ -80,7 +80,7 @@ fn uninstall_at(path: PathBuf) -> Result<String> {
         &JsonHookUninstallSpec {
             messages: json_config::JsonHookUninstallMessages {
                 file_missing: "No Grok workmux-status.json found",
-                not_found: "No workmux hooks found in Grok hooks file",
+                not_found: crate::rebrand!("No workmux hooks found in Grok hooks file"),
                 soft_read_error: None,
                 soft_parse_error: None,
             },
@@ -154,10 +154,10 @@ mod tests {
 
     #[test]
     fn test_hooks_json_contains_workmux_commands() {
-        assert!(HOOKS_JSON.contains("workmux register-agent"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status working"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status waiting"));
-        assert!(HOOKS_JSON.contains("workmux set-window-status done"));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux register-agent")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status working")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status waiting")));
+        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status done")));
     }
 
     #[test]
@@ -247,11 +247,11 @@ mod tests {
         let hooks_path = tmp.path().join("workmux-status.json");
         std::fs::write(
             &hooks_path,
-            r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"workmux register-agent"},{"type":"command","command":"python3 session-hook.py"}]}],"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]},{"hooks":[{"type":"command","command":"python3 my-hook.py"}]}]}}"#,
+            crate::rebrand!(r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"workmux register-agent"},{"type":"command","command":"python3 session-hook.py"}]}],"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]},{"hooks":[{"type":"command","command":"python3 my-hook.py"}]}]}}"#),
         )
         .unwrap();
         let result = uninstall_at(hooks_path.clone()).unwrap();
-        assert!(result.contains("Removed workmux hooks"));
+        assert!(result.contains(crate::rebrand!("Removed workmux hooks")));
         assert!(hooks_path.exists());
         let content = std::fs::read_to_string(&hooks_path).unwrap();
         let config: Value = serde_json::from_str(&content).unwrap();
@@ -275,7 +275,7 @@ mod tests {
         let hooks_path = tmp.path().join("workmux-status.json");
         std::fs::write(
             &hooks_path,
-            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#,
+            crate::rebrand!(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#),
         )
         .unwrap();
         let result = uninstall_at(hooks_path.clone()).unwrap();
@@ -289,7 +289,7 @@ mod tests {
         let hooks_path = tmp.path().join("workmux-status.json");
         std::fs::write(
             &hooks_path,
-            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#,
+            crate::rebrand!(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#),
         )
         .unwrap();
         let result1 = uninstall_at(hooks_path.clone()).unwrap();

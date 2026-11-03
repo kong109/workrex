@@ -14,7 +14,7 @@ use crate::agent_setup::json_config::{
 };
 
 /// Hooks extracted from `.claude-plugin/plugin.json` at compile time.
-const PLUGIN_JSON: &str = include_str!("../../.claude-plugin/plugin.json");
+const PLUGIN_JSON: &str = crate::rebrand_include!("../../.claude-plugin/plugin.json");
 
 fn claude_dir_from_config(home: PathBuf, config_dir: Option<std::ffi::OsString>) -> PathBuf {
     config_dir
@@ -26,7 +26,7 @@ fn claude_dir() -> Option<PathBuf> {
     home::home_dir().map(|home| claude_dir_from_config(home, std::env::var_os("CLAUDE_CONFIG_DIR")))
 }
 
-fn settings_path() -> Option<PathBuf> {
+pub(crate) fn settings_path() -> Option<PathBuf> {
     claude_dir().map(|d| d.join("settings.json"))
 }
 
@@ -72,9 +72,9 @@ pub(crate) fn check_dir(dir: &Path) -> Result<StatusCheck> {
 fn check_settings(settings: &Value) -> StatusCheck {
     // Check for plugin installation
     if let Some(plugins) = settings.get("enabledPlugins").and_then(|v| v.as_object())
-        && plugins
-            .iter()
-            .any(|(key, enabled)| key.starts_with("workmux-status@") && enabled == true)
+        && plugins.iter().any(|(key, enabled)| {
+            key.starts_with(crate::bin_name::PLUGIN_PREFIX) && enabled == true
+        })
     {
         return StatusCheck::Installed;
     }
@@ -109,7 +109,7 @@ fn uninstall_at(path: PathBuf) -> Result<String> {
         &JsonHookUninstallSpec {
             messages: json_config::JsonHookUninstallMessages {
                 file_missing: "No Claude Code settings.json found",
-                not_found: "No workmux hooks found in Claude Code settings",
+                not_found: crate::rebrand!("No workmux hooks found in Claude Code settings"),
                 soft_read_error: None,
                 soft_parse_error: None,
             },
@@ -218,7 +218,7 @@ mod tests {
     fn test_check_settings_plugin_enabled() {
         let settings = json!({
             "enabledPlugins": {
-                "workmux-status@workmux": true
+                (concat!(env!("CARGO_BIN_NAME"), "-status@workmux")): true
             }
         });
         assert!(matches!(check_settings(&settings), StatusCheck::Installed));
@@ -228,7 +228,7 @@ mod tests {
     fn test_check_settings_plugin_disabled() {
         let settings = json!({
             "enabledPlugins": {
-                "workmux-status@workmux": false
+                (concat!(env!("CARGO_BIN_NAME"), "-status@workmux")): false
             }
         });
         assert!(matches!(
@@ -241,7 +241,7 @@ mod tests {
     fn test_check_settings_plugin_different_version() {
         let settings = json!({
             "enabledPlugins": {
-                "workmux-status@1.2.3": true
+                (concat!(env!("CARGO_BIN_NAME"), "-status@1.2.3")): true
             }
         });
         assert!(matches!(check_settings(&settings), StatusCheck::Installed));
@@ -267,7 +267,7 @@ mod tests {
                 "Stop": [{
                     "hooks": [{
                         "type": "command",
-                        "command": "workmux set-window-status done"
+                        "command": crate::rebrand!("workmux set-window-status done")
                     }]
                 }]
             }
@@ -285,13 +285,13 @@ mod tests {
                 "SessionStart": [{
                     "hooks": [{
                         "type": "command",
-                        "command": "workmux register-agent"
+                        "command": crate::rebrand!("workmux register-agent")
                     }]
                 }],
                 "Stop": [{
                     "hooks": [{
                         "type": "command",
-                        "command": "workmux set-window-status done"
+                        "command": crate::rebrand!("workmux set-window-status done")
                     }]
                 }]
             }
@@ -335,13 +335,13 @@ mod tests {
     fn test_check_settings_both_plugin_and_hooks() {
         let settings = json!({
             "enabledPlugins": {
-                "workmux-status@workmux": true
+                (concat!(env!("CARGO_BIN_NAME"), "-status@workmux")): true
             },
             "hooks": {
                 "Stop": [{
                     "hooks": [{
                         "type": "command",
-                        "command": "workmux set-window-status done"
+                        "command": crate::rebrand!("workmux set-window-status done")
                     }]
                 }]
             }
@@ -363,7 +363,7 @@ mod tests {
         let settings_path = tmp.path().join("settings.json");
         std::fs::write(&settings_path, r#"{"someSetting": true}"#).unwrap();
         let result = uninstall_at(settings_path).unwrap();
-        assert!(result.contains("No workmux hooks found"));
+        assert!(result.contains(crate::rebrand!("No workmux hooks found")));
     }
 
     #[test]
@@ -372,11 +372,14 @@ mod tests {
         let settings_path = tmp.path().join("settings.json");
         std::fs::write(
             &settings_path,
-            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]},{"hooks":[{"type":"command","command":"afplay /System/Library/Sounds/Glass.aiff"}]}]}}"#,
+            crate::rebrand!(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]},{"hooks":[{"type":"command","command":"afplay /System/Library/Sounds/Glass.aiff"}]}]}}"#),
         )
         .unwrap();
         let result = uninstall_at(settings_path.clone()).unwrap();
-        assert!(result.contains("Removed workmux hooks"), "result: {result}");
+        assert!(
+            result.contains(crate::rebrand!("Removed workmux hooks")),
+            "result: {result}"
+        );
         // Verify the user hook is preserved
         let content = std::fs::read_to_string(&settings_path).unwrap();
         let settings: Value = serde_json::from_str(&content).unwrap();
@@ -396,14 +399,14 @@ mod tests {
         let settings_path = tmp.path().join("settings.json");
         std::fs::write(
             &settings_path,
-            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#,
+            crate::rebrand!(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"workmux set-window-status done"}]}]}}"#),
         )
         .unwrap();
         // First run
         let result1 = uninstall_at(settings_path.clone()).unwrap();
-        assert!(result1.contains("Removed workmux hooks"));
+        assert!(result1.contains(crate::rebrand!("Removed workmux hooks")));
         // Second run -- noop
         let result2 = uninstall_at(settings_path).unwrap();
-        assert!(result2.contains("No workmux hooks found"));
+        assert!(result2.contains(crate::rebrand!("No workmux hooks found")));
     }
 }

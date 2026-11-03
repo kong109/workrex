@@ -1,5 +1,6 @@
 //! Sandbox management commands.
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use std::io::{self, Write};
@@ -14,7 +15,7 @@ use crate::sandbox::lima;
 use crate::sandbox::lima::{LimaInstance, parse_lima_instances};
 
 #[derive(Debug, Args)]
-#[command(help_template = "\
+#[command(help_template = crate::rebrand!("\
 {about-with-newline}
 {usage-heading} {usage}
 
@@ -33,7 +34,7 @@ General commands:
   install-dev      Cross-compile and install workmux into sandboxes
   help             Print this message or the help of the given subcommand(s)
 
-{options}")]
+{options}"))]
 pub struct SandboxArgs {
     #[command(subcommand)]
     pub command: SandboxCommand,
@@ -135,9 +136,9 @@ fn run_agent(command: Vec<String>) -> Result<()> {
 
     // Validate git repo early -- sandbox needs git dirs for mounts
     let worktree_root = crate::git::get_repo_root()
-        .context(
-            "Not inside a git repository. workmux sandbox agent requires a git repo for mounting.",
-        )?
+        .context(crate::rebrand!(
+            "Not inside a git repository. workmux sandbox agent requires a git repo for mounting."
+        ))?
         .canonicalize()
         .unwrap_or_else(|_| cwd.clone());
 
@@ -198,7 +199,10 @@ fn run_build() -> Result<()> {
         sandbox::DEFAULT_IMAGE_REGISTRY,
         agent
     );
-    println!("     Use `workmux sandbox pull` to pull it instead of building locally.");
+    println!(
+        "{}",
+        crate::rebrand!("     Use `workmux sandbox pull` to pull it instead of building locally.")
+    );
 
     Ok(())
 }
@@ -331,7 +335,7 @@ fn native_build(release: bool) -> Result<PathBuf> {
         bail!("Build failed");
     }
 
-    let binary = workspace.join(format!("target/{}/{}/workmux", target, profile_dir));
+    let binary = crate::bin_name::target_binary(&workspace, target, profile_dir);
     if !binary.exists() {
         bail!("Expected binary not found at {}", binary.display());
     }
@@ -395,7 +399,7 @@ fn cross_compile(target: &str, release: bool) -> Result<PathBuf> {
         bail!("Cross-compilation failed");
     }
 
-    let binary = workspace.join(format!("target/{}/{}/workmux", target, profile_dir));
+    let binary = crate::bin_name::target_binary(&workspace, target, profile_dir);
     if !binary.exists() {
         bail!("Expected binary not found at {}", binary.display());
     }
@@ -442,7 +446,7 @@ fn install_to_vm(binary_path: &Path, vm_name: &str) -> Result<()> {
             "--",
             "bash",
             "-c",
-            "install -m 755 /tmp/workmux.new \"$HOME/.local/bin/workmux\"",
+            crate::bin_name::LIMA_INSTALL,
         ])
         .output()
         .context("Failed to run limactl shell for install")?;
@@ -473,10 +477,10 @@ fn run_install_dev(skip_build: bool, release: bool) -> Result<()> {
         let profile_dir = if release { "release" } else { "debug" };
         let path = if native {
             let target = linux_musl_target_triple()?;
-            workspace.join(format!("target/{}/{}/workmux", target, profile_dir))
+            crate::bin_name::target_binary(&workspace, target, profile_dir)
         } else {
             let target = linux_target_triple()?;
-            workspace.join(format!("target/{}/{}/workmux", target, profile_dir))
+            crate::bin_name::target_binary(&workspace, target, profile_dir)
         };
         if !path.exists() {
             bail!(
@@ -582,11 +586,11 @@ fn install_dev_container(binary_path: &Path, image_name: &str, config: &Config) 
     let context_path = temp_dir.path();
 
     // Copy binary to build context
-    let dest = context_path.join("workmux");
+    let dest = context_path.join(crate::bin_name::BIN);
     std::fs::copy(binary_path, &dest).context("Failed to copy binary")?;
 
     // Write overlay Dockerfile
-    let dockerfile = format!("FROM {}\nCOPY workmux /usr/local/bin/workmux\n", image_name);
+    let dockerfile = crate::bin_name::overlay_dockerfile(image_name);
     std::fs::write(context_path.join("Dockerfile"), &dockerfile)
         .context("Failed to write Dockerfile")?;
 
@@ -846,7 +850,7 @@ fn run_stop(name: Option<String>, all: bool, skip_confirm: bool) -> Result<()> {
             }
             None => {
                 anyhow::bail!(
-                    "VM '{}' not found. Use 'workmux sandbox stop' to see available VMs.",
+                    "VM '{}' not found. Use '{BIN} sandbox stop' to see available VMs.",
                     vm_name
                 );
             }
@@ -972,7 +976,7 @@ fn run_shell_container(exec: bool, command: Vec<String>, config: &Config) -> Res
         if containers.is_empty() {
             bail!(
                 "No running container found for worktree '{}'. \n\
-                 Start a sandbox first with 'workmux add --sandbox' or use 'workmux sandbox shell' without --exec.",
+                 Start a sandbox first with '{BIN} add --sandbox' or use '{BIN} sandbox shell' without --exec.",
                 handle
             );
         }
@@ -1083,7 +1087,7 @@ fn run_shell_lima(exec: bool, command: Vec<String>, config: &Config) -> Result<(
     if exec {
         bail!(
             "The --exec flag is only supported with the container backend.\n\
-             Lima VMs are persistent, so 'workmux sandbox shell' always connects to the existing VM."
+             Lima VMs are persistent, so '{BIN} sandbox shell' always connects to the existing VM."
         );
     }
 

@@ -1,6 +1,7 @@
 //! Remote agents as local views and commands see them: one row per agent
 //! the node reports, whether or not a local window relays it.
 
+use crate::bin_name::BIN;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -253,7 +254,9 @@ pub fn label(worktree: &str, remote: &str) -> String {
 pub fn connectivity(remote: &RemoteAgent, now: u64) -> Option<String> {
     if remote.connected {
         return remote.ended.map(|reason| match reason {
-            EndReason::HostReboot => "exited · host rebooted · `workmux open` resumes".to_string(),
+            EndReason::HostReboot => {
+                crate::rebrand!("exited · host rebooted · `workmux open` resumes").to_string()
+            }
         });
     }
     Some(match remote.last_seen {
@@ -303,7 +306,7 @@ pub fn open_window(remote: &RemoteAgent) -> Result<()> {
         stderr
             .lines()
             .rfind(|line| !line.trim().is_empty())
-            .unwrap_or("workmux open failed")
+            .unwrap_or(crate::rebrand!("workmux open failed"))
     ))
 }
 
@@ -469,7 +472,7 @@ pub fn fetch_diff(
 
 fn no_execution(record: &WorkspaceRecord) -> anyhow::Error {
     anyhow!(
-        "remote workspace '{}' has no running agent; `workmux open {}` starts it",
+        "remote workspace '{}' has no running agent; `{BIN} open {}` starts it",
         record.handle,
         record.handle
     )

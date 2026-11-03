@@ -16,6 +16,7 @@ pub mod util;
 pub mod wezterm;
 pub mod zellij;
 
+use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -503,6 +504,16 @@ pub trait Multiplexer: Send + Sync {
     /// (e.g., Zellij can't look up a pane by ID alone). Backends that can
     /// switch by pane ID directly (tmux, WezTerm) ignore this parameter.
     fn switch_to_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()>;
+
+    /// Called when the dashboard quits without jumping, for backends that
+    /// must hand focus back to the pane the dashboard was opened over.
+    fn dashboard_quit(&self) {}
+
+    /// Show a pane while the dashboard keeps the keyboard. Defaults to a
+    /// switch, which a tmux popup survives.
+    fn peek_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()> {
+        self.switch_to_pane(pane_id, window_hint)
+    }
 
     /// Whether jumping to a pane should exit the dashboard.
     /// Defaults to true. Override to return false to keep the dashboard open after jumping.
@@ -1077,7 +1088,7 @@ pub fn detect_backend() -> BackendType {
             Ok(bt) => return bt,
             Err(_) => {
                 eprintln!(
-                    "workmux: invalid WORKMUX_BACKEND={val:?}, expected {}",
+                    "{BIN}: invalid WORKMUX_BACKEND={val:?}, expected {}",
                     BackendType::expected_names()
                 );
             }

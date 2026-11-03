@@ -1,0 +1,23 @@
+{
+  "clients": [
+    {
+      "client_id": "client:01a19e9d-4934-749b-b0da-1126f7a3d76c",
+      "info": {
+        "kind": "cli",
+        "platform": "macos",
+        "name": "rex",
+        "version": "0.0.1793377904-ge6592f"
+      },
+      "principal": {
+        "kind": "peer",
+        "transport": "unix",
+        "display": "uid 501",
+        "uid": 501,
+        "gid": 20,
+        "pid": 54133
+      },
+      "connected_at": "2026-11-02T15:34:30.452302-08:00",
+      "connection_state": "connected"
+    }
+  ]
+}
