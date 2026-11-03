@@ -1163,13 +1163,19 @@ esac
             "kept for a later landing"
         );
 
-        fake.rex
-            .update_records(|records| {
-                let left = records.restore.as_mut().unwrap();
-                left.timed_out_at = left.timed_out_at.map(|at| at - 11_000);
-                Ok(())
-            })
-            .unwrap();
+        // Before each close, so a put back that a loaded machine stretches
+        // past the bound, which stamps the record again, cannot pull the
+        // next close back inside the window.
+        let past_the_window = || {
+            fake.rex
+                .update_records(|records| {
+                    let left = records.restore.as_mut().unwrap();
+                    left.timed_out_at = left.timed_out_at.map(|at| at - 11_000);
+                    Ok(())
+                })
+                .unwrap()
+        };
+        past_the_window();
         std::fs::write(
             dir.join("order"),
             "session:home home\nsession:first first\n",
@@ -1184,6 +1190,7 @@ esac
             "kept until found in place"
         );
         let moves = fake.calls("session move").len();
+        past_the_window();
         fake.rex
             .close_session_with_id("session:gone", None)
             .unwrap();
