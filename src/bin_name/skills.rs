@@ -44,6 +44,12 @@ fn load(path: &Path) -> Manifest {
 }
 
 fn save(path: &Path, manifest: &Manifest) -> Result<()> {
+    if manifest.files.is_empty() {
+        return match fs::remove_file(path) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
+            _ => Ok(()),
+        };
+    }
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("Failed to create {}", dir.display()))?;
     }
@@ -154,5 +160,6 @@ pub(crate) mod tests {
 
         assert_eq!(fs::read_to_string(&upstream).unwrap(), upstream_content);
         assert!(!ours.parent().unwrap().exists());
+        assert!(!tmp.path().join("manifest.json").exists());
     }
 }
