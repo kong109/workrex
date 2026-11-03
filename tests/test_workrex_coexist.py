@@ -291,6 +291,36 @@ def test_skills_taken_back_after_upstream_setup_leave_nothing_once_both_uninstal
     assert not own_state.exists()
 
 
+@pytest.mark.parametrize("first", [BIN, "workmux"])
+@pytest.mark.parametrize("edited", ["before", "after"])
+def test_a_merge_skill_the_user_edited_survives_both_uninstalls(
+    mux_server: MuxEnvironment, workmux_exe_path: Path, first: str, edited: str
+):
+    home = mux_server.home_path
+    install_opencode_version(mux_server, "v1.18.29")
+    write_upstream_skills(home)
+    merges = [home / skills_dir / "merge/SKILL.md" for skills_dir in SKILL_DIRS]
+    edit = "the user's merge skill\n"
+    if edited == "before":
+        for merge in merges:
+            merge.write_text(edit)
+    run_setup_overwriting_skills(mux_server, workmux_exe_path)
+    if edited == "after":
+        for merge in merges:
+            merge.write_text(edit)
+
+    if first == BIN:
+        run_uninstall(mux_server, workmux_exe_path)
+        uninstall_upstream(home)
+    else:
+        uninstall_upstream(home)
+        run_uninstall(mux_server, workmux_exe_path)
+
+    for skills_dir, merge in zip(SKILL_DIRS, merges):
+        assert merge.read_text() == edit, merge
+        assert [p for p in (home / skills_dir).rglob("*") if p.is_file()] == [merge]
+
+
 def run_update_check(env: MuxEnvironment, exe: Path) -> None:
     """Run the background update check against a fake GitHub that reports v0.1.300."""
     fake_bin = env.home_path / "fake-bin"

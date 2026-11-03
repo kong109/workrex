@@ -10,8 +10,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::BIN;
-
 #[derive(Default, Serialize, Deserialize)]
 struct Manifest {
     files: BTreeMap<PathBuf, Entry>,
@@ -22,9 +20,6 @@ struct Entry {
     sha256: String,
     /// What the path held before this binary overwrote it, restored on uninstall.
     replaced: Option<String>,
-    /// Whether `replaced` was upstream workmux's copy, which goes when upstream does.
-    #[serde(default)]
-    upstream: bool,
 }
 
 /// What [`remove`] did with a skill file.
@@ -34,6 +29,18 @@ pub enum Removal {
     Restored,
     Kept,
 }
+
+/// Upstream workmux's unmodified text of each skill it installs at the same path.
+const UPSTREAM_SKILLS: &[(&str, &str)] = &[
+    ("merge", include_str!("../../skills/merge/SKILL.md")),
+    ("rebase", include_str!("../../skills/rebase/SKILL.md")),
+    ("worktree", include_str!("../../skills/worktree/SKILL.md")),
+    (
+        "coordinator",
+        include_str!("../../skills/coordinator/SKILL.md"),
+    ),
+    ("open-pr", include_str!("../../skills/open-pr/SKILL.md")),
+];
 
 fn hash(content: &str) -> String {
     format!("{:x}", Sha256::digest(content.as_bytes()))
@@ -78,30 +85,28 @@ pub fn write(path: &Path, content: &str, previous: Option<String>) -> Result<()>
 fn record(path: &Path, content: &str, previous: Option<String>) -> Result<()> {
     let manifest_path = manifest_path()?;
     let mut manifest = load(&manifest_path);
-    let (replaced, upstream) = match manifest.files.remove(path) {
+    let replaced = match manifest.files.remove(path) {
         // Still this binary's last write, so what that write replaced is the original.
         Some(entry) if previous.as_deref().is_some_and(|p| hash(p) == entry.sha256) => {
-            (entry.replaced, entry.upstream)
+            entry.replaced
         }
-        _ => {
-            let upstream = previous.is_some() && path.parent().is_some_and(upstream_installed);
-            (previous, upstream)
-        }
+        _ => previous,
     };
     let entry = Entry {
         sha256: hash(content),
         replaced,
-        upstream,
     };
     manifest.files.insert(path.to_path_buf(), entry);
     save(&manifest_path, &manifest)
 }
 
-/// Undo this binary's write of `path` if the file still holds what it wrote.
+/// Undo this binary's write of `path`.
 ///
-/// Keeps the file when this binary did not write it, it was changed since, or
-/// upstream's identical skill shares it. Restores what the write replaced,
-/// unless that was upstream's copy and upstream has been uninstalled since.
+/// Uninstall keeps a skill file that changed since this binary wrote it or that
+/// upstream workmux, still installed, counts as its own; it deletes the file when
+/// the write replaced nothing, or replaced upstream's unmodified text and upstream
+/// is uninstalled; and it restores whatever else the write replaced, so a user's
+/// text is never lost.
 pub fn remove(path: &Path) -> Result<Removal> {
     let manifest_path = manifest_path()?;
     let mut manifest = load(&manifest_path);
@@ -112,14 +117,17 @@ pub fn remove(path: &Path) -> Result<Removal> {
         return Ok(Removal::Kept);
     }
     let dir = path.parent().context("skill file has no directory")?;
-    let removal = match &entry.replaced {
-        Some(_) if entry.upstream && !upstream_installed(dir) => delete(path, dir)?,
-        Some(previous) => {
+    let upstream = upstream_text(dir);
+    let installed = upstream_installed(dir);
+    let removal = match entry.replaced.as_deref() {
+        None if installed && upstream.is_some_and(|text| hash(text) == entry.sha256) => {
+            Removal::Kept
+        }
+        Some(previous) if installed || upstream != Some(previous) => {
             fs::write(path, previous)?;
             Removal::Restored
         }
-        None if upstream_uses(dir, &entry.sha256) => Removal::Kept,
-        None => delete(path, dir)?,
+        _ => delete(path, dir)?,
     };
     manifest.files.remove(path);
     save(&manifest_path, &manifest)?;
@@ -139,19 +147,19 @@ fn upstream_installed(dir: &Path) -> bool {
     dir.with_file_name("workmux").join("SKILL.md").exists()
 }
 
-/// Whether upstream workmux's skills are installed beside `dir`, whose file
-/// holds the bundled skill hashed `sha256`, and that skill is byte-identical
-/// to upstream's: upstream setup then counts this file as its own.
-fn upstream_uses(dir: &Path, sha256: &str) -> bool {
-    upstream_installed(dir)
-        && crate::skills::BUNDLED_SKILLS
-            .iter()
-            .any(|skill| hash(skill.content) == sha256 && !skill.content.contains(BIN))
+/// Upstream's unmodified text for the skill directory `dir`, if upstream installs one there.
+fn upstream_text(dir: &Path) -> Option<&'static str> {
+    let name = dir.file_name()?.to_str()?;
+    UPSTREAM_SKILLS
+        .iter()
+        .find(|(skill, _)| *skill == name)
+        .map(|(_, text)| *text)
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::bin_name::BIN;
     use std::cell::RefCell;
 
     thread_local! {
@@ -260,17 +268,50 @@ pub(crate) mod tests {
         }
         write(&user, "ours", Some("user".into())).unwrap();
         fs::write(&upstream, "upstream workmux skill").unwrap();
-        write(&kept, "ours", Some("upstream".into())).unwrap();
-        write(&gone, "ours", Some("upstream".into())).unwrap();
+        let original = |path: &Path| upstream_text(path.parent().unwrap()).unwrap();
+        write(&kept, "ours", Some(original(&kept).into())).unwrap();
+        write(&gone, "ours", Some(original(&gone).into())).unwrap();
 
         assert_eq!(remove(&kept).unwrap(), Removal::Restored);
         fs::remove_dir_all(upstream.parent().unwrap()).unwrap();
         assert_eq!(remove(&gone).unwrap(), Removal::Removed);
         assert_eq!(remove(&user).unwrap(), Removal::Restored);
 
-        assert_eq!(fs::read_to_string(&kept).unwrap(), "upstream");
+        assert_eq!(fs::read_to_string(&kept).unwrap(), original(&kept));
         assert!(!gone.parent().unwrap().exists());
         assert_eq!(fs::read_to_string(&user).unwrap(), "user");
+    }
+
+    #[test]
+    fn upstream_skills_are_the_bundled_skills_before_rebranding() {
+        let bundled: Vec<_> = crate::skills::BUNDLED_SKILLS
+            .iter()
+            .filter(|skill| skill.name != BIN)
+            .map(|skill| (skill.name, skill.content.to_string()))
+            .collect();
+        let upstream: Vec<_> = UPSTREAM_SKILLS
+            .iter()
+            .map(|(name, text)| (*name, crate::bin_name::rebrand_text(text)))
+            .collect();
+        assert_eq!(upstream, bundled);
+    }
+
+    #[test]
+    fn a_user_edit_comes_back_after_upstream_is_uninstalled() {
+        let tmp = tempfile::tempdir().unwrap();
+        use_manifest_in(tmp.path());
+        let [upstream, edited] =
+            ["workmux", "merge"].map(|name| tmp.path().join(name).join("SKILL.md"));
+        for path in [&upstream, &edited] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(&upstream, "upstream workmux skill").unwrap();
+        write(&edited, "ours", Some("user edit".into())).unwrap();
+
+        fs::remove_dir_all(upstream.parent().unwrap()).unwrap();
+        assert_eq!(remove(&edited).unwrap(), Removal::Restored);
+
+        assert_eq!(fs::read_to_string(&edited).unwrap(), "user edit");
     }
 
     #[test]
