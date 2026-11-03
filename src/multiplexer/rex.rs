@@ -47,6 +47,7 @@ rex_id!(ClientId);
 
 mod hosting;
 mod session;
+mod target;
 
 pub use hosting::HostedSession;
 
@@ -1300,7 +1301,7 @@ impl Multiplexer for RexBackend {
 
     fn create_window(&self, params: CreateWindowParams) -> Result<String> {
         let full_name = util::prefixed(params.prefix, params.name);
-        let after = params.after_window.map(|id| WindowId(id.to_string()));
+        let after = params.after_window.map(target::after_window);
         let view = match &after {
             Some(window) => self
                 .view_of_window(window)?

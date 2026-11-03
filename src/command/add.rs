@@ -389,8 +389,8 @@ fn check_remote_options(spec: &RemoteSpec, options: &[(bool, &str)]) -> Result<(
             spec.name
         );
     }
-    if detect_backend() != BackendType::Tmux {
-        bail!("remote agents need tmux; pass --local to create a local agent");
+    if !matches!(detect_backend(), BackendType::Tmux | BackendType::Rex) {
+        bail!("remote agents need tmux or Rex; pass --local to create a local agent");
     }
     Ok(())
 }
@@ -709,6 +709,11 @@ pub fn run(
     } else {
         options.target_window_name = target_name;
         options.window_session_name = parent_session;
+    }
+    // Under Rex sessions are the default, so a remote agent's relay window
+    // gets a session of its own.
+    if remote.is_some() && mode_override.is_none() && initial_config.mode() == MuxMode::Session {
+        options.mode = MuxMode::Session;
     }
 
     // Validate multi-worktree arguments
@@ -1217,8 +1222,10 @@ impl<'a> CreationPlan<'a> {
                     active_targets.push(record.window_name.clone());
                 }
                 println!(
-                    "✓ Successfully created remote workspace and tmux window for '{}' on '{}'",
-                    record.branch, record.remote
+                    "✓ Successfully created remote workspace and {} window for '{}' on '{}'",
+                    mux.name(),
+                    record.branch,
+                    record.remote
                 );
                 if let Some(base) = &record.base_label {
                     println!("  Base: {base}");
