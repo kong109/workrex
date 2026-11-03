@@ -535,7 +535,8 @@ const PASSED_ON: [&str; 4] = ["HOME", "TMPDIR", "XDG_STATE_HOME", "XDG_CONFIG_HO
 /// The command a sidebar block runs: our environment, the server address
 /// and the `rex` location, with tmux pointed at an empty socket directory.
 fn sidebar_command(rex: &RexBackend, files: &Files) -> Result<Vec<String>> {
-    let exe = std::env::current_exe().context("Failed to locate the workmux binary")?;
+    let exe =
+        std::env::current_exe().context(crate::rebrand!("Failed to locate the workmux binary"))?;
     let mut command: Vec<String> = ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"]
         .map(String::from)
         .to_vec();
