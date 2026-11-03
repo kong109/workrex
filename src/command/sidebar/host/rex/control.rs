@@ -704,7 +704,10 @@ impl Follower {
 
     /// Read every session and pass over it. Windows the cache has not seen
     /// were created while no event reached us, so they are owed a sidebar.
+    /// Every kept program status is read again too, for a change Rex never
+    /// announced.
     fn sweep(&mut self) -> Result<()> {
+        self.observed.program_status.expire();
         let plane = &mut self.plane;
         let mut guard = plane.files.lock_records()?;
         let views = plane.rex.sidebar_views()?;
@@ -1051,6 +1054,55 @@ mod tests {
             Some(AgentStatus::Done),
             "kept past the stream's end"
         );
+    }
+
+    #[test]
+    fn the_safety_rebuild_reads_every_kept_status_again() {
+        // verify11 probe C: a program that reported working and then exec'd
+        // another keeps its pid and loses its name, and Rex sends no event
+        // until the new program exits.
+        let dir = tempfile::tempdir().unwrap();
+        let status = dir.path().join("status");
+        let process = dir.path().join("process");
+        let mux = RexBackend::scripted(
+            dir.path(),
+            format!(
+                "cat > /dev/null\ncase \"$*\" in\n\
+                 \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
+                 \x20 *session.list*) echo '{{\"sessions\":[]}}';;\n\
+                 \x20 *program_status*) cat '{}';;\n\
+                 \x20 *process*) cat '{}';;\n\
+                 \x20 *) exit 1;;\nesac\n",
+                status.display(),
+                process.display(),
+            ),
+        );
+        let files = Files::at(dir.path().join("state"), "test");
+        let mut follower = Follower {
+            plane: Plane::new(mux.detached_for_events(), files, Config::default()).unwrap(),
+            observed: Arc::new(Observed::new(mux.program_statuses())),
+            stream: None,
+            work: Work::default(),
+        };
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let foreground = |name: &str| {
+            let foreground = format!(r#"{{"foreground":{{"pid":82590,"name":"{name}"}}}}"#);
+            std::fs::write(&process, foreground).unwrap();
+        };
+        let record = r#"{"state":"working","updated_at":"2026-11-03T08:00:00Z","owner":{"pid":82590,"name":"Python"}}"#;
+        std::fs::write(&status, format!(r#"{{"records":[{record}]}}"#)).unwrap();
+        foreground("Python");
+        let shown = || match mux.reported_status(block) {
+            Some(ReportedStatus::Agent { status, .. }) => Some(status),
+            _ => None,
+        };
+
+        follower.observed.program_status.follow(true);
+        assert_eq!(shown(), Some(AgentStatus::Working));
+        foreground("sleep");
+        assert_eq!(shown(), Some(AgentStatus::Working), "no event came");
+        follower.sweep().unwrap();
+        assert_eq!(shown(), None, "the record's owner left the foreground");
     }
 
     #[test]

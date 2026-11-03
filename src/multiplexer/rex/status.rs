@@ -231,8 +231,16 @@ impl ProgramStatuses {
     /// Start or stop following events. Either way, drop every entry and
     /// every read under way: an entry holds only while one stream follows it.
     pub(crate) fn follow(&self, followed: bool) {
+        self.lock().followed = followed;
+        self.expire();
+    }
+
+    /// Drop every entry and every read under way. Rex does not announce
+    /// every change: a program that execs another keeps its pid and sends no
+    /// `process_changed`, and a change made before a new stream subscribes
+    /// reaches no stream. Expiring on a period bounds how long either lasts.
+    pub(crate) fn expire(&self) {
         let mut statuses = self.lock();
-        statuses.followed = followed;
         statuses.drops += 1;
         statuses.reported.clear();
     }
