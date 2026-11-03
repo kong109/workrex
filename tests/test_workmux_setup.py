@@ -101,7 +101,7 @@ class TestSetupNoPrompt:
             / "plugins"
             / "workmux-status.ts"
         )
-        (plugin_dir / "workmux-status.ts").write_text(bundled(bundled_plugin))
+        (plugin_dir / f"{BIN}-status.ts").write_text(bundled(bundled_plugin))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -117,7 +117,7 @@ class TestSetupNoPrompt:
         """The V2 package files are recognized without prompting."""
         install_opencode_version(mux_server, "v2.0.18")
         plugin_dir = (
-            mux_server.home_path / ".config" / "opencode" / "plugins" / "workmux-status"
+            mux_server.home_path / ".config" / "opencode" / "plugins" / f"{BIN}-status"
         )
         plugin_dir.mkdir(parents=True)
         bundled_dir = (
@@ -176,7 +176,7 @@ class TestSetupNoPrompt:
             / "plugins"
             / "workmux-status.ts"
         )
-        (plugin_dir / "workmux-status.ts").write_text(bundled(bundled_plugin))
+        (plugin_dir / f"{BIN}-status.ts").write_text(bundled(bundled_plugin))
 
         result = run_workmux_command(
             mux_server, workmux_exe_path, repo_path, "setup --hooks"
@@ -365,7 +365,7 @@ class TestSetupInstall:
 
         run_setup_with_answers(mux_server, workmux_exe_path, hooks_answer="y")
 
-        plugin_path = opencode_dir / "plugins" / "workmux-status.ts"
+        plugin_path = opencode_dir / "plugins" / f"{BIN}-status.ts"
         assert plugin_path.exists()
         assert not (opencode_dir / "package.json").exists()
         plugin_text = plugin_path.read_text()
@@ -392,7 +392,8 @@ class TestSetupInstall:
         plugins = opencode_dir / "plugins"
         plugins.mkdir(parents=True)
         bundled_v1 = Path(__file__).parent.parent / v1_source
-        (plugins / "workmux-status.ts").write_text(bundled_v1.read_text())
+        v1 = bundled_v1.read_text()
+        (plugins / f"{BIN}-status.ts").write_text(rebrand(v1) if "resources" in v1_source else v1)
         (plugins / "custom.ts").write_text("// keep me")
 
         run_setup_with_answers(mux_server, workmux_exe_path, hooks_answer="y")
@@ -404,10 +405,10 @@ class TestSetupInstall:
             / "v2"
             / "workmux-status"
         )
-        installed_v2 = plugins / "workmux-status"
+        installed_v2 = plugins / f"{BIN}-status"
         for name in ("index.ts", "tui.ts", "status.ts"):
             assert (installed_v2 / name).read_text() == bundled(bundled_v2 / name)
-        assert not (plugins / "workmux-status.ts").exists()
+        assert not (plugins / f"{BIN}-status.ts").exists()
         assert (plugins / "custom.ts").read_text() == "// keep me"
 
         result = run_workmux_command(
@@ -460,7 +461,7 @@ class TestSetupInstall:
         assert "SessionStart" in settings["hooks"]
         assert "Stop" in settings["hooks"]
 
-        plugin_path = opencode_dir / "plugins" / "workmux-status.ts"
+        plugin_path = opencode_dir / "plugins" / f"{BIN}-status.ts"
         assert plugin_path.exists()
         assert not (opencode_dir / "package.json").exists()
 

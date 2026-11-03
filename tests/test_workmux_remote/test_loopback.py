@@ -299,7 +299,7 @@ def test_remote_list_reports_each_remote(
 
     assert result.returncode == 0, result.stderr
     lines = {line.split()[0]: line for line in result.stdout.splitlines()[1:]}
-    assert "ready (workmux" in lines["ready"]
+    assert f"ready ({BIN}" in lines["ready"]
     assert "(default)" in lines["ready"]
     assert "not set up" in lines["fresh"]
     assert "invalid config" in lines["broken"]
@@ -411,4 +411,4 @@ def test_host_setup_opencode_requires_an_installed_version(
     if program is None:
         assert sorted(p.name for p in config_dir.iterdir()) == ["user-config.json"]
     elif success:
-        assert (config_dir / "plugins/workmux-status/index.ts").is_file()
+        assert (config_dir / f"plugins/{BIN}-status/index.ts").is_file()
