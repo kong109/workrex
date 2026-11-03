@@ -8,7 +8,6 @@ import shutil
 import time
 from pathlib import Path
 
-import pytest
 
 from ..conftest import TmuxEnvironment
 from ..support.bin_name import BIN

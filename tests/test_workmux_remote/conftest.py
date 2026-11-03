@@ -20,6 +20,7 @@ from ..conftest import (
     run_workmux_command,
     wait_for_pane_output,
 )
+from ..rex_env import RexEnvironment
 from ..support.bin_name import BIN
 
 
@@ -128,7 +129,7 @@ class Node:
     """The loopback node: its root, records, and the tmux or Rex server its
     agent terminals run on."""
 
-    def __init__(self, root: Path, rex: Optional[Any] = None):
+    def __init__(self, root: Path, rex: Optional[RexEnvironment] = None):
         self.root = root
         self.rex = rex
         # Rex sessions of this root carry this prefix (`root_tag` in host.rs).
@@ -225,7 +226,7 @@ def node(mux_server: MuxEnvironment, workmux_exe_path: Path) -> Iterator[Node]:
     }
     rex = None
     if NODE_TERMINAL == "rex":
-        if mux_server.backend_name != "rex":
+        if not isinstance(mux_server, RexEnvironment):
             pytest.skip("a Rex-hosted node needs the Rex backend's server")
         remote["terminal"] = "rex"
         rex = mux_server
@@ -235,8 +236,9 @@ def node(mux_server: MuxEnvironment, workmux_exe_path: Path) -> Iterator[Node]:
     (config_dir / "config.yaml").write_text(yaml.dump(config))
     node = Node(root, rex)
     yield node
-    for session in node.rex_sessions().values():
-        rex.api("session.destroy", {"session_id": session})
+    if rex is not None:
+        for session in node.rex_sessions().values():
+            rex.api("session.destroy", {"session_id": session})
     node.tmux("kill-server")
     shutil.rmtree(root, ignore_errors=True)
 

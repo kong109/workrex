@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from ..conftest import get_window_name
+from ..rex_env import RexEnvironment
 from .conftest import (
     NODE_TERMINAL,
     Node,
@@ -28,8 +29,13 @@ def rex_hosted():
         pytest.skip("covers WORKREX_TEST_NODE_TERMINAL=rex")
 
 
+def rex_of(node: Node) -> RexEnvironment:
+    assert node.rex is not None
+    return node.rex
+
+
 def blocks(node: Node, session: str) -> list:
-    view = node.rex.api("session.view", {"session_id": session})
+    view = rex_of(node).api("session.view", {"session_id": session})
     return [
         block["block_id"]
         for window in view["windows"]
@@ -94,10 +100,10 @@ def test_rex_hosted_agent_lifecycle(
     # The token reached the agent through a file it read once: it is on no
     # command line, in no screen, and no file of it is left.
     for session in node.rex_sessions().values():
-        view = json.dumps(node.rex.api("session.view", {"session_id": session}))
+        view = json.dumps(rex_of(node).api("session.view", {"session_id": session}))
         assert TOKEN not in view
         for block in blocks(node, session):
-            assert TOKEN not in json.dumps(node.rex.block_call(block, "process"))
+            assert TOKEN not in json.dumps(rex_of(node).block_call(block, "process"))
     for name in node.sessions():
         assert TOKEN not in node.capture(name)
     assert sorted(p.name for p in secrets.iterdir()) == ["node.json"]
