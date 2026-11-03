@@ -1119,6 +1119,17 @@ esac
         fake
     }
 
+    /// The fake's backend afresh, for after the test changes the order
+    /// behind it: a backend may answer a list with one it read before.
+    fn reopen(fake: &mut FakeRex) {
+        fake.rex = RexBackend {
+            program: fake.rex.program.clone(),
+            caller: Default::default(),
+            registry: fake.rex.registry.clone(),
+            ..RexBackend::for_server(fake.rex.server.as_deref().unwrap())
+        };
+    }
+
     fn labels(fake: &FakeRex) -> Vec<String> {
         fake.rex
             .raw_sessions()
@@ -1130,14 +1141,14 @@ esac
 
     #[test]
     fn a_timed_out_move_that_lands_late_is_put_back_by_a_later_close() {
-        let fake = ordered_fake(&[
+        let mut fake = ordered_fake(&[
             ("session:first", "first"),
             ("session:home", "home"),
             ("session:t", "wm-t"),
             ("session:u", "wm-u"),
             ("session:v", "wm-v"),
         ]);
-        let dir = fake.dir.path();
+        let dir = fake.dir.path().to_path_buf();
         std::fs::write(dir.join("stall"), "").unwrap();
         fake.rex.close_session_to("wm-t", Some("home")).unwrap();
         fake.rex.close_session_to("wm-u", Some("home")).unwrap();
@@ -1150,6 +1161,7 @@ esac
             .output()
             .unwrap();
         assert!(landed.status.success(), "{landed:?}");
+        reopen(&mut fake);
         assert_eq!(
             labels(&fake),
             ["home", "first", "wm-v"],
@@ -1163,6 +1175,12 @@ esac
             "kept for a later landing"
         );
 
+        std::fs::write(
+            dir.join("order"),
+            "session:home home\nsession:first first\n",
+        )
+        .unwrap();
+        reopen(&mut fake);
         // Before each close, so a put back that a loaded machine stretches
         // past the bound, which stamps the record again, cannot pull the
         // next close back inside the window.
@@ -1176,11 +1194,6 @@ esac
                 .unwrap()
         };
         past_the_window();
-        std::fs::write(
-            dir.join("order"),
-            "session:home home\nsession:first first\n",
-        )
-        .unwrap();
         fake.rex
             .close_session_with_id("session:gone", None)
             .unwrap();
