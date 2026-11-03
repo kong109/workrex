@@ -48,7 +48,7 @@ rex config reload
 
 Press `Shift+Cmd+D`, or run **workrex: Open Dashboard** from the command palette. Pressing the key again while the dashboard is open focuses it instead of opening a second one. The key replaces Rex's default for **Split Pane Down**, which keeps `Shift+Cmd+Down`. To use another key, change the `rex.bind` line at the end of the file.
 
-- **Jumping.** Choosing an agent focuses its block and closes the layer. An agent in another session switches the app to that session first, which needs **Remote Control** turned on in the app's settings.
+- **Jumping.** Choosing an agent switches the app to the agent's tab, focuses its block, and closes the layer. Switching tabs needs **Remote Control** turned on in Rex Settings. With it off, you can still jump to an agent in the tab the dashboard is open over, and the first time the dashboard stays open to tell you how to turn Remote Control on. An agent in any other tab or session shows the same hint instead of jumping.
 - **Closing.** Press `q` to close the layer. Focus returns to the block you were in.
 - **Options.** The action passes `args` to `workrex dashboard`, for example `rex.bind("shift+cmd+d", "workrex_dashboard", { args = { "--session" } })`.
 - **Binary.** The action runs `workrex` from your login shell's `PATH`. To run another binary, set `WORKREX_BIN` in the Rex server's environment.

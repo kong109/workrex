@@ -280,16 +280,16 @@ impl App {
             .iter()
             .find(|a| a.pane_id == target_pane_id)
             .map(|a| a.window_name.as_str());
-        if self
-            .mux
-            .switch_to_pane(target_pane_id, window_hint)
-            .is_err()
-        {
+        if let Err(err) = self.mux.switch_to_pane(target_pane_id, window_hint) {
+            self.status_message = Some((err.to_string(), std::time::Instant::now()));
             return;
         }
 
-        if self.should_close_after_jump() {
-            self.should_jump = true;
+        // A notice keeps the dashboard open so the user can read it.
+        match self.mux.take_notice() {
+            Some(notice) => self.status_message = Some((notice, std::time::Instant::now())),
+            None if self.should_close_after_jump() => self.should_jump = true,
+            None => {}
         }
 
         if let Some(current) = pane_to_remember(current_pane.as_deref(), target_pane_id) {

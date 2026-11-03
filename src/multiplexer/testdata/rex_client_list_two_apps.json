@@ -1,0 +1,24 @@
+{
+  "clients": [
+    {
+      "client_id": "client:01a19e67-c952-7923-a102-902347c1c3c1",
+      "info": { "kind": "app", "platform": "macos", "name": "Rex Beta", "version": "0.1.0 (1696)" },
+      "connection_state": "connected"
+    },
+    {
+      "client_id": "client:01a1a0c2-0000-7000-8000-000000000002",
+      "info": { "kind": "app", "platform": "macos", "name": "Rex Beta", "version": "0.1.0 (1696)" },
+      "connection_state": "connected"
+    },
+    {
+      "client_id": "client:01a1a0c2-0000-7000-8000-000000000003",
+      "info": { "kind": "app", "platform": "macos", "name": "Rex Beta", "version": "0.1.0 (1696)" },
+      "connection_state": "lost"
+    },
+    {
+      "client_id": "client:01a19e99-4682-783d-8b8d-c76ae0c3fa13",
+      "info": { "kind": "cli", "platform": "macos", "name": "rex", "version": "0.0.1793377904-ge6592f" },
+      "connection_state": "connected"
+    }
+  ]
+}

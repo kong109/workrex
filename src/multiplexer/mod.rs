@@ -502,6 +502,12 @@ pub trait Multiplexer: Send + Sync {
     /// switch by pane ID directly (tmux, WezTerm) ignore this parameter.
     fn switch_to_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()>;
 
+    /// A message the user should see once about the last action, such as a
+    /// setting that would make it work fully. The dashboard shows it.
+    fn take_notice(&self) -> Option<String> {
+        None
+    }
+
     /// Whether jumping to a pane should exit the dashboard.
     /// Defaults to true. Override to return false to keep the dashboard open after jumping.
     fn should_exit_on_jump(&self) -> bool {

@@ -20,6 +20,8 @@ use super::util;
 
 mod layer;
 
+use layer::{LayerKind, RemoteControlHint};
+
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
 const TERMINAL_CREATOR: &str = "com.superlogical.terminal";
 
@@ -92,7 +94,7 @@ struct WindowView {
 #[derive(Debug, Deserialize)]
 struct LayerView {
     #[serde(default)]
-    kind: String,
+    kind: LayerKind,
     #[serde(default)]
     blocks: Vec<BlockView>,
 }
@@ -122,7 +124,7 @@ impl WindowView {
     fn terminal_block_ids(&self) -> impl Iterator<Item = &BlockId> {
         self.layers
             .iter()
-            .filter(|layer| layer.kind == "tiled")
+            .filter(|layer| layer.kind == LayerKind::Tiled)
             .flat_map(|layer| layer.blocks.iter())
             .filter(|block| block.is_terminal())
             .map(|block| &block.block_id)
@@ -310,8 +312,11 @@ struct ClientList {
 
 #[derive(Debug, Deserialize)]
 struct ClientEntry {
+    client_id: String,
     #[serde(default)]
     info: Option<ClientInfo>,
+    #[serde(default)]
+    connection_state: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -529,6 +534,7 @@ pub struct RexBackend {
     server: Option<String>,
     endpoint: OnceLock<String>,
     block_sessions: Mutex<HashMap<BlockId, SessionId>>,
+    remote_control_hint: Mutex<RemoteControlHint>,
 }
 
 impl RexBackend {
@@ -555,14 +561,7 @@ impl RexBackend {
             server,
             endpoint: OnceLock::new(),
             block_sessions: Mutex::new(HashMap::new()),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_program(program: PathBuf) -> Self {
-        Self {
-            program: program.to_string_lossy().into_owned(),
-            ..Self::with_server(None)
+            remote_control_hint: Mutex::default(),
         }
     }
 
@@ -948,25 +947,17 @@ impl RexBackend {
         Ok(pane_info(session, window, &process, title))
     }
 
-    fn app_attached(&self) -> Result<bool> {
-        let clients: ClientList = self.api("client.list", json!({}))?;
-        Ok(clients
-            .clients
-            .iter()
-            .any(|client| client.info.as_ref().is_some_and(|info| info.kind == "app")))
-    }
-
     fn select_session(&self, session: &SessionId) -> Result<()> {
         self.show_on_app(session, None)
     }
 
     fn show_on_app(&self, session: &SessionId, window: Option<&WindowId>) -> Result<()> {
-        if !self.app_attached()? {
+        let Some(app) = self.app_client()? else {
             return Ok(());
-        }
+        };
         let session = format!("session_id={}", session.as_str());
         let window = window.map(|window| format!("window_id={}", window.as_str()));
-        let mut args = vec!["do", "session.select", session.as_str()];
+        let mut args = vec!["-C", app.as_str(), "do", "session.select", session.as_str()];
         args.extend(window.as_deref());
         self.run(&args, None).map_err(anyhow::Error::from).context(
             "The Rex app did not switch to the window. Turn on Remote Control in \
@@ -1509,17 +1500,8 @@ impl Multiplexer for RexBackend {
     }
 
     fn select_pane(&self, pane_id: &str) -> Result<()> {
-        let block = BlockId::parse(pane_id)?;
-        let target = self
-            .resolve("block", block.as_str())?
-            .ok_or_else(|| anyhow!("Rex block {pane_id} not found"))?;
-        self.show_on_app(&target.session_id, target.window_id.as_ref())?;
-        self.block_session_call(
-            "session.focus_block",
-            &block,
-            json!({ "block_id": block.as_str() }),
-        )?;
-        Ok(())
+        let here = layer::origin_block().or_else(Self::env_block);
+        self.jump_to_block(&BlockId::parse(pane_id)?, here.as_ref())
     }
 
     fn zoom_pane(&self, pane_id: &str) -> Result<()> {
@@ -1534,6 +1516,10 @@ impl Multiplexer for RexBackend {
 
     fn switch_to_pane(&self, pane_id: &str, _window_hint: Option<&str>) -> Result<()> {
         self.select_pane(pane_id)
+    }
+
+    fn take_notice(&self) -> Option<String> {
+        self.take_remote_control_hint()
     }
 
     fn kill_pane(&self, pane_id: &str) -> Result<()> {
@@ -2130,7 +2116,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rex = fake_rex(
             dir.path(),
-            r#"*client.list*) echo '{"clients":[{"info":{"kind":"app"}}]}';;
+            r#"*client.list*) echo '{"clients":[{"client_id":"client:1","info":{"kind":"app"}}]}';;
                *session.select*) echo 'Error: client refused the action' >&2; exit 1;;"#,
         );
         let error = rex
