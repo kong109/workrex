@@ -324,7 +324,9 @@ class RexEnvironment(MuxEnvironment):
             w for w in view["windows"] if w["window_id"] == view["active_window_id"]
         )
         block = window.get("focused_block_id") or self._window_block(window)
-        report = self.block_call(block, "process", {})
+        if block is None:
+            return ""
+        report = self.block_call(block, "process", {}) or {}
         processes = [
             report.get("foreground"),
             *report.get("ancestors", []),
