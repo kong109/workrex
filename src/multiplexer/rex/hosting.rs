@@ -14,8 +14,8 @@ use serde_json::{Map, Value, json};
 
 use super::super::{LivePaneInfo, Multiplexer};
 use super::{
-    CallError, ClientList, CreatedWindow, ProcessReport, RexBackend, ServerVersion, SessionId,
-    SessionView, WindowView, found, pane_info, shell_block,
+    AppRefused, CallError, ClientId, ClientList, CreatedWindow, ProcessReport, RexBackend,
+    ServerVersion, SessionId, SessionView, WindowView, found, pane_info, shell_block,
 };
 
 /// Reads the env file in `$1`, removes it, replaces the environment the
@@ -435,18 +435,20 @@ impl RexBackend {
     pub fn select_on_app(&self, client: Option<&str>, id: &str) -> Result<()> {
         let server = self.server.as_deref().unwrap_or("the local Rex server");
         let clients: ClientList = self.api("client.list", json!({}))?;
-        let app = pick_app(&clients, client, server)?;
-        let session = format!("session_id={id}");
-        let select = ["-C", &app, "do", "session.select", &session];
-        self.exec_within(&select, None, Some(REMOTE_SELECT_TIMEOUT), &select)
-            .map_err(|err| {
-                if err.to_string().contains("(code=refused)") {
-                    anyhow!(super::REMOTE_CONTROL_FIX)
-                } else {
-                    anyhow!("Rex.app did not show the session: {err}")
-                }
-            })?;
-        Ok(())
+        let app = ClientId(pick_app(&clients, client, server)?);
+        self.ask_app_to_show(
+            &app,
+            &SessionId(id.to_string()),
+            None,
+            REMOTE_SELECT_TIMEOUT,
+        )
+        .map_err(|err| {
+            if err.is::<AppRefused>() {
+                err
+            } else {
+                anyhow!("Rex.app did not show the session: {err}")
+            }
+        })
     }
 }
 
@@ -580,7 +582,7 @@ mod tests {
         fake.rex
             .select_on_app(Some("studio"), "session:hosted")
             .unwrap();
-        let selects = fake.calls("session.select");
+        let selects = fake.calls("client.perform");
         let [select] = &selects[..] else {
             panic!("{selects:?}")
         };
@@ -594,11 +596,12 @@ mod tests {
         let fake = super::super::tests::app_fake(
             "client:a",
             &[app_labeled("client:a", "rexbook")],
-            "!Error: Remote Control is off for this client (code=refused)",
+            super::super::tests::REFUSED,
         );
         let err = fake.rex.select_on_app(None, "session:hosted").unwrap_err();
+        assert!(err.is::<AppRefused>());
         assert_eq!(err.to_string(), super::super::REMOTE_CONTROL_FIX);
-        assert_eq!(fake.calls("session.select").len(), 1);
+        assert_eq!(fake.calls("client.perform").len(), 1);
     }
 
     #[test]

@@ -2698,7 +2698,7 @@ mod tests {
     }
 
     /// Rex.app's answer to `client.perform` with Remote Control off.
-    const REFUSED: &str = "!Error: stream response \"control-1\" failed: Rex.app is not \
+    pub(super) const REFUSED: &str = "!Error: stream response \"control-1\" failed: Rex.app is not \
          accepting actions. Turn on Remote Control in its Settings under Rex Server. \
          (status=403 code=refused)";
     const UNAVAILABLE: &str = "!Error: stream response \"control-1\" failed: client \
