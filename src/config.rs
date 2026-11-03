@@ -1515,7 +1515,7 @@ pub enum WindowPlacement {
 pub struct RemoteConfig {
     /// SSH destination: an alias from `~/.ssh/config` or `user@host`.
     pub host: String,
-    /// Node root on the remote (default: `~/.workmux-node`).
+    /// Node root on the remote (default: `~/.workrex-node`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Override sandbox.enabled for this remote; unset follows the effective sandbox setting.
