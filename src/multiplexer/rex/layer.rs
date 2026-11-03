@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{AppSwitch, BlockId, RexBackend, SessionView, WindowId};
+use super::{AppSwitch, BlockId, Multiplexer, RexBackend, SessionView, WindowId};
 
 const REMOTE_CONTROL_HINT: &str = "Turn on Remote Control in Rex Settings to jump across tabs";
 
@@ -46,11 +46,13 @@ pub(super) fn active_block(
 }
 
 impl RexBackend {
-    /// Shows the block's tab on the app, then focuses the block. When the
-    /// app refuses to switch tabs (Remote Control off), the dashboard layer
-    /// still reaches a block in the tab it is open over; any other jump from
-    /// it fails with a hint short enough for its footer and leaves focus
-    /// alone. Outside the layer, the jump goes on as other commands do.
+    /// The dashboard layer's jump: the app shows the block's tab, then the
+    /// block is focused and the layer closes. When the app refuses (Remote
+    /// Control off), a block in the tab the layer is open over is still
+    /// focused; any other jump fails with a hint short enough for the
+    /// footer and leaves focus alone. Nothing is printed, since the layer's
+    /// display would swallow it. An app that does not answer may still
+    /// switch late, so the block is focused as `switch_to_pane` does.
     pub(super) fn jump_to_block(&self, block: &BlockId) -> Result<()> {
         let target = self
             .resolve("block", block.as_str())?
@@ -59,21 +61,13 @@ impl RexBackend {
             .lock()
             .unwrap()
             .insert(block.clone(), target.session_id.clone());
-        match self.show_on_app(&target.session_id, target.window_id.as_ref()) {
-            AppSwitch::Refused if self.caller.origin.is_some() => {
-                let here = self.caller.origin.as_ref();
-                if target.window_id.is_none() || target.window_id != self.window_of(here)? {
-                    return Err(anyhow!(REMOTE_CONTROL_HINT));
-                }
+        if self.show_on_app(&target.session_id, target.window_id.as_ref()) == AppSwitch::Refused {
+            let here = self.caller.origin.as_ref();
+            if target.window_id.is_none() || target.window_id != self.window_of(here)? {
+                return Err(anyhow!(REMOTE_CONTROL_HINT));
             }
-            switch => switch.hint_if_refused(),
         }
-        self.block_session_call(
-            "session.focus_block",
-            block,
-            json!({ "block_id": block.as_str() }),
-        )?;
-        Ok(())
+        self.select_pane(block.as_str())
     }
 
     fn window_of(&self, block: Option<&BlockId>) -> Result<Option<WindowId>> {
@@ -145,7 +139,7 @@ mod tests {
         fn refusing_select(clients: &str) -> Self {
             Self::with_select(
                 clients,
-                "echo 'Error: client refused session.select: not_supported' >&2; exit 1",
+                "echo 'Error: Remote Control is off for this client (code=refused)' >&2; exit 1",
             )
         }
 
@@ -284,16 +278,76 @@ esac
     }
 
     #[test]
-    fn refused_select_outside_the_dashboard_still_focuses_another_tab() {
+    fn refused_select_outside_the_dashboard_fails_with_the_fix() {
         let rex = FakeRex::refusing_select(APP_CLIENTS);
-        rex.backend(in_pane(HERE_ELSEWHERE))
+        let err = rex
+            .backend(in_pane(HERE_ELSEWHERE))
+            .switch_to_pane(AGENT, None)
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), super::super::REMOTE_CONTROL_FIX);
+        let calls = rex.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].ends_with(&select_call()), "{calls:?}");
+    }
+
+    #[test]
+    fn the_dashboard_jumps_through_its_layer_rule() {
+        let rex = FakeRex::refusing_select(APP_CLIENTS);
+        let err = rex
+            .backend(in_dashboard(HERE_ELSEWHERE))
+            .switch_to_pane(AGENT, None)
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), REMOTE_CONTROL_HINT);
+    }
+
+    #[test]
+    fn an_app_that_never_answers_still_lands_the_jump_from_the_dashboard() {
+        let rex = FakeRex::with_select(APP_CLIENTS, "exec sleep 30");
+        let start = std::time::Instant::now();
+        rex.backend(in_dashboard(HERE_ELSEWHERE))
             .jump_to_block(&block(AGENT))
             .unwrap();
 
+        assert!(start.elapsed() < std::time::Duration::from_secs(8));
         let calls = rex.calls();
         assert_eq!(calls.len(), 2, "{calls:?}");
         assert!(calls[0].ends_with(&select_call()), "{calls:?}");
         assert_focuses_agent(&calls[1]);
+    }
+
+    /// Runs refused dashboard jumps in a child test process, whose stderr
+    /// is its own and whose print-once flag is fresh.
+    #[test]
+    fn refused_jumps_from_the_dashboard_print_nothing() {
+        if std::env::var_os("WORKREX_LAYER_TEST_CHILD").is_some() {
+            let rex = FakeRex::refusing_select(APP_CLIENTS);
+            rex.backend(in_dashboard(HERE_ELSEWHERE))
+                .jump_to_block(&block(AGENT))
+                .unwrap_err();
+            let rex = FakeRex::refusing_select(APP_CLIENTS);
+            rex.backend(in_dashboard(HERE_IN_AGENT_TAB))
+                .jump_to_block(&block(AGENT))
+                .unwrap();
+            return;
+        }
+        let (_, path) = module_path!().split_once("::").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("{path}::refused_jumps_from_the_dashboard_print_nothing"),
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("WORKREX_LAYER_TEST_CHILD", "1")
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     }
 
     #[test]

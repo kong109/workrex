@@ -224,7 +224,7 @@ def refusing_rex(workmux: Path, tmp_path: Path) -> Path:
     (bin_dir / "rex").write_text(
         f"""#!/bin/sh
 case "$*" in
-  *session.select*) echo 'Error: client refused session.select' >&2; exit 1 ;;
+  *session.select*) echo 'Error: Remote Control is off for this client (code=refused)' >&2; exit 1 ;;
   *client.list*) cat '{bin_dir / "clients.json"}'; exit 0 ;;
   *"block call -b "*" size "*) echo '{owner}'; exit 0 ;;
 esac
