@@ -204,6 +204,25 @@ type Verdict = std::result::Result<(), String>;
 static SERVER_VERDICTS: LazyLock<Mutex<HashMap<Option<String>, Verdict>>> =
     LazyLock::new(Default::default);
 
+/// How long a command reuses a session list or view it already fetched. A
+/// loop that polls for a change made outside workmux sees it within this time.
+const READ_REUSE: Duration = Duration::from_millis(250);
+
+/// Calls that leave the server as it was. Any other call drops reused reads.
+fn changes_nothing(args: &[&str]) -> bool {
+    match args {
+        ["api", "call", method, ..] => matches!(
+            *method,
+            "session.list" | "session.view" | "target.resolve" | "server.version" | "client.list"
+        ),
+        ["block", "call", "-b", _, method, ..] => {
+            matches!(*method, "process" | "title" | "size" | "format")
+        }
+        ["whoami", ..] => true,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct Whoami {
     endpoint: String,
@@ -625,6 +644,7 @@ fn print_once(printed: &AtomicBool, out: &mut impl Write, text: &str) {
 #[derive(Debug)]
 pub struct RexBackend {
     program: String,
+    reads: Mutex<HashMap<String, (std::time::Instant, String)>>,
     server: Option<String>,
     caller: Caller,
     endpoint: OnceLock<String>,
@@ -652,6 +672,7 @@ impl RexBackend {
             .unwrap_or_else(|| "rex".to_string());
         Self {
             program,
+            reads: Mutex::default(),
             server,
             caller: Caller::from_env(),
             endpoint: OnceLock::new(),
@@ -673,7 +694,27 @@ impl RexBackend {
 
     fn run(&self, args: &[&str], stdin: Option<&str>) -> CallResult<String> {
         self.ensure_supported()?;
-        self.exec(args, stdin)
+        let [
+            "api",
+            "call",
+            method @ ("session.list" | "session.view"),
+            "-",
+        ] = args
+        else {
+            return self.exec(args, stdin);
+        };
+        let key = format!("{method} {}", stdin.unwrap_or_default());
+        if let Some((fetched, output)) = self.reads.lock().unwrap().get(&key)
+            && fetched.elapsed() < READ_REUSE
+        {
+            return Ok(output.clone());
+        }
+        let output = self.exec(args, stdin)?;
+        self.reads
+            .lock()
+            .unwrap()
+            .insert(key, (std::time::Instant::now(), output.clone()));
+        Ok(output)
     }
 
     /// Fails every call on a server whose API this backend does not speak,
@@ -706,6 +747,9 @@ impl RexBackend {
         stdin: Option<&str>,
         timeout: Option<Duration>,
     ) -> CallResult<String> {
+        if !changes_nothing(args) {
+            self.reads.lock().unwrap().clear();
+        }
         let program = &self.program;
         let mut command = Command::new(program);
         for var in Self::INHERITED_SCOPE_VARS {
@@ -1253,7 +1297,7 @@ impl Multiplexer for RexBackend {
     fn is_running(&self) -> Result<bool> {
         // An unsupported server is running, so a command that acts on it
         // goes on to a call that names why workmux cannot use it.
-        match self.run(&["api", "call", "session.list"], None) {
+        match self.run(&["api", "call", "session.list", "-"], Some("{}")) {
             Ok(_) | Err(CallError::Unsupported(_)) => Ok(true),
             Err(_) => Ok(false),
         }
