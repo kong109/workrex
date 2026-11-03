@@ -177,11 +177,14 @@ mod tests {
             Self::with_select(clients, "echo '{}'")
         }
 
-        /// The app refuses `session.select`, as it does with Remote Control off.
+        /// The app refuses `session.select` with Rex.app's real answer to
+        /// `client.perform` when Remote Control is off.
         fn refusing_select(clients: &str) -> Self {
             Self::with_select(
                 clients,
-                "echo 'Error: Remote Control is off for this client (code=refused)' >&2; exit 1",
+                "echo 'Error: stream response \"control-1\" failed: Rex.app is not accepting \
+                 actions. Turn on Remote Control in its Settings under Rex Server. \
+                 (status=403 code=refused)' >&2; exit 1",
             )
         }
 
@@ -202,7 +205,7 @@ case "$* $input" in
   *"block call"*size*) echo '{{"columns":80,"rows":24,"owner":"{APP}"}}' ;;
   *client.list*) cat "$d/clients.json" ;;
   *server.version*) cat "$d/version.json" ;;
-  *session.select*) {select} ;;
+  *client.perform*) {select} ;;
   *session.focus_block*) echo '{{"revision":1}}' ;;
   *) echo '{{}}' ;;
 esac
@@ -264,7 +267,9 @@ esac
     }
 
     fn select_call() -> String {
-        format!("-C {APP} do session.select session_id={AGENT_SESSION} window_id={AGENT_WINDOW} ")
+        format!(
+            r#"api call client.perform - {{"action":"session.select","args":{{"session_id":"{AGENT_SESSION}","window_id":"{AGENT_WINDOW}"}},"client_id":"{APP}","timeout_ms":1000}}"#
+        )
     }
 
     #[test]

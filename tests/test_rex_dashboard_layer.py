@@ -199,23 +199,25 @@ HINT = "Turn on Remote Control in Rex Settings to jump across tabs"
 NO_ANSWER_HINT = "Rex.app did not respond; jump not made"
 PEEK_HINT = "Peek works only for agents in this tab"
 REFUSE = (
-    "echo 'Error: Remote Control is off for this client (code=refused)' >&2; exit 1"
+    'echo \'Error: stream response "control-1" failed: Rex.app is not accepting'
+    " actions. Turn on Remote Control in its Settings under Rex Server."
+    " (status=403 code=refused)' >&2; exit 1"
 )
 
 
 def refusing_rex(workmux: Path, tmp_path: Path, select: str = REFUSE) -> Path:
     """A workmux whose rex reports an app that owns every block and is
-    attached to the sessions `attach_app` names, and answers session.select
-    with `select`: by default it fails, as Rex.app does with Remote Control
-    off. Each select is logged to `selects.log`. Rex sets REX_BIN_DIR in
-    every block, so the wrapper overrides it."""
+    attached to the sessions `attach_app` names, and answers each
+    client.perform with `select`: by default it fails, as Rex.app does with
+    Remote Control off. Each one is logged to `selects.log`. Rex sets
+    REX_BIN_DIR in every block, so the wrapper overrides it."""
     bin_dir = tmp_path / "refusing-rex"
     bin_dir.mkdir()
     owner = '{"columns":80,"rows":24,"owner":"client:app"}'
     (bin_dir / "rex").write_text(
         f"""#!/bin/sh
 case "$*" in
-  *session.select*) echo "$*" >> '{bin_dir / "selects.log"}'; {select} ;;
+  *client.perform*) echo "$*" >> '{bin_dir / "selects.log"}'; {select} ;;
   *client.list*) cat '{bin_dir / "clients.json"}'; exit 0 ;;
   *"block call -b "*" size "*) echo '{owner}'; exit 0 ;;
 esac
