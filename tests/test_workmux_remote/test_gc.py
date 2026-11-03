@@ -8,8 +8,6 @@ import shutil
 import time
 from pathlib import Path
 
-import pytest
-
 from ..conftest import TmuxEnvironment, get_window_name, wait_for_pane_output
 from ..support.bin_name import BIN
 from .conftest import Node, commit_project, git, local_records, wm

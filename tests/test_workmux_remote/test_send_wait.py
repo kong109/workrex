@@ -5,8 +5,6 @@ and the laptop sees it later still."""
 import time
 from pathlib import Path
 
-import pytest
-
 from ..conftest import (
     TmuxEnvironment,
     get_window_name,
