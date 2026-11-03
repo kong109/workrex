@@ -60,12 +60,10 @@ pub fn overlay_dockerfile(image: &str) -> String {
 /// root keeps each binary's pins, state and gc out of the other's.
 pub const NODE_ROOT: &str = concat!("~/.", env!("CARGO_BIN_NAME"), "-node");
 
-/// File name of the update-check cache, beside upstream's `update_check.json`.
-pub const UPDATE_CACHE_FILE: &str = concat!(env!("CARGO_BIN_NAME"), "-update_check.json");
-
-/// This binary's update-check cache, in the cache dir it shares with upstream.
+/// This binary's update-check cache, beside upstream's `update_check.json` in
+/// the cache dir they share.
 pub fn update_cache_file() -> Result<PathBuf> {
-    Ok(crate::xdg::cache_dir()?.join(UPDATE_CACHE_FILE))
+    Ok(crate::xdg::cache_dir()?.join(format!("{BIN}-update_check.json")))
 }
 
 /// This binary's own state directory. Upstream's uninstall deletes the shared one.

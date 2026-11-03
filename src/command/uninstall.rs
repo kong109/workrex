@@ -103,7 +103,7 @@ pub fn run(dry_run: bool) -> Result<()> {
                                 label.to_lowercase(),
                                 e
                             );
-                            errors.push(format!("{label} directory: {e}"));
+                            errors.push(format!("{label}: {e}"));
                         }
                     }
                 }

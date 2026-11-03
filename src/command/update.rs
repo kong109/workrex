@@ -270,9 +270,9 @@ struct UpdateCache {
 }
 
 fn update_cache_path() -> Option<std::path::PathBuf> {
-    let dir = crate::xdg::cache_dir().ok()?;
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join(crate::bin_name::UPDATE_CACHE_FILE))
+    let path = crate::bin_name::update_cache_file().ok()?;
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    Some(path)
 }
 
 fn now_secs() -> u64 {
