@@ -3,6 +3,7 @@
 import json
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -264,6 +265,24 @@ def test_a_stale_hook_file_does_not_block_adoption(rex, workmux_exe_path, repo_p
     assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"
 
 
+def assert_last_done_focuses(env: RexEnvironment, exe: Path, repo: Path, block: str):
+    def active_block():
+        view = env.api("session.view", {"session_id": env.session_id})
+        active = view.get("active_window_id")
+        window = next(w for w in view["windows"] if w["window_id"] == active)
+        return window.get("focused_block_id")
+
+    env.api(
+        "session.focus_block",
+        {"session_id": env.session_id, "block_id": env.runner_block_id},
+    )
+    assert active_block() == env.runner_block_id
+
+    result = workmux(env, exe, repo, "last-done")
+    assert result.returncode == 0, result.stderr
+    assert poll_until(lambda: active_block() == block, timeout=5), result.stdout
+
+
 def test_last_done_focuses_an_agent_that_only_reported_done(
     rex, workmux_exe_path, repo_path
 ):
@@ -272,18 +291,44 @@ def test_last_done_focuses_an_agent_that_only_reported_done(
     pruning = workmux(rex, workmux_exe_path, repo_path, "list")
     assert pruning.returncode == 0, pruning.stderr
 
-    def active_block():
-        view = rex.api("session.view", {"session_id": rex.session_id})
-        active = view.get("active_window_id")
-        window = next(w for w in view["windows"] if w["window_id"] == active)
-        return window.get("focused_block_id")
+    assert_last_done_focuses(rex, workmux_exe_path, repo_path, block)
 
-    rex.api(
-        "session.focus_block",
-        {"session_id": rex.session_id, "block_id": rex.runner_block_id},
+
+def test_last_done_prefers_a_hook_status_newer_than_the_last_report_a_reader_saw(
+    rex, workmux_exe_path, repo_path
+):
+    block = start_fake_agent(
+        rex, workmux_exe_path, repo_path, "osc-hook-newer", launch="{agent}"
     )
-    assert active_block() == rex.runner_block_id
 
-    result = workmux(rex, workmux_exe_path, repo_path, "last-done")
-    assert result.returncode == 0, result.stderr
-    assert poll_until(lambda: active_block() == block, timeout=5), result.stdout
+    def hook(status):
+        result = workmux(
+            rex, workmux_exe_path, repo_path, "set-window-status", status, block=block
+        )
+        assert result.returncode == 0, result.stderr
+
+    hook("working")
+    report(rex, block, "state=working:app=fake")
+    pruning = workmux(rex, workmux_exe_path, repo_path, "list")
+    assert pruning.returncode == 0, pruning.stderr
+
+    # Statuses carry whole seconds, so the hook must land in a later second.
+    time.sleep(1.2)
+    report(rex, block, "state=done:app=fake")
+    hook("done")
+
+    assert_last_done_focuses(rex, workmux_exe_path, repo_path, block)
+
+
+def test_a_reporting_pane_in_the_main_worktree_is_not_adopted(
+    rex, workmux_exe_path, repo_path
+):
+    block = start_fake_agent(
+        rex,
+        workmux_exe_path,
+        repo_path,
+        "osc-main-worktree",
+        launch=f"cd {repo_path} && exec {{agent}}",
+    )
+    report(rex, block, "state=working:app=fake")
+    assert agent_status(rex, workmux_exe_path, repo_path, block) is None

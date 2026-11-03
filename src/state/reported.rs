@@ -176,7 +176,10 @@ impl<'a> Reports<'a> {
         }
         for record in self.shown {
             let path = dir.join(record.pane_key.to_filename());
-            // Of two racing readers, the one that saw the later report wins.
+            // Never replace a record with one reported earlier. Equal report
+            // times overwrite. The read and the write are not atomic, so two
+            // racing readers can still leave the earlier report on disk until
+            // the next pruning reader rewrites it from a live query.
             if read_record(&path)?
                 .is_some_and(|current| current == record || current.since > record.since)
             {
@@ -191,6 +194,11 @@ impl<'a> Reports<'a> {
 
 /// Hook state with the statuses readers last saw merged in, plus agents
 /// that only reported, for readers like last-done that skip the live query.
+///
+/// A record is a snapshot of an old live query, so it overrides the hook only
+/// when it was reported after the hook's status changed. Both times are whole
+/// seconds and a tie keeps the hook: within one second the order is unknown,
+/// and the hook owns the state while the record may be stale.
 pub(crate) fn with_reported(
     store: &StateStore,
     agents: Vec<AgentState>,
@@ -202,7 +210,9 @@ pub(crate) fn with_reported(
     let mut merged: Vec<AgentState> = agents
         .into_iter()
         .map(|mut state| {
-            if let Some(record) = records.remove(&state.pane_key) {
+            if let Some(record) = records.remove(&state.pane_key)
+                && record.since > state.status_ts.unwrap_or(state.updated_ts)
+            {
                 let reported = ReportedStatus::Agent {
                     status: record.status,
                     since: record.since,

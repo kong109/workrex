@@ -224,3 +224,65 @@ fn idle_clears_the_hook_status() {
     assert_eq!(state.status, None);
     assert_eq!(state.status_ts, None);
 }
+
+#[test]
+fn a_record_older_than_the_hook_status_does_not_replace_it() {
+    let (_dir, store) = temp_store();
+    store
+        .upsert_agent(&hooked("block:a", AgentStatus::Working, 100))
+        .unwrap();
+    store
+        .load_all_reconciled_agents(&reporting("block:a", Some(working(200))))
+        .unwrap();
+    store
+        .upsert_agent(&hooked("block:a", AgentStatus::Done, 300))
+        .unwrap();
+
+    let merged = with_reported(&store, store.list_all_agents().unwrap()).unwrap();
+    assert_eq!(merged[0].status, Some(AgentStatus::Done));
+    assert_eq!(merged[0].status_ts, Some(300));
+}
+
+#[test]
+fn a_record_from_the_hooks_second_keeps_the_hook_status() {
+    let (_dir, store) = temp_store();
+    store
+        .upsert_agent(&hooked("block:a", AgentStatus::Working, 100))
+        .unwrap();
+    store
+        .load_all_reconciled_agents(&reporting("block:a", Some(working(200))))
+        .unwrap();
+    store
+        .upsert_agent(&hooked("block:a", AgentStatus::Done, 200))
+        .unwrap();
+
+    let merged = with_reported(&store, store.list_all_agents().unwrap()).unwrap();
+    assert_eq!(merged[0].status, Some(AgentStatus::Done));
+}
+
+#[test]
+fn a_reader_keeps_the_records_of_another_server() {
+    let (_dir, store) = temp_store();
+    let mut other = hooked("block:a", AgentStatus::Working, 100);
+    other.pane_key.instance = "unix:///tmp/other.sock".to_string();
+    let dir = store.reported_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let other_path = dir.join(other.pane_key.to_filename());
+    let other_record = record(&other, AgentStatus::Working, 100);
+    fs::write(&other_path, serde_json::to_vec(&other_record).unwrap()).unwrap();
+    store
+        .upsert_agent(&hooked("block:a", AgentStatus::Waiting, 100))
+        .unwrap();
+    store
+        .load_all_reconciled_agents(&reporting("block:a", Some(working(200))))
+        .unwrap();
+    assert_eq!(read_records(&dir).unwrap().len(), 2);
+
+    store
+        .load_all_reconciled_agents(&FakeMux::default())
+        .unwrap();
+
+    let records = read_records(&dir).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].1, other_record);
+}
