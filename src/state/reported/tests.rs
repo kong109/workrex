@@ -376,16 +376,18 @@ fn adopted_in(worktree: &Path, workdir: PathBuf) -> ReportedRecord {
 fn a_record_merged_against_a_hook_that_is_gone_is_not_read() {
     let (dir, store) = temp_store();
     let (_repo, worktree) = linked_worktree(dir.path());
-    let seen = hooked("block:a", AgentStatus::Working, 100);
+    let mut seen = hooked("block:a", AgentStatus::Working, 100);
+    seen.workdir = worktree.clone();
     store.upsert_agent(&seen).unwrap();
+    let hook_seen = Some(HookVersion::of(&seen));
     store_record(
         &store,
         &record(
             &seen,
             AgentStatus::Done,
             200,
-            Some(HookVersion::of(&seen)),
-            None,
+            hook_seen,
+            Some(worktree.clone()),
         ),
     );
     store_record(&store, &adopted_in(&worktree, worktree.clone()));
