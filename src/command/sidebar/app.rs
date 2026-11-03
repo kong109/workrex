@@ -571,7 +571,6 @@ impl SidebarApp {
     /// Apply a snapshot received from the daemon.
     pub fn apply_snapshot(&mut self, snapshot: SidebarSnapshot) {
         self.has_loaded_snapshot = true;
-        self.expire_notice();
 
         // Compute host agent index from the new snapshot first so that a
         // config_version bump anchors the reload to the *current* host path,
@@ -858,14 +857,24 @@ impl SidebarApp {
         self.expire_notice();
     }
 
-    fn expire_notice(&mut self) {
-        if self
-            .notice
+    /// When the held notice may go: `NOTICE_MIN` after it was shown, once a
+    /// key has been pressed.
+    pub fn notice_deadline(&self) -> Option<Instant> {
+        self.notice
             .as_ref()
-            .is_some_and(|notice| notice.key_pressed && notice.set_at.elapsed() >= NOTICE_MIN)
-        {
+            .filter(|notice| notice.key_pressed)
+            .map(|notice| notice.set_at + NOTICE_MIN)
+    }
+
+    /// Drop the notice if its deadline has passed. Returns whether it went.
+    pub fn expire_notice(&mut self) -> bool {
+        let due = self
+            .notice_deadline()
+            .is_some_and(|deadline| Instant::now() >= deadline);
+        if due {
             self.notice = None;
         }
+        due
     }
 
     pub fn tick(&mut self) {
@@ -2149,8 +2158,11 @@ mod tests {
         };
 
         app.hold_notice("refused".to_string());
+        assert_eq!(app.notice_deadline(), None, "no key yet");
         app.note_keypress();
         assert!(app.notice.is_some(), "a key inside 5 s");
+        let set_at = app.notice.as_ref().unwrap().set_at;
+        assert_eq!(app.notice_deadline(), Some(set_at + NOTICE_MIN));
         shown_for(&mut app, 5);
         app.expire_notice();
         assert!(app.notice.is_none(), "5 s after a key");

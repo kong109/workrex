@@ -141,10 +141,15 @@ pub fn run_sidebar() -> Result<()> {
             (None, None) => Duration::from_secs(3600),
         };
 
-        // The startup recheck has one deadline, even if snapshots are deduplicated.
+        // The startup recheck and a held notice have deadlines of their own,
+        // since snapshots are deduplicated.
+        let now = Instant::now();
         let timeout = last_pane_check
-            .timeout(Instant::now())
+            .timeout(now)
             .map_or(timeout, |grace| timeout.min(grace));
+        let timeout = app.notice_deadline().map_or(timeout, |deadline| {
+            timeout.min(deadline.saturating_duration_since(now))
+        });
 
         let first_event = match rx.recv_timeout(timeout) {
             Ok(ev) => Some(ev),
@@ -177,6 +182,10 @@ pub fn run_sidebar() -> Result<()> {
                 &mut needs_render,
                 &mut needs_clear,
             );
+        }
+
+        if app.expire_notice() {
+            needs_render = true;
         }
 
         if last_pane_check.grace_expired(Instant::now())

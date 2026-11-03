@@ -537,25 +537,34 @@ def test_a_refused_jump_shows_the_fix_in_the_sidebar_until_a_key(rex):
         env, sidebar
     )
 
-    env.mux_command(["send-key", "-b", sidebar, "enter"])
-    assert poll_until(
-        lambda: REMOTE_CONTROL_FIX in wrapped_text(capture(env, sidebar)), timeout=5
-    ), capture(env, sidebar)
-    shown = time.monotonic()
+    def held() -> bool:
+        return REMOTE_CONTROL_FIX in wrapped_text(capture(env, sidebar))
 
+    def refuse() -> float:
+        env.mux_command(["send-key", "-b", sidebar, "enter"])
+        assert poll_until(held, timeout=5), capture(env, sidebar)
+        return time.monotonic()
+
+    def sleep_until(at: float) -> None:
+        time.sleep(max(0.0, at - time.monotonic()))
+
+    shown = refuse()
+    sleep_until(shown + 5.5)
+    assert held(), "the fix went without a key"
     env.mux_command(["send-key", "-b", sidebar, "j"])
-    time.sleep(0.5)
-    assert REMOTE_CONTROL_FIX in wrapped_text(capture(env, sidebar)), (
-        "a key inside 5 s cleared the fix"
-    )
-    time.sleep(max(0.0, 5.2 - (time.monotonic() - shown)))
-    assert REMOTE_CONTROL_FIX in wrapped_text(capture(env, sidebar)), (
-        "the fix went without a key"
-    )
-
-    env.mux_command(["send-key", "-b", sidebar, "k"])
     assert poll_until(
         lambda: "Remote Control" not in capture(env, sidebar), timeout=2
+    ), capture(env, sidebar)
+
+    # No snapshot comes on a quiet sidebar, so the fix goes at its deadline.
+    shown = refuse()
+    sleep_until(shown + 1)
+    env.mux_command(["send-key", "-b", sidebar, "k"])
+    sleep_until(shown + 4.5)
+    assert held(), "a key inside 5 s cleared the fix"
+    assert poll_until(
+        lambda: "Remote Control" not in capture(env, sidebar),
+        timeout=shown + 6.5 - time.monotonic(),
     ), capture(env, sidebar)
 
     jump = subprocess.run(
