@@ -42,12 +42,21 @@ A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside
    systemd=true
    ```
 
-2. In WSL, install the OpenSSH server, make the `ssh.socket` unit listen on 2222 with a drop-in that sets `ListenStream=2222`, and turn on linger:
+2. In WSL, install the OpenSSH server, move the `ssh.socket` unit from port 22 to 2222, and turn on linger:
 
    ```bash
    sudo apt install openssh-server
    sudo systemctl edit ssh.socket
+   sudo systemctl restart ssh.socket
    sudo loginctl enable-linger cicero
+   ```
+
+   In the editor that `systemctl edit` opens, add this drop-in. The empty `ListenStream=` line clears the default port 22. Without it, the socket listens on port 22 and port 2222.
+
+   ```ini
+   [Socket]
+   ListenStream=
+   ListenStream=2222
    ```
 
    With WSL's mirrored networking, port 2222 in WSL is port 2222 on Windows. Otherwise forward it from Windows to WSL, or reach the distro through [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh) running inside it.
