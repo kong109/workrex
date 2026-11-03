@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use tracing::warn;
 
-use crate::multiplexer::{AgentPane, Multiplexer};
+use crate::multiplexer::{AgentPane, Multiplexer, SidebarRequest};
 
 use crate::ui::theme::ThemePalette;
 
@@ -472,10 +472,8 @@ impl SidebarApp {
         let window_prefix = config.window_prefix().to_string();
         let status_icons = config.status_icons.clone();
 
-        let host_identity = match mux.sidebar() {
-            Some(host) => host.pane_identity().map(HostIdentity::from),
-            None => detect_host_identity(),
-        };
+        let host_identity =
+            super::host::identity(mux.as_ref()).unwrap_or_else(detect_host_identity);
 
         let template_config = config.sidebar.templates.clone();
         let current_templates = resolved_template_strings(
@@ -1006,7 +1004,7 @@ impl SidebarApp {
         labels.sort_unstable();
         let value = labels.join("\t");
         let result = if let Some(host) = self.mux.sidebar() {
-            host.handle(crate::multiplexer::SidebarRequest::ExpandedGroups(
+            host.handle(SidebarRequest::ExpandedGroups(
                 labels.iter().map(|label| label.to_string()).collect(),
             ))
         } else if value.is_empty() {
@@ -1477,11 +1475,9 @@ impl SidebarApp {
         else {
             return;
         };
-        if let Some(host) = self.mux.sidebar() {
-            let request = crate::multiplexer::SidebarRequest::ToggleSleeping { pane_id };
-            if let Err(error) = host.handle(request) {
-                warn!(%error, "failed to toggle the sleeping agent");
-            }
+        if super::host::forward(self.mux.as_ref(), || SidebarRequest::ToggleSleeping {
+            pane_id: pane_id.clone(),
+        }) {
             return;
         }
 

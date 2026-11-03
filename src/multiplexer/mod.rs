@@ -1025,8 +1025,7 @@ pub trait Multiplexer: Send + Sync {
         Ok(None)
     }
 
-    /// The backend's own sidebar, for backends that run it without tmux's
-    /// panes and hooks.
+    /// The backend's own sidebar, for backends that run it without tmux.
     fn sidebar(&self) -> Option<&dyn SidebarHost> {
         None
     }

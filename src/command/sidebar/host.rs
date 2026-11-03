@@ -64,6 +64,25 @@ pub(crate) fn handle_cli(
     host.handle(request)
 }
 
+/// Send `request` to the backend's own sidebar, logging a failure. False
+/// when the backend has none, so the caller takes the tmux path.
+pub(super) fn forward(mux: &dyn Multiplexer, request: impl FnOnce() -> SidebarRequest) -> bool {
+    let Some(host) = mux.sidebar() else {
+        return false;
+    };
+    if let Err(error) = host.handle(request()) {
+        tracing::warn!(%error, "sidebar request failed");
+    }
+    true
+}
+
+/// The pane this sidebar runs in as the backend's host reports it, or None
+/// when the backend has no host.
+pub(super) fn identity(mux: &dyn Multiplexer) -> Option<Option<HostIdentity>> {
+    mux.sidebar()
+        .map(|host| host.pane_identity().map(HostIdentity::from))
+}
+
 /// The daemon's server reads and writes: the host's, or tmux's.
 pub(super) fn daemon_io(mux: &dyn Multiplexer, tmux: TmuxBackend) -> Result<Box<dyn DaemonIo>> {
     match mux.sidebar() {
