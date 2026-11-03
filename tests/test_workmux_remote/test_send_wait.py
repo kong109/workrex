@@ -17,7 +17,6 @@ from ..support.bin_name import rebrand
 from .conftest import Node, git, wm
 from .test_status import start_workmux, status_rows
 
-pytestmark = pytest.mark.tmux_only
 
 
 def turn_agent(directory: Path) -> Path:

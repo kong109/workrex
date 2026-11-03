@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import pytest
 import yaml
 
-from ..conftest import TmuxEnvironment, run_workmux_command
+from ..conftest import MuxEnvironment, TmuxEnvironment, run_workmux_command
 from ..support.bin_name import BIN
 
 
@@ -141,7 +141,7 @@ class Node:
 
 
 @pytest.fixture
-def node(mux_server: TmuxEnvironment, workmux_exe_path: Path) -> Iterator[Node]:
+def node(mux_server: MuxEnvironment, workmux_exe_path: Path) -> Iterator[Node]:
     # A short root keeps the node's tmux socket under the root.
     root = Path(tempfile.mkdtemp(prefix="wmn-", dir="/tmp")).resolve()
     config = {
@@ -190,7 +190,7 @@ def observation_path(env: TmuxEnvironment) -> Path:
 
 
 def wm(
-    env: TmuxEnvironment,
+    env: MuxEnvironment,
     exe: Path,
     repo: Path,
     command: str,
@@ -199,8 +199,11 @@ def wm(
 ):
     """Run workmux from the runner pane; commands that focus a remote window
     would otherwise type the next command into the remote shell."""
-    assert env.runner_pane_id is not None
-    env.tmux(["select-window", "-t", env.runner_pane_id])
+    if isinstance(env, TmuxEnvironment):
+        assert env.runner_pane_id is not None
+        env.tmux(["select-window", "-t", env.runner_pane_id])
+    else:
+        env.select_window("test")
     kwargs.setdefault("timeout", 60)
     pre_run_env = {**LOOPBACK, **agent_dirs_env(env.home_path), **(extra_env or {})}
     return run_workmux_command(

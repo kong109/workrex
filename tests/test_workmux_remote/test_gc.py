@@ -14,7 +14,6 @@ from ..conftest import TmuxEnvironment, get_window_name, wait_for_pane_output
 from ..support.bin_name import BIN
 from .conftest import Node, commit_project, git, local_records, wm
 
-pytestmark = pytest.mark.tmux_only
 
 ORPHAN_WS = "wdeadbeef0000"
 OLD = time.time() - 3600

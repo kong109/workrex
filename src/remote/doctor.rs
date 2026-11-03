@@ -14,6 +14,8 @@ use super::protocol::{self, HelloFailure};
 use super::transport::{Input, Transport};
 use crate::config::{Config, RemoteIsolation};
 
+mod wsl;
+
 const MIN_TMUX: (u32, u32) = (3, 3);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -25,6 +27,7 @@ fact os "$(uname -s)"
 fact arch "$(uname -m)"
 fact user "$(id -un)"
 fact hostname "$(uname -n)"
+fact kernel "$(uname -r)"
 fact tmux "$(tmux -V 2>/dev/null)"
 fact git "$(git --version 2>/dev/null)"
 if command -v loginctl >/dev/null 2>&1; then
@@ -167,7 +170,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
 
     rows.push(tmux_row(fact(facts, "tmux")));
 
-    rows.push(match fact(facts, "linger") {
+    let linger = match fact(facts, "linger") {
         "yes" => Row::new("linger", Level::Ok, format!("enabled for {user}")),
         "no" => Row::new(
             "linger",
@@ -183,7 +186,13 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
             format!("unknown linger state {other:?}"),
         )
         .fix(format!("sudo loginctl enable-linger {user}")),
-    });
+    };
+    rows.push(wsl::linger_row(
+        linger,
+        fact(facts, "kernel"),
+        fact(facts, "linger"),
+        user,
+    ));
 
     rows.push(Row::new(
         "agents",
@@ -333,7 +342,7 @@ pub fn run(spec: &RemoteSpec, config: &Config) -> Result<bool> {
     println!("Remote {} ({})", spec.name, spec.host);
     let transport = Transport::open(spec)?;
     if let Err(err) = transport.connect() {
-        print_row(&Row::new("ssh", Level::Fail, format!("{err:#}")));
+        print_row(&wsl::ssh_row(&spec.name, &spec.host, &err));
         return Ok(false);
     }
     let script = if spec.isolation == RemoteIsolation::Container {

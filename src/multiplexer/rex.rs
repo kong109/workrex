@@ -46,6 +46,7 @@ rex_id!(BlockId);
 rex_id!(ClientId);
 
 mod session;
+mod target;
 
 impl BlockId {
     fn parse(pane_id: &str) -> Result<Self> {
@@ -1294,7 +1295,7 @@ impl Multiplexer for RexBackend {
 
     fn create_window(&self, params: CreateWindowParams) -> Result<String> {
         let full_name = util::prefixed(params.prefix, params.name);
-        let after = params.after_window.map(|id| WindowId(id.to_string()));
+        let after = params.after_window.map(target::after_window);
         let view = match &after {
             Some(window) => self
                 .view_of_window(window)?

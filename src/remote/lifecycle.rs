@@ -22,7 +22,7 @@ use super::protocol::{
     RemoveRequest, RemoveResponse, StartRequest, StartResponse, WorkspaceIdentity, code,
 };
 use crate::cmd::Cmd;
-use crate::config::{Config, ConfigLocation};
+use crate::config::{Config, ConfigLocation, MuxMode};
 use crate::multiplexer::{CreateWindowParams, Multiplexer, WindowOwnershipRecord, WindowTarget};
 use crate::prompt::Prompt;
 use crate::shell::shell_quote;
@@ -132,6 +132,10 @@ pub fn create(
         Some(record) => record.window_name.clone(),
         None => crate::multiplexer::util::prefixed(&context.prefix, &handle),
     };
+    // Session mode: the relay window opens in a session named like it.
+    let window_session = window_session.or_else(|| {
+        (resume.is_none() && request.options.mode == MuxMode::Session).then(|| window_name.clone())
+    });
     if let Some(conflict) = local_conflict(
         context,
         request.branch,
@@ -372,7 +376,8 @@ pub(super) fn local_conflict(
     }
     if window_name_taken(context.mux.as_ref(), window_name, window_session)? {
         return Ok(Some(format!(
-            "A tmux window named '{window_name}' already exists.{hint}"
+            "A {} window named '{window_name}' already exists.{hint}",
+            context.mux.name()
         )));
     }
     Ok(None)
@@ -933,6 +938,7 @@ pub fn close(mux: &dyn Multiplexer, record: &WorkspaceRecord) -> Result<()> {
     };
     mux.kill_window_target(&target)
         .context("Failed to close window")?;
+    drop_emptied_session(mux, record);
     forget_attachments(record);
     println!(
         "✓ Closed the window of '{}'; its agent keeps running on '{}' (`{BIN} open {}` \
@@ -1288,6 +1294,22 @@ pub(crate) fn close_relay(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
         Err(err) => {
             tracing::warn!(handle = %record.handle, "could not resolve relay window: {err:#}")
         }
+    }
+    drop_emptied_session(mux, record);
+}
+
+/// tmux ends a session with its last window; Rex keeps it, empty. The
+/// relay's window may also have closed itself when its remote session ended.
+fn drop_emptied_session(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
+    let Some(session) = record.window_session.as_deref() else {
+        return;
+    };
+    let emptied = mux.session_exists(session).unwrap_or(false)
+        && mux
+            .get_window_names_in_session(session)
+            .is_ok_and(|names| names.is_empty());
+    if emptied && let Err(err) = mux.kill_session(session) {
+        tracing::warn!(handle = %record.handle, "could not close emptied session: {err:#}");
     }
 }
 

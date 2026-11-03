@@ -31,6 +31,49 @@ Names may contain letters, digits, `.`, `_` and `-`, and must start with a lette
 
 `remotes` only works in your global config. A project's `.workmux.yaml` can't add a server, so a repository can't send your code anywhere; it can only choose among your servers with [`placement`](#choosing-where-new-agents-go). The other keys, `path`, `isolation` and `binary`, are in the [configuration reference](/guide/configuration/#remotes).
 
+## A server in WSL
+
+A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside the distro on its own port, because port 22 on the Windows machine usually belongs to Windows OpenSSH, which can't run agents. This example uses port 2222 on a Windows machine named `winbox` (its Tailscale or LAN name) and the WSL user `cicero`.
+
+1. In WSL, turn on systemd, so linger and the `ssh` socket work. Add this to `/etc/wsl.conf`, then run `wsl.exe --shutdown` on Windows and open the distro again:
+
+   ```ini
+   [boot]
+   systemd=true
+   ```
+
+2. In WSL, install the OpenSSH server, make the `ssh.socket` unit listen on 2222 with a drop-in that sets `ListenStream=2222`, and turn on linger:
+
+   ```bash
+   sudo apt install openssh-server
+   sudo systemctl edit ssh.socket
+   sudo loginctl enable-linger cicero
+   ```
+
+   With WSL's mirrored networking, port 2222 in WSL is port 2222 on Windows. Otherwise forward it from Windows to WSL, or reach the distro through [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh) running inside it.
+
+3. On your machine, add an alias to `~/.ssh/config` and check that `ssh winbox-wsl-ssh` logs in without a prompt:
+
+   ```
+   Host winbox-wsl-ssh
+     HostName winbox
+     Port 2222
+     User cicero
+   ```
+
+4. Point the remote at the alias:
+
+   ```yaml
+   # ~/.config/workmux/config.yaml
+   remotes:
+     winbox:
+       host: winbox-wsl-ssh
+   ```
+
+`workmux remote doctor winbox` names the WSL fix when the connection fails: Windows OpenSSH answering on the configured port, or nothing answering because the distro or its `ssh.socket` is down. It also names the systemd fix when linger can't be checked.
+
+Remote agents run under the tmux and Rex backends. Under Rex, where workmux defaults to sessions, each remote agent's relay window opens in a Rex session of its own, and closing the window closes the session.
+
 ## Server or Docker
 
 Remote agents are sandboxed exactly when the same agent would be sandboxed locally. `remotes.<name>.isolation` overrides that for one server, in either direction.
