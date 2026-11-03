@@ -3346,6 +3346,43 @@ mod tests {
         assert!(fake.rex.validate_agent_alive(&agent).unwrap());
     }
 
+    /// A remote relay's window closes itself when its remote session ends,
+    /// possibly right after a command last read the relay's session. The
+    /// command must still see the session empty and destroy it.
+    #[test]
+    fn a_relay_session_emptied_after_a_reused_read_is_destroyed() {
+        let fake = FakeRex::new(&[
+            ("session.list", &session_list(&[("session:r", "wm-feat")])),
+            ("session.view", "$cat \"$dir/view\""),
+            ("session.destroy", "{}"),
+        ])
+        .reusing();
+        let relay = [("window:1", "wm-feat")];
+        fake.write("view", &view_json("session:r", "wm-feat", &relay));
+        let names = fake.rex.get_window_names_in_session("wm-feat").unwrap();
+        assert!(names.contains("wm-feat"), "{names:?}");
+        fake.write("view", &view_json("session:r", "wm-feat", &[]));
+
+        let mut record = crate::remote::cache::WorkspaceRecord::new(
+            "w1".into(),
+            "box",
+            "p".into(),
+            PathBuf::from("/src/app"),
+            "feat",
+            "feat",
+            "0".repeat(40),
+            None,
+            "wm-feat".into(),
+            PathBuf::from("/src/app__worktrees/feat"),
+        );
+        record.window_session = Some("wm-feat".into());
+        crate::remote::lifecycle::drop_emptied_session(&fake.rex, &record);
+
+        let destroys = fake.calls("session.destroy");
+        assert_eq!(destroys.len(), 1, "{destroys:?}");
+        assert!(destroys[0].contains("session:r"), "{destroys:?}");
+    }
+
     #[test]
     fn outside_changes_show_within_a_quarter_second() {
         assert_eq!(

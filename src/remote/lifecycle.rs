@@ -1326,11 +1326,13 @@ pub(crate) fn close_relay(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
 }
 
 /// tmux ends a session with its last window; Rex keeps it, empty. The
-/// relay's window may also have closed itself when its remote session ended.
-fn drop_emptied_session(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
+/// relay's window may also have closed itself when its remote session ended,
+/// after this process last read the session.
+pub(crate) fn drop_emptied_session(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
     let Some(session) = record.window_session.as_deref() else {
         return;
     };
+    mux.forget_reads();
     let emptied = mux.session_exists(session).unwrap_or(false)
         && mux
             .get_window_names_in_session(session)
