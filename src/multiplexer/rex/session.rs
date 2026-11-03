@@ -11,16 +11,22 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::super::Multiplexer;
 use super::super::types::CreateSessionParams;
 use super::super::util;
 
 use super::super::agent::shell_quote;
-use super::{CallError, CallResult, RexBackend, SessionId, SessionSummary, SessionView, found};
+use super::{CallError, RexBackend, SessionId, SessionSummary, SessionView, found};
 
 const SESSION_MOVE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long after a move timed out it may still land. Killing the rex CLI
+/// does not cancel the move, and Rex applies it once the server catches up.
+/// 10 s is Rex's own request timeout, the longest a close waited for a move
+/// before the 2 s bound, so a late move is healed at least as long as then.
+const LATE_MOVE_WINDOW: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ServerRecords {
@@ -40,6 +46,24 @@ struct Restore {
     destination: String,
     /// The session order without the closing session.
     order: Vec<String>,
+    /// When a move for this record last timed out, in Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timed_out_at: Option<u64>,
+}
+
+/// How a `rex session move` ended. A move that timed out may still land.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Moved {
+    Done,
+    Gone,
+    Failed,
+    TimedOut,
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
 }
 
 impl Restore {
@@ -57,6 +81,46 @@ impl Restore {
             .rev()
             .map(|id| ["--after", id.as_str()]);
         successors.chain(predecessors).collect()
+    }
+
+    /// Whether the destination already sits where [`Restore::places`] would
+    /// put it, next to its nearest live neighbor.
+    fn is_in_place(&self, live: &[SessionId]) -> bool {
+        let position = |id: &str| live.iter().position(|session| session.as_str() == id);
+        let Some(at) = position(&self.destination) else {
+            return true;
+        };
+        self.places()
+            .into_iter()
+            .find_map(|[how, neighbor]| {
+                let next_to = position(neighbor)?;
+                Some(if how == "--before" {
+                    next_to == at + 1
+                } else {
+                    at == next_to + 1
+                })
+            })
+            .unwrap_or(true)
+    }
+
+    fn may_still_land(&self) -> bool {
+        self.timed_out_at
+            .is_some_and(|at| unix_millis() < at + LATE_MOVE_WINDOW.as_millis() as u64)
+    }
+
+    /// The record after a move for it ended as `moved`, or `None` once the
+    /// order is back. A record whose move timed out is never cleared here:
+    /// a close past [`LATE_MOVE_WINDOW`] clears it on finding the
+    /// destination in place.
+    fn after(mut self, moved: Moved) -> Option<Self> {
+        match moved {
+            Moved::Done if self.timed_out_at.is_none() => None,
+            Moved::TimedOut => {
+                self.timed_out_at = Some(unix_millis());
+                Some(self)
+            }
+            _ => Some(self),
+        }
     }
 }
 
@@ -307,6 +371,7 @@ impl RexBackend {
             pick_destination(&sessions, closing, preferred, origin).map(|destination| Restore {
                 destination: destination.as_str().to_string(),
                 order,
+                timed_out_at: None,
             }),
         )
     }
@@ -315,28 +380,35 @@ impl RexBackend {
     /// `session.move` requires. A hung server would otherwise hold the
     /// registry lock, and every close and add behind it, for Rex's 10 s
     /// default per move.
-    fn move_session(&self, session: &str, place: [&str; 2]) -> CallResult<()> {
+    fn move_session(&self, session: &str, place: [&str; 2]) -> Moved {
         let args = ["session", "move", session, place[0], place[1]];
+        let started = Instant::now();
         let moved = self
             .ensure_supported()
             .and_then(|()| self.exec_within(&args, None, Some(SESSION_MOVE_TIMEOUT)));
         if let Err(error) = &moved {
             tracing::debug!(error = %error, "rex: session move failed");
         }
-        moved.map(drop)
+        match moved {
+            Ok(_) => Moved::Done,
+            Err(CallError::NotFound(_)) => Moved::Gone,
+            // exec_within kills a CLI still running at the bound.
+            Err(_) if started.elapsed() >= SESSION_MOVE_TIMEOUT => Moved::TimedOut,
+            Err(_) => Moved::Failed,
+        }
     }
 
-    /// False when a move failed for a reason other than a neighbor that is
-    /// gone, so the order is left recorded for the next close.
-    fn put_back(&self, restore: &Restore) -> bool {
+    /// How the first move that did not find its neighbor gone ended, or
+    /// Done when every neighbor is gone. Anything but Done leaves the order
+    /// recorded for the next close.
+    fn put_back(&self, restore: &Restore) -> Moved {
         for place in restore.places() {
             match self.move_session(&restore.destination, place) {
-                Ok(()) => return true,
-                Err(CallError::NotFound(_)) => {}
-                Err(_) => return false,
+                Moved::Gone => {}
+                moved => return moved,
             }
         }
-        true
+        Moved::Done
     }
 
     /// The whole close runs under the registry lock, so two closes, or a
@@ -350,17 +422,26 @@ impl RexBackend {
         preferred: Option<&str>,
     ) -> Result<()> {
         let mut locked = self.lock_records()?;
-        if let Some(left) = locked.records().restore.clone()
-            && self.put_back(&left)
-        {
-            locked.records().restore = None;
+        if let Some(left) = locked.records().restore.clone() {
+            let settled = left.timed_out_at.is_some()
+                && !left.may_still_land()
+                && self
+                    .raw_sessions()
+                    .is_ok_and(|live| left.is_in_place(&session_ids(&live)));
+            let kept = if settled {
+                None
+            } else {
+                let moved = self.put_back(&left);
+                left.after(moved)
+            };
+            locked.records().restore = kept;
             locked.save()?;
         }
         let Some(session) = find()? else {
             return Ok(());
         };
-        // A server that failed the last put back gets no new moves, and the
-        // order it left stays recorded.
+        // While a record is kept, after a failed put back or a move that may
+        // still land, the close makes no new moves.
         let restore = match locked.records().restore {
             Some(_) => None,
             None => self.plan_restore(&session, preferred, &locked.records().origins)?,
@@ -369,18 +450,20 @@ impl RexBackend {
             locked.records().restore = Some(restore.clone());
             locked.save()?;
         }
-        let in_front = restore.as_ref().filter(|restore| {
-            self.move_session(&restore.destination, ["--index", "1"])
-                .is_ok()
-        });
+        let to_front = restore
+            .as_ref()
+            .map(|restore| self.move_session(&restore.destination, ["--index", "1"]));
         let destroyed = self.destroy_session(&session);
-        let put_back = in_front.is_some_and(|restore| self.put_back(restore));
+        let put_back = match (&restore, to_front) {
+            (Some(restore), Some(Moved::Done)) => Some(self.put_back(restore)),
+            _ => None,
+        };
         // Closing prunes rather than forgetting the closing session itself,
         // so a close that never ran leaves its record intact.
         let live = self.raw_sessions();
         let records = locked.records();
-        if put_back {
-            records.restore = None;
+        if let Some(moved) = put_back.or(to_front) {
+            records.restore = records.restore.take().and_then(|left| left.after(moved));
         }
         if let Ok(live) = &live {
             records.retain_live(&session_ids(live));
@@ -664,6 +747,7 @@ mod tests {
             Some(Restore {
                 destination: "session:home".into(),
                 order: vec!["session:first".into(), "session:home".into()],
+                timed_out_at: None,
             })
         );
         assert_eq!(fake.rex.records().restore, None);
@@ -681,6 +765,7 @@ mod tests {
                         "session:home".into(),
                         "session:first".into(),
                     ],
+                    timed_out_at: None,
                 });
                 Ok(())
             })
@@ -698,6 +783,7 @@ mod tests {
         let restore = Restore {
             destination: "d".into(),
             order: ["a", "b", "d", "e", "f"].map(String::from).to_vec(),
+            timed_out_at: None,
         };
         assert_eq!(
             restore.places(),
@@ -715,8 +801,27 @@ mod tests {
             ),
             ("session move d --before f", "{}"),
         ]);
-        assert!(fake.rex.put_back(&restore));
+        assert_eq!(fake.rex.put_back(&restore), Moved::Done);
         assert_eq!(fake.calls("session move").len(), 2);
+    }
+
+    #[test]
+    fn the_destination_is_in_place_next_to_its_nearest_live_neighbor() {
+        let restore = Restore {
+            destination: "d".into(),
+            order: ["a", "b", "d", "e", "f"].map(String::from).to_vec(),
+            timed_out_at: None,
+        };
+        let in_place = |live: &[&str]| {
+            let live: Vec<SessionId> = live.iter().map(|id| SessionId((*id).into())).collect();
+            restore.is_in_place(&live)
+        };
+        assert!(in_place(&["a", "b", "d", "e", "f"]));
+        assert!(!in_place(&["d", "a", "b", "e", "f"]));
+        assert!(in_place(&["a", "b", "d", "f"]), "e is gone");
+        assert!(!in_place(&["d", "a", "b", "f"]));
+        assert!(in_place(&["x", "b", "d"]), "only b is left");
+        assert!(in_place(&["a", "b"]), "d itself is gone");
     }
 
     #[test]
@@ -724,9 +829,10 @@ mod tests {
         let restore = Restore {
             destination: "d".into(),
             order: ["a", "b", "d", "e", "f"].map(String::from).to_vec(),
+            timed_out_at: None,
         };
         let fake = FakeRex::new(&[("session move", "!Error: request timed out")]);
-        assert!(!fake.rex.put_back(&restore));
+        assert_eq!(fake.rex.put_back(&restore), Moved::Failed);
         assert_eq!(fake.calls("session move").len(), 1);
     }
 
@@ -754,6 +860,7 @@ mod tests {
             Some(Restore {
                 destination: "session:home".into(),
                 order: vec!["session:first".into(), "session:home".into()],
+                timed_out_at: None,
             })
         );
     }
@@ -775,6 +882,7 @@ mod tests {
         let left = Restore {
             destination: "session:home".into(),
             order: vec!["session:first".into(), "session:home".into()],
+            timed_out_at: None,
         };
         fake.rex
             .update_records(|records| {
@@ -796,7 +904,7 @@ mod tests {
         let started = std::time::Instant::now();
         let moved = fake.rex.move_session("d", ["--index", "1"]);
         let waited = started.elapsed();
-        assert!(moved.is_err());
+        assert_eq!(moved, Moved::TimedOut);
         assert!(
             waited >= SESSION_MOVE_TIMEOUT && waited < Duration::from_secs(8),
             "{waited:?}"
@@ -965,5 +1073,128 @@ mod tests {
             .insert("session:a".into(), "session:home".into());
         records.retain_live(&live);
         assert_eq!(records.origins.get("session:a").unwrap(), "session:home");
+    }
+
+    /// A server that keeps a session order in `order`, one `id label` line
+    /// per session. While `stall` exists, the next `--index 1` move gives
+    /// no answer and lands only once `land` exists, then writes `landed`.
+    const ORDER_MODEL: &str = r#"d=$(dirname "$0"); cmd=$1; shift
+case $cmd in
+list)
+  printf '{"sessions":['; sep=
+  while read -r id label; do printf '%s{"session_id":"%s","label":"%s"}' "$sep" "$id" "$label"; sep=,; done < "$d/order"
+  echo ']}';;
+destroy)
+  id=$(echo "$1" | sed 's/.*"session_id":"\([^"]*\)".*/\1/')
+  grep -v "^$id " "$d/order" > "$d/order.new"; mv "$d/order.new" "$d/order"; echo '{}';;
+move)
+  while [ "$1" != move ]; do shift; done
+  id=$2 how=$3 at=$4
+  if [ "$how" = --index ] && [ -e "$d/stall" ]; then
+    rm "$d/stall"
+    ( i=0; until [ -e "$d/land" ] || [ $i -ge 400 ]; do sleep 0.05; i=$((i+1)); done
+      sh "$0" move session move "$id" --index 1; touch "$d/landed" ) >/dev/null 2>&1 &
+    exec sleep 10
+  fi
+  [ "$how" = --index ] || grep -q "^$at " "$d/order" || { echo "Error: session target \"$at\" not found" >&2; exit 1; }
+  line=$(grep "^$id " "$d/order"); grep -v "^$id " "$d/order" > "$d/rest"
+  { [ "$how" = --index ] && echo "$line"
+    while read -r l; do
+      [ "$how" = --before ] && [ "${l%% *}" = "$at" ] && echo "$line"
+      echo "$l"
+      [ "$how" = --after ] && [ "${l%% *}" = "$at" ] && echo "$line"
+    done < "$d/rest"; } > "$d/order.new"
+  mv "$d/order.new" "$d/order"; echo '{}';;
+esac
+"#;
+
+    fn ordered_fake(order: &[(&str, &str)]) -> FakeRex {
+        let model = |args: &str| format!("$exec sh \"$(dirname \"$0\")/order.sh\" {args}");
+        let fake = FakeRex::new(&[
+            ("session move", &model("move \"$@\"")),
+            ("session.destroy", &model("destroy \"$call\"")),
+            ("session.list", &model("list")),
+        ]);
+        std::fs::write(fake.dir.path().join("order.sh"), ORDER_MODEL).unwrap();
+        let lines: String = order
+            .iter()
+            .map(|(id, label)| format!("{id} {label}\n"))
+            .collect();
+        std::fs::write(fake.dir.path().join("order"), lines).unwrap();
+        fake
+    }
+
+    fn labels(fake: &FakeRex) -> Vec<String> {
+        fake.rex
+            .raw_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|session| session.label)
+            .collect()
+    }
+
+    #[test]
+    fn a_timed_out_move_that_lands_late_is_put_back_by_a_later_close() {
+        let fake = ordered_fake(&[
+            ("session:first", "first"),
+            ("session:home", "home"),
+            ("session:t", "wm-t"),
+            ("session:u", "wm-u"),
+            ("session:v", "wm-v"),
+        ]);
+        let dir = fake.dir.path();
+        std::fs::write(dir.join("stall"), "").unwrap();
+        fake.rex.close_session_to("wm-t", Some("home")).unwrap();
+        fake.rex.close_session_to("wm-u", Some("home")).unwrap();
+        assert_eq!(labels(&fake), ["first", "home", "wm-v"]);
+
+        std::fs::write(dir.join("land"), "").unwrap();
+        let waited = std::time::Instant::now();
+        while !dir.join("landed").exists() && waited.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            labels(&fake),
+            ["home", "first", "wm-v"],
+            "the late move landed"
+        );
+
+        fake.rex.close_session_to("wm-v", Some("home")).unwrap();
+        assert_eq!(labels(&fake), ["first", "home"]);
+        assert!(
+            fake.rex.records().restore.is_some(),
+            "kept for a later landing"
+        );
+
+        fake.rex
+            .update_records(|records| {
+                let left = records.restore.as_mut().unwrap();
+                left.timed_out_at = left.timed_out_at.map(|at| at - 11_000);
+                Ok(())
+            })
+            .unwrap();
+        std::fs::write(
+            dir.join("order"),
+            "session:home home\nsession:first first\n",
+        )
+        .unwrap();
+        fake.rex
+            .close_session_with_id("session:gone", None)
+            .unwrap();
+        assert_eq!(labels(&fake), ["first", "home"], "put back past the window");
+        assert!(
+            fake.rex.records().restore.is_some(),
+            "kept until found in place"
+        );
+        let moves = fake.calls("session move").len();
+        fake.rex
+            .close_session_with_id("session:gone", None)
+            .unwrap();
+        assert_eq!(fake.calls("session move").len(), moves);
+        assert_eq!(
+            fake.rex.records().restore,
+            None,
+            "found in place, so cleared"
+        );
     }
 }
