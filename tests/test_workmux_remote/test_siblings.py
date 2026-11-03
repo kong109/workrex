@@ -18,6 +18,7 @@ from ..conftest import (
     poll_until,
     wait_for_pane_output,
 )
+from ..support.bin_name import hook_bin, rebrand
 from .conftest import Node, commit_project, git, local_records, observation_path, wm
 
 pytestmark = pytest.mark.tmux_only
@@ -32,7 +33,7 @@ def setup_project(repo: Path) -> None:
 def spawn(node: Node, ex_id: str, args: str) -> None:
     """Type `workmux add <args>` into the node session of `ex_id`, the way
     an agent without a sandbox would run it."""
-    wrapper = node.root / "run" / "bin" / "workmux"
+    wrapper = node.root / "run" / "bin" / hook_bin()
     node.tmux("send-keys", "-t", f"{ex_id}-0:", f"{wrapper} add {args}", "Enter")
 
 
@@ -54,7 +55,7 @@ def active_window(env: TmuxEnvironment) -> str:
     return env.tmux(["display-message", "-p", "#{window_name}"]).stdout.strip()
 
 
-AGENT = """#!/bin/sh
+AGENT = rebrand("""#!/bin/sh
 # Applies commands written to agent-control in its worktree's git dir.
 control="$(git rev-parse --absolute-git-dir)/agent-control"
 echo FAKE-AGENT-READY
@@ -69,7 +70,7 @@ while :; do
   fi
   sleep 0.1
 done
-"""
+""")
 
 
 def setup_agent_project(repo: Path, agent: Path) -> None:
