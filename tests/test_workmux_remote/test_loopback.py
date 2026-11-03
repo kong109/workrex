@@ -108,7 +108,7 @@ def test_setup_installs_pinned_binary(loopback_cli: RemoteCli, workmux_exe_path:
     result = loopback_cli.run("remote", "setup", "lo")
 
     assert result.returncode == 0, result.stderr
-    assert "installed workmux" in result.stdout
+    assert f"installed {BIN}" in result.stdout
     pinned = bin_dir / dev_pin(workmux_exe_path)
     assert pinned.read_bytes() == workmux_exe_path.read_bytes()
     assert pinned.stat().st_mode & 0o777 == 0o755
@@ -150,7 +150,7 @@ def test_setup_recovers_from_interrupted_installs(
     result = loopback_cli.run("remote", "setup", "lo")
 
     assert result.returncode == 0, result.stderr
-    assert "installed workmux" in result.stdout
+    assert f"installed {BIN}" in result.stdout
     assert pinned.read_bytes() == workmux_exe_path.read_bytes()
     assert not stale.exists()
     assert fresh.exists()

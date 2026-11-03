@@ -11,7 +11,6 @@ from .conftest import (
     make_env_script,
     poll_until,
     poll_until_file_has_content,
-    wait_for_pane_output,
 )
 from .support.bin_name import BIN, bundled, hook_bin, rebrand
 from .support.setup import (
@@ -151,6 +150,8 @@ def test_setup_then_uninstall_leaves_upstream_hooks_byte_identical(
     assert (home / f".copilot/hooks/{BIN}-status.json").is_file()
     assert (home / f".grok/hooks/{BIN}-status.json").is_file()
     assert (home / f".omp/agent/extensions/{BIN}-status.ts").is_file()
+    opencode = home / f".config/opencode/plugins/{BIN}-status.ts"
+    assert f"{BIN} set-window-status" in opencode.read_text()
     agy = home / ".gemini/config/hooks.json"
     assert set(json.loads(agy.read_text())) == {"workmux-status", f"{BIN}-status"}
     shared.append(agy)
@@ -167,6 +168,7 @@ def test_setup_then_uninstall_leaves_upstream_hooks_byte_identical(
     assert not (home / f".copilot/hooks/{BIN}-status.json").exists()
     assert not (home / f".grok/hooks/{BIN}-status.json").exists()
     assert not (home / f".omp/agent/extensions/{BIN}-status.ts").exists()
+    assert not opencode.exists()
     assert (state / "agents/upstream.json").read_text() == "{}"
 
 
@@ -185,18 +187,15 @@ def write_upstream_skills(home: Path) -> dict[Path, bytes]:
 def run_setup_overwriting_skills(env: MuxEnvironment, exe: Path) -> int:
     """Run setup answering yes to hooks, skills and every skill-overwrite prompt."""
     done = run_setup_interactive(env, exe)
-    for prompt in ("Install or update status tracking hooks?", "Install bundled skills?"):
-        wait_for_pane_output(env, "test", prompt, timeout=5)
-        env.send_keys("test:", "y")
     overwrites = 0
     deadline = time.monotonic() + 30
     while not (done.exists() and done.read_text().strip()):
         assert time.monotonic() < deadline, env.capture_pane("test")
         screen = env.capture_pane("test") or ""
         lines = [line for line in screen.splitlines() if line.strip()]
-        if lines and "with bundled version?" in lines[-1] and lines[-1].endswith("]"):
+        if lines and "?" in lines[-1] and lines[-1].endswith("]"):
             env.send_keys("test:", "y")
-            overwrites += 1
+            overwrites += "with bundled version?" in lines[-1]
             poll_until(lambda: env.capture_pane("test") != screen, 5)
         time.sleep(0.05)
     assert done.read_text().strip() == "0", env.capture_pane("test")
@@ -221,6 +220,24 @@ def test_setup_with_skills_then_uninstall_leaves_upstream_skills_byte_identical(
 
     run_uninstall(mux_server, workmux_exe_path)
 
+    for path, before in upstream.items():
+        assert path.read_bytes() == before, path
+    for skills_dir in SKILL_DIRS:
+        assert not (home / skills_dir / BIN).exists(), skills_dir
+
+
+def test_skills_taken_back_after_upstream_setup_are_restored_on_uninstall(
+    mux_server: MuxEnvironment, workmux_exe_path: Path
+):
+    home = mux_server.home_path
+    install_opencode_version(mux_server, "v1.18.29")
+    run_setup_overwriting_skills(mux_server, workmux_exe_path)
+    upstream = write_upstream_skills(home)
+
+    assert run_setup_overwriting_skills(mux_server, workmux_exe_path) > 0
+    run_uninstall(mux_server, workmux_exe_path)
+
+    assert len(upstream) == 30
     for path, before in upstream.items():
         assert path.read_bytes() == before, path
     for skills_dir in SKILL_DIRS:

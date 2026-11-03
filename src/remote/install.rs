@@ -42,7 +42,7 @@ impl Pin {
     pub fn for_spec(spec: &RemoteSpec) -> Result<Self> {
         let Some(path) = &spec.binary else {
             return Ok(Self {
-                name: format!("{}-{}", crate::bin_name::BIN, env!("CARGO_PKG_VERSION")),
+                name: crate::bin_name::pin_name(env!("CARGO_PKG_VERSION")),
                 source: PinSource::Release,
             });
         };
@@ -72,7 +72,7 @@ impl Pin {
     pub fn mismatch_hint(&self, spec: &RemoteSpec) -> String {
         match self.source {
             PinSource::Release => format!(
-                "This workmux is not the v{} release; point remotes.{}.binary at a Linux \
+                "This {BIN} is not the v{} release; point remotes.{}.binary at a Linux \
                  build of it (see `just remote-dev-binary`)",
                 env!("CARGO_PKG_VERSION"),
                 spec.name
@@ -97,7 +97,7 @@ impl Pin {
 /// Content-addressed pin name of a local binary.
 fn dev_pin_name(path: &Path) -> Result<String> {
     let hash = crate::command::update::sha256_of(path)?;
-    Ok(format!("workmux-dev-{}", &hash[..12]))
+    Ok(crate::bin_name::pin_name(&format!("dev-{}", &hash[..12])))
 }
 
 /// State of the pinned binary on a remote.
@@ -141,7 +141,7 @@ pub fn setup(spec: &RemoteSpec) -> Result<()> {
     match node_status(&transport, spec, &pin)? {
         NodeStatus::Ready(hello) => {
             println!(
-                "✓ {}: workmux {} (protocol {}) is already installed at {node_path}",
+                "✓ {}: {BIN} {} (protocol {}) is already installed at {node_path}",
                 spec.name, hello.version, hello.protocol
             );
             return Ok(());
@@ -171,7 +171,7 @@ pub fn setup(spec: &RemoteSpec) -> Result<()> {
         }
         PinSource::Release => {
             let version = env!("CARGO_PKG_VERSION");
-            println!("Downloading workmux v{version} for {platform}...");
+            println!("Downloading {BIN} v{version} for {platform}...");
             crate::command::update::fetch_release_binary(
                 version,
                 &crate::bin_name::release_artifact(platform)?,
@@ -180,7 +180,7 @@ pub fn setup(spec: &RemoteSpec) -> Result<()> {
             )
             .map_err(|err| {
                 anyhow!(
-                    "Could not get the workmux v{version} release for {platform}: {err:#}. \
+                    "Could not get the {BIN} v{version} release for {platform}: {err:#}. \
                      For an unreleased build, set remotes.{}.binary (see `just remote-dev-binary`)",
                     spec.name
                 )
@@ -199,7 +199,7 @@ pub fn setup(spec: &RemoteSpec) -> Result<()> {
     );
     let hello = stage_and_install(&transport, spec, &pin, &node_path, &local, size, platform)?;
     println!(
-        "✓ {}: installed workmux {} (protocol {}) at {node_path}",
+        "✓ {}: installed {BIN} {} (protocol {}) at {node_path}",
         spec.name, hello.version, hello.protocol
     );
     Ok(())
@@ -217,7 +217,7 @@ fn probe_platform(transport: &Transport) -> Result<&'static str> {
     let text = output.stdout_text();
     let mut lines = text.lines().map(str::trim);
     release_platform(lines.next().unwrap_or(""), lines.next().unwrap_or(""))
-        .context("No workmux build exists for the remote platform")
+        .with_context(|| format!("No {BIN} build exists for the remote platform"))
 }
 
 /// Map `uname -s` / `uname -m` to a release platform suffix.
@@ -326,12 +326,12 @@ chmod 755 "$stage" || { rm -f "$stage"; exit "$stage_failed"; }
 
 fn staged_failure(spec: &RemoteSpec, pin: &Pin, platform: &str, failure: HelloFailure) -> String {
     let source = match &pin.source {
-        PinSource::Release => format!("The workmux v{} release", env!("CARGO_PKG_VERSION")),
+        PinSource::Release => format!("The {BIN} v{} release", env!("CARGO_PKG_VERSION")),
         PinSource::File(path) => path.display().to_string(),
     };
     match failure {
         HelloFailure::PredatesNodes => format!(
-            "{source} predates remote nodes (it has no `workmux node` command). Point \
+            "{source} predates remote nodes (it has no `{BIN} node` command). Point \
              remotes.{}.binary at a Linux build of this {BIN} (see `just remote-dev-binary`)",
             spec.name
         ),
@@ -377,7 +377,7 @@ mod tests {
         // sha256("abc") = ba7816bf8f01cfea...
         assert_eq!(
             Pin::for_spec(&spec).unwrap().name,
-            "workmux-dev-ba7816bf8f01"
+            "workrex-dev-ba7816bf8f01"
         );
 
         let release = RemoteSpec {
@@ -386,7 +386,7 @@ mod tests {
         };
         assert_eq!(
             Pin::for_spec(&release).unwrap().name,
-            format!("{}-{}", crate::bin_name::BIN, env!("CARGO_PKG_VERSION"))
+            format!("workrex-{}", env!("CARGO_PKG_VERSION"))
         );
 
         let missing = RemoteSpec {

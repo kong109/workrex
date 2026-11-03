@@ -10,7 +10,7 @@ BIN = "workrex"
 def rebrand(text: str) -> str:
     """Apply the binary rename that `rebrand!` applies to embedded hook and skill text."""
     return re.sub(
-        r"(?:(?<![\w./@:-])|(?<=[\s\"'`(]/))workmux(?![\w/@:-]|\.[^\W_])", BIN, text
+        r"(?:(?<![\w./@:-])|(?<=[\s\"'`(]/))workmux(?![\w/@:-]|\.(?!status)[^\W_])", BIN, text
     )
 
 

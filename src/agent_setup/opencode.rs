@@ -22,7 +22,11 @@ use super::{StatusCheck, UpdatePreview};
 const PLUGIN_SOURCE: &str =
     crate::rebrand_include!("../../resources/opencode/plugins/workmux-status.ts");
 const PACKAGE_JSON: &str = include_str!("../../resources/opencode/package.json");
-const MANIFEST_FILE: &str = ".workmux-status.json";
+const MANIFEST_FILE: &str = concat!(".", env!("CARGO_BIN_NAME"), "-status.json");
+// Named after the binary so upstream workmux's plugin, at the `workmux-status` paths, coexists.
+const PLUGIN_FILE: &str = concat!("plugins/", env!("CARGO_BIN_NAME"), "-status.ts");
+const LEGACY_PLUGIN_FILE: &str = concat!("plugin/", env!("CARGO_BIN_NAME"), "-status.ts");
+const V2_DIR: &str = concat!("plugins/", env!("CARGO_BIN_NAME"), "-status");
 // SHA-256 of shipped sources before installation manifests were introduced.
 const V1_FINGERPRINTS: &[&str] = &[
     "7bf6a3de74f324c33e8879d0a083420d9b691ae0a6be18cbdb1f9cdb63dd65ca", // 0b0c3875
@@ -92,7 +96,7 @@ fn supported_version(version: &str) -> Result<OpenCodeVersion> {
 }
 
 fn v2_dir(config_dir: &Path) -> PathBuf {
-    config_dir.join("plugins/workmux-status")
+    config_dir.join(V2_DIR)
 }
 
 fn v2_files_present(config_dir: &Path) -> bool {
@@ -138,18 +142,12 @@ impl InstallManifest {
 
     fn write(config_dir: &Path, version: OpenCodeVersion) -> Result<()> {
         let files = match version {
-            OpenCodeVersion::V1 => BTreeMap::from([(
-                "plugins/workmux-status.ts".to_string(),
-                fingerprint(PLUGIN_SOURCE),
-            )]),
+            OpenCodeVersion::V1 => {
+                BTreeMap::from([(PLUGIN_FILE.to_string(), fingerprint(PLUGIN_SOURCE))])
+            }
             OpenCodeVersion::V2 => V2_FILES
                 .iter()
-                .map(|(name, source)| {
-                    (
-                        format!("plugins/workmux-status/{name}"),
-                        fingerprint(source),
-                    )
-                })
+                .map(|(name, source)| (format!("{V2_DIR}/{name}"), fingerprint(source)))
                 .collect(),
         };
         let manifest = Self { version: 1, files };
@@ -224,8 +222,8 @@ pub fn detect() -> Option<&'static str> {
 }
 
 fn check_at(config_dir: &Path, version: OpenCodeVersion) -> Result<StatusCheck> {
-    let plugin = config_dir.join("plugins/workmux-status.ts");
-    let legacy = config_dir.join("plugin/workmux-status.ts");
+    let plugin = config_dir.join(PLUGIN_FILE);
+    let legacy = config_dir.join(LEGACY_PLUGIN_FILE);
     match version {
         OpenCodeVersion::V1 => {
             if plugin.exists() {
@@ -307,8 +305,8 @@ pub(crate) fn update_preview() -> Result<Option<UpdatePreview>> {
         return Ok(None);
     };
     let version = installed_version()?;
-    let plugin = config_dir.join("plugins/workmux-status.ts");
-    let legacy = config_dir.join("plugin/workmux-status.ts");
+    let plugin = config_dir.join(PLUGIN_FILE);
+    let legacy = config_dir.join(LEGACY_PLUGIN_FILE);
     if version == OpenCodeVersion::V1 {
         let installed_path = if plugin.exists() { &plugin } else { &legacy };
         let mut installed = read_optional(installed_path)?;
@@ -358,7 +356,7 @@ fn validate_v2_files(config_dir: &Path, manifest: &InstallManifest) -> Result<()
         let path = dir.join(name);
         if path.exists()
             && !manifest.recognizes(
-                &format!("plugins/workmux-status/{name}"),
+                &format!("{V2_DIR}/{name}"),
                 &fs::read_to_string(&path)?,
                 source,
                 &[],
@@ -393,15 +391,12 @@ fn fingerprint(source: &str) -> String {
 
 fn install_at(config_dir: &Path, version: OpenCodeVersion) -> Result<()> {
     let manifest = InstallManifest::read(config_dir)?;
-    let plugin = config_dir.join("plugins/workmux-status.ts");
-    let legacy_plugin = config_dir.join("plugin/workmux-status.ts");
+    let plugin = config_dir.join(PLUGIN_FILE);
+    let legacy_plugin = config_dir.join(LEGACY_PLUGIN_FILE);
     // Mixed/partial installations can contain either version. Validate every
     // file we will replace or remove before the first filesystem mutation.
     validate_v2_files(config_dir, &manifest)?;
-    for (relative, path) in [
-        ("plugins/workmux-status.ts", &plugin),
-        ("plugin/workmux-status.ts", &legacy_plugin),
-    ] {
+    for (relative, path) in [(PLUGIN_FILE, &plugin), (LEGACY_PLUGIN_FILE, &legacy_plugin)] {
         if path.exists()
             && !manifest.recognizes(
                 relative,
@@ -463,7 +458,7 @@ fn install_version(config_dir: &Path, version: OpenCodeVersion) -> Result<String
     install_at(config_dir, version)?;
 
     let path = match version {
-        OpenCodeVersion::V1 => config_dir.join("plugins/workmux-status.ts"),
+        OpenCodeVersion::V1 => config_dir.join(PLUGIN_FILE),
         OpenCodeVersion::V2 => v2_dir(config_dir),
     };
     Ok(format!(
@@ -504,7 +499,7 @@ fn uninstall_at(config_dir: PathBuf) -> Result<String> {
         fs::remove_dir(dir)?;
     }
 
-    let plugin_path = config_dir.join("plugins/workmux-status.ts");
+    let plugin_path = config_dir.join(PLUGIN_FILE);
     if plugin_path.exists() {
         fs::remove_file(&plugin_path)?;
         removed.push(plugin_path.display().to_string());
@@ -517,7 +512,7 @@ fn uninstall_at(config_dir: PathBuf) -> Result<String> {
         }
     }
 
-    let legacy_path = config_dir.join("plugin/workmux-status.ts");
+    let legacy_path = config_dir.join(LEGACY_PLUGIN_FILE);
     if legacy_path.exists() {
         fs::remove_file(&legacy_path)?;
         removed.push(legacy_path.display().to_string());
@@ -550,6 +545,10 @@ fn uninstall_at(config_dir: PathBuf) -> Result<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    const V2_INDEX: &str = concat!("plugins/", env!("CARGO_BIN_NAME"), "-status/index.ts");
+    const V2_TUI: &str = concat!("plugins/", env!("CARGO_BIN_NAME"), "-status/tui.ts");
+    const V2_STATUS: &str = concat!("plugins/", env!("CARGO_BIN_NAME"), "-status/status.ts");
 
     #[test]
     fn config_dir_prefers_non_empty_directory_override() {
@@ -588,16 +587,12 @@ mod tests {
             check_installed_at(tmp.path()).unwrap(),
             StatusCheck::Installed
         ));
-        fs::write(
-            tmp.path().join("plugins/workmux-status.ts"),
-            "// old plugin\n",
-        )
-        .unwrap();
+        fs::write(tmp.path().join(PLUGIN_FILE), "// old plugin\n").unwrap();
         assert!(matches!(
             check_installed_at(tmp.path()).unwrap(),
             StatusCheck::UpdateAvailable
         ));
-        fs::remove_file(tmp.path().join("plugins/workmux-status.ts")).unwrap();
+        fs::remove_file(tmp.path().join(PLUGIN_FILE)).unwrap();
 
         install_at(tmp.path(), OpenCodeVersion::V2).unwrap();
         assert!(matches!(
@@ -609,7 +604,7 @@ mod tests {
             check_installed_at(tmp.path()).unwrap(),
             StatusCheck::UpdateAvailable
         ));
-        fs::write(tmp.path().join("plugins/workmux-status.ts"), PLUGIN_SOURCE).unwrap();
+        fs::write(tmp.path().join(PLUGIN_FILE), PLUGIN_SOURCE).unwrap();
         assert!(matches!(
             check_installed_at(tmp.path()).unwrap(),
             StatusCheck::UpdateAvailable
@@ -658,7 +653,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let plugins = tmp.path().join("plugins");
         fs::create_dir_all(&plugins).unwrap();
-        fs::write(plugins.join("workmux-status.ts"), PLUGIN_SOURCE).unwrap();
+        fs::write(
+            plugins.join(concat!(env!("CARGO_BIN_NAME"), "-status.ts")),
+            PLUGIN_SOURCE,
+        )
+        .unwrap();
         fs::write(plugins.join("custom.ts"), "// keep me").unwrap();
         fs::write(tmp.path().join("package.json"), r#"{"custom": true}"#).unwrap();
 
@@ -675,7 +674,11 @@ mod tests {
                 *source
             );
         }
-        assert!(!plugins.join("workmux-status.ts").exists());
+        assert!(
+            !plugins
+                .join(concat!(env!("CARGO_BIN_NAME"), "-status.ts"))
+                .exists()
+        );
         assert_eq!(
             fs::read_to_string(plugins.join("custom.ts")).unwrap(),
             "// keep me"
@@ -701,7 +704,9 @@ mod tests {
         for directory in ["plugin", "plugins"] {
             fs::create_dir_all(tmp.path().join(directory)).unwrap();
             fs::write(
-                tmp.path().join(directory).join("workmux-status.ts"),
+                tmp.path()
+                    .join(directory)
+                    .join(concat!(env!("CARGO_BIN_NAME"), "-status.ts")),
                 historical,
             )
             .unwrap();
@@ -713,7 +718,7 @@ mod tests {
             assert!(
                 !tmp.path()
                     .join(directory)
-                    .join("workmux-status.ts")
+                    .join(concat!(env!("CARGO_BIN_NAME"), "-status.ts"))
                     .exists()
             );
         }
@@ -734,7 +739,7 @@ mod tests {
 
         install_at(tmp.path(), OpenCodeVersion::V1).unwrap();
         assert_eq!(
-            fs::read_to_string(tmp.path().join("plugins/workmux-status.ts")).unwrap(),
+            fs::read_to_string(tmp.path().join(PLUGIN_FILE)).unwrap(),
             PLUGIN_SOURCE
         );
         assert!(!v2_dir(tmp.path()).exists());
@@ -747,14 +752,14 @@ mod tests {
     #[test]
     fn migrations_accept_previous_manifest_fingerprints_and_replace_the_manifest() {
         for (old_path, version) in [
-            ("plugins/workmux-status.ts", OpenCodeVersion::V2),
-            ("plugins/workmux-status/tui.ts", OpenCodeVersion::V1),
+            (PLUGIN_FILE, OpenCodeVersion::V2),
+            (V2_TUI, OpenCodeVersion::V1),
         ] {
             let tmp = tempfile::tempdir().unwrap();
             let path = tmp.path().join(old_path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, "// previous release\n").unwrap();
-            fs::write(tmp.path().join(".workmux-status.json"), serde_json::to_vec(&json!({
+            fs::write(tmp.path().join(MANIFEST_FILE), serde_json::to_vec(&json!({
                 "version": 1,
                 "files": {old_path: "b2918cff681c7bea49b5ca9ee5c6285c0fb9111df30c0d4202fafc108e3d69bd"}
             })).unwrap()).unwrap();
@@ -762,10 +767,9 @@ mod tests {
             install_at(tmp.path(), version).unwrap();
 
             assert!(!path.exists());
-            let manifest: Value = serde_json::from_str(
-                &fs::read_to_string(tmp.path().join(".workmux-status.json")).unwrap(),
-            )
-            .unwrap();
+            let manifest: Value =
+                serde_json::from_str(&fs::read_to_string(tmp.path().join(MANIFEST_FILE)).unwrap())
+                    .unwrap();
             assert!(manifest["files"].get(old_path).is_none());
             assert_eq!(
                 manifest["files"].as_object().unwrap().len(),
@@ -793,7 +797,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install_at(tmp.path(), OpenCodeVersion::V1).unwrap();
         let manifest = fs::read(tmp.path().join(MANIFEST_FILE)).unwrap();
-        let plugin = tmp.path().join("plugins/workmux-status.ts");
+        let plugin = tmp.path().join(PLUGIN_FILE);
         fs::create_dir_all(plugin.parent().unwrap()).unwrap();
         fs::write(&plugin, "// custom user code").unwrap();
 
@@ -813,7 +817,7 @@ mod tests {
 
         assert!(install_at(tmp.path(), OpenCodeVersion::V1).is_err());
         assert_eq!(fs::read_to_string(custom).unwrap(), "// custom user code");
-        assert!(!tmp.path().join("plugins/workmux-status.ts").exists());
+        assert!(!tmp.path().join(PLUGIN_FILE).exists());
         assert_eq!(fs::read(tmp.path().join(MANIFEST_FILE)).unwrap(), manifest);
         assert_eq!(
             fs::read_to_string(v2_dir(tmp.path()).join("index.ts")).unwrap(),
@@ -829,7 +833,7 @@ mod tests {
 
         assert!(install_at(tmp.path(), OpenCodeVersion::V2).is_err());
         assert_eq!(
-            fs::read_to_string(tmp.path().join("plugins/workmux-status.ts")).unwrap(),
+            fs::read_to_string(tmp.path().join(PLUGIN_FILE)).unwrap(),
             PLUGIN_SOURCE
         );
         assert!(!v2_dir(tmp.path()).exists());
@@ -838,21 +842,9 @@ mod tests {
     #[test]
     fn mixed_installation_preflight_preserves_modified_destination_files() {
         for (version, previous, modified) in [
-            (
-                OpenCodeVersion::V2,
-                OpenCodeVersion::V1,
-                "plugins/workmux-status/tui.ts",
-            ),
-            (
-                OpenCodeVersion::V1,
-                OpenCodeVersion::V2,
-                "plugins/workmux-status.ts",
-            ),
-            (
-                OpenCodeVersion::V1,
-                OpenCodeVersion::V2,
-                "plugin/workmux-status.ts",
-            ),
+            (OpenCodeVersion::V2, OpenCodeVersion::V1, V2_TUI),
+            (OpenCodeVersion::V1, OpenCodeVersion::V2, PLUGIN_FILE),
+            (OpenCodeVersion::V1, OpenCodeVersion::V2, LEGACY_PLUGIN_FILE),
         ] {
             let tmp = tempfile::tempdir().unwrap();
             install_at(tmp.path(), previous).unwrap();
@@ -861,11 +853,11 @@ mod tests {
             fs::write(&custom, "// custom destination code").unwrap();
             let snapshot = || {
                 [
-                    "plugins/workmux-status.ts",
-                    "plugin/workmux-status.ts",
-                    "plugins/workmux-status/index.ts",
-                    "plugins/workmux-status/tui.ts",
-                    "plugins/workmux-status/status.ts",
+                    PLUGIN_FILE,
+                    LEGACY_PLUGIN_FILE,
+                    V2_INDEX,
+                    V2_TUI,
+                    V2_STATUS,
                     MANIFEST_FILE,
                 ]
                 .map(|path| fs::read(tmp.path().join(path)).ok())
@@ -895,13 +887,13 @@ mod tests {
         ));
         install_at(tmp.path(), OpenCodeVersion::V2).unwrap();
         fs::create_dir_all(tmp.path().join("plugin")).unwrap();
-        fs::write(tmp.path().join("plugin/workmux-status.ts"), PLUGIN_SOURCE).unwrap();
+        fs::write(tmp.path().join(LEGACY_PLUGIN_FILE), PLUGIN_SOURCE).unwrap();
         assert!(matches!(
             check_at(tmp.path(), OpenCodeVersion::V2).unwrap(),
             StatusCheck::UpdateAvailable
         ));
         install_at(tmp.path(), OpenCodeVersion::V2).unwrap();
-        assert!(!tmp.path().join("plugin/workmux-status.ts").exists());
+        assert!(!tmp.path().join(LEGACY_PLUGIN_FILE).exists());
     }
 
     #[test]
@@ -910,12 +902,12 @@ mod tests {
         install_at(tmp.path(), OpenCodeVersion::V2).unwrap();
         let custom = v2_dir(tmp.path()).join("custom.ts");
         fs::write(&custom, "// keep me").unwrap();
-        fs::write(tmp.path().join("plugins/workmux-status.ts"), PLUGIN_SOURCE).unwrap();
+        fs::write(tmp.path().join(PLUGIN_FILE), PLUGIN_SOURCE).unwrap();
 
         uninstall_at(tmp.path().to_path_buf()).unwrap();
         assert!(!tmp.path().join(MANIFEST_FILE).exists());
         assert_eq!(fs::read_to_string(custom).unwrap(), "// keep me");
-        assert!(!tmp.path().join("plugins/workmux-status.ts").exists());
+        assert!(!tmp.path().join(PLUGIN_FILE).exists());
         for (name, _) in V2_FILES {
             assert!(!v2_dir(tmp.path()).join(name).exists());
         }
@@ -929,7 +921,7 @@ mod tests {
             StatusCheck::NotInstalled
         ));
 
-        let legacy = tmp.path().join("plugin/workmux-status.ts");
+        let legacy = tmp.path().join(LEGACY_PLUGIN_FILE);
         fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         fs::write(&legacy, PLUGIN_SOURCE).unwrap();
         assert!(matches!(
@@ -937,7 +929,7 @@ mod tests {
             StatusCheck::UpdateAvailable
         ));
 
-        let plugin = tmp.path().join("plugins/workmux-status.ts");
+        let plugin = tmp.path().join(PLUGIN_FILE);
         fs::create_dir_all(plugin.parent().unwrap()).unwrap();
         fs::write(&plugin, "// old plugin").unwrap();
         assert!(matches!(
@@ -963,7 +955,7 @@ mod tests {
         fs::write(tmp.path().join("plugins/custom.ts"), "// custom").unwrap();
         fs::create_dir_all(tmp.path().join("plugin")).unwrap();
         fs::write(
-            tmp.path().join("plugin/workmux-status.ts"),
+            tmp.path().join(LEGACY_PLUGIN_FILE),
             include_str!("../../tests/fixtures/opencode/v1-0b0c3875.ts"),
         )
         .unwrap();
@@ -989,10 +981,10 @@ mod tests {
             "// custom"
         );
         assert_eq!(
-            fs::read_to_string(tmp.path().join("plugins/workmux-status.ts")).unwrap(),
+            fs::read_to_string(tmp.path().join(PLUGIN_FILE)).unwrap(),
             PLUGIN_SOURCE
         );
-        assert!(!tmp.path().join("plugin/workmux-status.ts").exists());
+        assert!(!tmp.path().join(LEGACY_PLUGIN_FILE).exists());
         assert_eq!(
             fs::read_to_string(tmp.path().join("plugin/custom.ts")).unwrap(),
             "// legacy custom"
@@ -1003,10 +995,10 @@ mod tests {
     fn install_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         install_at(tmp.path(), OpenCodeVersion::V1).unwrap();
-        let first_plugin = fs::read(tmp.path().join("plugins/workmux-status.ts")).unwrap();
+        let first_plugin = fs::read(tmp.path().join(PLUGIN_FILE)).unwrap();
         install_at(tmp.path(), OpenCodeVersion::V1).unwrap();
         assert_eq!(
-            fs::read(tmp.path().join("plugins/workmux-status.ts")).unwrap(),
+            fs::read(tmp.path().join(PLUGIN_FILE)).unwrap(),
             first_plugin
         );
         assert!(!tmp.path().join("package.json").exists());
@@ -1027,7 +1019,7 @@ mod tests {
 
         let result = uninstall_at(tmp.path().to_path_buf()).unwrap();
         assert!(result.contains("Removed OpenCode plugin files"));
-        assert!(!tmp.path().join("plugins/workmux-status.ts").exists());
+        assert!(!tmp.path().join(PLUGIN_FILE).exists());
         assert!(!tmp.path().join("package.json").exists());
     }
 
@@ -1036,7 +1028,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let plugin_dir = tmp.path().join("plugins");
         fs::create_dir_all(&plugin_dir).unwrap();
-        fs::write(plugin_dir.join("workmux-status.ts"), "// plugin code").unwrap();
+        fs::write(
+            plugin_dir.join(concat!(env!("CARGO_BIN_NAME"), "-status.ts")),
+            "// plugin code",
+        )
+        .unwrap();
         fs::write(tmp.path().join("package.json"), r#"{"name": "custom"}"#).unwrap();
 
         uninstall_at(tmp.path().to_path_buf()).unwrap();

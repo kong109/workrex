@@ -56,21 +56,33 @@ pub fn overlay_dockerfile(image: &str) -> String {
     format!("FROM {image}\nCOPY {BIN} /usr/local/bin/{BIN}\n")
 }
 
-/// The part of a node pin name after its prefix: release pins are `{BIN}-<version>`,
-/// dev pins and pins from before the rename `workmux-…`.
+/// Default node root on a remote. Upstream's is `~/.workmux-node`; a separate
+/// root keeps each binary's pins, state and gc out of the other's.
+pub const NODE_ROOT: &str = concat!("~/.", env!("CARGO_BIN_NAME"), "-node");
+
+/// Name of the node pin for `version`, a release version or `dev-<hash>`.
+pub fn pin_name(version: &str) -> String {
+    format!("{BIN}-{version}")
+}
+
+/// The part of a node pin name after `{BIN}-`; upstream's `workmux-…` pins are not ours.
 pub fn pin_version(name: &str) -> Option<&str> {
     name.strip_prefix(concat!(env!("CARGO_BIN_NAME"), "-"))
-        .or_else(|| name.strip_prefix("workmux-"))
 }
 
 /// Guest `PATH` entry named [`BIN`]: sandbox images ship upstream's `workmux`, while the
 /// mounted agent hooks call [`BIN`]. It runs a [`BIN`] that install-dev put in the guest,
 /// else the guest's `workmux`, which speaks the same sandbox RPC.
+///
+/// A PATH entry that spells the shim's own directory differently would exec the shim
+/// again. exec keeps the pid, so a shim that finds its own pid in the sentinel was
+/// re-entered and stops searching; processes the binary starts later have other pids.
 const GUEST_SHIM: &str = concat!(
-    "#!/bin/sh\nself=$(dirname \"$0\")\nIFS=:\nfor dir in $PATH; do\n",
+    "#!/bin/sh\nself=$(dirname \"$0\")\nset -f\nIFS=:\n",
+    "[ \"$WORKREX_SHIM_PID\" = $$ ] || for dir in $PATH; do\n",
     "  [ \"$dir\" != \"$self\" ] && [ -x \"$dir/",
     env!("CARGO_BIN_NAME"),
-    "\" ] && exec \"$dir/",
+    "\" ] && WORKREX_SHIM_PID=$$ && export WORKREX_SHIM_PID && exec \"$dir/",
     env!("CARGO_BIN_NAME"),
     "\" \"$@\"\ndone\nexec workmux \"$@\"\n"
 );
@@ -78,9 +90,6 @@ const GUEST_SHIM: &str = concat!(
 /// Write the [`GUEST_SHIM`] into a sandbox shim directory.
 pub fn write_guest_shim(shim_bin: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    if BIN == "workmux" {
-        return Ok(());
-    }
     let path = shim_bin.join(BIN);
     crate::util::write_atomic(&path, GUEST_SHIM.as_bytes())?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
@@ -157,15 +166,8 @@ const fn joins(b: u8) -> bool {
 /// such as `workmux-status`, `.workmux.yaml`, `raine/workmux` or `workmux.dev`.
 const fn is_command_at(src: &[u8], i: usize) -> bool {
     let end = i + UPSTREAM.len();
-    if end > src.len() {
+    if !matches_at(src, i, UPSTREAM) {
         return false;
-    }
-    let mut k = 0;
-    while k < UPSTREAM.len() {
-        if src[i + k] != UPSTREAM[k] {
-            return false;
-        }
-        k += 1;
     }
     if i > 0 && joins(src[i - 1]) {
         // `/workmux` after a space or quote names the skill as a slash command.
@@ -179,9 +181,24 @@ const fn is_command_at(src: &[u8], i: usize) -> bool {
         // A sentence may end on the name; a dotted name may not.
         let sentence_end =
             src[end] == b'.' && (end + 1 == src.len() || !src[end + 1].is_ascii_alphanumeric());
-        if !sentence_end {
+        // The OpenCode plugin ids `workmux.status…` would collide with upstream's plugin.
+        if !sentence_end && !matches_at(src, end, b".status") {
             return false;
         }
+    }
+    true
+}
+
+const fn matches_at(src: &[u8], i: usize, pat: &[u8]) -> bool {
+    if i + pat.len() > src.len() {
+        return false;
+    }
+    let mut k = 0;
+    while k < pat.len() {
+        if src[i + k] != pat[k] {
+            return false;
+        }
+        k += 1;
     }
     true
 }
@@ -239,9 +256,6 @@ const UPSTREAM_CALLS: &[&str] = &[
 /// workrex installs its own hooks beside them and never edits or removes them.
 pub fn upstream_hook_files(agent: Agent) -> Vec<PathBuf> {
     use crate::agent_setup::*;
-    if BIN == "workmux" {
-        return Vec::new();
-    }
     let ext = |dir: Option<PathBuf>| dir.and_then(|p| Some(p.parent()?.join("workmux-status.ts")));
     let candidates: Vec<Option<PathBuf>> = match agent {
         Agent::Claude => vec![claude::settings_path()],
@@ -288,17 +302,6 @@ pub fn warn_upstream_hooks(agents: impl IntoIterator<Item = Agent>) {
     }
 }
 
-/// Run `op` on the OpenCode plugin unless upstream's plugin holds the path both use.
-pub fn unless_upstream_opencode(op: fn() -> Result<String>) -> Result<String> {
-    match upstream_hook_files(Agent::OpenCode).first() {
-        Some(path) => Ok(format!(
-            "Left upstream workmux's OpenCode plugin at {} in place",
-            path.display()
-        )),
-        None => op(),
-    }
-}
-
 /// [`rebrand!`](crate::rebrand) applied to `include_str!($path)`, resolved from the calling file.
 #[macro_export]
 macro_rules! rebrand_include {
@@ -332,7 +335,7 @@ mod tests {
             "workmux add x; $`workmux set-window-status`; spawn(\"workmux\", a); use workmux.\n\
              \"/workmux add\" \
              .workmux.yaml workmux-status@workmux raine/workmux workmux.dev ~/.config/workmux/ \
-             WORKMUX_X workmux_pipe workmux:"
+             WORKMUX_X workmux_pipe workmux: 'workmux.status.server'"
         );
         assert_eq!(
             src,
@@ -340,7 +343,7 @@ mod tests {
                 "{BIN} add x; $`{BIN} set-window-status`; spawn(\"{BIN}\", a); use {BIN}.\n\
                  \"/{BIN} add\" \
                  .workmux.yaml workmux-status@workmux raine/workmux workmux.dev ~/.config/workmux/ \
-                 WORKMUX_X workmux_pipe workmux:"
+                 WORKMUX_X workmux_pipe workmux: '{BIN}.status.server'"
             )
         );
     }
@@ -448,6 +451,53 @@ mod tests {
             hook(format!("{path}:{}", dev.display())),
             format!("{BIN} set-window-status done\n")
         );
+    }
+
+    #[test]
+    fn guest_shim_reached_again_by_another_spelling_falls_back_instead_of_looping() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+        let tmp = tempfile::tempdir().unwrap();
+        let shims = crate::sandbox::shims::create_shim_directory(tmp.path(), &[]).unwrap();
+        let image = tmp.path().join("image");
+        std::fs::create_dir_all(&image).unwrap();
+        std::fs::write(image.join("workmux"), "#!/bin/sh\necho workmux \"$@\"\n").unwrap();
+        std::fs::set_permissions(image.join("workmux"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&shims, &alias).unwrap();
+        let shells = ["/bin/sh", "/bin/dash", "/bin/busybox"];
+        for shell in shells.iter().filter(|shell| Path::new(shell).exists()) {
+            for entries in [
+                format!("{}/", shims.display()),
+                format!("{}:{}", shims.display(), alias.display()),
+            ] {
+                let mut cmd = std::process::Command::new(shell);
+                if shell.ends_with("busybox") {
+                    cmd.arg("sh");
+                }
+                let mut child = cmd
+                    .args(["-c", &format!("{BIN} set-window-status done")])
+                    .env("PATH", format!("{entries}:{}:/usr/bin:/bin", image.display()))
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while child.try_wait().unwrap().is_none() {
+                    if Instant::now() > deadline {
+                        child.kill().unwrap();
+                        panic!("{shell}: the shim looped with PATH entries {entries}");
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let out = child.wait_with_output().unwrap();
+                assert_eq!(
+                    String::from_utf8(out.stdout).unwrap(),
+                    "workmux set-window-status done\n",
+                    "{shell} {entries}"
+                );
+            }
+        }
     }
 
     #[test]

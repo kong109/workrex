@@ -38,7 +38,7 @@ use crate::config::{Config, RemoteIsolation};
 use crate::shell::shell_quote;
 
 /// Default node root on the remote.
-pub const DEFAULT_NODE_PATH: &str = "~/.workmux-node";
+pub const DEFAULT_NODE_PATH: &str = crate::bin_name::NODE_ROOT;
 
 /// A validated `remotes.<name>` entry.
 #[derive(Debug, Clone)]

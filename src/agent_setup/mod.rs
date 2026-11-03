@@ -385,7 +385,7 @@ pub fn install(agent: Agent) -> Result<String> {
         Agent::Copilot => copilot::install(),
         Agent::Gemini => gemini::install(),
         Agent::Grok => grok::install(),
-        Agent::OpenCode => crate::bin_name::unless_upstream_opencode(opencode::install),
+        Agent::OpenCode => opencode::install(),
         Agent::Pi => pi::install(),
         Agent::Omp => omp::install(),
     }
@@ -431,7 +431,7 @@ pub fn uninstall_one(agent: Agent) -> Result<String> {
         Agent::Copilot => copilot::uninstall(),
         Agent::Gemini => gemini::uninstall(),
         Agent::Grok => grok::uninstall(),
-        Agent::OpenCode => crate::bin_name::unless_upstream_opencode(opencode::uninstall),
+        Agent::OpenCode => opencode::uninstall(),
         Agent::Pi => pi::uninstall(),
         Agent::Omp => omp::uninstall(),
     }

@@ -14,6 +14,11 @@ through the binary name: the CLI name, `workrex update` (from
 binaries, the status hook commands that `workrex setup` writes, and the bundled
 skills.
 
+Files both binaries would otherwise write get workrex's own name, so neither
+install touches the other's: the default remote node root `~/.workrex-node` and
+its `workrex-*` pins, the OpenCode plugin `workrex-status`, and the agent hook
+files named `workrex-status`.
+
 These names stay the same as upstream, so the fork rebases cleanly and reads
 existing workmux configuration:
 
