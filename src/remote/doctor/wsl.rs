@@ -45,14 +45,21 @@ impl Destination {
         let mut cmd = Command::new("ssh-keyscan");
         cmd.args(["-T", "5", "-p", &self.port, &self.hostname]);
         let output = run_bounded(cmd, Stdio::null(), Some(KEYSCAN_TIMEOUT)).ok()??;
-        String::from_utf8_lossy(&output.stderr)
-            .lines()
-            .find_map(|line| {
-                line.split_whitespace()
-                    .find(|word| word.starts_with("SSH-"))
-            })
-            .map(str::to_string)
+        // ssh-keyscan prints the `# host:port SSH-...` comment on stdout in
+        // newer OpenSSH and on stderr in older releases.
+        [&output.stdout, &output.stderr]
+            .into_iter()
+            .find_map(|stream| banner_in(&String::from_utf8_lossy(stream)))
     }
+}
+
+fn banner_in(keyscan: &str) -> Option<String> {
+    keyscan.lines().find_map(|line| {
+        line.strip_prefix('#')?
+            .split_whitespace()
+            .find(|word| word.starts_with("SSH-"))
+            .map(str::to_string)
+    })
 }
 
 impl fmt::Display for Destination {
@@ -197,6 +204,17 @@ mod tests {
                  remotes.winbox.host at an ~/.ssh/config alias with WSL's port (Port 2222)"
             )
         );
+    }
+
+    #[test]
+    fn banner_comes_from_the_keyscan_comment() {
+        let keyscan = "# winbox:22 SSH-2.0-OpenSSH_for_Windows_9.5\n\
+                       winbox ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA\n";
+        assert_eq!(
+            banner_in(keyscan).as_deref(),
+            Some("SSH-2.0-OpenSSH_for_Windows_9.5")
+        );
+        assert_eq!(banner_in("winbox ssh-rsa SSH-not-a-banner\n"), None);
     }
 
     #[test]
