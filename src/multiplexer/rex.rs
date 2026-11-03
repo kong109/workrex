@@ -2348,7 +2348,7 @@ mod tests {
     /// process wrote can fail to start with ETXTBSY: a test on another thread
     /// that forks while the file is open for writing keeps a writable copy
     /// of its descriptor until that child execs.
-    pub(super) fn write_script(path: &Path, content: String) -> std::io::Result<()> {
+    fn write_script(path: &Path, content: String) -> std::io::Result<()> {
         let mut child = Command::new("/bin/sh")
             .args(["-c", "cat > \"$0\""])
             .arg(path)
