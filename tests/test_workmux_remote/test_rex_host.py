@@ -5,6 +5,7 @@ sessions. Runs with WORKREX_TEST_NODE_TERMINAL=rex on the Rex backend,
 whose isolated server stands in for the node's."""
 
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -14,10 +15,12 @@ from ..conftest import get_window_name, poll_until
 from ..rex_env import RexEnvironment
 from ..support.bin_name import hook_bin
 from .conftest import (
+    LOOPBACK,
     NODE_TERMINAL,
     Node,
     commit_project,
     local_records,
+    observation_path,
     wm,
     write_script,
 )
@@ -34,6 +37,27 @@ def rex_hosted():
 def rex_of(node: Node) -> RexEnvironment:
     assert node.rex is not None
     return node.rex
+
+
+def observed_since(env, since: float) -> bool:
+    """Whether a connected observation arrived after `since`."""
+    path = observation_path(env)
+    if not path.exists():
+        return False
+    observed = json.loads(path.read_text())
+    return observed["connected"] and observed["last_seen"] > since
+
+
+def start_workmux(env, exe: Path, repo: Path, *args: str) -> "subprocess.Popen[str]":
+    """Run workmux in the background."""
+    return subprocess.Popen(
+        [str(exe), *args],
+        cwd=repo,
+        env={**env.env, **LOOPBACK},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
 
 
 def blocks(node: Node, session: str) -> list:
@@ -216,3 +240,43 @@ def test_a_renamed_hosted_session_is_still_found_by_id(
     assert "Removed remote workspace 'feat'" in removed.stdout, removed.stderr
     live = [s["session_id"] for s in rex_of(node).api("session.list")["sessions"]]
     assert session not in live, live
+
+
+def test_open_restarts_an_agent_whose_session_closed_since_the_observation(
+    mux_server, workmux_exe_path: Path, mux_repo_path: Path, node: Node, tmp_path: Path
+):
+    """Closing the agent's session in Rex.app leaves the last observation
+    calling it alive for up to 15 s. `open` checks the session first, so it
+    restarts the agent at once instead of showing a session that is gone."""
+    env, exe, repo = mux_server, workmux_exe_path, mux_repo_path
+    claude = write_script(
+        tmp_path / "claude", "echo AGENT-UP\nwhile read -r line; do :; done\n"
+    )
+    commit_project(
+        repo,
+        {"nerdfont": False, "agent": str(claude), "panes": [{"command": "<agent>"}]},
+    )
+    added = wm(env, exe, repo, "add feat --remote lo")
+    assert "Successfully created remote workspace" in added.stdout, added.stderr
+    node.wait_for_agent(env, "feat", "AGENT-UP")
+    [record] = local_records(env)
+    [session] = record["execution"]["rex"]["sessions"].values()
+
+    since = time.time()
+    observer = start_workmux(env, exe, repo, "wait", "feat", "--timeout", "60")
+    try:
+        assert poll_until(lambda: observed_since(env, since), timeout=20)
+    finally:
+        observer.kill()
+        observer.wait()
+    rex_of(node).api("session.destroy", {"session_id": session})
+
+    opened = wm(env, exe, repo, "open feat")
+    assert "Started remote workspace 'feat'" in opened.stdout, (
+        opened.stdout + opened.stderr
+    )
+    [record] = local_records(env)
+    [restarted] = record["execution"]["rex"]["sessions"].values()
+    assert restarted != session
+    node.wait_for_agent(env, "feat", "AGENT-UP")
+    wm(env, exe, repo, "remove --force feat")

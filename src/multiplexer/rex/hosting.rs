@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use super::super::{LivePaneInfo, Multiplexer};
 use super::{
     CallError, ClientList, CreatedWindow, ProcessReport, RexBackend, SessionId, SessionView,
-    WindowView, pane_info, shell_block,
+    WindowView, found, pane_info, shell_block,
 };
 
 /// Reads the env file in `$1`, removes it, replaces the environment the
@@ -299,6 +299,11 @@ impl RexBackend {
             reads.insert(id.to_string(), read);
         }
         Ok(reads)
+    }
+
+    /// Whether the server has session `id`.
+    pub fn has_session(&self, id: &str) -> Result<bool> {
+        Ok(found(self.view(&SessionId(id.to_string())))?.is_some())
     }
 
     /// Have the next `respawn_pane` source `env_file` before its command, so

@@ -902,6 +902,7 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
     // A replaced Rex server ends no execution, but leaves its panes dead.
     if on_rex(&record)
         && observed.is_some_and(|ws| ws.ended.is_none() && ws.panes.iter().any(|pane| pane.alive))
+        && !super::rex_jump::session_gone(&record)
     {
         return show_on_rex(&record, focus);
     }
