@@ -3228,6 +3228,27 @@ mod tests {
         assert!(!fake.rex.validate_agent_alive(&agent_in_view(4242)).unwrap());
     }
 
+    /// Only not_found reads as a gone pane. Any other failed call must reach
+    /// reconcile as an error, or it would prune a live agent.
+    #[test]
+    fn a_second_look_that_fails_is_an_error_not_a_dead_pane() {
+        let fake = FakeRex::new(&[
+            (
+                "session.list",
+                &session_list(&[("session:01a19e60-6410-7e09-a3ee-f675512a3a06", "fixture")]),
+            ),
+            ("session.view", VIEW),
+            ("target.resolve", RESOLVE),
+            (" process ", "!Error: connection reset by peer"),
+            (" title ", r#"{"title":""}"#),
+        ]);
+        assert!(
+            fake.rex
+                .validate_agent_alive(&agent_in_view(85152))
+                .is_err()
+        );
+    }
+
     /// An agent recorded in VIEW's block, which PROCESS shows running
     /// `sleep` under pid 85152.
     fn agent_in_view(pane_pid: u32) -> crate::state::AgentState {
