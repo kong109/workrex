@@ -323,12 +323,16 @@ struct ClientEntry {
 }
 
 impl ClientList {
-    fn is_app_attached_to(&self, client: &ClientId, session: &SessionId) -> bool {
-        self.clients.iter().any(|entry| {
-            &entry.client_id == client
-                && entry.connection_state != "lost"
+    fn connected_apps(&self) -> impl Iterator<Item = &ClientEntry> {
+        self.clients.iter().filter(|entry| {
+            entry.connection_state != "lost"
                 && entry.info.as_ref().is_some_and(|info| info.kind == "app")
-                && entry.session_ids.iter().flatten().any(|id| id == session)
+        })
+    }
+
+    fn is_app_attached_to(&self, client: &ClientId, session: &SessionId) -> bool {
+        self.connected_apps().any(|entry| {
+            &entry.client_id == client && entry.session_ids.iter().flatten().any(|id| id == session)
         })
     }
 }
@@ -347,6 +351,8 @@ fn shows_caller(clients: &ClientList, owner: &ClientId, caller_session: &Session
 struct ClientInfo {
     #[serde(default)]
     kind: String,
+    #[serde(default)]
+    label: Option<String>,
 }
 
 /// Workmux's identity for a window it created. Rex windows carry only a

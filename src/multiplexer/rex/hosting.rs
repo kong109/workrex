@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::super::{LivePaneInfo, Multiplexer};
-use super::{CreatedWindow, RexBackend, SessionId, found, parallel_map, shell_block};
+use super::{ClientList, CreatedWindow, RexBackend, SessionId, found, parallel_map, shell_block};
 
 /// Reads the env file in `$1`, removes it, replaces the environment the
 /// block inherited from the Rex server with it and runs the script in `$2`.
@@ -69,39 +69,14 @@ struct CreatedSession {
     initial_windows: Vec<CreatedWindow>,
 }
 
-#[derive(Debug, Deserialize)]
-struct AppClients {
-    #[serde(default)]
-    clients: Vec<AppClient>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AppClient {
-    client_id: String,
-    #[serde(default)]
-    connection_state: String,
-    #[serde(default)]
-    info: Option<AppInfo>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AppInfo {
-    #[serde(default)]
-    kind: String,
-    #[serde(default)]
-    label: Option<String>,
-}
-
 /// The connected app client a jump switches: the one labeled `wanted`, else
 /// the only one.
-fn pick_app(clients: &AppClients, wanted: Option<&str>, server: &str) -> Result<String> {
+fn pick_app(clients: &ClientList, wanted: Option<&str>, server: &str) -> Result<String> {
     let apps: Vec<(&str, Option<&str>)> = clients
-        .clients
-        .iter()
-        .filter(|client| client.connection_state != "lost")
-        .filter_map(|client| {
-            let info = client.info.as_ref().filter(|info| info.kind == "app")?;
-            Some((client.client_id.as_str(), info.label.as_deref()))
+        .connected_apps()
+        .map(|client| {
+            let label = client.info.as_ref().and_then(|info| info.label.as_deref());
+            (client.client_id.as_str(), label)
         })
         .collect();
     if let Some(wanted) = wanted {
@@ -232,7 +207,7 @@ impl RexBackend {
     /// `client`, else the only app connected.
     pub fn select_on_app(&self, client: Option<&str>, id: &str) -> Result<()> {
         let server = self.server.as_deref().unwrap_or("the local Rex server");
-        let clients: AppClients = self.api("client.list", json!({}))?;
+        let clients: ClientList = self.api("client.list", json!({}))?;
         let app = pick_app(&clients, client, server)?;
         let session = format!("session_id={id}");
         self.exec_within(
@@ -272,7 +247,7 @@ mod tests {
 
     const STATUS: &str = include_str!("../testdata/rex_server_status_tailnet.json");
 
-    fn clients(entries: &[(&str, &str, Option<&str>, &str)]) -> AppClients {
+    fn clients(entries: &[(&str, &str, Option<&str>, &str)]) -> ClientList {
         let clients: Vec<Value> = entries
             .iter()
             .map(|(id, kind, label, state)| {
