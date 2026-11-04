@@ -1,131 +1,108 @@
 ---
 title: "Quick start"
-description: Get started with workmux in minutes
+description: Run your first agent in its own worktree and Rex session, then merge its work
 ---
 
-:::note[Prerequisites]
-workmux requires a terminal multiplexer. Make sure you have [tmux](https://github.com/tmux/tmux) (or [WezTerm](/guide/wezterm/) / [Kitty](/guide/kitty/) / [Zellij](/guide/zellij/)) installed and running before you start. See [My tmux setup](https://raine.dev/blog/my-tmux-setup/) if you need a starting point.
-:::
+In this tutorial, we start an agent on a task in its own worktree and Rex
+session, check on it from the dashboard, and merge its branch back.
 
-## 1. Install
+Before you start, you need:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/raine/workmux/main/scripts/install.sh | bash
-```
+- workrex on your `PATH`. See [Installation](/guide/installation/).
+- Rex running, with a pane open in a git repository.
+- An agent CLI, such as [Claude Code](https://www.anthropic.com/claude-code).
 
-See [Installation](/guide/installation/) for other methods (Homebrew, Cargo, Nix).
+workrex also runs in tmux, [WezTerm](/guide/wezterm/), [kitty](/guide/kitty/),
+and [Zellij](/guide/zellij/). The steps are the same, but each task gets a
+window or tab instead of a Rex session.
 
-## 2. Initialize configuration (optional)
+## 1. Create the project configuration
 
-```bash
-workmux init
-```
-
-This creates a `.workmux.yaml` file to customize your workflow (pane layouts, setup commands, file operations, etc.). workmux works out of the box with sensible defaults, so this step is optional.
-
-## 3. Create a new worktree and tmux window
+In the repository's root, run:
 
 ```bash
-workmux add new-feature
+workrex init
 ```
 
-This will:
+workrex writes a commented `.workmux.yaml`. The project file keeps the workmux
+name, as do all workrex [configuration](/guide/configuration/) files, so
+existing workmux configs work.
 
-- Create a git worktree at `<project_root>/../<project_name>__worktrees/new-feature`
-- Copy config files and symlink dependencies (if [configured](/guide/configuration/#file-operations))
-- Run any [`post_create`](/guide/configuration/#lifecycle-hooks) setup commands
-- Create a tmux window named `wm-new-feature` (the prefix is configurable)
-- Set up your configured or the default tmux pane layout
-- Automatically switch your tmux client to the new window
+## 2. Choose the agent
 
-:::tip
-**Highly recommended workflow**: If you're already in an agent session, use the [`/worktree` skill](/guide/skills/#worktree) instead of writing `workmux add` commands yourself:
+workrex starts an agent only when the project has a `CLAUDE.md` or the
+configuration names an agent. Open `.workmux.yaml` and uncomment this line:
 
-```text
-> /worktree Add pagination to the users endpoint
-> /worktree Fix it <referring to some agent's question>
+```yaml
+agent: claude
 ```
 
-The agent writes detailed prompts based on the current context and launches each task in its own worktree.
-:::
+New worktrees now open with the agent in one pane and a shell in the other.
 
-## 4. Do your thing
+## 3. Start a task
 
-Work on your feature, fix a bug, or let an AI agent handle it.
+Create a worktree for the task, and give the agent its prompt:
 
-## 5. Finish and clean up
+```bash
+workrex add user-auth -p "Add password reset to the login page"
+```
 
-**Local merge:** Run `workmux merge` to merge into the base branch and clean up in one step.
+workrex creates the `user-auth` branch and its worktree, opens a Rex session
+for it, and starts the agent with your prompt. You should see output like this:
 
-**PR workflow:** Use [`/open-pr`](/guide/skills/#open-pr) to push and open a PR. After it's merged, run `workmux remove` to clean up.
+```
+✓ Successfully created worktree and tmux session for 'user-auth'
+  Base: main
+  Worktree: /Users/you/projects/my-project__worktrees/user-auth
+Rex.app stays put: to see user-auth, press Enter on its row in workrex dashboard.
+```
 
-See [Workflows](/guide/workflows/) for more patterns including delegating tasks from agent sessions.
-
-## Directory structure
-
-Here's how workmux organizes your worktrees by default:
+The worktree is a sibling of your project directory:
 
 ```
 ~/projects/
-├── my-project/               <-- Main project directory
-│   ├── src/
-│   ├── package.json
+├── my-project/                 your main checkout
 │   └── .workmux.yaml
-│
-└── my-project__worktrees/    <-- Worktrees created by workmux
-    ├── feature-A/            <-- Isolated workspace for 'feature-A' branch
-    │   ├── src/
-    │   └── package.json
-    │
-    └── bugfix-B/             <-- Isolated workspace for 'bugfix-B' branch
-        ├── src/
-        └── package.json
+└── my-project__worktrees/
+    └── user-auth/              the agent's checkout, on branch user-auth
 ```
 
-Each worktree is a separate working directory for a different branch, all sharing the same git repository. This allows you to work on multiple branches simultaneously without conflicts.
+To put worktrees somewhere else, set
+[`worktree_dir`](/guide/configuration/).
 
-You can customize the worktree directory location using the `worktree_dir` configuration option (see [Configuration](/guide/configuration/)).
+## 4. Check on the agent
 
-## Workflow example
-
-Here's a complete workflow:
+Open the dashboard:
 
 ```bash
-# Start a new feature
-workmux add user-auth
-
-# Work on your feature...
-# (workmux automatically sets up your configured panes and environment)
-
-# When ready, merge and clean up
-workmux merge user-auth
-
-# Start another feature
-workmux add api-endpoint
-
-# List all active worktrees
-workmux list
+workrex dashboard
 ```
 
-## The parallel AI workflow
+The dashboard lists each agent with its status. Select `user-auth` and press
+`Enter`. Rex.app switches to the task's session. To open the dashboard with a
+key, see [Dashboard](/guide/rex/#dashboard) in the Rex guide.
 
-Run multiple AI agents simultaneously, each in its own worktree. No conflicts, no branch switching, no stashing.
+## 5. Merge the work
+
+When the agent is done, run:
 
 ```bash
-# Spin up two agents working on different tasks
-workmux add refactor-user-model -p "Refactor the User model to use composition"
-workmux add add-search-endpoint -p "Add a /search endpoint with pagination"
-
-# Each agent works in isolation. Check progress via tmux windows or the dashboard
-workmux dashboard
-
-# Merge completed work back to main
-workmux merge refactor-user-model
-workmux merge add-search-endpoint
+workrex merge user-auth
 ```
 
-:::tip
-Use `-A` (`--auto-name`) to [generate branch names automatically](/reference/commands/add/#automatic-branch-name-generation) from your prompt, so you don't have to think of one.
-:::
+workrex merges `user-auth` into `main`, then removes the worktree, the Rex
+session, and the branch. `workrex list` now shows only `main`.
 
-See [AI Agents](/guide/agents/) for details on prompts, multi-agent generation, and agent status tracking.
+If you open a pull request instead, run `workrex remove user-auth` after it
+merges.
+
+## Next steps
+
+- Run several tasks at once. Each `workrex add` gets its own worktree and
+  session.
+- Let an agent start tasks for you with the
+  [`/worktree` skill](/guide/skills/#worktree).
+- Set up panes, file copies, and setup commands in
+  [Configuration](/guide/configuration/).
+- See [Workflows](/guide/workflows/) and [AI agents](/guide/agents/) for
+  longer patterns.

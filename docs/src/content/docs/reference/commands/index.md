@@ -1,33 +1,74 @@
 ---
 title: "CLI reference"
-description: Complete reference for all workmux commands
+description: Every workrex command, grouped as in workrex --help
 ---
 
-## Commands overview
+This page lists the commands in `workrex --help`, in the same groups. For a
+command's full options, run `workrex <command> --help`. "Window" means a tmux
+window, a WezTerm, kitty, or Zellij tab, or a Rex window. In session mode, which
+is the default under Rex, each worktree gets a session instead.
 
-| Command                                           | Description                                         |
-| ------------------------------------------------- | --------------------------------------------------- |
-| [`add`](/reference/commands/add/)                 | Create a new worktree and tmux window               |
-| [`merge`](/reference/commands/merge/)             | Merge a branch and clean up everything              |
-| [`rebase`](/reference/commands/rebase/)           | Rebase a worktree branch onto its base branch       |
-| [`remove`](/reference/commands/remove/)           | Remove worktrees without merging                    |
-| [`rename`](/reference/commands/rename/)           | Rename a worktree, its tmux window, and branch      |
-| [`list`](/reference/commands/list/)               | List all worktrees with status                      |
-| [`status`](/reference/commands/status/)           | Query tracked agent status                          |
-| [`open`](/reference/commands/open/)               | Open a tmux window for an existing worktree         |
-| [`close`](/reference/commands/close/)             | Close a worktree's tmux window (keeps worktree)     |
-| [`resurrect`](/reference/commands/resurrect/)     | Restore worktree windows after a crash              |
-| [`sync-files`](/reference/commands/sync-files/)   | Re-apply file operations to existing worktrees      |
-| [`path`](/reference/commands/path/)               | Get the filesystem path of a worktree               |
-| [`shell`](/reference/commands/shell/)             | Open a shell in a remote workspace                  |
-| [`dashboard`](/reference/commands/dashboard/)     | TUI dashboard for monitoring agents                 |
-| [`sidebar`](/reference/commands/sidebar/)         | Live agent status sidebar in tmux                   |
-| [`reap-agents`](/reference/commands/reap-agents/) | Exit tracked agent processes older than a threshold |
-| [`config edit`](/reference/commands/config/)      | Edit the global configuration file                  |
-| [`init`](/reference/commands/init/)               | Generate configuration file                         |
-| [`claude prune`](/reference/commands/claude/)     | Clean up stale Claude Code entries                  |
-| [`remote`](/reference/commands/remote/)           | Set up and manage remote hosts that run agents      |
-| [`completions`](/reference/commands/completions/) | Generate shell completions                          |
-| [`docs`](/reference/commands/docs/)               | Show detailed documentation                         |
-| [`update`](/reference/commands/update/)           | Update workmux to the latest version                |
-| [`last-done`](/reference/commands/last-done/)     | Switch to the most recently completed agent         |
+## Worktree lifecycle
+
+| Command                                       | Description                                                   |
+| --------------------------------------------- | ------------------------------------------------------------- |
+| [`add`](/reference/commands/add/)             | Create a worktree and its window                              |
+| [`remove`](/reference/commands/remove/)       | Remove a worktree, its window, and its branch without merging |
+| [`rename`](/reference/commands/rename/)       | Rename a worktree, its window or session, and its branch      |
+| [`merge`](/reference/commands/merge/)         | Merge a branch, then remove its worktree and window           |
+| [`rebase`](/reference/commands/rebase/)       | Rebase a worktree branch onto its base branch                 |
+| [`open`](/reference/commands/open/)           | Open a window for an existing worktree                        |
+| [`close`](/reference/commands/close/)         | Close a worktree's window and keep the worktree and branch    |
+| [`resurrect`](/reference/commands/resurrect/) | Restore worktree windows after a crash                        |
+
+## Monitoring
+
+| Command                                       | Description                                   |
+| --------------------------------------------- | --------------------------------------------- |
+| [`dashboard`](/reference/commands/dashboard/) | Show a TUI dashboard of every active agent    |
+| [`sidebar`](/reference/commands/sidebar/)     | Control the live agent status sidebar in tmux |
+| [`list`](/reference/commands/list/)           | List all worktrees                            |
+| [`path`](/reference/commands/path/)           | Print the filesystem path of a worktree       |
+| [`status`](/reference/commands/status/)       | Query agent status for worktrees              |
+
+## Setup and configuration
+
+| Command                                           | Description                                            |
+| ------------------------------------------------- | ------------------------------------------------------ |
+| [`init`](/reference/commands/init/)               | Write an example `.workmux.yaml`                       |
+| [`setup`](/reference/commands/setup/)             | Set up agent status tracking hooks and install skills  |
+| [`config`](/reference/commands/config/)           | Edit, locate, or print the global configuration        |
+| [`sandbox`](/reference/commands/sandbox/)         | Manage sandbox settings                                |
+| [`remote`](/reference/commands/remote/)           | Manage SSH remotes that run agents                     |
+| [`sync-files`](/reference/commands/sync-files/)   | Copy and symlink configured files into worktrees again |
+| [`claude`](/reference/commands/claude/)           | Claude Code commands, such as `claude prune`           |
+| [`reap-agents`](/reference/commands/reap-agents/) | Exit tracked agent processes older than a set age      |
+
+## Agent interaction
+
+| Command                                   | Description                                     |
+| ----------------------------------------- | ----------------------------------------------- |
+| [`send`](/reference/commands/send/)       | Send a prompt or instruction to a running agent |
+| [`capture`](/reference/commands/capture/) | Capture terminal output from a running agent    |
+| [`wait`](/reference/commands/wait/)       | Wait for agents to reach a target status        |
+| [`run`](/reference/commands/run/)         | Run a command in a worktree's window            |
+
+## Help and updates
+
+| Command                                           | Description                                     |
+| ------------------------------------------------- | ----------------------------------------------- |
+| [`docs`](/reference/commands/docs/)               | Show the README in the terminal                 |
+| [`changelog`](/reference/commands/changelog/)     | Show the changelog (what's new in each version) |
+| [`update`](/reference/commands/update/)           | Update workrex to the latest release            |
+| [`completions`](/reference/commands/completions/) | Print shell completions                         |
+
+## Commands not shown in --help
+
+`workrex --help` does not list these commands.
+
+| Command                                         | Description                                                        |
+| ----------------------------------------------- | ------------------------------------------------------------------ |
+| [`last-done`](/reference/commands/last-done/)   | Switch to the agent that finished or asked for input most recently |
+| [`last-agent`](/reference/commands/last-agent/) | Switch to the last visited agent (toggle between two)              |
+| [`shell`](/reference/commands/shell/)           | Open a shell in a remote workspace                                 |
+| `uninstall`                                     | Remove status hooks, skills, and workrex's state and update cache  |
