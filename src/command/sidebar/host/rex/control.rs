@@ -1113,9 +1113,12 @@ mod tests {
             work: Work::default(),
         };
 
-        follower.handle(vec![Event::SessionCreated {
-            session_id: SESSION.into(),
-        }]);
+        assert!(
+            follower.handle(vec![Event::SessionCreated {
+                session_id: SESSION.into(),
+            }]),
+            "a new session wakes the daemon, so every sidebar lists it"
+        );
         let records = follower.plane.files.records();
         assert_eq!(
             records.get(WINDOW).map(|record| record.block_id.as_str()),
@@ -1123,5 +1126,83 @@ mod tests {
             "{records:?}"
         );
         assert!(follower.work.created.is_empty());
+    }
+
+    const NEW_VIEW: &str =
+        include_str!("../../../../multiplexer/testdata/rex_sidebar_view_before.json");
+    const NEW_SESSION: &str = "session:01a19e92-e5aa-7c77-a9b2-9042bbdbf620";
+    const NEW_WINDOW: &str = "window:01a19e92-e5ba-7c40-bd4e-37d60b3ba9bb";
+
+    /// A follower over a scripted rex that shows `view` and gives each
+    /// sidebar split its own block, with a global sidebar on.
+    fn follower_showing(dir: &std::path::Path, view: &str) -> Follower {
+        let path = dir.join("view");
+        std::fs::write(&path, view).unwrap();
+        let rex = RexBackend::scripted(
+            dir,
+            format!(
+                "cat > /dev/null\ncase \"$*\" in\n\
+                 \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
+                 \x20 *session.view*) cat '{}';;\n\
+                 \x20 *' size '*) echo '{{\"columns\":120,\"rows\":40}}';;\n\
+                 \x20 *session.new_split*) n=$(($(cat '{dir}/splits' 2>/dev/null || echo 0) + 1)); \
+                 echo $n > '{dir}/splits'; \
+                 echo \"{{\\\"block_ids\\\":[\\\"block:sidebar$n\\\"],\\\"split_ids\\\":[\\\"split:sidebar$n\\\"]}}\";;\n\
+                 \x20 *) exit 1;;\nesac\n",
+                path.display(),
+                dir = dir.display(),
+            ),
+        );
+        let files = Files::at(dir.join("state"), "test");
+        files
+            .update_prefs(|prefs| {
+                Scope::Global {
+                    optout: HashSet::new(),
+                }
+                .write(prefs)
+            })
+            .unwrap();
+        let plane = Plane::new(rex.detached_for_events(), files, Config::default()).unwrap();
+        Follower {
+            plane: plane.for_daemon(),
+            observed: Arc::default(),
+            stream: None,
+            work: Work::default(),
+        }
+    }
+
+    /// `session.create` can start a session with several windows, and
+    /// session_created stands for all of them.
+    #[test]
+    fn every_window_a_new_session_starts_with_gets_a_sidebar() {
+        let mut view: serde_json::Value = serde_json::from_str(NEW_VIEW).unwrap();
+        let first = view["windows"][0].to_string();
+        let second: serde_json::Value =
+            serde_json::from_str(&first.replace("01a19e9", "02b29f9")).unwrap();
+        let second_id = second["window_id"].as_str().unwrap().to_string();
+        view["windows"].as_array_mut().unwrap().push(second);
+        let dir = tempfile::tempdir().unwrap();
+        let mut follower = follower_showing(dir.path(), &view.to_string());
+
+        follower.handle(vec![Event::SessionCreated {
+            session_id: NEW_SESSION.into(),
+        }]);
+        let records = follower.plane.files.records();
+        assert!(records.contains_key(NEW_WINDOW), "{records:?}");
+        assert!(records.contains_key(&second_id), "{records:?}");
+    }
+
+    /// Only a creation event owes a window a sidebar: a change in a session
+    /// that was already there places none.
+    #[test]
+    fn a_view_change_in_an_older_session_places_no_sidebar() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut follower = follower_showing(dir.path(), NEW_VIEW);
+
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        let records = follower.plane.files.records();
+        assert!(!records.contains_key(NEW_WINDOW), "{records:?}");
     }
 }

@@ -34,6 +34,23 @@ def test_add_without_mode_creates_session_under_rex(
     assert_window_not_exists(env, get_window_name(branch_name))
 
 
+def test_a_session_add_under_rex_names_the_worktree_in_its_hint(
+    mux_server, workmux_exe_path, repo_path
+):
+    env = mux_server
+    if env.backend_name != "rex":
+        pytest.skip("only Rex leaves the app put and prints a hint")
+    branch_name = "feature-hint"
+    write_workmux_config(repo_path)
+
+    result = run_workmux_command(
+        env, workmux_exe_path, repo_path, f"add {branch_name} --session"
+    )
+
+    # The hint names the worktree, not the session label an agent renames.
+    assert f"to see {branch_name}, press Enter" in result.stdout, result.stdout
+
+
 class TestSessionCreation:
     """Tests for basic session creation functionality.
 

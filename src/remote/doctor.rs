@@ -826,6 +826,18 @@ mod tests {
         assert_eq!(fact(&facts, "systemd"), if booted { "yes" } else { "no" });
     }
 
+    /// On a host without systemd, a misspelled probe also reports `no`, so
+    /// `facts_script_runs_locally` passes there. Pin sd_booted(3)'s directory.
+    #[test]
+    fn systemd_fact_probes_the_sd_booted_directory() {
+        assert!(
+            FACTS_SCRIPT.contains(
+                "if [ -d /run/systemd/system ]; then fact systemd yes; else fact systemd no; fi"
+            ),
+            "{FACTS_SCRIPT}"
+        );
+    }
+
     #[test]
     fn facts_script_keeps_loginctl_stdout_and_stderr_apart() {
         let dir = tempfile::TempDir::new().unwrap();
