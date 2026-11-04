@@ -1339,4 +1339,225 @@ mod tests {
         let records = follower.plane.files.records();
         assert!(!records.contains_key(NEW_WINDOW), "{records:?}");
     }
+
+    fn leaf(block: &str, rect: [f64; 4]) -> serde_json::Value {
+        serde_json::json!({ "rect": rect, "block_id": block })
+    }
+
+    fn split(
+        id: &str,
+        ratio: f64,
+        rect: [f64; 4],
+        before: serde_json::Value,
+        after: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "rect": rect,
+            "split": { "split_id": id, "direction": "horizontal", "ratio": ratio,
+                       "before": before, "after": after },
+        })
+    }
+
+    /// A view of `NEW_SESSION` whose one window, `NEW_WINDOW`, has `layout`
+    /// and the blocks `blocks`.
+    fn view_of(layout: serde_json::Value, blocks: &[&str]) -> String {
+        let blocks: Vec<_> = blocks
+            .iter()
+            .map(|block| serde_json::json!({ "block_id": block }))
+            .collect();
+        serde_json::json!({
+            "session_id": NEW_SESSION,
+            "windows": [{
+                "window_id": NEW_WINDOW,
+                "layers": [{ "kind": "tiled", "layout": layout, "blocks": blocks }],
+            }],
+        })
+        .to_string()
+    }
+
+    /// A follower over a scripted rex that logs each call to `dir/calls`
+    /// and shows `views[n]` after its n-th sidebar split, with a global
+    /// sidebar on.
+    fn follower_replaying(path: &std::path::Path, views: &[String]) -> Follower {
+        for (n, view) in views.iter().enumerate() {
+            std::fs::write(path.join(format!("view-{n}")), view).unwrap();
+        }
+        let calls = path.join("calls");
+        let splits = path.join("splits");
+        let rex = RexBackend::scripted(
+            path,
+            format!(
+                "params=$(cat)\necho \"$* $params\" >> '{calls}'\n\
+                 n=$(cat '{splits}' 2>/dev/null || echo 0)\ncase \"$*\" in\n\
+                 \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
+                 \x20 *session.view*) cat \"{dir}/view-$n\";;\n\
+                 \x20 *' size '*) echo '{{\"columns\":120,\"rows\":40}}';;\n\
+                 \x20 *session.new_split*) n=$((n + 1)); echo $n > '{splits}'; \
+                 echo \"{{\\\"block_ids\\\":[\\\"block:sidebar$n\\\"],\\\"split_ids\\\":[\\\"split:sidebar$n\\\"]}}\";;\n\
+                 \x20 *block.close*|*session.resize_pane*) echo '{{}}';;\n\
+                 \x20 *) exit 1;;\nesac\n",
+                calls = calls.display(),
+                splits = splits.display(),
+                dir = path.display(),
+            ),
+        );
+        let files = Files::at(path.join("state"), "test");
+        files
+            .update_prefs(|prefs| {
+                Scope::Global {
+                    optout: HashSet::new(),
+                }
+                .write(prefs)
+            })
+            .unwrap();
+        let plane = Plane::new(rex.detached_for_events(), files, Config::default()).unwrap();
+        Follower {
+            plane: plane.for_daemon(),
+            observed: Arc::default(),
+            stream: None,
+            work: Work::default(),
+        }
+    }
+
+    /// Replays the race WR-3 fix8 found. The daemon reads the add's new
+    /// window while it has one block, the add splits that block, and the
+    /// daemon's split, anchored on the block, lands inside the add's split.
+    #[test]
+    fn a_split_that_lands_before_the_placement_still_leaves_the_sidebar_at_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let whole = [0.0, 0.0, 1.0, 1.0];
+        let views = [
+            view_of(leaf("block:a", whole), &["block:a"]),
+            view_of(
+                split(
+                    "split:add",
+                    0.5,
+                    whole,
+                    split(
+                        "split:sidebar1",
+                        0.3125,
+                        [0.0, 0.0, 0.5, 1.0],
+                        leaf("block:sidebar1", [0.0, 0.0, 0.156, 1.0]),
+                        leaf("block:a", [0.156, 0.0, 0.344, 1.0]),
+                    ),
+                    leaf("block:b", [0.5, 0.0, 0.5, 1.0]),
+                ),
+                &["block:sidebar1", "block:a", "block:b"],
+            ),
+            view_of(
+                split(
+                    "split:sidebar2",
+                    0.18,
+                    whole,
+                    leaf("block:sidebar2", [0.0, 0.0, 0.18, 1.0]),
+                    split(
+                        "split:add",
+                        0.5,
+                        [0.18, 0.0, 0.82, 1.0],
+                        leaf("block:a", [0.18, 0.0, 0.41, 1.0]),
+                        leaf("block:b", [0.59, 0.0, 0.41, 1.0]),
+                    ),
+                ),
+                &["block:sidebar2", "block:a", "block:b"],
+            ),
+        ];
+        let mut follower = follower_replaying(path, &views);
+        let calls = path.join("calls");
+        let sidebar = |follower: &Follower| {
+            let records = follower.plane.files.records();
+            records
+                .get(NEW_WINDOW)
+                .map(|record| record.block_id.clone())
+        };
+        let changed = || {
+            vec![Event::ViewChanged {
+                session_id: NEW_SESSION.into(),
+            }]
+        };
+
+        follower.handle(vec![Event::WindowCreated {
+            session_id: NEW_SESSION.into(),
+            window_id: NEW_WINDOW.into(),
+        }]);
+        assert_eq!(sidebar(&follower).as_deref(), Some("block:sidebar1"));
+
+        follower.handle(changed());
+        let log = std::fs::read_to_string(&calls).unwrap();
+        let placements: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("session.new_split"))
+            .collect();
+        assert_eq!(placements.len(), 2, "{log}");
+        assert!(
+            placements[1].contains(r#""anchor_id":"split:add""#)
+                && placements[1].contains(r#""side":"before""#),
+            "the sidebar moves to the root the add's split made: {log}"
+        );
+        assert!(
+            log.lines().any(|line| line.contains("block.close")
+                && line.contains(r#""block_id":"block:sidebar1""#)),
+            "the nested sidebar is closed: {log}"
+        );
+        assert_eq!(sidebar(&follower).as_deref(), Some("block:sidebar2"));
+
+        follower.handle(changed());
+        let log = std::fs::read_to_string(&calls).unwrap();
+        assert_eq!(
+            log.matches("session.new_split").count(),
+            2,
+            "a sidebar at the root stays: {log}"
+        );
+        assert_eq!(sidebar(&follower).as_deref(), Some("block:sidebar2"));
+    }
+
+    /// A sidebar the user floated out of the layout is theirs to place.
+    #[test]
+    fn a_floating_sidebar_stays_where_the_user_put_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let whole = [0.0, 0.0, 1.0, 1.0];
+        let mut floated: serde_json::Value = serde_json::from_str(&view_of(
+            split(
+                "split:add",
+                0.5,
+                whole,
+                leaf("block:a", [0.0, 0.0, 0.5, 1.0]),
+                leaf("block:b", [0.5, 0.0, 0.5, 1.0]),
+            ),
+            &["block:a", "block:b"],
+        ))
+        .unwrap();
+        floated["windows"][0]["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "kind": "floating",
+                "layout": leaf("block:sidebar1", [0.1, 0.1, 0.3, 0.8]),
+                "blocks": [{ "block_id": "block:sidebar1" }],
+            }));
+        let views = [
+            view_of(leaf("block:a", whole), &["block:a"]),
+            floated.to_string(),
+        ];
+        let mut follower = follower_replaying(path, &views);
+
+        follower.handle(vec![Event::WindowCreated {
+            session_id: NEW_SESSION.into(),
+            window_id: NEW_WINDOW.into(),
+        }]);
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        let log = std::fs::read_to_string(path.join("calls")).unwrap();
+        assert_eq!(log.matches("session.new_split").count(), 1, "{log}");
+        assert!(!log.contains("block.close"), "{log}");
+        let records = follower.plane.files.records();
+        assert_eq!(
+            records
+                .get(NEW_WINDOW)
+                .map(|record| record.block_id.as_str()),
+            Some("block:sidebar1")
+        );
+    }
 }
