@@ -400,6 +400,17 @@ impl Plane {
                 .root_split()
                 .filter(|root| root.before.block_id.as_deref() == Some(&record.block_id))
             else {
+                // A split that lands between a pass's read and its placement
+                // nests the sidebar, and Rex has no anchor for the window's
+                // root. Placing again anchors the root split, which a block
+                // split cannot displace.
+                if window.tiles(&record.block_id)
+                    && let Some(placed) = self.place(session_id, window, synced)?
+                {
+                    records.insert(window_id.clone(), placed);
+                    result.placed.insert(window_id.clone());
+                    self.rex.close_sidebar_block(session_id, &record.block_id)?;
+                }
                 continue;
             };
             let observed_cols = sizes.get(&record.block_id).copied();
