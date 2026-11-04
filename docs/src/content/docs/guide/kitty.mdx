@@ -14,7 +14,7 @@ The kitty backend is new and experimental. Expect rough edges and potential issu
 
 <Screenshot
   src={screenshot}
-  alt="workmux running in kitty with multiple agents"
+  alt="workrex running in kitty with multiple agents"
   framed={false}
 />
 
@@ -28,9 +28,9 @@ The kitty backend is new and experimental. Expect rough edges and potential issu
 | Scope                | tmux session         | OS window                |
 
 - **Tab ordering**: New tabs appear at the end of the tab bar (no "insert after" support like tmux)
-- **OS window isolation**: workmux operates within the current OS window. Tabs in other OS windows are not affected.
+- **OS window isolation**: workrex operates within the current OS window. Tabs in other OS windows are not affected.
 - **Pane sizing**: `percentage` uses Kitty's split bias with the `splits` layout. Absolute `size` values are unsupported because Kitty does not provide fixed-cell splits.
-- **Terminology note**: What workmux calls a "pane" is called a "window" in kitty, and what workmux calls a "window" (tab) is called a "tab" in kitty
+- **Terminology note**: What workrex calls a "pane" is called a "window" in kitty, and what workrex calls a "window" (tab) is called a "tab" in kitty
 
 ## Requirements
 
@@ -41,7 +41,7 @@ The kitty backend is new and experimental. Expect rough edges and potential issu
 
 ## Required kitty configuration
 
-workmux relies on kitty's remote control API. Add these settings to your `kitty.conf`:
+workrex relies on kitty's remote control API. Add these settings to your `kitty.conf`:
 
 ```bash
 # REQUIRED: Enable remote control
@@ -57,7 +57,7 @@ enabled_layouts splits,stack
 
 ## Agent status display
 
-workmux stores agent status in kitty [user variables](https://sw.kovidgoyal.net/kitty/remote-control/#kitten-set-user-vars) (`workmux_status`), which can be displayed in tab titles using kitty's `{custom}` template placeholder.
+workrex stores agent status in kitty [user variables](https://sw.kovidgoyal.net/kitty/remote-control/#kitten-set-user-vars) (`workmux_status`), which can be displayed in tab titles using kitty's `{custom}` template placeholder.
 
 :::tip[Agent setup]
 Copy this page as markdown and paste it to your coding agent to have it set up the configuration files for you.

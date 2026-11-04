@@ -3,14 +3,16 @@ title: "AI agents"
 description: Run multiple AI agents in parallel, each in their own isolated git worktree environment
 ---
 
-workmux is designed with AI agent workflows in mind. Run multiple agents in parallel, each in their own isolated environment.
+workrex is designed with AI agent workflows in mind. Run multiple agents in parallel, each in their own isolated environment.
 
 ## Agent integration
 
-When you provide a prompt via `--prompt`, `--prompt-file`, or `--prompt-editor`, workmux automatically injects the prompt into panes running the configured agent command (e.g., `claude`, `codex`, `opencode`, `gemini`, `agy`, `kiro-cli`, `vibe`, `pi`, `omp`, `grok`, or whatever you've set via the `agent` config or `--agent` flag) without requiring any `.workmux.yaml` changes:
+workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
+
+When you provide a prompt via `--prompt`, `--prompt-file`, or `--prompt-editor`, workrex automatically injects the prompt into panes running the configured agent command (e.g., `claude`, `codex`, `opencode`, `gemini`, `agy`, `kiro-cli`, `vibe`, `pi`, `omp`, `grok`, or whatever you've set via the `agent` config or `--agent` flag) without requiring any `.workmux.yaml` changes:
 
 - Panes with a command matching the configured agent are automatically started with the given prompt.
-- You can keep your `.workmux.yaml` pane configuration simple (e.g., `panes: [{ command: "<agent>" }]`) and let workmux handle prompt injection at runtime.
+- You can keep your `.workmux.yaml` pane configuration simple (e.g., `panes: [{ command: "<agent>" }]`) and let workrex handle prompt injection at runtime.
 
 This means you can launch AI agents with task-specific prompts without modifying your project configuration for each task.
 
@@ -18,22 +20,22 @@ This means you can launch AI agents with task-specific prompts without modifying
 
 ```bash
 # Create a worktree with an inline prompt
-workmux add feature/auth -p "Implement user authentication with OAuth"
+workrex add feature/auth -p "Implement user authentication with OAuth"
 
 # Create a worktree with a prompt from a file
-workmux add feature/refactor --prompt-file task-description.md
+workrex add feature/refactor --prompt-file task-description.md
 
 # Open your editor to write a prompt interactively
-workmux add feature/new-api --prompt-editor
+workrex add feature/new-api --prompt-editor
 
 # Override the default agent for a specific worktree
-workmux add feature/caching -a gemini -p "Add caching layer for API responses"
+workrex add feature/caching -a gemini -p "Add caching layer for API responses"
 
 # Use -A to generate branch name from the prompt automatically
-workmux add -A -p "Fix race condition in payment handler"
+workrex add -A -p "Fix race condition in payment handler"
 
 # Use -A alone to open editor for prompt, then generate branch name from it
-workmux add -A
+workrex add -A
 ```
 
 :::tip
@@ -45,7 +47,7 @@ The `-A` (`--auto-name`) flag uses an LLM to [generate a branch name](/reference
 If your editor has a built-in agent (e.g., neovim with an agent plugin), you can use `--prompt-file-only` to write the prompt to `.workmux/PROMPT-<branch>.md` without requiring an agent pane:
 
 ```bash
-workmux add feature/task -P task.md --prompt-file-only
+workrex add feature/task -P task.md --prompt-file-only
 ```
 
 Your editor can then detect the prompt file on startup and pass it to its embedded agent. Set `prompt_file_only: true` in `.workmux.yaml` to make this the default.
@@ -84,13 +86,13 @@ Use named agents anywhere you'd use an agent name:
 
 ```bash
 # CLI
-workmux add oauth -a pi-luna-max -p "Implement history/2026-08-29-oauth-plan.md"
+workrex add oauth -a pi-luna-max -p "Implement history/2026-08-29-oauth-plan.md"
 
 # In .workmux.yaml
 agent: pi-luna-max
 ```
 
-workmux resolves the name to a structured command before launching panes. The agent profile controls prompt injection format, continue/resume flags, skip-permissions flags, and sandbox behavior. Set `type` when the command is a wrapper or when you omit `command` and want the built-in executable for that agent type:
+workrex resolves the name to a structured command before launching panes. The agent profile controls prompt injection format, continue/resume flags, skip-permissions flags, and sandbox behavior. Set `type` when the command is a wrapper or when you omit `command` and want the built-in executable for that agent type:
 
 ```yaml
 agents:
@@ -141,7 +143,7 @@ Named agents are global-only for security. Define them in `~/.config/workmux/con
 
 ## Per-pane agents
 
-workmux automatically recognizes built-in agent commands (`claude`, `gemini`, `agy`, `codex`, `opencode`, `kiro-cli`, `vibe`, `pi`, `omp`, `grok`) in pane commands. This means prompt injection works without the `<agent>` placeholder or a matching `agent` config:
+workrex automatically recognizes built-in agent commands (`claude`, `gemini`, `agy`, `codex`, `opencode`, `kiro-cli`, `vibe`, `pi`, `omp`, `grok`) in pane commands. This means prompt injection works without the `<agent>` placeholder or a matching `agent` config:
 
 ```yaml
 panes:
@@ -153,7 +155,7 @@ panes:
 
 Each agent receives the prompt using its native format (e.g., Claude uses `--`, Gemini and Antigravity use `-i`). Auto-detection matches the executable name regardless of flags or path. Just provide a prompt via `-p`, `-P`, or `-e`.
 
-Antigravity CLI support covers command detection, prompt injection, and status tracking through lifecycle hooks installed by `workmux setup`.
+Antigravity CLI support covers command detection, prompt injection, and status tracking through lifecycle hooks installed by `workrex setup`.
 
 See [pane configuration](/guide/configuration/#agent-placeholders) for details.
 
@@ -176,27 +178,27 @@ layouts:
 
 ```bash
 # Two agents side by side
-workmux add my-feature -l design -p "Implement the new search API"
+workrex add my-feature -l design -p "Implement the new search API"
 
 # Single agent
-workmux add quick-fix -l solo -p "Fix the login bug"
+workrex add quick-fix -l solo -p "Fix the login bug"
 ```
 
 When a layout is selected with `-l`, its panes replace the top-level `panes`. All other config (hooks, files, etc.) comes from the top-level as usual.
 
 ## Parallel workflows
 
-workmux can generate multiple worktrees from a single `add` command, which is ideal for running parallel experiments or delegating tasks to multiple AI agents.
+workrex can generate multiple worktrees from a single `add` command, which is ideal for running parallel experiments or delegating tasks to multiple AI agents.
 
 ### Multi-agent example
 
 ```bash
 # Create one worktree for claude and one for gemini with a focused prompt
-workmux add my-feature -a claude -a gemini -p "Implement the new search API integration"
+workrex add my-feature -a claude -a gemini -p "Implement the new search API integration"
 # Generates worktrees: my-feature-claude, my-feature-gemini
 
 # Create 2 instances of the default agent
-workmux add my-feature -n 2 -p "Implement task #{{ num }} in TASKS.md"
+workrex add my-feature -n 2 -p "Implement task #{{ num }} in TASKS.md"
 # Generates worktrees: my-feature-1, my-feature-2
 ```
 
