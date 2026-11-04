@@ -29,3 +29,34 @@ existing workmux configuration:
 - The Claude Code plugin id `workmux-status`
 
 Log filters use the binary's crate name, so write `RUST_LOG=workrex=debug`.
+
+## Rebasing on upstream
+
+The fork's [README.md](README.md) replaces upstream's. Upstream edits its
+README often, so without help every rebase onto upstream stops on a README
+conflict. A git merge driver resolves it. To install the driver, run this once
+in each clone:
+
+```bash
+scripts/setup-readme-merge
+```
+
+The script copies [`scripts/merge-workrex-readme`](scripts/merge-workrex-readme)
+into the git directory and adds `README.md merge=workrex-readme` to
+`.git/info/attributes`. The driver keeps the README whose first line is
+`# workrex` when only one side has it, and makes a normal three-way merge when
+both or neither side has it. It works for `git rebase` and `git merge`.
+
+The fork does not use `README.md merge=ours` in `.gitattributes`. A rebase
+swaps the sides, so `ours` is upstream's copy and git drops the fork's README
+with no conflict. A committed `.gitattributes` also does not apply to the
+rebase steps before the commit that adds it.
+
+Right after a rebase onto `upstream/main`, `ORIG_HEAD` is the old fork tip.
+To read the upstream README changes that the rebase brought in, run:
+
+```bash
+git log -p ORIG_HEAD..upstream/main -- README.md
+```
+
+Carry over anything that workrex should also say.

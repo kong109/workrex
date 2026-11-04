@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Install the README.md merge driver in this clone. It lives in the git dir,
+# not the work tree, so it applies at every step of a rebase onto upstream,
+# including steps before the commit that added it.
+set -euo pipefail
+top=$(git rev-parse --show-toplevel)
+git_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+install -m 755 "$top/scripts/merge-workrex-readme" "$git_dir/merge-workrex-readme"
+mkdir -p "$git_dir/info"
+line='README.md merge=workrex-readme'
+grep -qxF "$line" "$git_dir/info/attributes" 2>/dev/null || echo "$line" >>"$git_dir/info/attributes"
+git config merge.workrex-readme.name "keep the workrex README"
+git config merge.workrex-readme.driver "\"$git_dir/merge-workrex-readme\" %O %A %B"
+echo "README.md merge driver installed in $git_dir"
