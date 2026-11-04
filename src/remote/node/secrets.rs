@@ -125,6 +125,18 @@ pub fn env_file(root: &NodeRoot, name: &str, secrets: &Secrets) -> Result<TempPa
     let contents: String = checked(secrets)?
         .map(|(name, value)| format!("{name}={value}\n"))
         .collect();
+    read_once(root, name, contents)
+}
+
+/// [`env_file`] as a script that exports `vars`, for a shell to source.
+pub fn export_file(root: &NodeRoot, name: &str, vars: &Secrets) -> Result<TempPath> {
+    let contents: String = checked(vars)?
+        .map(|(name, value)| format!("export {name}={}\n", crate::shell::shell_quote(value)))
+        .collect();
+    read_once(root, name, contents)
+}
+
+fn read_once(root: &NodeRoot, name: &str, contents: String) -> Result<TempPath> {
     let path = root.private_secrets_dir()?.join(format!("{name}.env"));
     let _ = fs::remove_file(&path);
     nix::unistd::mkfifo(&path, Mode::S_IRUSR | Mode::S_IWUSR)

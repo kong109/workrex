@@ -558,6 +558,7 @@ mod tests {
             isolation,
             isolation_explicit: true,
             binary: None,
+            terminal: Default::default(),
         }
     }
 

@@ -1525,6 +1525,22 @@ pub struct RemoteConfig {
     /// the release matching this workmux version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
+    /// Where the agents' terminals live: the node's tmux, relayed into a
+    /// local window (default), or the node's Rex server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<RemoteTerminal>,
+    /// Label of the Rex.app client to switch when jumping to a Rex-hosted
+    /// agent; unset picks the only app connected to the node's server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rex_client: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteTerminal {
+    #[default]
+    Tmux,
+    Rex,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
@@ -5848,6 +5864,8 @@ agents:
             path: None,
             isolation: None,
             binary: None,
+            terminal: None,
+            rex_client: None,
         };
         let global = Config {
             remotes: [("hetzner".to_string(), remote("trusted"))]

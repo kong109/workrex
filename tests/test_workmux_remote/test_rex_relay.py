@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from ..conftest import MuxEnvironment, get_window_name, poll_until, wait_for_pane_output
-from .conftest import Node, commit_project, local_records, wm
+from .conftest import NODE_TERMINAL, Node, commit_project, local_records, wm
 from .test_siblings import by_branch, node_pane, setup_agent_project, tell
 
 
@@ -17,6 +17,8 @@ from .test_siblings import by_branch, node_pane, setup_agent_project, tell
 def rex_only(mux_server: MuxEnvironment):
     if mux_server.backend_name != "rex":
         pytest.skip("covers the Rex backend")
+    if NODE_TERMINAL == "rex":
+        pytest.skip("covers the relay; test_rex_host covers Rex-hosted terminals")
 
 
 def test_rex_relay_lifecycle_in_its_own_session(

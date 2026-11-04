@@ -162,6 +162,10 @@ pub struct RemoteAgent {
     /// Whether the remote answered within the heartbeat deadline.
     #[serde(default)]
     pub connected: bool,
+    /// Not connected because this view only started observing the remote
+    /// and it has not answered yet, rather than because it went quiet.
+    #[serde(default)]
+    pub connecting: bool,
     /// When the remote last answered (laptop clock).
     #[serde(default)]
     pub last_seen: Option<u64>,
@@ -199,6 +203,7 @@ impl RemoteAgent {
             host: String::new(),
             attached: true,
             connected: false,
+            connecting: false,
             last_seen: None,
             git: None,
             ended: None,

@@ -585,6 +585,13 @@ pub trait Multiplexer: Send + Sync {
         self.send_enter(pane_id)
     }
 
+    /// Type `command` into the shell of `pane_id` and run it. A shell takes
+    /// the command and its Enter alike however they arrive, so a backend may
+    /// send both at once.
+    fn run_in_shell(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.send_keys(pane_id, command)
+    }
+
     /// Whether this backend requires focusing a pane before sending input to it.
     /// Defaults to false. Backends like Zellij that can't target unfocused panes
     /// override this to return true.
@@ -894,7 +901,7 @@ pub trait Multiplexer: Send + Sync {
                 };
 
                 let _ = self.clear_pane(&spawned_id);
-                self.send_keys(&spawned_id, &final_command)?;
+                self.run_in_shell(&spawned_id, &final_command)?;
 
                 // Set working status for agent panes with injected prompts
                 if resolved.prompt_injected
@@ -935,7 +942,7 @@ pub trait Multiplexer: Send + Sync {
                 && !has_command
             {
                 // The keys reach the shell once it starts reading input.
-                self.send_keys(
+                self.run_in_shell(
                     &pane_id,
                     &format!(
                         " {}; printf '\\033[H\\033[2J\\033[3J'",

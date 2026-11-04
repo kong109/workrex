@@ -165,6 +165,7 @@ fn adopt_one(
         ex_id: ws.ex_id.clone(),
         panes: ws.panes.iter().map(|pane| pane.index).collect(),
         node_bin: sibling.pin.clone(),
+        rex: ws.rex.clone(),
     });
     record.window_pending = true;
     record.save()?;

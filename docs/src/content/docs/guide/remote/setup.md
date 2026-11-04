@@ -84,6 +84,27 @@ A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside
 
 Remote agents run under the tmux and Rex backends. Under Rex, where workmux defaults to sessions, each remote agent's relay window opens in a Rex session of its own, and closing the window closes the session.
 
+## Agent terminals on the server's Rex
+
+By default a remote agent runs in tmux on the server, and your machine shows it in a relay window. If the server runs a Rex server that Rex.app on your machine reaches over Tailscale, the agent's terminal can live on that Rex server instead:
+
+```yaml
+# ~/.config/workmux/config.yaml
+remotes:
+  winbox:
+    host: winbox-wsl-ssh
+    isolation: none
+    terminal: rex
+```
+
+`add --remote winbox` then creates one Rex session per pane on the server, and opens no relay window on your machine. Rex.app lists the sessions under the server's host, and `workmux open <name>` selects the first one in Rex.app. The dashboard, `send`, `wait`, `capture`, `merge`, `remove` and `remote gc` work as with tmux.
+
+- `terminal: rex` needs `isolation: none`. Agents in Docker can't run in a Rex session yet.
+- The server's Rex server must be on Tailscale when the workspace is created, and `workmux open` needs Remote Control on in Rex.app. When several Rex.app clients are connected to the server, set `remotes.<name>.rex_client` to the label of the one to switch.
+- Each workspace keeps the terminal it was created with. If the server's Rex server restarts, its sessions are gone; `workmux open` starts the agents again in new ones.
+- Secrets reach the agent through a file its shell reads once and removes, so they don't appear in the session's command line or screen.
+- `workmux remote shell` still opens its shells in tmux on the server.
+
 ## Server or Docker
 
 Remote agents are sandboxed exactly when the same agent would be sandboxed locally. `remotes.<name>.isolation` overrides that for one server, in either direction.

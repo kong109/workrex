@@ -12,7 +12,15 @@ from typing import Any, Dict, Iterator, List, Optional
 import pytest
 import yaml
 
-from ..conftest import MuxEnvironment, TmuxEnvironment, run_workmux_command
+from ..conftest import (
+    MuxEnvironment,
+    TmuxEnvironment,
+    get_window_name,
+    poll_until,
+    run_workmux_command,
+    wait_for_pane_output,
+)
+from ..rex_env import RexEnvironment
 from ..support.bin_name import BIN
 
 
@@ -112,12 +120,63 @@ def loopback_cli(tmp_path: Path, workmux_exe_path: Path) -> RemoteCli:
 
 LOOPBACK = {"WORKMUX_REMOTE_LOOPBACK": "1"}
 
+# Where the loopback node hosts agent terminals: its own tmux server, or the
+# test's isolated Rex server standing in for the node's.
+NODE_TERMINAL = os.environ.get("WORKREX_TEST_NODE_TERMINAL", "tmux")
+
 
 class Node:
-    """The loopback node: its root, records and tmux server."""
+    """The loopback node: its root, records, and the tmux or Rex server its
+    agent terminals run on."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, rex: Optional[RexEnvironment] = None):
         self.root = root
+        self.rex = rex
+        # Rex sessions of this root carry this prefix (`root_tag` in host.rs).
+        self.tag = "wr" + hashlib.sha256(str(root).encode()).hexdigest()[:8] + "."
+
+    def rex_sessions(self) -> Dict[str, str]:
+        """This root's Rex sessions, by name without the tag, to their ids."""
+        if self.rex is None:
+            return {}
+        return {
+            s["label"][len(self.tag) :]: s["session_id"]
+            for s in self.rex.api("session.list")["sessions"]
+            if s["label"].startswith(self.tag)
+        }
+
+    def plant_session(self, name: str) -> None:
+        """Start a bare session `name` where this node hosts its terminals."""
+        if self.rex is None:
+            self.tmux("new-session", "-d", "-s", name)
+        else:
+            self.rex.api(
+                "session.create",
+                {
+                    "label": self.tag + name,
+                    "initial_windows": [{"layout": self.rex._shell_layout()}],
+                },
+            )
+
+    def capture(self, name: str) -> str:
+        """The visible text of session `name`'s agent pane."""
+        if self.rex is None:
+            return self.tmux("capture-pane", "-p", "-t", f"={name}:").stdout
+        session = self.rex_sessions().get(name)
+        if session is None:
+            return ""
+        view = self.rex.api("session.view", {"session_id": session})
+        blocks = [
+            block["block_id"]
+            for window in view["windows"]
+            for layer in window["layers"]
+            for block in layer["blocks"]
+        ]
+        reports = [
+            self.rex.block_call(b, "format", {"format": "text", "trim": True})
+            for b in blocks
+        ]
+        return "\n".join(r.get("content", "") for r in reports if r)
 
     def tmux(self, *args: str) -> subprocess.CompletedProcess[str]:
         socket = self.root / "run" / "tmux.sock"
@@ -126,8 +185,23 @@ class Node:
         )
 
     def sessions(self) -> List[str]:
+        if self.rex is not None:
+            return sorted(self.rex_sessions())
         result = self.tmux("list-sessions", "-F", "#{session_name}")
         return sorted(result.stdout.split()) if result.returncode == 0 else []
+
+    def wait_for_agent(
+        self, env: MuxEnvironment, branch: str, text: str, timeout: float = 20
+    ) -> None:
+        """Wait until the agent of `branch` prints `text`: in its local relay
+        window, or on the node's Rex server for a Rex-hosted terminal."""
+        if self.rex is None:
+            wait_for_pane_output(env, get_window_name(branch), text, timeout=timeout)
+            return
+        assert poll_until(
+            lambda: any(text in self.capture(name) for name in self.sessions()),
+            timeout=timeout,
+        ), f"{text!r} not on the node: {[self.capture(n) for n in self.sessions()]}"
 
     def workspaces(self) -> List[dict]:
         directory = self.root / "state" / "workspaces"
@@ -144,22 +218,27 @@ class Node:
 def node(mux_server: MuxEnvironment, workmux_exe_path: Path) -> Iterator[Node]:
     # A short root keeps the node's tmux socket under the root.
     root = Path(tempfile.mkdtemp(prefix="wmn-", dir="/tmp")).resolve()
-    config = {
-        "nerdfont": False,
-        "remotes": {
-            "lo": {
-                "host": "localhost",
-                "path": str(root),
-                "binary": str(workmux_exe_path),
-                "isolation": "none",
-            }
-        },
+    remote = {
+        "host": "localhost",
+        "path": str(root),
+        "binary": str(workmux_exe_path),
+        "isolation": "none",
     }
+    rex = None
+    if NODE_TERMINAL == "rex":
+        if not isinstance(mux_server, RexEnvironment):
+            pytest.skip("a Rex-hosted node needs the Rex backend's server")
+        remote["terminal"] = "rex"
+        rex = mux_server
+    config = {"nerdfont": False, "remotes": {"lo": remote}}
     config_dir = mux_server.home_path / ".config" / "workmux"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "config.yaml").write_text(yaml.dump(config))
-    node = Node(root)
+    node = Node(root, rex)
     yield node
+    if rex is not None:
+        for session in node.rex_sessions().values():
+            rex.api("session.destroy", {"session_id": session})
     node.tmux("kill-server")
     shutil.rmtree(root, ignore_errors=True)
 

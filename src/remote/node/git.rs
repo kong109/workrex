@@ -6,7 +6,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::execution::{kill_execution, tmux_socket};
 use super::{NodeRoot, Workspace, base_ref, refuse, stop_containers_mounting, validate_id};
 use crate::config::RemoteIsolation;
 use crate::remote::git::{self, Snapshot};
@@ -64,7 +63,7 @@ fn open(root: &NodeRoot, ws_id: &str) -> Result<(std::fs::File, Workspace)> {
 /// Stop the workspace's execution and containers and forget the execution.
 pub fn quiesce(root: &NodeRoot, workspace: &mut Workspace) -> Result<()> {
     if let Some(execution) = workspace.execution.take() {
-        kill_execution(root, &tmux_socket(root)?, &execution.ex_id);
+        super::host::stop_execution(root, &execution)?;
     }
     if workspace.isolation == RemoteIsolation::Container {
         stop_containers_mounting(&workspace.worktree_path)?;

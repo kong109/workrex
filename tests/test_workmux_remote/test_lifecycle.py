@@ -146,6 +146,12 @@ def test_remote_lifecycle(
 
     result = wm(mux_server, workmux_exe_path, repo, "add feat --remote lo")
     assert "Successfully created remote workspace" in result.stdout, result.stderr
+    if node.rex is None:
+        # A relayed workspace's agent runs in a local window.
+        assert (
+            "Successfully created remote workspace and "
+            f"{mux_server.backend_name} window for 'feat' on 'lo'" in result.stdout
+        ), result.stdout
     assert "Pushing" in result.stdout
 
     # The node has the worktree at the unpushed commit, with files and hooks.

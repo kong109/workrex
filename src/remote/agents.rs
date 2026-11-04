@@ -72,6 +72,7 @@ pub fn rows(
             status.base_branch = base;
             status
         });
+        let connected = observation.is_some_and(|o| o.is_connected(now));
         let remote = |pane: usize, attached: bool| RemoteAgent {
             at: RemoteRef {
                 remote: record.remote.clone(),
@@ -83,7 +84,8 @@ pub fn rows(
             project_root: record.project_root.clone(),
             host: hosts.get(&record.remote).cloned().unwrap_or_default(),
             attached,
-            connected: observation.is_some_and(|o| o.is_connected(now)),
+            connected,
+            connecting: !connected && observe::connecting(&record.remote, observation, now),
             last_seen: observation.and_then(|o| o.last_seen),
             git: git.clone(),
             ended: observed.and_then(|o| o.ended),
@@ -259,6 +261,9 @@ pub fn connectivity(remote: &RemoteAgent, now: u64) -> Option<String> {
             }
         });
     }
+    if remote.connecting {
+        return Some("connecting".to_string());
+    }
     Some(match remote.last_seen {
         Some(seen) => format!(
             "disconnected · seen {} ago",
@@ -273,6 +278,8 @@ pub fn connectivity(remote: &RemoteAgent, now: u64) -> Option<String> {
 pub fn row_title(remote: &RemoteAgent, now: u64, title: Option<&str>) -> Option<String> {
     let state = if remote.connected {
         remote.ended?.label().to_string()
+    } else if remote.connecting {
+        "connecting".to_string()
     } else {
         match remote.last_seen {
             Some(seen) => format!(
@@ -503,6 +510,7 @@ mod tests {
             ex_id: "x1".into(),
             panes: vec![0, 1],
             node_bin: "workmux-1".into(),
+            rex: None,
         });
         record
     }
@@ -520,6 +528,7 @@ mod tests {
                 sibling: None,
                 operation: None,
                 ended: None,
+                rex: None,
             }],
         }
     }
@@ -656,6 +665,49 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_reads_connecting_until_it_answers_the_view() {
+        let mut watched = record();
+        watched.remote = "box-connecting".into();
+        observe::observing_since("box-connecting", 1000);
+        // The last observation is two minutes older than the view.
+        let observations = HashMap::from([(
+            "box-connecting".to_string(),
+            Observation {
+                last_seen: Some(880),
+                ..Default::default()
+            },
+        )]);
+        let rows_now = rows(&[watched], &[], &observations, &hosts(), 1002);
+        let remote = rows_now[0].remote.as_ref().unwrap();
+        assert!(remote.connecting && !remote.connected);
+        assert_eq!(connectivity(remote, 1002).as_deref(), Some("connecting"));
+
+        // A remote no view of this process observes is just disconnected.
+        let unwatched = rows(&[record()], &[], &observations, &hosts(), 1002);
+        assert!(!unwatched[0].remote.as_ref().unwrap().connecting);
+    }
+
+    #[test]
+    fn a_connected_row_is_never_connecting() {
+        let mut watched = record();
+        watched.remote = "box-kept-current".into();
+        observe::observing_since("box-kept-current", 1000);
+        // Another view's observer kept the file current before this view
+        // started, so the remote is connected but has not answered this view.
+        let observations = HashMap::from([(
+            "box-kept-current".to_string(),
+            Observation {
+                connected: true,
+                last_seen: Some(999),
+                ..Default::default()
+            },
+        )]);
+        let rows_now = rows(&[watched], &[], &observations, &hosts(), 1002);
+        let remote = rows_now[0].remote.as_ref().unwrap();
+        assert!(remote.connected && !remote.connecting);
+    }
+
+    #[test]
     fn rows_keep_the_title_beside_connectivity() {
         let rows = rows(&[record()], &[], &HashMap::new(), &hosts(), 5);
         let mut remote = rows[0].remote.clone().unwrap();
@@ -669,6 +721,15 @@ mod tests {
             row_title(&remote, 5, Some("")).as_deref(),
             Some("disconnected")
         );
+        // Until a view's new observer hears from the remote.
+        remote.last_seen = Some(1000);
+        remote.connecting = true;
+        assert_eq!(
+            row_title(&remote, 1120, Some("Fixing")).as_deref(),
+            Some("connecting · Fixing")
+        );
+        assert_eq!(connectivity(&remote, 1120).as_deref(), Some("connecting"));
+        remote.connecting = false;
         remote.connected = true;
         assert_eq!(row_title(&remote, 5, Some("Fixing")), None);
         remote.ended = Some(EndReason::HostReboot);

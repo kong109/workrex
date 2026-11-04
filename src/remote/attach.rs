@@ -29,7 +29,7 @@ use super::RemoteSpec;
 use super::cache::WorkspaceRecord;
 use super::client::Node;
 use super::install::Pin;
-use super::node::attach::{DETACHED, SESSION_GONE};
+use super::node::attach::{DETACHED, HOSTED_ON_REX, SESSION_GONE};
 use super::node::observe::{ObservedAgent, ObservedPane};
 use super::observe::Observation;
 use super::transport::{SshFailure, SshFailureKind, Transport};
@@ -79,7 +79,8 @@ pub fn classify(status: Option<i32>, stderr: &[u8], ssh_failure: Option<SshFailu
         };
     }
     match status {
-        Some(SESSION_GONE) => Ending::SessionGone,
+        // A Rex-hosted pane has nothing to relay, now or after a reconnect.
+        Some(SESSION_GONE | HOSTED_ON_REX) => Ending::SessionGone,
         Some(DETACHED) => Ending::Detached,
         _ => {
             let text = String::from_utf8_lossy(stderr);
@@ -824,6 +825,10 @@ mod tests {
     fn exits_map_to_endings() {
         assert_eq!(classify(Some(SESSION_GONE), b"", None), Ending::SessionGone);
         assert_eq!(classify(Some(DETACHED), b"", None), Ending::Detached);
+        assert_eq!(
+            classify(Some(HOSTED_ON_REX), b"", None),
+            Ending::SessionGone
+        );
         assert_eq!(
             classify(
                 Some(255),

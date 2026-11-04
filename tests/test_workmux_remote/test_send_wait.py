@@ -5,12 +5,7 @@ and the laptop sees it later still."""
 import time
 from pathlib import Path
 
-from ..conftest import (
-    TmuxEnvironment,
-    get_window_name,
-    poll_until,
-    wait_for_pane_output,
-)
+from ..conftest import TmuxEnvironment, poll_until
 from ..support.bin_name import rebrand
 from .conftest import Node, git, wm
 from .test_status import start_workmux, status_rows
@@ -60,9 +55,7 @@ def test_wait_after_send_waits_for_the_turn_it_started(
     git(repo, "add", ".workmux.yaml")
     git(repo, "commit", "-m", "configure a turn agent")
     wm(mux_server, exe, repo, "add sw --remote lo")
-    wait_for_pane_output(
-        mux_server, get_window_name("sw"), "TURN-AGENT-READY", timeout=20
-    )
+    node.wait_for_agent(mux_server, "sw", "TURN-AGENT-READY")
     assert poll_until(lambda: statuses(mux_server, exe, repo) == ["done"], timeout=15)
 
     # Nobody sent: an agent that is done is done.
@@ -123,8 +116,6 @@ def test_send_refuses_an_agent_that_has_not_reported_without_a_container(
     git(repo, "add", ".workmux.yaml")
     git(repo, "commit", "-m", "configure a silent agent")
     wm(mux_server, exe, repo, "add quiet --remote lo")
-    wait_for_pane_output(
-        mux_server, get_window_name("quiet"), "SILENT-READY", timeout=20
-    )
+    node.wait_for_agent(mux_server, "quiet", "SILENT-READY")
     result = wm(mux_server, exe, repo, "send quiet hello", expect_fail=True)
     assert "no agent is running in workspace 'quiet'" in result.stderr

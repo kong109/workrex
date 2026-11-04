@@ -204,7 +204,7 @@ pub fn run(args: NodeArgs) -> Result<()> {
                     observe::stream(&root)?;
                     std::process::exit(0);
                 }
-                observe::snapshot(&root)
+                observe::snapshot(&root, request.siblings)
             }),
             NodeVerb::Send { .. } => serve(request, |root, request| observe::send(&root, request)),
             NodeVerb::Capture { .. } => {

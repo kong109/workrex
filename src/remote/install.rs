@@ -373,6 +373,7 @@ mod tests {
             isolation: Default::default(),
             isolation_explicit: false,
             binary: Some(path.clone()),
+            terminal: Default::default(),
         };
         // sha256("abc") = ba7816bf8f01cfea...
         assert_eq!(

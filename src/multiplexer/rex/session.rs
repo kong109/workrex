@@ -388,7 +388,7 @@ impl RexBackend {
         let mut started = Instant::now();
         let moved = self.ensure_supported().and_then(|()| {
             started = Instant::now();
-            self.exec_within(&args, None, Some(SESSION_MOVE_TIMEOUT))
+            self.exec_within(&args, None, Some(SESSION_MOVE_TIMEOUT), &args)
         });
         if let Err(error) = &moved {
             tracing::debug!(error = %error, "rex: session move failed");
