@@ -408,7 +408,15 @@ impl Plane {
                 .unwrap_or(record.window_cols);
             let cols = observed_cols.unwrap_or(record.last_cols);
             let target = self.target(window_cols, synced);
-            let action = size::decide(&record, root.ratio, cols, window_cols, target, configured);
+            let action = size::decide(
+                &record,
+                root.ratio,
+                root.even_ratio(),
+                cols,
+                window_cols,
+                target,
+                configured,
+            );
             let record = records.get_mut(&window_id).expect("record exists");
             record.window_cols = window_cols;
             match action {
