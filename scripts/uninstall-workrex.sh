@@ -54,10 +54,22 @@ if [ "$workrex_path" = "$cargo_bin" ] || [ -f "$cargo_bin" ]; then
     log_info "You can also run the remaining cleanup steps:"
 fi
 
-# 2. If workrex binary is available, run binary uninstall first
-if [ -n "$workrex_path" ]; then
+# WORKMUX_INSTALL_DIR and the PATH lookup cover a custom install directory.
+custom_bin=""
+if [ -n "${WORKMUX_INSTALL_DIR:-}" ]; then
+    custom_bin="$WORKMUX_INSTALL_DIR/workrex"
+fi
+
+# 2. Run the binary's own uninstall first, also when the binary is off PATH
+uninstall_bin="$workrex_path"
+for path in "$custom_bin" "$local_bin" "$usr_bin" "$cargo_bin"; do
+    if [ -z "$uninstall_bin" ] && [ -n "$path" ] && [ -x "$path" ]; then
+        uninstall_bin="$path"
+    fi
+done
+if [ -n "$uninstall_bin" ]; then
     log_info "Removing status tracking hooks and skills..."
-    if ! workrex uninstall 2>&1 | sed 's/^/  /'; then
+    if ! "$uninstall_bin" uninstall 2>&1 | sed 's/^/  /'; then
         log_warning "workrex uninstall encountered issues (see above)"
     fi
     echo ""
@@ -65,11 +77,6 @@ fi
 
 # 3. Remove binary from known locations
 log_info "Removing workrex binary..."
-# WORKMUX_INSTALL_DIR and the PATH lookup cover a custom install directory.
-custom_bin=""
-if [ -n "${WORKMUX_INSTALL_DIR:-}" ]; then
-    custom_bin="$WORKMUX_INSTALL_DIR/workrex"
-fi
 removed=""
 for path in "$usr_bin" "$local_bin" "$cargo_bin" "$custom_bin" "$workrex_path"; do
     if [ -n "$path" ] && [ -f "$path" ] && [[ " $removed " != *" $path "* ]]; then
