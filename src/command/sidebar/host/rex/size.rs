@@ -321,6 +321,42 @@ mod tests {
     }
 
     #[test]
+    fn floating_a_pane_is_a_pane_change() {
+        // Rex.app balances the root row when a pane floats or unfloats.
+        let layers = |tiled: &[&str], floating: &[&str]| -> Window {
+            let ids = |ids: &[&str]| -> Vec<_> {
+                ids.iter()
+                    .map(|id| serde_json::json!({"block_id": id}))
+                    .collect()
+            };
+            serde_json::from_value(serde_json::json!({
+                "window_id": "window:1",
+                "layers": [
+                    {"kind": "tiled", "blocks": ids(tiled)},
+                    {"kind": "floating", "blocks": ids(floating)},
+                ],
+            }))
+            .unwrap()
+        };
+        let mut record = record(0.15);
+        note_panes(
+            &mut record,
+            &layers(&["block:1", "block:2", "block:3"], &[]),
+            1_000,
+        );
+        assert!(!note_panes(
+            &mut record,
+            &layers(&["block:1", "block:2", "block:3"], &[]),
+            7_000
+        ));
+        assert!(note_panes(
+            &mut record,
+            &layers(&["block:1", "block:2"], &["block:3"]),
+            8_000
+        ));
+    }
+
+    #[test]
     fn a_sidebar_already_at_the_even_share_is_kept() {
         let applied = sidebar_ratio(40, 80);
         assert_eq!(applied, 0.5);
