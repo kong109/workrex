@@ -312,6 +312,96 @@ def test_dragging_one_sidebar_moves_every_sidebar_and_persists(rex):
     assert settings["sidebar_width"] == 32
 
 
+def balance(env: SidebarRex, window_id: str) -> None:
+    """Share the root's side-by-side row out evenly, as Rex.app does after a
+    pane opens or closes in it (seen on the real app: a third each with two
+    panes beside the sidebar, half each with one)."""
+    session_id = env.session_id
+    assert session_id is not None
+    split = root_split(windows(env, session_id)[window_id])
+    assert split is not None
+
+    def members(node: dict) -> int:
+        inner = node.get("split")
+        if inner and inner["direction"] == split["direction"]:
+            return members(inner["before"]) + members(inner["after"])
+        return 1
+
+    env.api(
+        "session.resize_pane",
+        {
+            "session_id": session_id,
+            "direction": split["direction"],
+            "before_block_id": first_block(split["before"]),
+            "after_block_id": first_block(split["after"]),
+            "ratio": 1 / (1 + members(split["after"])),
+        },
+    )
+
+
+def test_opening_and_closing_a_pane_keeps_every_sidebar_width(rex):
+    env = rex
+    other = new_window(env, env.session_id)
+    cli(env, "on")
+    assert poll_until(lambda: all_have_sidebars(env, env.session_id), timeout=2)
+    [window_id] = [w for w in windows(env, env.session_id) if w != other]
+    settings = env.home_path / ".local/state/workmux/settings.json"
+
+    def ratios() -> dict:
+        return {
+            w: placed_sidebar(window)["ratio"]
+            for w, window in windows(env, env.session_id).items()
+        }
+
+    def kept() -> bool:
+        return all(abs(ratios()[w] - ratio) < 0.02 for w, ratio in before.items())
+
+    before = ratios()
+    window = windows(env, env.session_id)[window_id]
+    pane = first_block(placed_sidebar(window)["split"]["after"])
+    added = env.api(
+        "session.new_split",
+        {
+            "session_id": env.session_id,
+            "anchor_id": pane,
+            "direction": "horizontal",
+            "side": "after",
+            "layout": shell_layout(env),
+        },
+    )["block_ids"][0]
+    balance(env, window_id)
+    assert poll_until(kept, timeout=1.5, poll_interval=0.05), (before, ratios())
+
+    env.api("block.close", {"session_id": env.session_id, "block_id": added})
+    balance(env, window_id)
+    assert poll_until(kept, timeout=1.5, poll_interval=0.05), (before, ratios())
+    width = (
+        json.loads(settings.read_text()).get("sidebar_width")
+        if settings.exists()
+        else None
+    )
+    assert width is None, "a pane change is not a drag"
+
+    # A drag after the pane changes still moves every sidebar and persists.
+    side = placed_sidebar(windows(env, env.session_id)[window_id])
+    env.api(
+        "session.resize_pane",
+        {
+            "session_id": env.session_id,
+            "direction": "horizontal",
+            "before_block_id": side["block_id"],
+            "after_block_id": first_block(side["split"]["after"]),
+            "ratio": 0.4,
+        },
+    )
+    assert poll_until(
+        lambda: all(abs(r - 0.4) < 0.02 for r in ratios().values()),
+        timeout=1.5,
+        poll_interval=0.05,
+    ), ratios()
+    assert json.loads(settings.read_text())["sidebar_width"] == 32
+
+
 def test_off_restores_every_window_layout(rex):
     env = rex
     split_window = new_window(env, env.session_id, split_layout(env))
@@ -807,3 +897,84 @@ def test_a_closed_sidebar_outlasts_a_quit_elsewhere_and_goes_with_its_window(rex
     assert poll_until(lambda: closing not in closed_windows(env), timeout=3), (
         "the closed record outlived its window"
     )
+
+
+def test_a_balance_for_fewer_panes_is_not_a_drag(rex):
+    """Two panes open beside the sidebar before the daemon reacts to Rex.app's
+    balance for the first. The view then holds four row members and a third
+    for the sidebar, and only later the quarter of the second balance."""
+    env = rex
+    cli(env, "on")
+    assert poll_until(lambda: all_have_sidebars(env, env.session_id), timeout=2)
+    [window_id] = list(windows(env, env.session_id))
+    settings = env.home_path / ".local/state/workmux/settings.json"
+    side = placed_sidebar(windows(env, env.session_id)[window_id])
+    applied = side["ratio"]
+    pane = first_block(side["split"]["after"])
+    for _ in range(2):
+        env.api(
+            "session.new_split",
+            {
+                "session_id": env.session_id,
+                "anchor_id": pane,
+                "direction": "horizontal",
+                "side": "after",
+                "layout": shell_layout(env),
+            },
+        )
+
+    def set_root(ratio: float) -> None:
+        s = placed_sidebar(windows(env, env.session_id)[window_id])
+        env.api(
+            "session.resize_pane",
+            {
+                "session_id": env.session_id,
+                "direction": "horizontal",
+                "before_block_id": s["block_id"],
+                "after_block_id": first_block(s["split"]["after"]),
+                "ratio": ratio,
+            },
+        )
+
+    set_root(1 / 3)
+    time.sleep(1.0)
+    set_root(1 / 4)
+    time.sleep(1.0)
+    width = (
+        json.loads(settings.read_text()).get("sidebar_width")
+        if settings.exists()
+        else None
+    )
+    now = placed_sidebar(windows(env, env.session_id)[window_id])["ratio"]
+    assert width is None and abs(now - applied) < 0.02, (width, applied, now)
+
+
+def test_a_keyboard_step_onto_an_even_share_is_saved(rex):
+    """Rex's pane.resize moves the ratio by 0.05, so a press can land on 1/5
+    or 1/20 with no pane opened or closed. That is the user's width."""
+    env = rex
+    cli(env, "on")
+    assert poll_until(lambda: all_have_sidebars(env, env.session_id), timeout=2)
+    [window_id] = list(windows(env, env.session_id))
+    settings = env.home_path / ".local/state/workmux/settings.json"
+
+    def saved() -> Optional[int]:
+        if not settings.exists():
+            return None
+        return json.loads(settings.read_text()).get("sidebar_width")
+
+    for ratio, cols in [(0.2, 16), (0.05, 4)]:
+        side = placed_sidebar(windows(env, env.session_id)[window_id])
+        env.api(
+            "session.resize_pane",
+            {
+                "session_id": env.session_id,
+                "direction": "horizontal",
+                "before_block_id": side["block_id"],
+                "after_block_id": first_block(side["split"]["after"]),
+                "ratio": ratio,
+            },
+        )
+        assert poll_until(lambda: saved() == cols, timeout=2), (ratio, saved())
+        now = placed_sidebar(windows(env, env.session_id)[window_id])["ratio"]
+        assert abs(now - ratio) < 0.01, (ratio, now)

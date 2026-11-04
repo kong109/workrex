@@ -110,6 +110,12 @@ pub(super) struct WindowSidebar {
     pub applied_ratio: f64,
     pub last_cols: u32,
     pub window_cols: u32,
+    /// The window's tiled blocks as the last pass saw them, and when a pass
+    /// first saw them change, in Unix milliseconds.
+    #[serde(default)]
+    pub panes: String,
+    #[serde(default)]
+    pub panes_changed_ms: u64,
 }
 
 pub(super) type Records = BTreeMap<String, WindowSidebar>;
@@ -269,6 +275,8 @@ mod tests {
             applied_ratio: 0.18,
             last_cols: 30,
             window_cols: 166,
+            panes: String::new(),
+            panes_changed_ms: 0,
         }
     }
 
