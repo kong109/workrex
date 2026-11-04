@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Git merge driver for README.md. Keeps the fork's README when upstream changed
+# its own, for both `git merge upstream/main` and `git rebase upstream/main`.
+# A rebase swaps the sides, so the driver finds the fork's copy by its heading.
+# Installed by scripts/setup-readme-merge. See "Rebasing on upstream" in NOTICE.md.
+set -euo pipefail
+base=$1 current=$2 other=$3 size=$4 base_label=$5 current_label=$6 other_label=$7
+is_fork() { [[ "$(head -n 1 "$1")" == "# workrex" ]]; }
+if is_fork "$current" && ! is_fork "$other"; then
+	exit 0
+elif is_fork "$other" && ! is_fork "$current"; then
+	cp "$other" "$current"
+	exit 0
+fi
+exec git merge-file --marker-size="$size" -L "$current_label" -L "$base_label" -L "$other_label" "$current" "$base" "$other"
