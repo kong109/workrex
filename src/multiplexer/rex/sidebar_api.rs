@@ -320,7 +320,7 @@ impl RexBackend {
             .unwrap_or_default();
         Ok(Some(LivePaneInfo {
             pid: process.child.as_ref().map(|child| child.pid),
-            current_command: process.foreground.as_ref().map(|fg| fg.name.clone()),
+            current_command: process.foreground_command(),
             working_dir: process.working_dir(),
             title: (!title.is_empty()).then_some(title),
             session: Some(view.label.clone()),

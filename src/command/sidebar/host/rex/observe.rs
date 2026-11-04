@@ -112,7 +112,7 @@ impl Observed {
                 ..
             } => {
                 if let Some(pane) = cache.panes.get_mut(block_id) {
-                    pane.current_command = Some(foreground.name.clone());
+                    pane.current_command = Some(foreground.command());
                     if let Some(cwd) = &foreground.cwd {
                         pane.working_dir = cwd.clone();
                     }
@@ -364,6 +364,26 @@ mod tests {
         assert_eq!(pane.current_command.as_deref(), Some("claude"));
         assert_eq!(pane.working_dir, PathBuf::from("/repo/wt"));
         assert_eq!(pane.title.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn a_process_event_names_the_command_the_agent_started_as() {
+        let observed = Observed::default();
+        observed
+            .cache
+            .lock()
+            .unwrap()
+            .panes
+            .insert("block:1".into(), pane("/repo"));
+        observed.apply(
+            &Event::parse(r#"{"type":"session_event","payload":{"session_id":"session:1","event":{"type":"block_event","payload":{"block_id":"block:1","name":"process_changed","payload":{"generation":4,"foreground":{"pid":9,"name":"agy.1793778097211245000.old","argv0":"agy","cwd":"/repo/wt"}}}}}}"#)
+                .unwrap(),
+        );
+        let cache = observed.cache.lock().unwrap();
+        assert_eq!(
+            cache.panes["block:1"].current_command.as_deref(),
+            Some("agy")
+        );
     }
 
     #[test]

@@ -278,7 +278,22 @@ struct ProcessEntry {
     pid: u32,
     name: String,
     #[serde(default)]
+    argv0: Option<String>,
+    #[serde(default)]
     cwd: Option<PathBuf>,
+}
+
+/// The command a process was started as. Rex's `name` follows the
+/// executable file, so an agent that renames its running binary to update
+/// itself (`agy` to `agy.<n>.old`) would read as a different command, and
+/// no `process_changed` event says so.
+fn process_command(name: &str, argv0: Option<&str>) -> String {
+    argv0
+        .map(|argv0| argv0.strip_prefix('-').unwrap_or(argv0))
+        .and_then(|argv0| Path::new(argv0).file_name())
+        .and_then(|file| file.to_str())
+        .unwrap_or(name)
+        .to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,6 +303,12 @@ impl ProcessReport {
     /// A block outlives its program, so an exited agent still has a block.
     fn has_exited(&self) -> bool {
         self.last_exit.is_some()
+    }
+
+    fn foreground_command(&self) -> Option<String> {
+        self.foreground
+            .as_ref()
+            .map(|fg| process_command(&fg.name, fg.argv0.as_deref()))
     }
 
     fn working_dir(&self) -> PathBuf {
@@ -571,7 +592,7 @@ fn pane_info(
     }
     Some(LivePaneInfo {
         pid: process.child.as_ref().map(|child| child.pid),
-        current_command: process.foreground.as_ref().map(|fg| fg.name.clone()),
+        current_command: process.foreground_command(),
         working_dir: process.working_dir(),
         title: (!title.is_empty()).then_some(title),
         session: Some(session.label.clone()),
@@ -2264,6 +2285,41 @@ mod tests {
         assert_eq!(report.child.as_ref().unwrap().pid, 85152);
         assert_eq!(report.foreground.as_ref().unwrap().name, "sleep");
         assert_eq!(report.working_dir(), PathBuf::from("/private/tmp"));
+    }
+
+    #[test]
+    fn an_agent_keeps_its_command_when_it_renames_its_running_binary() {
+        let view = view();
+        let window = &view.windows[1];
+        let command = |foreground: Value| {
+            let report: ProcessReport =
+                serde_json::from_value(json!({ "foreground": foreground })).unwrap();
+            pane_info(&view, window, &report, String::new())
+                .unwrap()
+                .current_command
+        };
+        let started = command(json!({ "pid": 9, "name": "agy", "argv0": "agy" }));
+        let updated = command(json!({
+            "pid": 9,
+            "name": "agy.1793778097211245000.old",
+            "path": "/Users/dev/.local/bin/agy.1793778097211245000.old",
+            "argv0": "agy",
+        }));
+        assert_eq!(started.as_deref(), Some("agy"));
+        assert_eq!(updated, started);
+        assert_eq!(
+            command(json!({ "pid": 9, "name": "agy", "argv0": "/Users/dev/.local/bin/agy" }))
+                .as_deref(),
+            Some("agy")
+        );
+        assert_eq!(
+            command(json!({ "pid": 8, "name": "zsh", "argv0": "-zsh" })).as_deref(),
+            Some("zsh")
+        );
+        assert_eq!(
+            command(json!({ "pid": 7, "name": "claude" })).as_deref(),
+            Some("claude")
+        );
     }
 
     #[test]

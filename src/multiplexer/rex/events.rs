@@ -80,7 +80,15 @@ pub(crate) struct Foreground {
     pub pid: Option<u32>,
     pub name: String,
     #[serde(default)]
+    pub argv0: Option<String>,
+    #[serde(default)]
     pub cwd: Option<PathBuf>,
+}
+
+impl Foreground {
+    pub fn command(&self) -> String {
+        super::process_command(&self.name, self.argv0.as_deref())
+    }
 }
 
 fn text(value: &Value, key: &str) -> Option<String> {
