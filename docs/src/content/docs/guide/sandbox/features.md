@@ -11,6 +11,8 @@ The `extra_mounts` option lets you mount additional host directories into the sa
 
 `extra_mounts` is a **global-only** setting. If set in a project's `.workmux.yaml`, it is ignored and a warning is logged. This prevents a malicious repository from mounting arbitrary host paths into the sandbox.
 
+These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
+
 Each entry can be a simple path string (read-only, mirrored into the guest at the same path) or a detailed spec with `host_path`, optional `guest_path`, and optional `writable` flag.
 
 ```yaml
@@ -28,7 +30,7 @@ sandbox:
 
 Paths starting with `~` are expanded to the user's home directory. When `guest_path` is omitted, the expanded host path is used as the guest mount point.
 
-**Note:** For the Lima backend, mount changes only take effect when the VM is created. To apply changes to an existing VM, recreate it with `workmux sandbox prune`.
+**Note:** For the Lima backend, mount changes only take effect when the VM is created. To apply changes to an existing VM, recreate it with `workrex sandbox prune`.
 
 **Note:** Apple Container only supports directory mounts. Individual file paths in `extra_mounts` will fail with Apple Container.
 
@@ -50,7 +52,7 @@ sandbox:
 
 `host_commands` is only read from your global config. If set in a project's `.workmux.yaml`, it is ignored and a warning is logged. This ensures that only you control which commands get host access, not the projects you clone.
 
-When configured, workmux creates shim scripts inside the sandbox that transparently forward these commands to the host via RPC. The host runs them in the project's toolchain environment (Devbox/Nix if available), streams stdout/stderr back to the sandbox in real-time, and returns the exit code.
+When configured, workrex creates shim scripts inside the sandbox that transparently forward these commands to the host via RPC. The host runs them in the project's toolchain environment (Devbox/Nix if available), streams stdout/stderr back to the sandbox in real-time, and returns the exit code.
 
 Some commands are built-in and always available as host-exec shims without configuration (e.g., `afplay` for sound notifications). Only commands listed in `host_commands` or built-in are allowed; there is no wildcard or auto-discovery.
 
@@ -78,19 +80,19 @@ Host-exec applies several layers of defense to limit what a compromised agent in
 
 ## Sound notifications
 
-Claude Code hooks often use `afplay` to play notification sounds (e.g., when an agent finishes). Since `afplay` is a macOS-only binary, it doesn't exist inside the Linux guest. workmux includes `afplay` as a built-in host-exec shim that forwards sound playback to the host. This works with both Lima and container backends.
+Claude Code hooks often use `afplay` to play notification sounds (e.g., when an agent finishes). Since `afplay` is a macOS-only binary, it doesn't exist inside the Linux guest. workrex includes `afplay` as a built-in host-exec shim that forwards sound playback to the host. This works with both Lima and container backends.
 
 This is transparent: when a hook runs `afplay /System/Library/Sounds/Glass.aiff` inside the sandbox, the shim runs `afplay` on the host via the host-exec RPC mechanism. No configuration is needed.
 
 ## Clipboard proxy
 
-Image pasting via Ctrl+V works inside the sandbox. workmux provides built-in shims for `wl-paste` and `xclip` that transparently proxy clipboard reads to the host. No configuration is needed.
+Image pasting via Ctrl+V works inside the sandbox. workrex provides built-in shims for `wl-paste` and `xclip` that transparently proxy clipboard reads to the host. No configuration is needed.
 
 Currently only `image/png` is supported. Text clipboard works natively through the terminal and does not need proxying.
 
 ## Git identity
 
-The sandbox does not mount your `~/.gitconfig` because it may contain credential helpers, shell aliases, or other sensitive configuration. Instead, workmux automatically extracts your `user.name` and `user.email` from the host's git config and injects them into the sandbox via environment variables (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`).
+The sandbox does not mount your `~/.gitconfig` because it may contain credential helpers, shell aliases, or other sensitive configuration. Instead, workrex automatically extracts your `user.name` and `user.email` from the host's git config and injects them into the sandbox via environment variables (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`).
 
 This means git commits inside the sandbox use your identity without exposing the rest of your git config. The extraction respects all git config scopes (system, global, conditional includes) by running from the worktree directory, so directory-specific identities work correctly.
 
@@ -98,13 +100,13 @@ No configuration is needed. If the host has no `user.name` or `user.email` confi
 
 ## Agent flags
 
-Inside a sandbox the sandbox is the security boundary, so workmux starts agents without their own permission prompts: Claude with `--dangerously-skip-permissions`, Codex and Gemini with `--yolo`, and other agents with their equivalent. Flags your agent command already sets are not added a second time.
+Inside a sandbox the sandbox is the security boundary, so workrex starts agents without their own permission prompts: Claude with `--dangerously-skip-permissions`, Codex and Gemini with `--yolo`, and other agents with their equivalent. Flags your agent command already sets are not added a second time.
 
 Codex also gets `--no-daemon`. The sandbox mounts the host's `~/.codex`, where Codex installs and tracks its shared background server, but a sandboxed Codex can't reach a server running outside the sandbox. Without the flag, it fails to start once Codex on the host has installed the server ("daemon executable not found"), or installs a server of its own into the host's `~/.codex`.
 
-Codex also gets `--dangerously-bypass-hook-trust`. Codex otherwise asks you to review every new or changed hook before it runs, including the hooks workmux installs for [status tracking](/guide/status-tracking/), and the sandbox path of `~/.codex/hooks.json` differs from the host's, so approvals given on the host don't apply. Hooks run inside the sandbox, the same as any command the agent runs with `--yolo`, so the review adds no protection there. Hooks you disabled in Codex stay disabled. The flag applies to that launch only and records no approval.
+Codex also gets `--dangerously-bypass-hook-trust`. Codex otherwise asks you to review every new or changed hook before it runs, including the hooks workrex installs for [status tracking](/guide/status-tracking/), and the sandbox path of `~/.codex/hooks.json` differs from the host's, so approvals given on the host don't apply. Hooks run inside the sandbox, the same as any command the agent runs with `--yolo`, so the review adds no protection there. Hooks you disabled in Codex stay disabled. The flag applies to that launch only and records no approval.
 
-`--no-daemon` needs Codex 0.156 or newer. The workmux image installs the latest release. A custom image (`sandbox.image`) or a Lima VM with an older Codex fails to start Codex with "unexpected argument '--no-daemon'": update Codex in the image, or recreate the VM with `workmux sandbox prune`.
+`--no-daemon` needs Codex 0.156 or newer. The default image, upstream's `ghcr.io/raine/workmux-sandbox`, installs the latest release. A custom image (`sandbox.image`) or a Lima VM with an older Codex fails to start Codex with "unexpected argument '--no-daemon'": update Codex in the image, or recreate the VM with `workrex sandbox prune`.
 
 ## Credentials
 
@@ -127,7 +129,7 @@ Key behaviors:
 - Claude stores auth in macOS Keychain, which isn't accessible from containers or Linux VMs. You need to authenticate Claude separately inside the sandbox.
 - Authentication done inside the sandbox writes back to the host directory. Credentials persist across sandbox recreations.
 - The credential mount is determined by the `agent` setting. Switching agents requires recreating the sandbox (Lima) or starting a new container.
-- For `pi`, the entire `~/.pi/agent/` is shared except `bin/`. Pi auto-downloads platform-specific `fd` and `rg` binaries into `bin/`, so a Linux sandbox would otherwise overwrite a macOS host's Mach-O binaries through the bind mount. Workmux overlays a per-sandbox, arch-keyed directory on `bin/` to keep host and guest binaries separate.
+- For `pi`, the entire `~/.pi/agent/` is shared except `bin/`. Pi auto-downloads platform-specific `fd` and `rg` binaries into `bin/`, so a Linux sandbox would otherwise overwrite a macOS host's Mach-O binaries through the bind mount. Workrex overlays a per-sandbox, arch-keyed directory on `bin/` to keep host and guest binaries separate.
 - OMP uses file-backed state and credentials mounted from `~/.omp/agent/`.
 
 The container backend also uses a separate config file for Claude, mounted to `/tmp/.claude.json` inside the container. Docker/Podman use `~/.claude-sandbox.json` (file mount); Apple Container uses `~/.claude-sandbox-config/claude.json` (directory mount, since Apple Container only supports directory mounts).
@@ -152,7 +154,7 @@ This is useful when you want different MCP servers, project configs, or settings
 A coordinator agent sits on the main branch, plans work, and delegates tasks to worktree agents via `/worktree`. See [Workflows](/guide/workflows/#from-an-ongoing-agent-session) for more on this pattern.
 :::
 
-Coordinator agents can run inside a sandbox using `workmux sandbox agent`. When the coordinator calls `workmux add` from inside the sandbox, the command is automatically routed through RPC to the host, where sub-agents are created normally (and sandboxed if the project config enables it).
+Coordinator agents can run inside a sandbox using `workrex sandbox agent`. When the coordinator calls `workrex add` from inside the sandbox, the command is routed through RPC to the host, where sub-agents are created normally (and sandboxed if the project config enables it). The default image and Lima VMs have only upstream `workmux`, so run [`workrex sandbox install-dev`](#installing-local-builds) first.
 
 Alternatively, coordinators can run on the host (unsandboxed) and only sandbox leaf agents.
 
@@ -165,9 +167,9 @@ The supervisor and guest communicate via JSON-lines over TCP. Each request is a 
 - `SetStatus` - updates the tmux pane status icon (working/waiting/done/clear)
 - `SetTitle` - renames the tmux window
 - `Heartbeat` - health check, returns Ok
-- `SpawnAgent` - runs `workmux add` on the host to create a new worktree and pane
+- `SpawnAgent` - runs `workrex add` on the host to create a new worktree and pane
 - `Exec` - runs a command on the host and streams stdout/stderr back (used by host-exec shims, including built-in `afplay`)
-- `Merge` - runs `workmux merge` on the host with hooks disabled
+- `Merge` - runs `workrex merge` on the host with hooks disabled
 - `Remove` - asks the local machine to remove a workspace on a [remote server](/guide/remote/), without hooks; refused locally, where `pre_remove` hooks would run on the host
 - `ClipboardRead` - reads the host clipboard and writes image data to the shared worktree filesystem (used by `wl-paste`/`xclip` shims)
 
@@ -179,7 +181,7 @@ Requests are authenticated with a per-session token passed via the `WM_RPC_TOKEN
 
 Claude stores auth in macOS Keychain, so it must authenticate separately inside containers and VMs. Other agents (Gemini, Codex, OpenCode, OMP) use file-based credentials that are shared with the host automatically.
 
-If credentials are missing, start a shell in the sandbox with `workmux sandbox shell` and run the agent to trigger authentication. Credentials written inside the sandbox persist to the host.
+If credentials are missing, start a shell in the sandbox with `workrex sandbox shell` and run the agent to trigger authentication. Credentials written inside the sandbox persist to the host.
 
 ### Debugging blocked requests
 
@@ -195,7 +197,7 @@ Rejected entries include the denied hostname. Add any expected hosts to your san
 
 ## Installing local builds
 
-During development, the macOS host binary cannot run inside Linux containers or VMs. Use `install-dev` to cross-compile and install your local workmux build:
+During development, the macOS host binary cannot run inside Linux containers or VMs. Use `install-dev` to cross-compile and install your local workrex build:
 
 ```bash
 # First time: install prerequisites
@@ -203,16 +205,16 @@ rustup target add aarch64-unknown-linux-gnu
 brew install messense/macos-cross-toolchains/aarch64-unknown-linux-gnu
 
 # Cross-compile and install into containers and running VMs
-workmux sandbox install-dev
+workrex sandbox install-dev
 
 # After code changes, rebuild and reinstall
-workmux sandbox install-dev
+workrex sandbox install-dev
 
 # Use --release for optimized builds
-workmux sandbox install-dev --release
+workrex sandbox install-dev --release
 
 # Skip rebuild if binary hasn't changed
-workmux sandbox install-dev --skip-build
+workrex sandbox install-dev --skip-build
 ```
 
-For containers, this builds a thin overlay image (`FROM <image>` + `COPY workmux`) on top of the configured sandbox image, replacing it in-place. For Lima VMs, the binary is installed to `~/.local/bin/workmux` inside each running VM.
+For containers, this builds a thin overlay image (`FROM <image>` + `COPY workrex`) on top of the configured sandbox image, replacing it in-place. For Lima VMs, the binary is installed to `~/.local/bin/workrex` inside each running VM.
