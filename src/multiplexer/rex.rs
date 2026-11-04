@@ -4100,6 +4100,42 @@ mod tests {
         );
     }
 
+    /// An event that arrives while a second look waits on Rex may describe a
+    /// later foreground, so the read is not kept for the snapshot. Rex's
+    /// `process` answer waits until the event has been applied.
+    #[test]
+    fn a_second_look_that_overlapped_an_event_is_not_kept() {
+        let fake = FakeRex::new(&[
+            ("session.view", VIEW),
+            ("target.resolve", RESOLVE),
+            (
+                " process ",
+                "$touch \"$dir/asked\"; i=0; while [ ! -e \"$dir/answer\" ] && [ $i -lt 2000 ]; do sleep 0.01; i=$((i+1)); done; cat \"$dir/process\"",
+            ),
+            (" title ", r#"{"title":""}"#),
+        ]);
+        fake.write("process", PROCESS);
+        let reads = fake.rex.pane_reads();
+        let dir = fake.dir.path().to_path_buf();
+        let event = reads.clone();
+        let during = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !dir.join("asked").exists() {
+                assert!(Instant::now() < deadline, "the second look never asked");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            event.discard("block:another-pane");
+            std::fs::write(dir.join("answer"), "").unwrap();
+        });
+        assert!(
+            fake.rex
+                .validate_agent_alive(&agent_in_view(85152))
+                .unwrap()
+        );
+        during.join().unwrap();
+        assert!(reads.take().is_empty());
+    }
+
     /// A second look forgets only its own session's view, and leaves what
     /// it read for the sidebar daemon's snapshot, which no event corrects.
     #[test]
