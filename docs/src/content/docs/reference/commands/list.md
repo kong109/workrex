@@ -6,7 +6,7 @@ description: List all git worktrees with their agent, window, and merge status
 Lists git worktrees with their agent status, multiplexer window status, and merge status. Alias: `ls`
 
 ```bash
-workmux list [options] [worktree-or-branch...]
+workrex list [options] [worktree-or-branch...]
 ```
 
 ## Arguments
@@ -27,19 +27,19 @@ workmux list [options] [worktree-or-branch...]
 
 ```bash
 # List all worktrees
-workmux list
+workrex list
 
 # List with PR status
-workmux list --pr
+workrex list --pr
 
 # Output tracked projects as one JSON response
-workmux list --all --json
+workrex list --all --json
 
 # Filter to a specific worktree
-workmux list my-feature
+workrex list my-feature
 
 # Filter to multiple worktrees
-workmux list feature-auth feature-api
+workrex list feature-auth feature-api
 ```
 
 ## Remote workspaces

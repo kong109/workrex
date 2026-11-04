@@ -9,7 +9,7 @@ per-worktree settings in that file. Over time, as worktrees are merged or
 deleted, it can accumulate entries for paths that no longer exist.
 
 ```bash
-workmux claude prune
+workrex claude prune
 ```
 
 ## What happens
@@ -29,7 +29,7 @@ workmux claude prune
 
 ```bash
 # Clean up stale Claude Code entries
-workmux claude prune
+workrex claude prune
 ```
 
 ## Example output

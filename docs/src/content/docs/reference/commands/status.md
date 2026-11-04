@@ -7,7 +7,7 @@ Reports tracked agents in the current repository or in explicitly requested
 worktrees.
 
 ```bash
-workmux status [WORKTREE ...] [--all] [--json] [--git]
+workrex status [WORKTREE ...] [--all] [--json] [--git]
 ```
 
 ## Options
@@ -49,9 +49,11 @@ omitted when every agent's session is named after its project.
 }
 ```
 
+Under [Rex](/guide/rex/), `context.backend` is `rex` and `context.instance` is the Rex server's address.
+
 The counts describe successive stages of the observation.
 
-- `state_files_total`: JSON state files found in the workmux agents directory,
+- `state_files_total`: JSON state files found in the agents state directory,
   including files that cannot be decoded. Atomic-write temporary files are
   excluded.
 - `state_files_invalid`: State files that cannot be decoded across all
@@ -73,7 +75,7 @@ The counts describe successive stages of the observation.
 The observation does not remove stale or invalid state files. It excludes stale
 entries from `agents` and leaves persisted evidence available for later cleanup
 or diagnosis. If invalid state blocks an observation, inspect the agents
-directory under the workmux XDG state directory and remove or repair the file
+directory (`~/.local/state/workmux/agents/` by default) and remove or repair the file
 reported in the warning log.
 
 `scope.repository` is the current repository when it can be resolved. With no
@@ -97,7 +99,7 @@ Agents on [remote servers](/guide/remote/) are reported with the local ones, lab
 - `attached`: whether a local window relays the agent
 - `connected`: whether the remote answered recently
 - `last_seen`: Unix time of the remote's last answer, or `null`
-- `ended`: present when the agent's session ended under it, for example `host_reboot` after the remote host restarted. `workmux open` starts it again.
+- `ended`: present when the agent's session ended under it, for example `host_reboot` after the remote host restarted. `workrex open` starts it again.
 
 Local agents have no `remote` field.
 
@@ -125,7 +127,7 @@ State files for another context can belong to an old or concurrently running
 multiplexer instance. Their presence is evidence of another context, not proof
 that the selected context is wrong.
 
-Workmux can observe only agents that produced tracking state. An agent without
+workrex can observe only agents that produced tracking state. An agent without
 configured or functioning status hooks remains invisible to this command.
 
 ## Errors
@@ -140,3 +142,5 @@ The command fails when it cannot complete the requested observation, including:
 - Git query failures when `--git` is requested
 - missing or ambiguous requested worktrees, reported in `target_errors` when an
   observation can otherwise be completed
+
+State paths keep their workmux names so existing workmux configs work. See [Configuration](/guide/configuration/).

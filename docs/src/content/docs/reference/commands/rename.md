@@ -4,11 +4,11 @@ description: Rename a worktree, its tmux window/session, and optionally the bran
 ---
 
 Renames a worktree's directory, its tmux window or session, and the per-worktree
-workmux metadata stored in git config. Optionally also renames the underlying
+workrex metadata stored in git config. Optionally also renames the underlying
 git branch.
 
 ```bash
-workmux rename [old-name] <new-name> [--branch]
+workrex rename [old-name] <new-name> [--branch]
 ```
 
 ## Arguments
@@ -31,17 +31,19 @@ workmux rename [old-name] <new-name> [--branch]
 5. Sandbox container marker directory, if present
 6. The local git branch, only when `--branch` is passed
 
+Config and state paths keep their workmux names so existing workmux configs work. See [Configuration](/guide/configuration/).
+
 ## Examples
 
 ```bash
 # Rename a worktree from inside it
-workmux rename feature-new
+workrex rename feature-new
 
 # Rename a specific worktree by name
-workmux rename feature-old feature-new
+workrex rename feature-old feature-new
 
 # Also rename the branch to match
-workmux rename feature-old feature-new --branch
+workrex rename feature-old feature-new --branch
 ```
 
 ## Notes

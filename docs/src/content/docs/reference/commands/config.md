@@ -1,16 +1,16 @@
 ---
 title: "config"
-description: Edit, locate, or view the global workmux configuration file
+description: Edit, locate, or view the global workrex configuration file
 ---
 
-Manage the global workmux configuration file (`~/.config/workmux/config.yaml`).
+Manage the global workrex configuration file (`~/.config/workmux/config.yaml`). Config and state paths keep their workmux names so existing workmux configs work. See [Configuration](/guide/configuration/).
 
 ## config edit
 
 Open the global configuration file in your preferred editor.
 
 ```bash
-workmux config edit
+workrex config edit
 ```
 
 Uses `$VISUAL`, then `$EDITOR`, then falls back to `vi`. If the configuration file does not exist yet, it is created with commented-out defaults before opening.
@@ -20,7 +20,7 @@ Uses `$VISUAL`, then `$EDITOR`, then falls back to `vi`. If the configuration fi
 Print the path to the global configuration file. Useful for scripting.
 
 ```bash
-workmux config path
+workrex config path
 # Output: /home/user/.config/workmux/config.yaml
 ```
 
@@ -29,23 +29,23 @@ workmux config path
 Print the default configuration file with all options documented. Useful for discovering available options or piping to an AI agent for context.
 
 ```bash
-workmux config reference
+workrex config reference
 ```
 
 ## Examples
 
 ```bash
 # Edit global config
-workmux config edit
+workrex config edit
 
 # Use a specific editor
-EDITOR=nano workmux config edit
+EDITOR=nano workrex config edit
 
 # Print the config path (for use in scripts)
-cat "$(workmux config path)"
+cat "$(workrex config path)"
 
 # Print the default config reference
-workmux config reference
+workrex config reference
 ```
 
 ## See also
