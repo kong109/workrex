@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::multiplexer::rex::RexBackend;
 use crate::multiplexer::rex::events::Event;
 use crate::multiplexer::rex::sidebar_api::View;
+use crate::multiplexer::rex::{ProgramStatuses, RexBackend};
 use crate::multiplexer::tmux::TmuxSidebarSnapshot;
 use crate::multiplexer::{DaemonIo, LivePaneInfo};
 
@@ -47,9 +47,18 @@ struct Cache {
 pub(super) struct Observed {
     cache: Mutex<Cache>,
     pub events_pid: AtomicU32,
+    /// The program statuses the daemon's tick reads through its own backend.
+    pub program_status: Arc<ProgramStatuses>,
 }
 
 impl Observed {
+    pub fn new(program_status: Arc<ProgramStatuses>) -> Self {
+        Self {
+            program_status,
+            ..Self::default()
+        }
+    }
+
     /// Replace every session's view, as at start and on the safety rebuild.
     pub fn replace_all(&self, rex: &RexBackend, views: Vec<View>, sidebars: &HashSet<String>) {
         let boot_id = rex.boot_id().ok();
@@ -94,6 +103,7 @@ impl Observed {
 
     /// Fold a terminal event into the pane it describes.
     pub fn apply(&self, event: &Event) {
+        self.program_status.apply(event);
         let mut cache = self.cache.lock().unwrap();
         match event {
             Event::ProcessChanged {

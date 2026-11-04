@@ -8,7 +8,7 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,9 +23,12 @@ use super::util;
 pub(crate) mod events;
 mod layer;
 pub(crate) mod sidebar_api;
+mod status;
 
 pub use layer::LayerHint;
 use layer::LayerKind;
+pub(crate) use status::ProgramStatuses;
+use status::Read;
 
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
 const TERMINAL_CREATOR: &str = "com.superlogical.terminal";
@@ -95,7 +98,7 @@ struct SessionView {
 #[derive(Debug, Deserialize)]
 struct WindowView {
     window_id: WindowId,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "status::deserialize_base_label")]
     label: String,
     #[serde(default)]
     focused_block_id: Option<BlockId>,
@@ -231,7 +234,7 @@ const READ_ONLY_API: [&str; 5] = [
     "server.version",
     "client.list",
 ];
-const READ_ONLY_BLOCK: [&str; 4] = ["process", "title", "size", "format"];
+const READ_ONLY_BLOCK: [&str; 5] = ["process", "title", "size", "format", "program_status"];
 
 /// Calls that leave the server as it was. Any other call drops reused reads.
 fn changes_nothing(args: &[&str]) -> bool {
@@ -712,6 +715,7 @@ pub struct RexBackend {
     registry: Option<PathBuf>,
     /// Env file the next respawned block sources (see `hosting`).
     respawn_env: Mutex<Option<PathBuf>>,
+    program_status: Arc<ProgramStatuses>,
 }
 
 impl RexBackend {
@@ -748,6 +752,7 @@ impl RexBackend {
                 .ok()
                 .map(|dir| dir.join("rex-sessions.json")),
             respawn_env: Mutex::new(None),
+            program_status: Arc::default(),
         }
     }
 
@@ -1227,17 +1232,28 @@ impl RexBackend {
         session: &SessionView,
         window: &WindowView,
         block: &BlockId,
+        read: Read,
     ) -> Result<Option<LivePaneInfo>> {
-        let Some(process) = found(self.block_call::<ProcessReport>(block, "process", json!({})))?
-        else {
+        let reading = self.program_status.begin(read);
+        let (process, title, program_status) = thread::scope(|scope| {
+            let title = scope.spawn(|| self.block_call::<TitleReport>(block, "title", json!({})));
+            let program_status = scope.spawn(|| self.query_program_status(block));
+            let process = self.block_call::<ProcessReport>(block, "process", json!({}));
+            let joined = "rex worker thread panicked";
+            (
+                process,
+                title.join().expect(joined),
+                program_status.join().expect(joined),
+            )
+        });
+        let Some(process) = found(process)? else {
             return Ok(None);
         };
         if process.has_exited() {
             return Ok(None);
         }
-        let title = found(self.block_call::<TitleReport>(block, "title", json!({})))?
-            .map(|report| report.title)
-            .unwrap_or_default();
+        self.observe_program_status(block, reading, program_status, process.foreground.as_ref());
+        let title = found(title)?.map(|report| report.title).unwrap_or_default();
         Ok(pane_info(session, window, &process, title))
     }
 
@@ -2040,12 +2056,16 @@ impl Multiplexer for RexBackend {
         Ok(())
     }
 
-    fn set_status(&self, _pane_id: &str, _icon: &str, _auto_clear_on_focus: bool) -> Result<()> {
-        Ok(())
+    fn set_status(&self, pane_id: &str, icon: &str, _auto_clear_on_focus: bool) -> Result<()> {
+        self.set_window_icon(pane_id, Some(icon))
     }
 
-    fn clear_status(&self, _pane_id: &str) -> Result<()> {
-        Ok(())
+    fn clear_status(&self, pane_id: &str) -> Result<()> {
+        self.set_window_icon(pane_id, None)
+    }
+
+    fn reported_status(&self, pane_id: &str) -> Option<ReportedStatus> {
+        self.program_status_of(pane_id)
     }
 
     fn ensure_status_format(&self, _pane_id: &str) -> Result<()> {
@@ -2150,7 +2170,7 @@ impl Multiplexer for RexBackend {
         let Some((window, _)) = view.terminal_blocks().find(|(_, id)| **id == block) else {
             return Ok(None);
         };
-        self.live_pane(&view, window, &block)
+        self.live_pane(&view, window, &block, Read::Look)
     }
 
     /// Runs only for a pane the batch read missed. A reused view would
@@ -2171,7 +2191,7 @@ impl Multiplexer for RexBackend {
             })
             .collect();
         let panes = parallel_map(&blocks, |(view, window, block)| {
-            self.live_pane(view, window, block)
+            self.live_pane(view, window, block, Read::Scan)
                 .map(|pane| pane.map(|pane| (block.as_str().to_string(), pane)))
         });
         Ok(panes
@@ -2674,6 +2694,273 @@ mod tests {
             .send_text_fragment("block:01a19e59-43d8-72fd-860c-3a1d6f183cc3", "")
             .unwrap();
         assert!(fake.calls("write").is_empty());
+    }
+
+    #[test]
+    fn a_backend_that_never_scans_reads_each_new_program_status() {
+        let fake = FakeRex::new(&[
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", PROCESS),
+        ]);
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let status = |state: &str| {
+            json!({ "records": [{ "state": state, "updated_at": "2026-11-03T08:00:00Z" }] })
+                .to_string()
+        };
+        let shown = |rex: &RexBackend| match rex.reported_status(block) {
+            Some(ReportedStatus::Agent { status, .. }) => Some(status),
+            _ => None,
+        };
+
+        fake.write("status", &status("working"));
+        assert_eq!(shown(&fake.rex), Some(AgentStatus::Working));
+        fake.write("status", &status("blocked"));
+        assert_eq!(shown(&fake.rex), Some(AgentStatus::Waiting));
+        fake.write("status", &status("done"));
+        assert_eq!(shown(&fake.rex), Some(AgentStatus::Done));
+    }
+
+    fn status_json(state: &str) -> String {
+        json!({ "records": [{ "state": state, "updated_at": "2026-11-03T08:00:00Z" }] }).to_string()
+    }
+
+    fn shown_status(rex: &RexBackend, block: &str) -> Option<AgentStatus> {
+        match rex.reported_status(block) {
+            Some(ReportedStatus::Agent { status, .. }) => Some(status),
+            _ => None,
+        }
+    }
+
+    /// `program_status` answers with the status it read on
+    /// entry, then blocks until the test has changed the status and dropped
+    /// the block's entry as the daemon's follower would.
+    fn overlapping_status_fake() -> FakeRex {
+        FakeRex::new(&[
+            ("target.resolve", RESOLVE),
+            ("session.view", VIEW),
+            (
+                "program_status",
+                "$s=$(cat \"$dir/status\"); : > \"$dir/entered\"; while [ ! -e \"$dir/go\" ]; do sleep 0.01; done; printf %s \"$s\"",
+            ),
+            ("process", PROCESS),
+            ("title", r#"{"title":""}"#),
+        ])
+    }
+
+    fn change_status_during_read(fake: &FakeRex, block: &str, read: impl FnOnce() + Send) {
+        let entered = fake.dir.path().join("entered");
+        thread::scope(|scope| {
+            let reader = scope.spawn(read);
+            while !entered.exists() {
+                thread::sleep(Duration::from_millis(5));
+            }
+            std::fs::write(fake.dir.path().join("status"), status_json("blocked")).unwrap();
+            fake.rex
+                .program_status
+                .apply(&events::Event::ProgramStatusChanged {
+                    session_id: "session:1".into(),
+                    block_id: block.into(),
+                    state: "blocked".into(),
+                    kind: None,
+                    app: None,
+                });
+            std::fs::write(fake.dir.path().join("go"), "").unwrap();
+            reader.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn a_followed_look_that_overlaps_a_drop_is_not_kept() {
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let fake = overlapping_status_fake();
+        fake.rex.program_status.follow(true);
+        std::fs::write(fake.dir.path().join("status"), status_json("working")).unwrap();
+        change_status_during_read(&fake, block, || {
+            assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+        });
+        assert_eq!(
+            shown_status(&fake.rex, block),
+            Some(AgentStatus::Waiting),
+            "the read that overlapped the drop was kept"
+        );
+    }
+
+    #[test]
+    fn a_followed_pane_read_that_overlaps_a_drop_is_not_kept() {
+        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
+        let fake = overlapping_status_fake();
+        fake.rex.program_status.follow(true);
+        std::fs::write(fake.dir.path().join("status"), status_json("working")).unwrap();
+        change_status_during_read(&fake, block, || {
+            assert!(fake.rex.get_live_pane_info(block).unwrap().is_some());
+        });
+        assert_eq!(
+            shown_status(&fake.rex, block),
+            Some(AgentStatus::Waiting),
+            "the pane read that overlapped the drop was kept"
+        );
+    }
+
+    #[test]
+    fn after_the_stream_ends_a_look_keeps_nothing() {
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let fake = FakeRex::new(&[
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", PROCESS),
+        ]);
+        fake.rex.program_status.follow(true);
+        fake.rex.program_status.follow(false);
+        std::fs::write(fake.dir.path().join("status"), status_json("working")).unwrap();
+        assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+        std::fs::write(fake.dir.path().join("status"), status_json("blocked")).unwrap();
+        assert_eq!(
+            shown_status(&fake.rex, block),
+            Some(AgentStatus::Waiting),
+            "a look after the stream ended was kept"
+        );
+    }
+
+    #[test]
+    fn a_scan_keeps_its_reads_for_the_reconcile_that_follows() {
+        let fake = FakeRex::new(&[
+            (
+                "session.list",
+                &session_list(&[("session:01a19e60-6410-7e09-a3ee-f675512a3a06", "fixture")]),
+            ),
+            ("session.view", VIEW),
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", PROCESS),
+            ("title", r#"{"title":""}"#),
+        ]);
+        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
+        fake.write("status", &status_json("working"));
+        assert!(
+            fake.rex
+                .get_all_live_pane_info()
+                .unwrap()
+                .contains_key(block)
+        );
+        let reads = fake.calls("program_status").len();
+        assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+        assert_eq!(
+            fake.calls("program_status").len(),
+            reads,
+            "the reconcile after a scan asked Rex again"
+        );
+    }
+
+    #[test]
+    fn a_process_change_does_not_reread_a_block_with_no_records() {
+        // A busy shell makes Rex send several `process_changed` a second.
+        let fake = FakeRex::new(&[
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", r#"{"foreground":{"pid":4242,"name":"zsh"}}"#),
+        ]);
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let process_changed = events::Event::ProcessChanged {
+            session_id: "session:1".into(),
+            block_id: block.into(),
+            foreground: None,
+        };
+        fake.write("status", r#"{"records":[]}"#);
+        fake.rex.program_statuses().follow(true);
+
+        assert_eq!(fake.rex.reported_status(block), None);
+        fake.rex.program_statuses().apply(&process_changed);
+        assert_eq!(fake.rex.reported_status(block), None);
+        assert_eq!(fake.calls("program_status").len(), 1, "no re-read");
+
+        fake.write("status", &status_json("working"));
+        fake.rex
+            .program_statuses()
+            .apply(&events::Event::ProgramStatusChanged {
+                session_id: "session:1".into(),
+                block_id: block.into(),
+                state: "working".into(),
+                kind: None,
+                app: None,
+            });
+        assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+        fake.rex.program_statuses().apply(&process_changed);
+        assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+        assert_eq!(
+            fake.calls("program_status").len(),
+            3,
+            "a record is read again"
+        );
+    }
+
+    #[test]
+    fn a_record_shows_once_its_owner_takes_the_foreground() {
+        // Rex can send an agent's first report before the process change
+        // that puts the agent in the foreground.
+        let fake = FakeRex::new(&[
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", "$cat \"$dir/process\""),
+        ]);
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let foreground = |pid: u32, name: &str| {
+            fake.write(
+                "process",
+                &json!({ "foreground": { "pid": pid, "name": name } }).to_string(),
+            );
+        };
+        let owner = json!({ "pid": 82590, "name": "Python" });
+        let record =
+            json!({ "state": "working", "updated_at": "2026-11-03T08:00:00Z", "owner": owner });
+        fake.write("status", &json!({ "records": [record] }).to_string());
+        foreground(4242, "zsh");
+        fake.rex.program_statuses().follow(true);
+
+        assert_eq!(shown_status(&fake.rex, block), None, "zsh is in front");
+        foreground(82590, "Python");
+        fake.rex
+            .program_statuses()
+            .apply(&events::Event::ProcessChanged {
+                session_id: "session:1".into(),
+                block_id: block.into(),
+                foreground: None,
+            });
+        assert_eq!(shown_status(&fake.rex, block), Some(AgentStatus::Working));
+    }
+
+    #[test]
+    fn a_look_at_one_pane_keeps_nothing_that_no_stream_drops() {
+        // The sidebar daemon's backend reads this way until its event stream
+        // connects and between streams. Reconcile's validate_agent_alive
+        // asks get_live_pane_info for a hooked agent whose pane the
+        // event-built snapshot lacks.
+        let fake = FakeRex::new(&[
+            ("target.resolve", RESOLVE),
+            ("session.view", VIEW),
+            ("program_status", "$cat \"$dir/status\""),
+            ("process", PROCESS),
+            ("title", r#"{"title":""}"#),
+        ]);
+        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
+        let status = |state: &str| {
+            json!({ "records": [{ "state": state, "updated_at": "2026-11-03T08:00:00Z" }] })
+                .to_string()
+        };
+        let shown = |rex: &RexBackend| match rex.reported_status(block) {
+            Some(ReportedStatus::Agent { status, .. }) => Some(status),
+            _ => None,
+        };
+        fake.write("status", &status("working"));
+        assert!(fake.rex.get_live_pane_info(block).unwrap().is_some());
+        assert_eq!(shown(&fake.rex), Some(AgentStatus::Working));
+        fake.write("status", &status("blocked"));
+        assert_eq!(
+            shown(&fake.rex),
+            Some(AgentStatus::Waiting),
+            "after one validation"
+        );
+        fake.write("status", &status("done"));
+        assert_eq!(
+            shown(&fake.rex),
+            Some(AgentStatus::Done),
+            "after one validation"
+        );
     }
 
     pub(super) const APP: &str = "client:app-1";
@@ -3282,7 +3569,25 @@ mod tests {
                 "client.list",
             ]
         );
-        assert_eq!(READ_ONLY_BLOCK, ["process", "title", "size", "format"]);
+        assert_eq!(
+            READ_ONLY_BLOCK,
+            ["process", "title", "size", "format", "program_status"]
+        );
+    }
+
+    #[test]
+    fn a_program_status_read_keeps_the_reads_before_it() {
+        let fake = FakeRex::new(&[
+            ("session.view", "{}"),
+            ("program_status", r#"{"records":[]}"#),
+        ])
+        .reusing();
+        fake.view();
+        let block = BlockId("block:01a19e59-43d8-72fd-860c-3a1d6f183cc3".into());
+        let _ = fake.rex.query_program_status(&block);
+        assert_eq!(fake.calls("program_status").len(), 1);
+        fake.view();
+        assert_eq!(fake.calls("session.view").len(), 1);
     }
 
     #[test]

@@ -71,14 +71,24 @@ impl SidebarHost for RexBackend {
     fn attach_daemon(&self) -> Result<Box<dyn DaemonIo>> {
         let instance = self.resolve_instance_id()?;
         let files = Files::for_instance(&instance)?;
-        let plane = daemon_plane(self, files.clone(), Config::load(None)?)?;
-        let observed = Arc::new(Observed::default());
+        let (plane, observed) = self.daemon_parts(&files, Config::load(None)?)?;
+        control::spawn(plane, observed.clone(), daemon::socket_path(&instance));
+        Ok(Box::new(RexDaemonIo { observed, files }))
+    }
+}
+
+impl RexBackend {
+    /// The daemon's control plane and what its event follower observes. The
+    /// follower shares this backend's program statuses, so the daemon's
+    /// reconcile keeps each one until an event drops it.
+    fn daemon_parts(&self, files: &Files, config: Config) -> Result<(Plane, Arc<Observed>)> {
+        let plane = daemon_plane(self, files.clone(), config)?;
+        let observed = Arc::new(Observed::new(self.program_statuses()));
         // The first tick must see the server, or the daemon would treat
         // every agent's pane as gone.
         let sidebars = control::sidebar_blocks(&files.records());
         observed.replace_all(&plane.rex, plane.rex.sidebar_views()?, &sidebars);
-        control::spawn(plane, observed.clone(), daemon::socket_path(&instance));
-        Ok(Box::new(RexDaemonIo { observed, files }))
+        Ok((plane, observed))
     }
 }
 
@@ -496,6 +506,83 @@ mod tests {
     const WITH_SIDEBAR: &str = include_str!("../../../multiplexer/testdata/rex_sidebar_view.json");
     const SESSION: &str = "session:01a19e92-e5aa-7c77-a9b2-9042bbdbf620";
     const SIDEBAR: &str = "block:01a19e93-b76d-7c44-9a83-651cbd8da21e";
+
+    #[test]
+    fn the_daemon_starts_with_the_windows_the_server_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let view = dir.path().join("view");
+        std::fs::write(&view, WITH_SIDEBAR).unwrap();
+        let rex = RexBackend::scripted(
+            dir.path(),
+            format!(
+                "cat > /dev/null\ncase \"$*\" in\n\
+                 \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
+                 \x20 *session.list*) echo '{{\"sessions\":[{{\"session_id\":\"{SESSION}\"}}]}}';;\n\
+                 \x20 *session.view*) cat '{}';;\n\
+                 \x20 *) exit 1;;\nesac\n",
+                view.display(),
+            ),
+        );
+        let files = Files::at(dir.path().join("state"), "test");
+        let (_plane, observed) = rex.daemon_parts(&files, Config::default()).unwrap();
+        assert_eq!(
+            observed.window_ids(),
+            std::collections::HashSet::from([
+                "window:01a19e92-e5ba-7c40-bd4e-37d60b3ba9bb".to_string()
+            ]),
+            "the first tick sees the server's windows"
+        );
+    }
+
+    #[test]
+    fn the_daemon_keeps_each_status_its_follower_has_not_dropped() {
+        use crate::multiplexer::rex::events::Event;
+        use crate::multiplexer::{AgentStatus, ReportedStatus};
+        const PROCESS: &str = include_str!("../../../multiplexer/testdata/rex_process.json");
+        let dir = tempfile::tempdir().unwrap();
+        let status = dir.path().join("status");
+        let process = dir.path().join("process");
+        std::fs::write(&process, PROCESS).unwrap();
+        let rex = RexBackend::scripted(
+            dir.path(),
+            format!(
+                "cat > /dev/null\ncase \"$*\" in\n\
+                 \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
+                 \x20 *session.list*) echo '{{\"sessions\":[]}}';;\n\
+                 \x20 *program_status*) cat '{}';;\n\
+                 \x20 *process*) cat '{}';;\n\
+                 \x20 *) exit 1;;\nesac\n",
+                status.display(),
+                process.display(),
+            ),
+        );
+        let files = Files::at(dir.path().join("state"), "test");
+        let (_plane, observed) = rex.daemon_parts(&files, Config::default()).unwrap();
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let report = |state: &str| {
+            let record = format!(r#"{{"state":"{state}","updated_at":"2026-11-03T08:00:00Z"}}"#);
+            std::fs::write(&status, format!(r#"{{"records":[{record}]}}"#)).unwrap();
+        };
+        let shown = || match rex.reported_status(block) {
+            Some(ReportedStatus::Agent { status, .. }) => Some(status),
+            _ => None,
+        };
+
+        // What the follower does once its stream connects.
+        observed.program_status.follow(true);
+        report("working");
+        assert_eq!(shown(), Some(AgentStatus::Working));
+        report("blocked");
+        assert_eq!(shown(), Some(AgentStatus::Working), "kept until an event");
+        observed.apply(&Event::ProgramStatusChanged {
+            session_id: "session:1".into(),
+            block_id: block.into(),
+            state: "blocked".into(),
+            kind: None,
+            app: None,
+        });
+        assert_eq!(shown(), Some(AgentStatus::Waiting));
+    }
 
     /// Another process places a sidebar between two of the daemon's reads of
     /// a session, the second read coming at once, as an event's would.

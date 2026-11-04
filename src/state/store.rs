@@ -402,6 +402,11 @@ impl StateStore {
         self.base_path.join("agents")
     }
 
+    /// Path to the statuses readers saw panes report.
+    pub(crate) fn reported_dir(&self) -> PathBuf {
+        self.base_path.join("reported")
+    }
+
     /// Path to containers directory.
     fn containers_dir(&self) -> PathBuf {
         self.base_path.join("containers")
@@ -1434,6 +1439,7 @@ impl StateStore {
         prune_stale: bool,
     ) -> Result<Vec<crate::multiplexer::AgentPane>> {
         let backend = mux.name();
+        let mut reports = super::reported::Reports::new(mux, instance);
         let auto_renamed_tmux_windows = if backend == "tmux" {
             tmux_auto_renamed_windows(live_panes)
         } else {
@@ -1531,6 +1537,8 @@ impl StateStore {
                     }
                 }
                 Some(live) => {
+                    let mut state = state;
+                    reports.overlay(&mut state);
                     // Valid - include in dashboard
                     let mut agent_pane = state.to_agent_pane(
                         live.session
@@ -1568,6 +1576,10 @@ impl StateStore {
             }
         }
 
+        valid_agents.extend(reports.adopt(live_panes, current_boot_id));
+        if prune_stale {
+            reports.persist(self, live_panes)?;
+        }
         Ok(valid_agents)
     }
 }

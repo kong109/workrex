@@ -681,6 +681,12 @@ pub trait Multiplexer: Send + Sync {
     /// Ensure the status format is configured (for backends that need it)
     fn ensure_status_format(&self, pane_id: &str) -> Result<()>;
 
+    /// What the agent in a pane reported to the multiplexer itself, if the
+    /// backend has such reports. It wins over hook-reported status.
+    fn reported_status(&self, _pane_id: &str) -> Option<ReportedStatus> {
+        None
+    }
+
     // === Pane Setup ===
 
     /// Split a pane, returning the new pane ID.

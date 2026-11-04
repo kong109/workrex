@@ -18,7 +18,7 @@ pub fn run() -> Result<()> {
 
     // Read agent state directly from disk without validating against tmux.
     // This avoids O(n) tmux queries. Dead panes are handled during switch.
-    let agents = store.list_all_agents()?;
+    let agents = crate::state::reported::with_reported(&store, store.list_all_agents()?)?;
 
     // Filter to done/waiting agents for current backend/instance
     let backend_name = mux.name();

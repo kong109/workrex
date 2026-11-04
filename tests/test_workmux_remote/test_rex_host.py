@@ -7,6 +7,7 @@ whose isolated server stands in for the node's."""
 import json
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -469,3 +470,45 @@ def test_a_hosted_start_runs_four_rex_processes(
     start = [step for parent, step in calls if " node start-execution" in parent]
     assert start == ["do open", "session.create", "do respawn", "write"], calls
     wm(env, workmux_exe_path, mux_repo_path, "remove --force feat")
+
+
+def test_a_long_watch_sees_each_hosted_program_status(
+    mux_server, workmux_exe_path: Path, mux_repo_path: Path, node, tmp_path: Path
+):
+    """One node watch stream spans every report: the node's Rex backend
+    keeps no program status between its polls, so a long `wait` sees the
+    status that follows the one it first read."""
+    env, exe, repo = mux_server, workmux_exe_path, mux_repo_path
+    script = tmp_path / "agent.py"
+    script.write_text(
+        "import sys\n"
+        'print("AGENT-UP", flush=True)\n'
+        "for line in sys.stdin:\n"
+        '    sys.stdout.write("\\x1b]7501;" + line.strip() + "\\x1b\\\\")\n'
+        "    sys.stdout.flush()\n"
+    )
+    claude = write_script(
+        tmp_path / "claude",
+        f"{hook_bin()} set-window-status working </dev/null\n"
+        f"{shlex.quote(sys.executable)} -u {shlex.quote(str(script))}\n",
+    )
+    commit_project(
+        repo,
+        {"nerdfont": False, "agent": str(claude), "panes": [{"command": "<agent>"}]},
+    )
+    wm(env, exe, repo, "add feat --remote lo")
+    node.wait_for_agent(env, "feat", "AGENT-UP")
+    [record] = local_records(env)
+    [session] = record["execution"]["rex"]["sessions"].values()
+    [block] = blocks(node, session)
+    rex = rex_of(node)
+    rex.send_keys(block, "state=working:app=fake")
+    waiter = start_workmux(env, exe, repo, "wait", "feat", "--timeout", "30")
+    try:
+        time.sleep(4)
+        assert waiter.poll() is None, "wait returned before the agent was done"
+        rex.send_keys(block, "state=done:app=fake")
+        assert waiter.wait(timeout=15) == 0
+    finally:
+        waiter.kill()
+        waiter.wait()
