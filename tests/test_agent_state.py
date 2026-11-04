@@ -1084,6 +1084,18 @@ def test_set_window_status_ignores_muse_events_outside_a_turn(
 
     run_status("done", {"hook_event_name": "Stop", "session_id": "s"})
     assert poll_until(lambda: status() == "done", timeout=5.0)
+
+    # Muse's async ToolUseStart can land after Stop. It only clears waiting.
+    tool_start = {"hook_event_name": "ToolUseStart", "session_id": "s"}
+    run_status("working", tool_start)
+    assert_stays("done")
+    run_status("waiting", {"hook_event_name": "Notification", "session_id": "s"})
+    assert poll_until(lambda: status() == "waiting", timeout=5.0)
+    run_status("working", tool_start)
+    assert poll_until(lambda: status() == "working", timeout=5.0)
+
+    run_status("done", {"hook_event_name": "Stop", "session_id": "s"})
+    assert poll_until(lambda: status() == "done", timeout=5.0)
     # Outside Muse the user_shell_ prefix means nothing.
     run_status("working", user_shell, target_env)
     assert poll_until(lambda: status() == "working", timeout=5.0)

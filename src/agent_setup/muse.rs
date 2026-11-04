@@ -220,13 +220,19 @@ fn read_record(dir: &Path) -> Result<Option<EnvVarsRecord>> {
         return Ok(None);
     }
     let content = fs::read_to_string(&path).context("Failed to read Muse env vars record")?;
-    let record = serde_json::from_str(&content).context("Muse env vars record is not valid")?;
+    let record = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "{} is not valid. Delete it and run the command again",
+            path.display()
+        )
+    })?;
     Ok(Some(record))
 }
 
-/// Add what one setup run changed to the record of earlier runs.
-fn save_record(dir: &Path, new: EnvVarsRecord) -> Result<()> {
-    let record = match read_record(dir)? {
+/// Add what one setup run changed to `earlier`, the record of the runs
+/// that wired the current settings.
+fn save_record(dir: &Path, earlier: Option<EnvVarsRecord>, new: EnvVarsRecord) -> Result<()> {
+    let record = match earlier {
         Some(mut record) => {
             for name in new.added {
                 if !record.added.contains(&name) {
@@ -236,7 +242,14 @@ fn save_record(dir: &Path, new: EnvVarsRecord) -> Result<()> {
             record.created_key |= new.created_key;
             record
         }
-        None if new == EnvVarsRecord::default() => return Ok(()),
+        None if new == EnvVarsRecord::default() => {
+            // A record left from an install these settings no longer carry.
+            if record_path_in(dir).exists() {
+                fs::remove_file(record_path_in(dir))
+                    .context("Failed to remove Muse env vars record")?;
+            }
+            return Ok(());
+        }
         None => new,
     };
     fs::write(
@@ -277,6 +290,9 @@ pub fn uninstall() -> Result<String> {
 
 fn uninstall_dir(dir: &Path) -> Result<String> {
     let hooks_path = hooks_path_in(dir);
+    // Read the record first, so a bad one stops uninstall before it removes
+    // the hooks file.
+    let record = read_record(dir)?;
     let result = json_config::json_hook_uninstall(
         &hooks_path,
         &JsonHookUninstallSpec {
@@ -294,7 +310,6 @@ fn uninstall_dir(dir: &Path) -> Result<String> {
     if hooks_path.exists() {
         return Ok(result);
     }
-    let record = read_record(dir)?;
     if let Some(mut settings) = read_settings(dir)?
         && unwire(&mut settings, &hooks_path, record.as_ref())
     {
@@ -341,6 +356,12 @@ fn install_dir(dir: &Path) -> Result<String> {
     let mut settings =
         read_settings(dir)?.unwrap_or_else(|| serde_json::json!({ "schema_version": 1 }));
     ensure_own_hooks_path(dir, &settings, &hooks_path)?;
+    // A record describes the settings it was made with. Settings that no
+    // longer point at the hooks file start a new record.
+    let earlier = match configured_hooks_path(&settings) {
+        Some(path) if Path::new(path) == hooks_path => read_record(dir)?,
+        _ => None,
+    };
     // Wire in memory first, so a settings.json Muse could not use stops
     // setup before it writes anything.
     let added = wire(&mut settings, &hooks_path)?;
@@ -357,7 +378,7 @@ fn install_dir(dir: &Path) -> Result<String> {
         },
         hooks::merge_missing_hook_commands,
     )?;
-    save_record(dir, added)?;
+    save_record(dir, earlier, added)?;
     write_settings(dir, &settings)?;
 
     Ok(format!("Installed hooks to {}", hooks_path.display()))
@@ -659,6 +680,109 @@ mod tests {
             assert_eq!(settings_in(dir), original);
             assert!(!record_path_in(dir).exists());
         }
+    }
+
+    #[test]
+    fn test_bad_record_stops_uninstall_before_it_removes_anything() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        install_dir(dir).unwrap();
+        let settings = settings_in(dir);
+        fs::write(record_path_in(dir), "not json").unwrap();
+
+        let err = uninstall_dir(dir).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains(&record_path_in(dir).display().to_string()),
+            "{err:#}"
+        );
+        assert!(hooks_path_in(dir).exists());
+        assert_eq!(settings_in(dir), settings);
+    }
+
+    #[test]
+    fn test_bad_record_stops_setup_before_it_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        install_dir(dir).unwrap();
+        let mut config: Value =
+            serde_json::from_str(&fs::read_to_string(hooks_path_in(dir)).unwrap()).unwrap();
+        config["hooks"].as_object_mut().unwrap().remove("Stop");
+        fs::write(hooks_path_in(dir), config.to_string()).unwrap();
+        let hooks = fs::read_to_string(hooks_path_in(dir)).unwrap();
+        fs::write(record_path_in(dir), "not json").unwrap();
+
+        let err = install_dir(dir).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains(&record_path_in(dir).display().to_string()),
+            "{err:#}"
+        );
+        assert_eq!(fs::read_to_string(hooks_path_in(dir)).unwrap(), hooks);
+    }
+
+    #[test]
+    fn test_setup_ignores_a_record_its_settings_no_longer_carry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::write(dir.join("settings.json"), r#"{"schema_version":1}"#).unwrap();
+        install_dir(dir).unwrap();
+        // The user removes setup's changes by hand and keeps the record.
+        fs::remove_file(hooks_path_in(dir)).unwrap();
+        let own = r#"{"schema_version":1,"managed_hooks_env_vars":["TMUX","MY_VAR"]}"#;
+        fs::write(dir.join("settings.json"), own).unwrap();
+        install_dir(dir).unwrap();
+
+        uninstall_dir(dir).unwrap();
+
+        assert_eq!(
+            settings_in(dir),
+            serde_json::from_str::<Value>(own).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_rerun_setup_adds_to_the_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"managed_hooks_env_vars":["TMUX"]}"#,
+        )
+        .unwrap();
+        install_dir(dir).unwrap();
+        // The user drops the list, TMUX included; the next setup recreates it.
+        let mut settings = settings_in(dir);
+        settings.as_object_mut().unwrap().remove(ENV_VARS_KEY);
+        write_settings(dir, &settings).unwrap();
+        install_dir(dir).unwrap();
+
+        uninstall_dir(dir).unwrap();
+
+        assert_eq!(settings_in(dir), serde_json::json!({"schema_version": 1}));
+    }
+
+    #[test]
+    fn test_install_without_a_record_leaves_the_names_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"managed_hooks_env_vars":["MY_VAR"]}"#,
+        )
+        .unwrap();
+        install_dir(dir).unwrap();
+        // An install made before setup kept a record.
+        fs::remove_file(record_path_in(dir)).unwrap();
+        install_dir(dir).unwrap();
+        assert!(!record_path_in(dir).exists());
+        let names = settings_in(dir)[ENV_VARS_KEY].clone();
+
+        uninstall_dir(dir).unwrap();
+
+        let settings = settings_in(dir);
+        assert_eq!(settings[ENV_VARS_KEY], names);
+        assert!(settings.get(HOOKS_PATH_KEY).is_none());
     }
 
     #[test]

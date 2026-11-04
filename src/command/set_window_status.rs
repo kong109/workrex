@@ -97,7 +97,15 @@ pub fn run(cmd: SetWindowStatusCommand) -> Result<()> {
     {
         return Ok(());
     }
+    let only_clears_waiting = hook
+        .as_ref()
+        .is_some_and(|hook| hook.only_clears_waiting(in_muse));
     run_for_status_target(hook.as_ref(), |mux, pane_id| {
+        if only_clears_waiting
+            && crate::state::agent_status(mux, pane_id) != Some(AgentStatus::Waiting)
+        {
+            return Ok(());
+        }
         apply_status_update(
             &cmd,
             &config,
@@ -340,6 +348,8 @@ struct HookInput {
     initial_prompt: Option<String>,
     #[serde(default, deserialize_with = "lenient_string")]
     tool_use_id: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    hook_event_name: Option<String>,
     /// Set by Muse on events it sends after the turn's `Stop`.
     #[serde(default, deserialize_with = "lenient_bool")]
     post_stop: Option<bool>,
@@ -402,6 +412,13 @@ impl HookInput {
         let post_stop =
             self.post_stop == Some(true) && !matches!(cmd, SetWindowStatusCommand::Waiting);
         user_shell || post_stop
+    }
+
+    /// Muse runs `ToolUseStart` hooks only asynchronously, so one can land
+    /// after the turn's `Stop` or `Interrupt`. Its only job is to clear
+    /// `waiting` once the user answers an approval.
+    fn only_clears_waiting(&self, in_muse: bool) -> bool {
+        in_muse && self.hook_event_name.as_deref() == Some("ToolUseStart")
     }
 
     fn transcript_path(&self) -> Option<&Path> {
@@ -911,6 +928,17 @@ mod tests {
     }
 
     #[test]
+    fn only_muse_tool_use_start_is_limited_to_clearing_waiting() {
+        let start =
+            parse_hook_input(r#"{"hook_event_name":"ToolUseStart","session_id":"s"}"#).unwrap();
+        assert!(start.only_clears_waiting(true));
+        assert!(!start.only_clears_waiting(false));
+        let done =
+            parse_hook_input(r#"{"hook_event_name":"PostToolUse","session_id":"s"}"#).unwrap();
+        assert!(!done.only_clears_waiting(true));
+    }
+
+    #[test]
     fn muse_post_stop_events_keep_the_finished_status() {
         let tool = parse_hook_input(
             r#"{"hook_event_name":"PostToolUse","tool_use_id":"call_1","session_id":"s","post_stop":true}"#,
@@ -1240,6 +1268,7 @@ mod tests {
             initial_prompt: None,
             tool_use_id: None,
             post_stop: None,
+            hook_event_name: None,
         };
 
         assert!(continuation_owns_ancestry_pane(
@@ -1266,6 +1295,7 @@ mod tests {
             initial_prompt: None,
             tool_use_id: None,
             post_stop: None,
+            hook_event_name: None,
         };
         assert!(!continuation_owns_ancestry_pane(
             &agents,
