@@ -313,20 +313,41 @@ struct Reads {
 /// binary, so without them the snapshot would keep the stale command and
 /// every tick would look again.
 #[derive(Debug, Default)]
-pub(crate) struct PaneReads(Mutex<HashMap<String, LivePaneInfo>>);
+pub(crate) struct PaneReads(Mutex<KeptReads>);
+
+#[derive(Debug, Default)]
+struct KeptReads {
+    panes: HashMap<String, LivePaneInfo>,
+    /// Counts the events applied, so a read that overlapped one is not kept.
+    events: u64,
+}
 
 impl PaneReads {
-    pub(crate) fn put(&self, block: &str, pane: LivePaneInfo) {
-        self.0.lock().unwrap().insert(block.to_string(), pane);
+    /// Mark the start of a read, for `put`.
+    pub(crate) fn begin(&self) -> u64 {
+        self.0.lock().unwrap().events
     }
 
-    /// Forget a read that an event about `block` has made older news.
+    /// Keep a read that `begin` started, unless an event came in since.
+    /// The event may describe a later foreground, such as the shell the
+    /// agent exited to, and no later event would correct the read.
+    pub(crate) fn put(&self, block: &str, pane: LivePaneInfo, begun: u64) {
+        let mut reads = self.0.lock().unwrap();
+        if reads.events == begun {
+            reads.panes.insert(block.to_string(), pane);
+        }
+    }
+
+    /// An event about `block` makes its pending read, and any read under
+    /// way, older news.
     pub(crate) fn discard(&self, block: &str) {
-        self.0.lock().unwrap().remove(block);
+        let mut reads = self.0.lock().unwrap();
+        reads.events += 1;
+        reads.panes.remove(block);
     }
 
     pub(crate) fn take(&self) -> HashMap<String, LivePaneInfo> {
-        std::mem::take(&mut *self.0.lock().unwrap())
+        std::mem::take(&mut self.0.lock().unwrap().panes)
     }
 }
 
@@ -2318,9 +2339,11 @@ impl Multiplexer for RexBackend {
     /// batch read says changed. A reused view would repeat the batch's
     /// answer, and a miss prunes the agent.
     fn validate_agent_alive(&self, state: &crate::state::AgentState) -> Result<bool> {
+        let begun = self.pane_reads.begin();
         let live_pane = self.read_pane(&state.pane_key.pane_id, true)?;
         if let Some(pane) = &live_pane {
-            self.pane_reads.put(&state.pane_key.pane_id, pane.clone());
+            self.pane_reads
+                .put(&state.pane_key.pane_id, pane.clone(), begun);
         }
         Ok(super::pane_runs_agent(live_pane, state))
     }
@@ -4096,6 +4119,11 @@ mod tests {
         let other = SessionId("session:other".into());
         fake.rex.view(&other).unwrap();
         fake.rex.view(&SessionId(session.into())).unwrap();
+        // A plain pane read reuses the view; only a second look reads afresh.
+        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
+        assert!(fake.rex.get_live_pane_info(block).unwrap().is_some());
+        assert_eq!(fake.calls(session).len(), 1);
+        assert!(fake.rex.pane_reads().take().is_empty());
         assert!(
             fake.rex
                 .validate_agent_alive(&agent_in_view(85152))
@@ -4105,12 +4133,19 @@ mod tests {
         assert_eq!(fake.calls("session:other").len(), 1);
         assert_eq!(fake.calls(session).len(), 2);
         let reads = fake.rex.pane_reads().take();
-        assert_eq!(
-            reads["block:01a19e60-6442-727c-b026-9bb98fffd538"]
-                .current_command
-                .as_deref(),
-            Some("sleep")
-        );
+        assert_eq!(reads[block].current_command.as_deref(), Some("sleep"));
+    }
+
+    /// A view read that overlapped a forget must not be kept, or the next
+    /// read would reuse what Rex said before the forget.
+    #[test]
+    fn forgetting_a_view_keeps_an_overlapping_read_from_being_stored() {
+        let fake = FakeRex::new(&[]);
+        let session = SessionId("session:a".into());
+        let writes = || fake.rex.reads.lock().unwrap().writes;
+        let before = writes();
+        fake.rex.forget_view(&session);
+        assert_eq!(writes(), before + 1);
     }
 
     /// The second look checks the pid and command like the batch does, so a

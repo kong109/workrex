@@ -415,32 +415,42 @@ mod tests {
             cache.views.insert(view.session_id.clone(), view.clone());
             cache.panes.insert(block.clone(), pane("/repo"));
         }
-        let command = |observed: &Observed| {
+        let shown = |observed: &Observed| {
             observed
                 .snapshot(&Options::default(), &Persisted::default())
                 .live_panes[&block]
-                .current_command
                 .clone()
         };
         let read_again = LivePaneInfo {
+            pid: Some(42),
             current_command: Some("agy".into()),
-            ..pane("/repo")
+            ..pane("/repo/wt")
         };
+        let process_changed = Event::parse(&format!(
+            r#"{{"type":"session_event","payload":{{"session_id":"{}","event":{{"type":"block_event","payload":{{"block_id":"{block}","name":"process_changed","payload":{{"generation":5,"foreground":{{"pid":9,"name":"zsh","argv0":"-zsh"}}}}}}}}}}}}"#,
+            view.session_id
+        ))
+        .unwrap();
 
-        reads.put(&block, read_again.clone());
-        assert_eq!(command(&observed).as_deref(), Some("agy"));
-        assert_eq!(command(&observed).as_deref(), Some("agy"));
+        reads.put(&block, read_again.clone(), reads.begin());
+        let pane = shown(&observed);
+        assert_eq!(pane.current_command.as_deref(), Some("agy"));
+        assert_eq!(pane.pid, Some(42));
+        assert_eq!(pane.working_dir, PathBuf::from("/repo/wt"));
+        assert!(reads.take().is_empty());
+        assert_eq!(shown(&observed).current_command.as_deref(), Some("agy"));
 
         // An event after the read is newer news than the read.
-        reads.put(&block, read_again);
-        observed.apply(
-            &Event::parse(&format!(
-                r#"{{"type":"session_event","payload":{{"session_id":"{}","event":{{"type":"block_event","payload":{{"block_id":"{block}","name":"process_changed","payload":{{"generation":5,"foreground":{{"pid":9,"name":"zsh","argv0":"-zsh"}}}}}}}}}}}}"#,
-                view.session_id
-            ))
-            .unwrap(),
-        );
-        assert_eq!(command(&observed).as_deref(), Some("zsh"));
+        reads.put(&block, read_again.clone(), reads.begin());
+        observed.apply(&process_changed);
+        assert_eq!(shown(&observed).current_command.as_deref(), Some("zsh"));
+
+        // So is an event that arrives while the read is under way, as when
+        // the agent exits between Rex's answer and the read being kept.
+        let begun = reads.begin();
+        observed.apply(&process_changed);
+        reads.put(&block, read_again, begun);
+        assert_eq!(shown(&observed).current_command.as_deref(), Some("zsh"));
     }
 
     #[test]
