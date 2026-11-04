@@ -879,3 +879,53 @@ def test_a_closed_sidebar_outlasts_a_quit_elsewhere_and_goes_with_its_window(rex
     assert poll_until(lambda: closing not in closed_windows(env), timeout=3), (
         "the closed record outlived its window"
     )
+
+
+def test_a_balance_for_fewer_panes_is_not_a_drag(rex):
+    """Two panes open beside the sidebar before the daemon reacts to Rex.app's
+    balance for the first. The view then holds four row members and a third
+    for the sidebar, and only later the quarter of the second balance."""
+    env = rex
+    cli(env, "on")
+    assert poll_until(lambda: all_have_sidebars(env, env.session_id), timeout=2)
+    [window_id] = list(windows(env, env.session_id))
+    settings = env.home_path / ".local/state/workmux/settings.json"
+    side = placed_sidebar(windows(env, env.session_id)[window_id])
+    applied = side["ratio"]
+    pane = first_block(side["split"]["after"])
+    for _ in range(2):
+        env.api(
+            "session.new_split",
+            {
+                "session_id": env.session_id,
+                "anchor_id": pane,
+                "direction": "horizontal",
+                "side": "after",
+                "layout": shell_layout(env),
+            },
+        )
+
+    def set_root(ratio: float) -> None:
+        s = placed_sidebar(windows(env, env.session_id)[window_id])
+        env.api(
+            "session.resize_pane",
+            {
+                "session_id": env.session_id,
+                "direction": "horizontal",
+                "before_block_id": s["block_id"],
+                "after_block_id": first_block(s["split"]["after"]),
+                "ratio": ratio,
+            },
+        )
+
+    set_root(1 / 3)
+    time.sleep(1.0)
+    set_root(1 / 4)
+    time.sleep(1.0)
+    width = (
+        json.loads(settings.read_text()).get("sidebar_width")
+        if settings.exists()
+        else None
+    )
+    now = placed_sidebar(windows(env, env.session_id)[window_id])["ratio"]
+    assert width is None and abs(now - applied) < 0.02, (width, applied, now)

@@ -49,17 +49,23 @@ pub(super) enum SizeAction {
     },
 }
 
-/// How close a ratio must be to the even share to count as Rex's balance.
+/// How close a ratio must be to an even share to count as Rex's balance.
 /// Rex writes the exact fraction, and a drag lands on a pixel.
 const EVEN_SHARE_EPSILON: f64 = 1e-6;
 
-/// What one sidebar needs, given the ratio Rex shows now, the ratio Rex
-/// would set to balance the row, its columns, the window width, and the
-/// target width for that window.
+/// Whether Rex balanced the sidebar's row. The sidebar is the root's single
+/// `before` leaf, so a balance puts it at exactly 1/n. Any n counts: a second
+/// pane change can land before the daemon reads the first balance, so the row
+/// the daemon sees may not be the row Rex balanced.
+fn is_even_share(ratio: f64) -> bool {
+    (2..=64u32).any(|n| (ratio - 1.0 / f64::from(n)).abs() < EVEN_SHARE_EPSILON)
+}
+
+/// What one sidebar needs, given the ratio Rex shows now, its columns, the
+/// window width, and the target width for that window.
 pub(super) fn decide(
     record: &WindowSidebar,
     view_ratio: f64,
-    even_ratio: f64,
     cols: u32,
     window_cols: u32,
     target: u16,
@@ -67,7 +73,7 @@ pub(super) fn decide(
 ) -> SizeAction {
     let window = f64::from(window_cols.max(1));
     let moved = (view_ratio - record.applied_ratio).abs() > 0.5 / window;
-    if moved && (view_ratio - even_ratio).abs() < EVEN_SHARE_EPSILON {
+    if moved && is_even_share(view_ratio) {
         return SizeAction::Enforce {
             ratio: sidebar_ratio(target, window_cols),
         };
@@ -94,9 +100,6 @@ pub(super) fn decide(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The even ratio of a sidebar beside one pane.
-    const HALF: f64 = 0.5;
 
     fn record(applied_ratio: f64) -> WindowSidebar {
         WindowSidebar {
@@ -141,7 +144,7 @@ mod tests {
         // Same ratio at 160 columns renders 22: recompute for 30.
         let cols = (applied * 160.0).round() as u32;
         assert_eq!(
-            decide(&record(applied), applied, HALF, cols, 160, 30, false),
+            decide(&record(applied), applied, cols, 160, 30, false),
             SizeAction::Enforce {
                 ratio: sidebar_ratio(30, 160)
             }
@@ -152,11 +155,11 @@ mod tests {
     fn a_sidebar_within_a_column_of_its_target_is_kept() {
         let applied = sidebar_ratio(30, 218);
         assert_eq!(
-            decide(&record(applied), applied, HALF, 31, 218, 30, false),
+            decide(&record(applied), applied, 31, 218, 30, false),
             SizeAction::Keep
         );
         assert_eq!(
-            decide(&record(applied), applied + 0.001, HALF, 30, 218, 30, true),
+            decide(&record(applied), applied + 0.001, 30, 218, 30, true),
             SizeAction::Keep
         );
     }
@@ -164,13 +167,13 @@ mod tests {
     #[test]
     fn a_drag_persists_without_a_configured_width_and_snaps_back_with_one() {
         let applied = sidebar_ratio(30, 200);
-        let dragged = 0.25;
+        let dragged = 0.26;
         assert_eq!(
-            decide(&record(applied), dragged, HALF, 50, 200, 30, false),
-            SizeAction::PersistDrag { cols: 50 }
+            decide(&record(applied), dragged, 52, 200, 30, false),
+            SizeAction::PersistDrag { cols: 52 }
         );
         assert_eq!(
-            decide(&record(applied), dragged, HALF, 50, 200, 30, true),
+            decide(&record(applied), dragged, 52, 200, 30, true),
             SizeAction::SnapBack {
                 ratio: sidebar_ratio(30, 200)
             }
@@ -187,19 +190,36 @@ mod tests {
         let third = 1.0 / 3.0;
         for configured in [false, true] {
             assert_eq!(
-                decide(&record(applied), third, third, 67, 200, 30, configured),
+                decide(&record(applied), third, 67, 200, 30, configured),
                 target
             );
         }
         // The pane closed again: half each.
-        assert_eq!(
-            decide(&record(applied), HALF, HALF, 100, 200, 30, false),
-            target
-        );
+        assert_eq!(decide(&record(applied), 0.5, 100, 200, 30, false), target);
         // A drag in the same window still persists.
         assert_eq!(
-            decide(&record(applied), 0.3, third, 60, 200, 30, false),
+            decide(&record(applied), 0.3, 60, 200, 30, false),
             SizeAction::PersistDrag { cols: 60 }
+        );
+    }
+
+    #[test]
+    fn a_sidebar_already_at_the_even_share_is_kept() {
+        let applied = sidebar_ratio(40, 80);
+        assert_eq!(applied, 0.5);
+        assert_eq!(
+            decide(&record(applied), applied, 40, 80, 40, false),
+            SizeAction::Keep
+        );
+    }
+
+    #[test]
+    fn a_drag_a_pixel_off_the_even_share_persists() {
+        let applied = sidebar_ratio(30, 200);
+        let dragged = 1.0 / 3.0 + 1.0 / 1400.0;
+        assert_eq!(
+            decide(&record(applied), dragged, 67, 200, 30, false),
+            SizeAction::PersistDrag { cols: 67 }
         );
     }
 

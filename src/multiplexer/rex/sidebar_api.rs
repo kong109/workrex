@@ -67,35 +67,12 @@ pub(crate) struct Node {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Split {
     pub split_id: String,
-    #[serde(default)]
-    pub direction: String,
     pub ratio: f64,
     pub before: Node,
     pub after: Node,
 }
 
-impl Split {
-    /// The ratio Rex sets when it shares this split's row out evenly, as it
-    /// does when a pane opens or closes in the row. The row is every node
-    /// reached through splits of this split's direction.
-    pub(crate) fn even_ratio(&self) -> f64 {
-        let row = |node: &Node| node.row_members(&self.direction);
-        let before = row(&self.before);
-        f64::from(before) / f64::from(before + row(&self.after))
-    }
-}
-
 impl Node {
-    /// How many members of a `direction` row this node fills.
-    fn row_members(&self, direction: &str) -> u32 {
-        match &self.split {
-            Some(split) if split.direction == direction => {
-                split.before.row_members(direction) + split.after.row_members(direction)
-            }
-            _ => 1,
-        }
-    }
-
     /// The first block in reading order and its rect width.
     pub(crate) fn first_block(&self) -> Option<(&str, f64)> {
         match (&self.block_id, &self.split) {
@@ -362,45 +339,6 @@ mod tests {
     const WITH_SIDEBAR: &str = include_str!("../testdata/rex_sidebar_view.json");
     const BEFORE_SIDEBAR: &str = include_str!("../testdata/rex_sidebar_view_before.json");
     const MULTI_WINDOW: &str = include_str!("../testdata/rex_sidebar_view_multi.json");
-
-    fn split_of(json: serde_json::Value) -> Split {
-        serde_json::from_value(json).unwrap()
-    }
-
-    fn leaf() -> serde_json::Value {
-        json!({"rect": [0, 0, 1, 1], "block_id": "block:x"})
-    }
-
-    fn split(
-        direction: &str,
-        before: serde_json::Value,
-        after: serde_json::Value,
-    ) -> serde_json::Value {
-        json!({"rect": [0, 0, 1, 1], "split": {
-            "split_id": "split:x", "direction": direction, "ratio": 0.15,
-            "before": before, "after": after,
-        }})
-    }
-
-    /// Ratios seen on Rex.app after a pane opened or closed beside a sidebar.
-    #[test]
-    fn the_even_ratio_counts_the_members_of_the_root_row() {
-        let root = |after| split_of(split("horizontal", leaf(), after)["split"].clone());
-        assert_eq!(root(leaf()).even_ratio(), 0.5);
-        let beside = split("horizontal", leaf(), leaf());
-        assert_eq!(root(beside.clone()).even_ratio(), 1.0 / 3.0);
-        // A stacked pane fills one member of the row.
-        let stacked = split("vertical", leaf(), leaf());
-        assert_eq!(root(stacked.clone()).even_ratio(), 0.5);
-        assert_eq!(
-            root(split("vertical", beside.clone(), leaf())).even_ratio(),
-            0.5
-        );
-        assert_eq!(
-            root(split("horizontal", stacked, beside)).even_ratio(),
-            0.25
-        );
-    }
 
     #[test]
     fn a_window_with_a_sidebar_has_it_as_the_root_split_before_side() {
