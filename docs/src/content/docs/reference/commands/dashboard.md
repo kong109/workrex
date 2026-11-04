@@ -3,10 +3,10 @@ title: "dashboard"
 description: Open a TUI dashboard showing all active AI agents
 ---
 
-Opens a TUI dashboard showing all active AI agents across all tmux sessions.
+Opens a TUI dashboard showing all active AI agents across all multiplexer sessions.
 
 ```bash
-workmux dashboard
+workrex dashboard
 ```
 
 ## Options
@@ -20,19 +20,25 @@ workmux dashboard
 
 ```bash
 # Open dashboard with default layout
-workmux dashboard
+workrex dashboard
 
 # Open with smaller preview pane (40% of height)
-workmux dashboard --preview-size 40
+workrex dashboard --preview-size 40
 
 # Open diff view directly for current worktree
-workmux dashboard --diff
+workrex dashboard --diff
 
 # Show only agents in the current tmux session
-workmux dashboard --session
+workrex dashboard --session
 
 # Open directly on the Worktrees tab
-workmux dashboard --tab worktrees
+workrex dashboard --tab worktrees
 ```
+
+## Under Rex
+
+Under [Rex](/guide/rex/), choosing an agent moves Rex.app to the agent's tab and focuses its block. The jump asks the Rex.app client that owns your pane, and it needs Remote Control, which you turn on in Rex Settings. Without it, the dashboard stays open and shows the fix in its footer. Enter on a worktree row moves Rex.app to that worktree's session.
+
+To open the dashboard in a floating layer over the current tab, the Rex counterpart of a tmux popup, load `resources/rex/workrex.lua` from your Rex `init.lua`. The layer binds `Shift+Cmd+D` and passes its `args` to `workrex dashboard`. See [Rex dashboard](/guide/rex/#dashboard) for the setup.
 
 See the [Dashboard guide](/guide/dashboard/) for keybindings and detailed documentation.

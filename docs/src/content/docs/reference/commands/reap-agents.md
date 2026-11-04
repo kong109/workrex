@@ -6,14 +6,14 @@ description: Exit tracked agent processes older than a configured age
 Exit tracked agent processes whose last state update is older than a threshold.
 
 ```bash
-workmux reap-agents
-workmux reap-agents --hours 48
-workmux reap-agents --hours 24 --force
+workrex reap-agents
+workrex reap-agents --hours 48
+workrex reap-agents --hours 24 --force
 ```
 
 By default, the command prints matching agents without exiting them. It still
-reconciles workmux state while checking live panes. Pass `--force` to interrupt
-matching agents and remove their workmux agent state after they exit.
+reconciles workrex state while checking live panes. Pass `--force` to interrupt
+matching agents and remove their workrex agent state after they exit.
 
 ## Options
 

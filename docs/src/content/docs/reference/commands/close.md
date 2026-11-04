@@ -3,10 +3,10 @@ title: "close"
 description: Close a tmux window without removing the worktree or branch
 ---
 
-Closes the tmux window for a worktree without removing the worktree or branch. This is useful when you want to temporarily close a window to reduce clutter or free resources, but plan to return to the work later.
+Closes the multiplexer window for a worktree, and keeps the worktree and branch. Use it to close a window you plan to return to later.
 
 ```bash
-workmux close [name]
+workrex close [name]
 ```
 
 ## Arguments
@@ -17,15 +17,19 @@ workmux close [name]
 
 ```bash
 # Close the window for a specific worktree
-workmux close user-auth
+workrex close user-auth
 
 # Close the current worktree's window (run from within the worktree)
-workmux close
+workrex close
 ```
 
-To reopen the window later, use [`workmux open`](/reference/commands/open/).
+## Under Rex
 
-For a workspace on a [remote server](/guide/remote/), `close` closes only the local window: the agent keeps running on the server. Run it with no name inside the workspace's window, or name the workspace (`workmux close <handle>`). In a pane on the server, `close` is refused, because the window is on the local machine.
+When `close` closes a Rex session that Rex.app shows, the app moves to the first of these sessions that exists: [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session the worktree was added from. Without a destination, the app lands on the first session. An app that shows another session stays where it is. Closing a session does not need Rex Remote Control. See [Rex session mode](/guide/rex/#session-mode).
+
+To reopen the window later, use [`workrex open`](/reference/commands/open/).
+
+For a workspace on a [remote server](/guide/remote/), `close` closes only the local window: the agent keeps running on the server. Run it with no name inside the workspace's window, or name the workspace (`workrex close <handle>`). In a pane on the server, `close` is refused, because the window is on the local machine.
 
 :::tip
 You can also use tmux's native kill-window command (default: `prefix + &`) to close a worktree's window with the same effect. For worktrees created with `--session`, this closes the entire session.

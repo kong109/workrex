@@ -6,13 +6,13 @@ description: Merge a branch and clean up the worktree, window, and local branch
 Merges a branch into a target branch (main by default) and automatically cleans up all associated resources (worktree, tmux window, and local branch).
 
 ```bash
-workmux merge [branch-name] [flags]
+workrex merge [branch-name] [flags]
 ```
 
 :::tip[When to use `merge` vs `remove`]
-`workmux merge` performs the git merge locally. Use it when you want to merge directly without a pull request.
+`workrex merge` performs the git merge locally. Use it when you want to merge directly without a pull request.
 
-If your workflow uses pull requests, the merge happens on the remote after review. In that case, use [`workmux remove`](/reference/commands/remove/) to clean up the worktree after your PR is merged.
+If your workflow uses pull requests, the merge happens on the remote after review. In that case, use [`workrex remove`](/reference/commands/remove/) to clean up the worktree after your PR is merged.
 :::
 
 ## Arguments
@@ -27,13 +27,15 @@ If your workflow uses pull requests, the merge happens on the remote after revie
 | `--ignore-uncommitted` | Commit any staged changes before merging without opening an editor.                                                                                                                                                                                      |
 | `--keep, -k`           | Keep the worktree, window, and branch after merging (skip cleanup). Useful when you want to verify the merge before cleaning up.                                                                                                                         |
 | `--cleanup`            | Clean up after merging, overriding `merge_keep: true`.                                                                                                                                                                                                   |
+| `-n, --no-verify`      | Skip the `pre_merge` hooks.                                                                                                                                                                                                                              |
+| `--no-hooks`           | Skip all hooks, both `pre_merge` and `pre_remove`.                                                                                                                                                                                                       |
 | `--notification`       | Show a system notification on successful merge. Useful when delegating merge to an AI agent and you want to be notified when it completes.                                                                                                               |
 | `--rebase`             | Rebase the feature branch onto the target before merging (creates a linear history via fast-forward merge). If conflicts occur, you'll need to resolve them manually and run `git rebase --continue`.                                                    |
 | `--squash`             | Squash all commits from the feature branch into a single commit on the target. You'll be prompted to provide a commit message in your editor.                                                                                                            |
 
 ## Merge strategies
 
-By default, `workmux merge` performs a standard merge commit (configurable via `merge_strategy`). You can override the configured behavior with these mutually exclusive flags:
+By default, `workrex merge` performs a standard merge commit (configurable via `merge_strategy`). You can override the configured behavior with these mutually exclusive flags:
 
 - `--rebase`: Rebase the feature branch onto the target before merging (creates a linear history via fast-forward merge). If conflicts occur, you'll need to resolve them manually in the worktree and run `git rebase --continue`.
 - `--squash`: Squash all commits from the feature branch into a single commit on the target. You'll be prompted to provide a commit message in your editor.
@@ -45,13 +47,15 @@ If you don't want to have merge commits in your main branch, use the `rebase` me
 merge_strategy: rebase
 ```
 
+The config path keeps its workmux name so existing workmux configs work. See [Configuration](/guide/configuration/).
+
 To keep the worktree, window, and branch after every merge unless overridden, set:
 
 ```yaml
 merge_keep: true
 ```
 
-Use `workmux merge --cleanup` to clean up for a single merge when this default is enabled.
+Use `workrex merge --cleanup` to clean up for a single merge when this default is enabled.
 
 ## What happens
 
@@ -66,35 +70,39 @@ Use `workmux merge --cleanup` to clean up for a single merge when this default i
 
 ## Remote workspaces
 
-For a workspace on a [remote server](/guide/remote/), run `workmux merge <handle>` from the project on your machine. workmux fetches the branch and the uncommitted work into a local copy, then merges it as usual; all options apply. The remote agent keeps running until the merge succeeds, and its worktree, container and window are then removed. If the remote workspace changed after the fetch, it is kept and the merge still lands.
+For a workspace on a [remote server](/guide/remote/), run `workrex merge <handle>` from the project on your machine. workrex fetches the branch and the uncommitted work into a local copy, then merges it as usual; all options apply. The remote agent keeps running until the merge succeeds, and its worktree, container and window are then removed. If the remote workspace changed after the fetch, it is kept and the merge still lands.
 
-See [merging remote workspaces](/guide/remote/git/#merging) for preparing the merge worktree, uncommitted work, conflicts and `--keep`. In a remote workspace's pane, or from its agent, `workmux merge` asks the local machine to merge it; see [remove or merge from a remote pane](/guide/remote/usage/#remove-or-merge-from-a-remote-pane).
+See [merging remote workspaces](/guide/remote/git/#merging) for preparing the merge worktree, uncommitted work, conflicts and `--keep`. In a remote workspace's pane, or from its agent, `workrex merge` asks the local machine to merge it; see [remove or merge from a remote pane](/guide/remote/usage/#remove-or-merge-from-a-remote-pane).
+
+## Under Rex
+
+When `merge` closes a Rex session that Rex.app shows, the app moves to the first of these sessions that exists: the managed session of the merge target, then [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session the worktree was added from. Without a destination, the app lands on the first session. An app that shows another session stays where it is. Closing a session does not need Rex Remote Control. See [Rex session mode](/guide/rex/#session-mode).
 
 ## Typical workflow
 
-When you're done working in a worktree, simply run `workmux merge` from within that worktree's tmux window. The command will automatically detect which branch you're on, merge it into main, and close the current window as part of cleanup.
+When you're done working in a worktree, simply run `workrex merge` from within that worktree's tmux window. The command will automatically detect which branch you're on, merge it into main, and close the current window as part of cleanup.
 
 ## Examples
 
 ```bash
 # Merge branch into main (default: merge commit)
-workmux merge user-auth
+workrex merge user-auth
 
 # Merge the current worktree you're in
 # (run this from within the worktree's tmux window)
-workmux merge
+workrex merge
 
 # Rebase onto main before merging for a linear history
-workmux merge user-auth --rebase
+workrex merge user-auth --rebase
 
 # Squash all commits into a single commit
-workmux merge user-auth --squash
+workrex merge user-auth --squash
 
 # Merge but keep the worktree/window/branch to verify before cleanup
-workmux merge user-auth --keep
+workrex merge user-auth --keep
 # ... verify the merge in main ...
-workmux remove user-auth  # clean up later when ready
+workrex remove user-auth  # clean up later when ready
 
 # Merge into a different branch (stacked PRs)
-workmux merge feature/subtask --into feature/parent
+workrex merge feature/subtask --into feature/parent
 ```

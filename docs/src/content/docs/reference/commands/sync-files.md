@@ -8,7 +8,7 @@ Re-applies file operations (copy and symlink from the `files` config) to existin
 Unlike `open --force-files`, this command does not require tmux and works standalone from inside any worktree.
 
 ```bash
-workmux sync-files [--all]
+workrex sync-files [--all]
 ```
 
 ## Options
@@ -21,8 +21,8 @@ workmux sync-files [--all]
 
 ```bash
 # Sync files to the current worktree
-workmux sync-files
+workrex sync-files
 
 # Sync files to all worktrees at once
-workmux sync-files --all
+workrex sync-files --all
 ```
