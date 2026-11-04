@@ -14,7 +14,7 @@ The Zellij backend is new and experimental. It depends on unreleased Zellij feat
 
 <Screenshot
   src={screenshot}
-  alt="workmux running in zellij with multiple agents"
+  alt="workrex running in zellij with multiple agents"
   framed={false}
 />
 
@@ -31,7 +31,7 @@ The Zellij backend is new and experimental. It depends on unreleased Zellij feat
 | Dashboard preview    | Yes                  | No                |
 
 - **Tab ordering**: New tabs appear at the end of the tab bar (no "insert after" support like tmux)
-- **Session isolation**: workmux operates within the current Zellij session. Tabs in other sessions are not affected.
+- **Session isolation**: workrex operates within the current Zellij session. Tabs in other sessions are not affected.
 - **Window mode only**: Session mode (`--session`) is not supported. Use window mode instead.
 - **Pane splits**: Horizontal and vertical splits are 50/50 - percentage-based sizing is not available via the Zellij CLI.
 - **Stacked panes**: Use `split: stacked` in a pane config to create a Zellij stack with the previous pane, or with the pane selected by `target`.
@@ -55,7 +55,9 @@ cargo install --path .
 
 ## Configuration
 
-No special Zellij configuration is required. workmux uses Zellij's built-in CLI actions (`zellij action`) which work out of the box.
+No special Zellij configuration is required. workrex uses Zellij's built-in CLI actions (`zellij action`) which work out of the box.
+
+workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
 
 If you want to override the auto-detected backend, set the `WORKMUX_BACKEND` environment variable:
 
@@ -79,10 +81,10 @@ panes:
     target: 0
 ```
 
-Zellij pane display names are supported with `name`. workmux applies them using
+Zellij pane display names are supported with `name`. workrex applies them using
 `zellij action rename-pane --pane-id`, so the pane does not need to be focused.
 
-Agent status icons are appended to workmux tab titles. Zellij does not expose a
+Agent status icons are appended to workrex tab titles. Zellij does not expose a
 focus hook equivalent to tmux, so waiting and done icons are replaced by the
 next status update rather than clearing when the tab receives focus.
 

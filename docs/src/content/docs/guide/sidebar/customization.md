@@ -38,6 +38,8 @@ The values shown above are also the built-in defaults, so leaving these keys
 unset gives you the standard rendering. `top` is also accepted as an alias for
 `horizontal`.
 
+workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
+
 Templates can be set in either the global config or a project's `.workmux.yaml`.
 Project values override global values field by field, so a project that sets
 only `grouped.tiles` keeps the global `compact`, `tiles` and `horizontal`
@@ -52,7 +54,7 @@ sidebars without a restart.
 | `{secondary}`    | Secondary label from the same chain, with worktree appended if not already primary.                                                             |
 | `{worktree}`     | Worktree directory name.                                                                                                                        |
 | `{project}`      | Project name (parent of the worktree).                                                                                                          |
-| `{session}`      | Tmux session name (blank for workmux-prefixed sessions).                                                                                        |
+| `{session}`      | Tmux session name (blank for sessions named with `window_prefix`, such as the ones workrex creates).                                            |
 | `{window}`       | Tmux window name (blank for generic shell names like `zsh`, `bash`).                                                                            |
 | `{window_index}` | Tmux window number as shown in the status bar (e.g. `3` for `3:wm-fix-auth`), usable with `prefix+N`. Empty on backends without window indexes. |
 | `{pane_title}`   | Sanitized agent task title from the pane title.                                                                                                 |
@@ -157,7 +159,7 @@ Use `{{` for a literal `{` and `}}` for a literal `}`.
 
 ## Styling
 
-Templates accept the same tmux-style `#[...]` directives that workmux uses
+Templates accept the same tmux-style `#[...]` directives that workrex uses
 elsewhere (see [configuration](/guide/configuration/#agent-status-icons)). A
 directive is stateful: it applies to all subsequent literals, fields, and
 fill spaces on the same line until the next directive or `#[default]`. Each
@@ -206,7 +208,7 @@ Notes:
 
 Adding `{agent_icon}` or `{agent_label}` to a template surfaces which agent is
 running in each pane. Identity is detected from the stored agent command via
-the same profile system used elsewhere in workmux.
+the same profile system used elsewhere in workrex.
 
 Default icons:
 

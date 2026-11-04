@@ -6,15 +6,15 @@ description: A TUI for monitoring agents, reviewing changes, staging hunks, and 
 import Screenshot from "../../../../components/Screenshot.astro";
 import screenshot from "../../../../assets/screenshots/dashboard.webp";
 
-When running agents in multiple worktrees across many projects, it's helpful to have a centralized view of what each agent is doing. The dashboard provides a TUI for monitoring agents, reviewing their changes, staging hunks, and sending commands.
+When you run agents in many worktrees across several projects, the dashboard shows what each one is doing in one place. It is a TUI for monitoring agents, reviewing their changes, staging hunks and sending commands.
 
 :::note[Optional feature]
-The dashboard is entirely optional. It becomes especially useful when running multiple agents across several projects, but workmux's core workflow works great on its own.
+You do not need the dashboard to use workrex. It helps most when you run several agents across several projects.
 :::
 
 <div style="display: flex; justify-content: center; max-width: 45rem; margin: 1.5rem 0;">
 
-<Screenshot src={screenshot} alt="workmux dashboard" framed={false} />
+<Screenshot src={screenshot} alt="workrex dashboard" framed={false} />
 
 </div>
 
@@ -23,22 +23,29 @@ For an always-visible, non-intrusive alternative, see the [sidebar](/guide/sideb
 ## Setup
 
 :::caution[Prerequisites]
-The dashboard requires [status tracking hooks](/guide/status-tracking/) to be configured. Without them, no agents will appear.
+The dashboard lists agents that report their status. Configure [status tracking hooks](/guide/status-tracking/), or no agents appear. Under Rex, Claude Code reports its status to Rex without hooks. See [Rex program status](/guide/status-tracking/#rex-program-status).
 :::
+
+### Open it in tmux
 
 Add this binding to your `~/.tmux.conf`:
 
 ```bash
-bind C-s display-popup -h 30 -w 100 -E "workmux dashboard"
+bind C-s display-popup -h 30 -w 100 -E "workrex dashboard"
 ```
 
 Then press `prefix + Ctrl-s` to open the dashboard as a tmux popup. Feel free to adjust the keybinding and popup dimensions (`-h` and `-w`) as needed.
 
-In Rex, the dashboard opens in a floating layer instead. See [Rex](/guide/rex/#dashboard) for the `init.lua` setup.
+To open the dashboard without the tmux prefix, bind it to a key in your terminal emulator, such as `Cmd+E` or `Ctrl+E`.
 
-:::tip[Quick access]
-Consider binding the dashboard to a key you can press without the tmux prefix, such as `Cmd+E` or `Ctrl+E` in your terminal emulator. This makes it easy to check on your agents at any time.
-:::
+### Open it in Rex
+
+In Rex, the dashboard opens in a floating layer over the current tab, the Rex counterpart of a tmux popup. Load `workrex.lua` from your Rex `init.lua`, then press `Shift+Cmd+D`. See [Rex: Dashboard](/guide/rex/#dashboard) for the setup.
+
+These keys behave differently in the Rex layer:
+
+- Jumping to an agent moves Rex.app to that agent's tab. A jump to another tab or session needs Remote Control in Rex Settings.
+- `p` peeks only at agents in the layer's own tab. For an agent in another tab, press `Enter` to jump there instead.
 
 See [command reference](/reference/commands/dashboard/) for CLI options.
 

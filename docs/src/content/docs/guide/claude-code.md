@@ -1,6 +1,6 @@
 ---
 title: "Claude Code"
-description: Configure Claude Code permissions and settings for use with workmux worktrees
+description: Configure Claude Code permissions and settings for use with workrex worktrees
 ---
 
 ## Permissions
@@ -16,6 +16,8 @@ files:
   symlink:
     - .claude/settings.local.json
 ```
+
+workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
 
 Add this to your global config (`~/.config/workmux/config.yaml`) or project's `.workmux.yaml`. Since this file contains user-specific permissions, also add it to `.gitignore`:
 
@@ -33,7 +35,7 @@ agents:
   claude: "claude --dangerously-skip-permissions"
 ```
 
-This shadows the built-in `claude` name so all workmux-created worktrees use the flag automatically, without affecting `claude` outside of workmux.
+This shadows the built-in `claude` name so all worktrees that workrex creates use the flag automatically, without affecting `claude` outside of workrex.
 
 You can also use a separate name and reference it per-project:
 
@@ -76,11 +78,11 @@ Then set the agent per project:
 agent: cc-work
 ```
 
-Or use it directly: `workmux add feature -a cc-work`.
+Or use it directly: `workrex add feature -a cc-work`.
 
 ### Alternative: direnv
 
-You can also use [`CLAUDE_CONFIG_DIR`](https://code.claude.com/docs/en/env-vars) with [direnv](https://direnv.net/) to switch configurations per directory. This affects `claude` everywhere, not just workmux:
+You can also use [`CLAUDE_CONFIG_DIR`](https://code.claude.com/docs/en/env-vars) with [direnv](https://direnv.net/) to switch configurations per directory. This affects `claude` everywhere, not just workrex:
 
 ```bash
 # .envrc

@@ -18,7 +18,7 @@ The WezTerm backend is new and experimental. Expect rough edges and potential is
 | Scope                | tmux session         | WezTerm workspace |
 
 - **Tab ordering**: New tabs appear at the end of the tab bar (no "insert after" support like tmux)
-- **Workspace isolation**: workmux operates within the current WezTerm workspace (analogous to tmux sessions). Tabs in other workspaces are not affected.
+- **Workspace isolation**: workrex operates within the current WezTerm workspace (analogous to tmux sessions). Tabs in other workspaces are not affected.
 - **Exit detection**: Uses title heuristics to detect when agents exit
 
 ## Requirements
@@ -30,7 +30,7 @@ The WezTerm backend is new and experimental. Expect rough edges and potential is
 
 ## Required WezTerm configuration
 
-workmux relies on WezTerm's environment variables (`WEZTERM_PANE`, `WEZTERM_UNIX_SOCKET`) being consistent across all panes. This requires connecting to the mux server on startup.
+workrex relies on WezTerm's environment variables (`WEZTERM_PANE`, `WEZTERM_UNIX_SOCKET`) being consistent across all panes. This requires connecting to the mux server on startup.
 
 Add this to your `wezterm.lua`:
 
@@ -53,15 +53,17 @@ Additionally, if you have custom keybindings for creating tabs, ensure they use 
 -- CORRECT: Uses the current pane's domain (mux server)
 { key = 't', mods = 'SUPER', action = act.SpawnTab('CurrentPaneDomain') },
 
--- WRONG: This spawns in the GUI domain, breaking workmux
+-- WRONG: This spawns in the GUI domain, breaking workrex
 -- { key = 't', mods = 'SUPER', action = act.SpawnTab({ DomainName = 'local' }) },
 ```
 
-Without this configuration, panes created via keybindings may connect to a different socket than panes created by workmux, causing state inconsistencies.
+Without this configuration, panes created via keybindings may connect to a different socket than panes created by workrex, causing state inconsistencies.
 
 ## Cross-workspace navigation
 
-The dashboard can show agents from all workspaces with `--all` (or pressing `a`). However, WezTerm's CLI cannot directly switch workspaces. To enable jumping to tabs in other workspaces, add this to your `wezterm.lua`:
+The dashboard shows agents from every workspace unless you turn on its session filter (`F`, or `workrex dashboard --session`). However, WezTerm's CLI cannot directly switch workspaces. The user variable keeps its workmux name, `workmux-switch-pane`, so a `wezterm.lua` made for workmux keeps working. See [Configuration](/guide/configuration/).
+
+To enable jumping to tabs in other workspaces, add this to your `wezterm.lua`:
 
 ```lua
 local wezterm = require("wezterm")

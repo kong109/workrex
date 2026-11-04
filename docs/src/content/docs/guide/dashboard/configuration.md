@@ -3,12 +3,14 @@ title: "Configuration"
 description: Customize dashboard commands and layout
 ---
 
+workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
+
 The dashboard can be customized in your `.workmux.yaml`:
 
 ```yaml
 dashboard:
   commit: "Commit staged changes with a descriptive message"
-  merge: "!workmux merge"
+  merge: "!workrex merge"
   layout: stacked
   preview_size: 60
   agent_columns:
@@ -25,7 +27,7 @@ The `commit` and `merge` values are text sent to the agent's pane. Use the `!` p
 | Option             | Default value                                                        | Description                                                                   |
 | ------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | `commit`           | `Commit staged changes with a descriptive message`                   | Natural language prompt                                                       |
-| `merge`            | `!workmux merge`                                                     | Shell command via agent                                                       |
+| `merge`            | `!workrex merge`                                                     | Shell command via agent                                                       |
 | `layout`           | `stacked`                                                            | `stacked` (table above preview) or `side_by_side` (preview left, table right) |
 | `preview_size`     | `60`                                                                 | Preview height or width as percentage (10-90)                                 |
 | `agent_columns`    | `[number, project, worktree, machine, git, pr, status, time, title]` | Agents table columns, in display order                                        |
@@ -91,7 +93,7 @@ Dropping `number` hides the jump key, and `1`-`9` still jump to the first nine r
 
 The opt-in `prompt` column shows the last prompt you sent to each agent, on one line and cut with `…` to fit. Status hooks store the prompt only while the `prompt` column or a [`{prompt}` sidebar token](/guide/sidebar/customization/#tokens) is configured, evaluated with the agent's project configuration. Removing both stops capture, and each agent's stored prompt is deleted at its next status update.
 
-Prompts come from Claude Code, Codex, Gemini CLI, Copilot CLI, Grok, OpenCode, pi, and oh-my-pi. Prompts sent to subagents and messages the agent injects itself are ignored. A prompt with no text, such as an image alone, keeps the previous prompt. A prompt passed when the agent starts, such as `workmux add -p`, may not be shown until you send the next one. OpenCode, pi, and oh-my-pi report prompts once `workmux setup` updates their status plugin.
+Prompts come from Claude Code, Codex, Gemini CLI, Copilot CLI, Grok, OpenCode, pi, and oh-my-pi. Prompts sent to subagents and messages the agent injects itself are ignored. A prompt with no text, such as an image alone, keeps the previous prompt. A prompt passed when the agent starts, such as `workrex add -p`, may not be shown until you send the next one. OpenCode, pi, and oh-my-pi report prompts once `workrex setup` updates their status plugin.
 
 ### Worktree columns
 
@@ -138,7 +140,7 @@ Side-by-side leaves less width for each pane. On narrow terminals, use the stack
 
 The `preview_size` option controls the preview as a percentage of the content area: height in `stacked` layout, width in `side_by_side` layout. A higher value means more space for the preview and less for the table.
 
-You can also adjust the preview size interactively with `+`/`-` keys. These adjustments persist across dashboard sessions in the workmux state directory.
+You can also adjust the preview size interactively with `+`/`-` keys. These adjustments persist across dashboard sessions in `~/.local/state/workmux/settings.json`.
 
 The CLI flag `--preview-size` (`-P`) overrides both the config and saved preference for that session.
 
@@ -151,12 +153,12 @@ dashboard:
 
 # Custom shell commands
 dashboard:
-  merge: "!workmux merge --rebase --notification"
+  merge: "!workrex merge --rebase --notification"
 
 # Natural language prompts
 dashboard:
   commit: "Create a commit with a conventional commit message"
-  merge: "Rebase onto main and run workmux merge"
+  merge: "Rebase onto main and run workrex merge"
 ```
 
 ## Using skills

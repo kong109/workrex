@@ -3,11 +3,13 @@ title: "Monorepos"
 description: Per-project configs and port isolation for monorepos with multiple services
 ---
 
-Tips for using workmux with monorepos containing multiple services.
+Tips for using workrex with monorepos containing multiple services.
 
 ## Nested configuration
 
-Place a `.workmux.yaml` in any subdirectory to configure that project independently. When you run workmux from a subdirectory, it walks upward to find the nearest config:
+workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
+
+Place a `.workmux.yaml` in any subdirectory to configure that project independently. When you run workrex from a subdirectory, it walks upward to find the nearest config:
 
 ```
 monorepo/
@@ -22,7 +24,7 @@ monorepo/
 
 ```bash
 cd monorepo/backend
-workmux add api-feature    # Uses backend/.workmux.yaml
+workrex add api-feature    # Uses backend/.workmux.yaml
 ```
 
 When using a nested config:
@@ -105,7 +107,7 @@ EOF
 echo "Created .env.local with ports: API=$api_port, VITE=$vite_port"
 ```
 
-Configure workmux to copy `.env` and generate `.env.local`:
+Configure workrex to copy `.env` and generate `.env.local`:
 
 ```yaml
 # .workmux.yaml
@@ -158,7 +160,7 @@ post_create:
 The worktree handle is hashed to get a deterministic starting port, so `feature-auth` always starts at the same offset. If that port is taken, `lsof` finds the next available one.
 
 ```
-$ workmux add feature-auth
+$ workrex add feature-auth
 Running setup commands...
 Created .env.local with ports: API=3471, VITE=3470
 ✓ Setup complete
