@@ -7,6 +7,8 @@ description: Day-to-day commands, remote panes, disconnects and reboots for agen
 
 Remote workspaces use the usual commands. Run them from the project on the local machine and name the workspace by its handle.
 
+A shell you open on the server yourself, such as an SSH login or a Rex window on the server's Rex server, has no `workrex` on its `PATH`. `remote setup` installs only a version-pinned binary, `~/.workrex-node/bin/workrex-<version>`. Remote workspaces run it with the node root's own state, and the workspace's panes get a `workrex` wrapper on their `PATH`. Run commands such as `status`, `send`, `merge` and `remove` on your own machine, and name the workspace by its handle. A separate workrex installed on the server would be an unrelated install with its own workspaces.
+
 | Command                                                                        | On a remote workspace                                                                                       |
 | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
 | [`close`](/reference/commands/close/)                                          | Closes the local window only. The agent keeps running.                                                      |
@@ -23,33 +25,33 @@ Remote workspaces use the usual commands. Run them from the project on the local
 
 ## Sending prompts
 
-`workmux send` and `wait` work as they do locally. An agent running directly on the server can only receive `send` once it has reported its first status, so give the first prompt with `add -p` or type it into the window. In Docker mode, `send` works as soon as the agent's container is running.
+`workrex send` and `wait` work as they do locally. An agent running directly on the server can only receive `send` once it has reported its first status, so give the first prompt with `add -p` or type it into the window. In Docker mode, `send` works as soon as the agent's container is running.
 
 ## Panes on the server
 
 Every pane in the window is a session on the server. Non-agent panes are shells on the server, or in the container with `sandbox.target: all`.
 
-- **On the server directly:** `workmux` works in every pane, including the shell left after the agent exits. It is the server's copy, which knows the pane's workspace.
-- **In Docker:** shell panes on the server have no `workmux`. Run workmux commands for the workspace on the local machine. The agent's container has `workmux`, for [`merge` and `rm`](#remove-or-merge-from-a-remote-pane) and [starting agents](#agents-that-start-agents).
+- **On the server directly:** `workrex` works in every pane, including the shell left after the agent exits. It is the server's copy, which knows the pane's workspace.
+- **In Docker:** shell panes on the server have no `workrex`. Run workrex commands for the workspace on the local machine. The agent's container has `workrex`, for [`merge` and `rm`](#remove-or-merge-from-a-remote-pane) and [starting agents](#agents-that-start-agents).
 
 ### Opening a shell on the server
 
-A tmux split of the window starts a shell on the local machine, not on the server. Run [`workmux shell`](/reference/commands/shell/) in the split to get a shell in the workspace's working directory on the server. In Docker mode the shell runs in a new container of the workspace; `--host` runs it on the server instead. Exiting the shell leaves the agent running.
+A tmux split of the window starts a shell on the local machine, not on the server. Run [`workrex shell`](/reference/commands/shell/) in the split to get a shell in the workspace's working directory on the server. In Docker mode the shell runs in a new container of the workspace; `--host` runs it on the server instead. Exiting the shell leaves the agent running.
 
 ## Remove or merge from a remote pane
 
 In a workspace running directly on the server, type the usual commands in any of its panes. An agent can run them too, including in Docker:
 
 ```bash
-workmux merge
-workmux rm
+workrex merge
+workrex rm
 ```
 
-The local machine does the work, exactly as if you had run `workmux merge my-feature` or `workmux rm my-feature` there: it uses the local machine's config, hooks and base branch, and closes the window when it is done. Meanwhile the pane shows the local machine's progress:
+The local machine does the work, exactly as if you had run `workrex merge my-feature` or `workrex rm my-feature` there: it uses the local machine's config, hooks and base branch, and closes the window when it is done. Meanwhile the pane shows the local machine's progress:
 
 ```
 Merging 'my-feature' on the local machine…
-Started on the local machine; follow with `workmux remote logs devbox r0123456789ab`
+Started on the local machine; follow with `workrex remote logs devbox r0123456789ab`
 Bringing the work to the local machine… (1s)
 Preparing a local copy for the merge (files, post_create)…
 Running pre_merge hooks locally… (42s)
@@ -61,9 +63,9 @@ The [log](/guide/remote/git/#operation-logs) holds the full hook output.
 - Only the workspace's own handle works: no name, `.`, or the handle itself.
 - Nothing can ask questions, so these are refused with a hint: removing a workspace with unmerged commits without `--force`, merging staged changes that need a commit message (commit them first), squash merges, `rm --all`, `--gone` and `--keep-branch`. `close` is refused too, because the window is on the local machine.
 - If the merge fails, the workspace stays and the pane prints why.
-- In Docker mode, these requests run no hooks: no `post_create`, `pre_merge` or `pre_remove`, and no Git hooks, as for a [local sandbox](/guide/sandbox/#security-model). Hooks would run outside the container on code the agent wrote. Run `workmux merge <handle>` on the local machine when you want them.
+- In Docker mode, these requests run no hooks: no `post_create`, `pre_merge` or `pre_remove`, and no Git hooks, as for a [local sandbox](/guide/sandbox/#security-model). Hooks would run outside the container on code the agent wrote. Run `workrex merge <handle>` on the local machine when you want them.
 
-An agent can finish its own task this way, for example with `-p "… when the tests pass, run: workmux merge"` or the bundled [`/merge` skill](/guide/skills/).
+An agent can finish its own task this way, for example with `-p "… when the tests pass, run: workrex merge"` or the bundled [`/merge` skill](/guide/skills/).
 
 ## When the local machine sleeps or disconnects
 
@@ -72,7 +74,7 @@ The agent, its container and its tmux session run on the server, so they don't d
 - The agent keeps working, and its status is recorded on the server.
 - The window shows a status line with the server's name and the reason, reconnects by itself, and offers keys to retry now or close the pane.
 - Keystrokes typed while disconnected are dropped, never delivered late.
-- The dashboard, sidebar and `workmux status` keep showing the agent's last known state, marked disconnected with when it was last seen.
+- The dashboard, sidebar and `workrex status` keep showing the agent's last known state, marked disconnected with when it was last seen.
 
 Short interruptions pass without any visible change. After an authentication or host key failure, or when the session was attached from somewhere else, the window doesn't retry by itself: fix the cause and press the retry key.
 
@@ -82,19 +84,19 @@ An agent on a server can start a sibling the same way a local agent does (see [s
 
 ```bash
 # run by the agent on the server
-workmux add parser-tests -b -P task.md
+workrex add parser-tests -b -P task.md
 ```
 
 - The agent must name a new branch. Generated names and existing branches are refused.
 - The sibling starts from the tip of the agent's branch, with the same mode, config, files and environment. `post_create` hooks don't run.
-- Its window opens next to the parent's the next time the local machine connects. If it doesn't, run `workmux list` from the project's repository, or `workmux open <branch>`.
+- Its window opens next to the parent's the next time the local machine connects. If it doesn't, run `workrex list` from the project's repository, or `workrex open <branch>`.
 
 ## When the server reboots
 
 A reboot stops the agents and containers, but worktrees, branches and records survive. The dashboard, `status` and `list` show the agent as exited because the server rebooted. To start it again:
 
 ```bash
-workmux open my-feature
+workrex open my-feature
 ```
 
 The agent starts with its continue flag, so agents that keep their conversations on disk pick up where they left off. `open` says whether it continued. The original prompt isn't sent again, and nothing restarts automatically at boot.
