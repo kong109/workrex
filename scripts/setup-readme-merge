@@ -7,8 +7,14 @@ top=$(git rev-parse --show-toplevel)
 git_dir=$(git rev-parse --path-format=absolute --git-common-dir)
 install -m 755 "$top/scripts/merge-workrex-readme" "$git_dir/merge-workrex-readme"
 mkdir -p "$git_dir/info"
-line='README.md merge=workrex-readme'
-grep -qxF "$line" "$git_dir/info/attributes" 2>/dev/null || echo "$line" >>"$git_dir/info/attributes"
+attrs=$git_dir/info/attributes
+line='/README.md merge=workrex-readme'
+if ! grep -qxF "$line" "$attrs" 2>/dev/null; then
+	if [[ -s $attrs && -n $(tail -c 1 "$attrs") ]]; then
+		echo >>"$attrs"
+	fi
+	echo "$line" >>"$attrs"
+fi
 git config merge.workrex-readme.name "keep the workrex README"
-git config merge.workrex-readme.driver "\"$git_dir/merge-workrex-readme\" %O %A %B"
+git config merge.workrex-readme.driver "\"$git_dir/merge-workrex-readme\" %O %A %B %L %S %X %Y"
 echo "README.md merge driver installed in $git_dir"

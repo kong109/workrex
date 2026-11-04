@@ -43,9 +43,10 @@ revision 8 or 9.
   Rex through the
   [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status)
   (OSC 7501). Claude Code reports it with no setup.
-- **Remote agents.** An agent can run on a Linux server over SSH, for example
-  a WSL distro on a Windows machine. With `terminal: rex`, the agent's terminal
-  runs on the server's own Rex server, and Rex.app shows it.
+- **Remote agents in Rex.** workmux runs agents on a Linux server over SSH,
+  for example a WSL distro on a Windows machine. workrex adds `terminal: rex`,
+  so the agent's terminal runs on the server's own Rex server, and Rex.app shows
+  it.
 
 The [workrex documentation](https://kong109.github.io/workrex/) has the detail:
 
@@ -83,8 +84,17 @@ cargo install --path .
 ```
 
 To update an installed binary from the latest kong109/workrex release, run
-`workrex update`. To remove it, run
-[`scripts/uninstall-workrex.sh`](scripts/uninstall-workrex.sh).
+`workrex update`. To remove workrex with its status hooks and skills, run the
+uninstall script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/uninstall-workrex.sh | bash
+```
+
+The script removes `workrex` from `/usr/local/bin`, `~/.local/bin`,
+`~/.cargo/bin` and the `workrex` it finds on `PATH`. If you installed it with
+`WORKMUX_INSTALL_DIR` to a directory that is not on `PATH`, set the same
+`WORKMUX_INSTALL_DIR` for the uninstall script too.
 
 To check the install, print the version:
 
@@ -188,14 +198,18 @@ To show the sidebar in every window, run:
 workrex sidebar on
 ```
 
-To limit the sidebar to the current session, run `workrex sidebar --session`.
+To show it only in the current session, run `workrex sidebar --session`
+instead, while the sidebar is off. `--session` is a toggle. When the sidebar is
+on in every window, `workrex sidebar --session` hides it in the current
+session.
 
 ### Use a second Rex server
 
 workrex talks to the Rex server named by `REX_SERVER`. When `REX_SERVER` is
-unset, it uses the server that the `rex` CLI finds by default. If you start a
-second Rex server, set `REX_SERVER` in that server's environment, so its panes
-reach it. See
+unset, it uses the server that the `rex` CLI finds by default. If you run a
+second Rex server, set `REX_SERVER` in its environment before you start it. Rex
+panes inherit the server's environment, so workrex and the `rex` CLI in those
+panes then reach that server instead of the default one. See
 [Choosing the server](https://kong109.github.io/workrex/guide/rex/#choosing-the-server).
 
 ## Run agents on a remote server
@@ -208,29 +222,29 @@ in the dashboard, the sidebar, `workrex status` and `workrex list`.
 
    ```yaml
    remotes:
-     winbox:
-       host: winbox-wsl-ssh
+     devbox:
+       host: dev@devbox.example.com
    ```
 
 2. Install the workrex node binary and the agent status hooks on the server,
    then check the server:
 
    ```bash
-   workrex remote setup winbox
-   workrex remote doctor winbox
+   workrex remote setup devbox
+   workrex remote doctor devbox
    ```
 
 3. Log an agent in on the server. The agent is one of `claude`, `codex`,
    `gemini`, `opencode`, `pi` or `omp`:
 
    ```bash
-   workrex remote login winbox claude
+   workrex remote login devbox claude
    ```
 
 4. Start an agent on the server:
 
    ```bash
-   workrex add fix-login --remote winbox -p "Fix the redirect loop"
+   workrex add fix-login --remote devbox -p "Fix the redirect loop"
    ```
 
 By default the agent runs in tmux on the server, and a relay window on your
@@ -239,13 +253,13 @@ over Tailscale, the agent can run there instead:
 
 ```yaml
 remotes:
-  winbox:
-    host: winbox-wsl-ssh
+  devbox:
+    host: dev@devbox.example.com
     isolation: none
     terminal: rex
 ```
 
-With `terminal: rex`, `workrex add --remote winbox` creates the agent's Rex
+With `terminal: rex`, `workrex add --remote devbox` creates the agent's Rex
 sessions on the server and opens no relay window. `terminal: rex` needs
 `isolation: none`, and `workrex open` needs Remote Control.
 
@@ -266,11 +280,11 @@ options of each one, and `workrex --help` for the full list.
 | ---------------------------- | -------------------------------------------------------------- |
 | `workrex add <branch>`       | Create a worktree and start its agent in a window or session   |
 | `workrex open <name>`        | Open a window for an existing worktree                         |
-| `workrex close <name>`       | Close a worktree's window and keep the worktree and branch     |
+| `workrex close [name]`       | Close a worktree's window and keep the worktree and branch     |
 | `workrex merge [name]`       | Merge a branch, then remove its worktree and window            |
-| `workrex remove <name>`      | Remove a worktree, its window and its branch without merging   |
+| `workrex remove [names]...`  | Remove worktrees, their windows and branches without merging   |
 | `workrex rebase [name]`      | Rebase a worktree branch onto its base branch                  |
-| `workrex rename`             | Rename a worktree, its window or session, and maybe its branch |
+| `workrex rename <names>...`  | Rename a worktree and its window or session, and with `-b` its branch |
 | `workrex resurrect`          | Reopen worktree windows after a crash or a server restart      |
 | `workrex list`               | List all worktrees                                             |
 | `workrex status`             | Show agent status for worktrees                                |
@@ -283,14 +297,14 @@ options of each one, and `workrex --help` for the full list.
 | `workrex remote`             | Set up, check and log in to SSH remotes                        |
 | `workrex setup`              | Install status tracking hooks and skills                       |
 | `workrex init`               | Write an example `.workmux.yaml`                               |
-| `workrex config`             | Edit or print the global config, or print its reference        |
+| `workrex config`             | Edit the global config, or print its path or the option reference |
 | `workrex sandbox`            | Manage sandbox settings                                        |
 | `workrex update`             | Update to the latest kong109/workrex release                   |
 | `workrex docs`               | Show this README in the terminal                               |
 
 ## Configuration keeps the workmux names
 
-Only the binary is renamed. workrex reads the same configuration as workmux:
+workrex reads the same configuration as workmux:
 
 - Global config: `~/.config/workmux/config.yaml`. Run `workrex config path` to
   print the path.

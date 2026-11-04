@@ -65,8 +65,15 @@ fi
 
 # 3. Remove binary from known locations
 log_info "Removing workrex binary..."
-for path in "$usr_bin" "$local_bin" "$cargo_bin"; do
-    if [ -f "$path" ]; then
+# WORKMUX_INSTALL_DIR and the PATH lookup cover a custom install directory.
+custom_bin=""
+if [ -n "${WORKMUX_INSTALL_DIR:-}" ]; then
+    custom_bin="$WORKMUX_INSTALL_DIR/workrex"
+fi
+removed=""
+for path in "$usr_bin" "$local_bin" "$cargo_bin" "$custom_bin" "$workrex_path"; do
+    if [ -n "$path" ] && [ -f "$path" ] && [[ " $removed " != *" $path "* ]]; then
+        removed="$removed $path"
         if [ -w "$(dirname "$path")" ]; then
             rm -f "$path"
             log_success "Removed $path"
@@ -77,6 +84,9 @@ for path in "$usr_bin" "$local_bin" "$cargo_bin"; do
         fi
     fi
 done
+if remaining="$(command -v workrex 2>/dev/null)"; then
+    log_warning "A workrex binary is still on PATH at $remaining. Delete it yourself."
+fi
 echo ""
 
 # 4. Manual cleanup guidance
