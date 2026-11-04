@@ -272,6 +272,16 @@ mod tests {
         }
     }
 
+    /// A records file from before `stray` existed loads, and a record
+    /// without a stray writes the same file back.
+    #[test]
+    fn a_record_without_a_stray_keeps_the_old_file_format() {
+        let old = r#"{"window:w":{"session_id":"session:s","window_id":"window:w","block_id":"block:b","split_id":"split:x","applied_ratio":0.18,"last_cols":30,"window_cols":166}}"#;
+        let records: Records = serde_json::from_str(old).unwrap();
+        assert_eq!(records["window:w"].stray, None);
+        assert_eq!(serde_json::to_string(&records).unwrap(), old);
+    }
+
     #[test]
     fn missing_files_are_defaults_and_writes_round_trip() {
         let dir = tempfile::tempdir().unwrap();

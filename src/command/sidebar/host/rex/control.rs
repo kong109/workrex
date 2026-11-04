@@ -374,6 +374,20 @@ impl Plane {
                 records.remove(&window_id);
                 continue;
             };
+            if let Some(stray) = &record.stray {
+                let open = window.block_ids().any(|block| block == stray)
+                    && self.spare.as_deref() != Some(stray.as_str());
+                if open {
+                    self.rex.close_sidebar_block(session_id, stray)?;
+                }
+                records.get_mut(&window_id).expect("record exists").stray = None;
+                if open && window.block_ids().any(|block| block == record.block_id) {
+                    result.placed.insert(window_id.clone());
+                    if in_scope {
+                        continue;
+                    }
+                }
+            }
             if !window.block_ids().any(|block| block == record.block_id) {
                 if self.daemon {
                     closed.insert(window_id.clone(), session_id.to_string());
@@ -385,17 +399,6 @@ impl Plane {
             }
             if self.spare.as_deref() == Some(record.block_id.as_str()) {
                 continue;
-            }
-            if let Some(stray) = &record.stray {
-                if window.block_ids().any(|block| block == stray)
-                    && self.spare.as_deref() != Some(stray.as_str())
-                {
-                    self.rex.close_sidebar_block(session_id, stray)?;
-                    records.get_mut(&window_id).expect("record exists").stray = None;
-                    result.placed.insert(window_id.clone());
-                    continue;
-                }
-                records.get_mut(&window_id).expect("record exists").stray = None;
             }
             if window.block_ids().all(|block| block == record.block_id) {
                 self.rex.close_window_by_id(session_id, &window_id)?;
@@ -432,6 +435,7 @@ impl Plane {
                             .rex
                             .close_sidebar_block(session_id, &placed.block_id)
                             .is_err()
+                            && self.block_remains(session_id, &placed.block_id)
                         {
                             placed.stray = Some(record.block_id.clone());
                             records.insert(window_id.clone(), placed);
@@ -1435,8 +1439,12 @@ mod tests {
     /// and shows `views[n]` after its n-th sidebar split, with a global
     /// sidebar on. While `dir/split-fails` or `dir/close-fails` exists,
     /// every split or close fails; while `dir/close1-fails` exists, closing
-    /// `block:sidebar1` fails.
+    /// `block:sidebar1` fails. With `dir/arm`, the next close makes the view
+    /// read after it fail once.
     fn follower_replaying(path: &std::path::Path, views: &[String]) -> Follower {
+        // A sweep that succeeds wakes the daemon with SIGUSR1, which would
+        // otherwise end the test process.
+        signal_hook::flag::register(signal_hook::consts::SIGUSR1, Arc::default()).unwrap();
         for (n, view) in views.iter().enumerate() {
             std::fs::write(path.join(format!("view-{n}")), view).unwrap();
         }
@@ -1448,12 +1456,17 @@ mod tests {
                 "params=$(cat)\necho \"$* $params\" >> '{calls}'\n\
                  n=$(cat '{splits}' 2>/dev/null || echo 0)\ncase \"$*\" in\n\
                  \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
-                 \x20 *session.view*) cat \"{dir}/view-$n\";;\n\
+                 \x20 *session.view*) [ -f '{dir}/view-fails-next' ] && \
+                 {{ rm '{dir}/view-fails-next'; exit 1; }}; cat \"{dir}/view-$n\";;\n\
+                 \x20 *session.list*) \
+                 echo '{{\"sessions\":[{{\"session_id\":\"{session}\",\"label\":\"x\"}}]}}';;\n\
                  \x20 *' size '*) echo '{{\"columns\":120,\"rows\":40}}';;\n\
                  \x20 *session.new_split*) [ -f '{dir}/split-fails' ] && exit 1; \
                  n=$((n + 1)); echo $n > '{splits}'; \
                  echo \"{{\\\"block_ids\\\":[\\\"block:sidebar$n\\\"],\\\"split_ids\\\":[\\\"split:sidebar$n\\\"]}}\";;\n\
-                 \x20 *block.close*) case \"$params\" in *sidebar1*) \
+                 \x20 *block.close*) [ -f '{dir}/arm' ] && \
+                 {{ rm '{dir}/arm'; touch '{dir}/view-fails-next'; }}; \
+                 case \"$params\" in *sidebar1*) \
                  [ -f '{dir}/close1-fails' ] && exit 1;; esac; \
                  [ -f '{dir}/close-fails' ] && exit 1; echo '{{}}';;\n\
                  \x20 *session.resize_pane*) echo '{{}}';;\n\
@@ -1461,6 +1474,7 @@ mod tests {
                 calls = calls.display(),
                 splits = splits.display(),
                 dir = path.display(),
+                session = NEW_SESSION,
             ),
         );
         let files = Files::at(path.join("state"), "test");
@@ -1864,16 +1878,7 @@ mod tests {
         let views = [
             view_of(leaf("block:a", [0.0, 0.0, 1.0, 1.0]), &["block:a"]),
             nested_view(),
-            root_sidebar2_over(
-                split(
-                    "split:add",
-                    0.5,
-                    [0.18, 0.0, 0.82, 1.0],
-                    leaf("block:a", [0.18, 0.0, 0.41, 1.0]),
-                    leaf("block:b", [0.59, 0.0, 0.41, 1.0]),
-                ),
-                &["block:sidebar2", "block:a", "block:b"],
-            ),
+            root_sidebar2_view(),
         ];
         let mut follower = follower_replaying(path, &views);
         follower.handle(vec![Event::WindowCreated {
@@ -1890,6 +1895,7 @@ mod tests {
         }]);
         follower.work.sweep = true;
         follower.run_owed();
+        assert!(!follower.work.owed(), "the sweep failed");
         let log = std::fs::read_to_string(path.join("calls")).unwrap();
         assert_eq!(log.matches("block.close").count(), 1, "{log}");
         assert_eq!(sidebar_of(&follower).as_deref(), Some("block:sidebar2"));
@@ -1906,22 +1912,7 @@ mod tests {
         let views = [
             view_of(leaf("block:a", [0.0, 0.0, 1.0, 1.0]), &["block:a"]),
             nested_view(),
-            root_sidebar2_over(
-                split(
-                    "split:add",
-                    0.5,
-                    [0.18, 0.0, 0.82, 1.0],
-                    split(
-                        "split:sidebar1",
-                        0.3125,
-                        [0.18, 0.0, 0.41, 1.0],
-                        leaf("block:sidebar1", [0.18, 0.0, 0.128, 1.0]),
-                        leaf("block:a", [0.308, 0.0, 0.282, 1.0]),
-                    ),
-                    leaf("block:b", [0.59, 0.0, 0.41, 1.0]),
-                ),
-                &["block:sidebar2", "block:sidebar1", "block:a", "block:b"],
-            ),
+            both_sidebars_view(),
         ];
         let mut follower = follower_replaying(path, &views);
         follower.handle(vec![Event::WindowCreated {
@@ -1941,6 +1932,7 @@ mod tests {
         }
         follower.work.sweep = true;
         follower.run_owed();
+        assert!(!follower.work.owed(), "the sweep failed");
         let log = std::fs::read_to_string(path.join("calls")).unwrap();
         let closes: Vec<&str> = log
             .lines()
@@ -1949,5 +1941,250 @@ mod tests {
         assert_eq!(closes.len(), 3, "{log}");
         assert!(closes[2].contains("block:sidebar1"), "{log}");
         assert_eq!(sidebar_of(&follower).as_deref(), Some("block:sidebar2"));
+    }
+
+    /// The view after both closes of a repair failed: `sidebar2` at the root
+    /// over the nested `sidebar1`.
+    fn both_sidebars_view() -> String {
+        root_sidebar2_over(
+            split(
+                "split:add",
+                0.5,
+                [0.18, 0.0, 0.82, 1.0],
+                split(
+                    "split:sidebar1",
+                    0.3125,
+                    [0.18, 0.0, 0.41, 1.0],
+                    leaf("block:sidebar1", [0.18, 0.0, 0.128, 1.0]),
+                    leaf("block:a", [0.308, 0.0, 0.282, 1.0]),
+                ),
+                leaf("block:b", [0.59, 0.0, 0.41, 1.0]),
+            ),
+            &["block:sidebar2", "block:sidebar1", "block:a", "block:b"],
+        )
+    }
+
+    /// `sidebar2` at the root over `[a, b]`.
+    fn root_sidebar2_view() -> String {
+        root_sidebar2_over(
+            split(
+                "split:add",
+                0.5,
+                [0.18, 0.0, 0.82, 1.0],
+                leaf("block:a", [0.18, 0.0, 0.41, 1.0]),
+                leaf("block:b", [0.59, 0.0, 0.41, 1.0]),
+            ),
+            &["block:sidebar2", "block:a", "block:b"],
+        )
+    }
+
+    /// A follower whose repair failed both closes, so its record names
+    /// `sidebar2` with `sidebar1` as the stray. `views[2]` shows both.
+    fn follower_with_a_stray(path: &std::path::Path) -> Follower {
+        let views = [
+            view_of(leaf("block:a", [0.0, 0.0, 1.0, 1.0]), &["block:a"]),
+            nested_view(),
+            both_sidebars_view(),
+        ];
+        let mut follower = follower_replaying(path, &views);
+        follower.handle(vec![Event::WindowCreated {
+            session_id: NEW_SESSION.into(),
+            window_id: NEW_WINDOW.into(),
+        }]);
+        std::fs::write(path.join("close-fails"), "").unwrap();
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        std::fs::remove_file(path.join("close-fails")).unwrap();
+        let record = follower.plane.files.records()[NEW_WINDOW].clone();
+        assert_eq!(
+            (record.block_id.as_str(), record.stray.as_deref()),
+            ("block:sidebar2", Some("block:sidebar1"))
+        );
+        follower
+    }
+
+    fn closes_in(path: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(path.join("calls"))
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("block.close"))
+            .map(String::from)
+            .collect()
+    }
+
+    /// `sidebar off` while a stray is pending closes the stray and the
+    /// root sidebar.
+    #[test]
+    fn sidebar_off_with_a_pending_stray_closes_both_sidebars() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let follower = follower_with_a_stray(path);
+        follower
+            .plane
+            .files
+            .update_prefs(|prefs| Scope::Off.write(prefs))
+            .unwrap();
+        let mut cli = Plane::new(
+            follower.plane.rex.detached(),
+            follower.plane.files.clone(),
+            Config::default(),
+        )
+        .unwrap();
+        let before = closes_in(path).len();
+        cli.reconcile_all(false).unwrap();
+        let closes = closes_in(path);
+        let closed = &closes[before..];
+        assert!(
+            closed.iter().any(|line| line.contains("block:sidebar1"))
+                && closed.iter().any(|line| line.contains("block:sidebar2")),
+            "{closes:?}"
+        );
+        assert!(follower.plane.files.records().is_empty());
+    }
+
+    /// When the rollback close is carried out but reported as failed, the
+    /// record keeps the nested sidebar, and the next pass repairs it.
+    #[test]
+    fn a_rollback_rex_carried_out_but_reported_as_failed_keeps_the_nested_sidebar() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let views = [
+            view_of(leaf("block:a", [0.0, 0.0, 1.0, 1.0]), &["block:a"]),
+            nested_view(),
+            nested_view(),
+            root_sidebar2_view().replace("sidebar2", "sidebar3"),
+        ];
+        let mut follower = follower_replaying(path, &views);
+        follower.handle(vec![Event::WindowCreated {
+            session_id: NEW_SESSION.into(),
+            window_id: NEW_WINDOW.into(),
+        }]);
+        std::fs::write(path.join("close-fails"), "").unwrap();
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        std::fs::remove_file(path.join("close-fails")).unwrap();
+        assert_eq!(sidebar_of(&follower).as_deref(), Some("block:sidebar1"));
+        for _ in 0..3 {
+            follower.handle(vec![Event::ViewChanged {
+                session_id: NEW_SESSION.into(),
+            }]);
+        }
+        follower.work.sweep = true;
+        follower.run_owed();
+        assert!(!follower.work.owed(), "the sweep failed");
+        let closed = follower.plane.files.daemon().windows_with(store::CLOSED);
+        assert!(closed.is_empty(), "{closed:?}");
+        assert_eq!(sidebar_of(&follower).as_deref(), Some("block:sidebar3"));
+    }
+
+    /// A user who closes the root sidebar while a stray is pending closes
+    /// the window's sidebar: the stray is closed too.
+    #[test]
+    fn closing_the_root_sidebar_while_a_stray_is_pending_closes_the_stray() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let mut follower = follower_with_a_stray(path);
+        std::fs::write(path.join("view-2"), nested_view()).unwrap();
+        let before = closes_in(path).len();
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        let closes = closes_in(path);
+        assert_eq!(closes.len(), before + 1, "{closes:?}");
+        assert!(closes[before].contains("block:sidebar1"), "{closes:?}");
+        assert_eq!(sidebar_of(&follower), None);
+        let closed = follower.plane.files.daemon().windows_with(store::CLOSED);
+        assert!(closed.contains_key(NEW_WINDOW), "{closed:?}");
+    }
+
+    /// A stray that is the block a quitting sidebar runs in is left for it
+    /// to close.
+    #[test]
+    fn a_stray_that_is_the_spare_is_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let mut follower = follower_with_a_stray(path);
+        follower.plane.spare = Some("block:sidebar1".into());
+        let before = closes_in(path).len();
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        assert_eq!(closes_in(path).len(), before);
+    }
+
+    /// A stray the user moved to another window is not closed.
+    #[test]
+    fn a_stray_moved_to_another_window_is_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let mut follower = follower_with_a_stray(path);
+        let mut view: serde_json::Value = serde_json::from_str(&root_sidebar2_view()).unwrap();
+        view["windows"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "window_id": "window:other",
+                "layers": [{
+                    "kind": "tiled",
+                    "layout": leaf("block:sidebar1", [0.0, 0.0, 1.0, 1.0]),
+                    "blocks": [{ "block_id": "block:sidebar1" }],
+                }],
+            }));
+        std::fs::write(path.join("view-2"), view.to_string()).unwrap();
+        let before = closes_in(path).len();
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        assert_eq!(closes_in(path).len(), before);
+        assert_eq!(follower.plane.files.records()[NEW_WINDOW].stray, None);
+    }
+
+    /// A stray whose close fails stays recorded, and a retry is scheduled.
+    #[test]
+    fn a_stray_that_will_not_close_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let mut follower = follower_with_a_stray(path);
+        follower.work.retry_at = None;
+        std::fs::write(path.join("close-fails"), "").unwrap();
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        assert_eq!(
+            follower.plane.files.records()[NEW_WINDOW].stray.as_deref(),
+            Some("block:sidebar1")
+        );
+        assert!(follower.work.retry_at.is_some());
+    }
+
+    /// When the nested close fails and the view cannot be read again, the
+    /// nested block counts as still there: the new sidebar is closed.
+    #[test]
+    fn a_failed_read_after_a_failed_close_counts_as_still_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let views = [
+            view_of(leaf("block:a", [0.0, 0.0, 1.0, 1.0]), &["block:a"]),
+            nested_view(),
+            both_sidebars_view(),
+        ];
+        let mut follower = follower_replaying(path, &views);
+        follower.handle(vec![Event::WindowCreated {
+            session_id: NEW_SESSION.into(),
+            window_id: NEW_WINDOW.into(),
+        }]);
+        std::fs::write(path.join("close1-fails"), "").unwrap();
+        std::fs::write(path.join("arm"), "").unwrap();
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        let closes = closes_in(path);
+        assert!(
+            closes.iter().any(|line| line.contains("block:sidebar2")),
+            "{closes:?}"
+        );
+        assert_eq!(sidebar_of(&follower).as_deref(), Some("block:sidebar1"));
     }
 }
