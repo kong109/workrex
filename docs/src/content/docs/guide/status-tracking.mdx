@@ -32,6 +32,7 @@ switching to it.
 | Oh My Pi                | ✅ Supported                                                                |
 | Gemini CLI              | ✅ Supported                                                                |
 | Grok                    | ✅ Supported                                                                |
+| Muse Code               | ✅ Supported\*                                                              |
 | Antigravity CLI (`agy`) | ✅ Supported\*                                                              |
 | Kiro                    | [Tracking issue](https://github.com/kirodotdev/Kiro/issues/5440)            |
 | Mistral Vibe            | [Tracking issue](https://github.com/mistralai/mistral-vibe/discussions/334) |
@@ -42,6 +43,7 @@ switching to it.
 - **Pi**: No 💬 waiting state
 - **Codex**: Registration occurs when the first turn begins because its session hook is turn-bound
 - **Antigravity CLI (`agy`)**: No 💬 waiting state; registration occurs when agent execution begins
+- **Muse Code**: Registration occurs when the first prompt is sent, because Muse starts its session then
 - **Kiro**: Hooks support is messy: requires a custom agent since the default can't be edited
 
 ## Status icons
@@ -75,7 +77,7 @@ Run `workrex setup` to automatically detect your agent CLIs and install status t
 workrex setup
 ```
 
-This detects Claude Code, Codex, Copilot CLI, Gemini CLI, Grok, Antigravity CLI, OpenCode, Pi, and Oh My Pi by checking for their executable or configuration directories, then offers to install the appropriate hooks. Agent-specific configuration directory overrides are respected. workrex also offers updates when an installed integration differs from its bundled version.
+This detects Claude Code, Codex, Copilot CLI, Gemini CLI, Grok, Muse Code, Antigravity CLI, OpenCode, Pi, and Oh My Pi by checking for their executable or configuration directories, then offers to install the appropriate hooks. Agent-specific configuration directory overrides are respected. workrex also offers updates when an installed integration differs from its bundled version.
 
 Under tmux, workrex modifies your `window-status-format` to display the status icons. This happens once per session and only affects the current tmux session (not your global config).
 
@@ -207,6 +209,21 @@ curl -o "$grok_home/hooks/workrex-status.json" \
 ```
 
 `UserPromptSubmit` and `PostToolUse` mark the pane working, `Notification` marks it waiting, and `Stop` or `SessionEnd` marks it done. Grok permission prompts do not all emit `Notification`, so some prompts may remain marked as working while waiting for input.
+
+## Muse Code setup
+
+Muse runs hooks from its `settings.json` with most environment variables removed, including the ones workrex uses to find the agent's pane. Hooks in a managed hooks file keep the variables that `managed_hooks_env_vars` names. `workrex setup` therefore writes the hooks to `workrex-status.json` in Muse's config directory, `$XDG_CONFIG_HOME/muse/` or `~/.config/muse/`. It also adds two keys to `settings.json` in that directory:
+
+- `managed_hooks_path` names the hooks file.
+- `managed_hooks_env_vars` lists the multiplexer, `WORKMUX_*` and XDG variables that the hooks need.
+
+Setup records the variable names it adds in `workrex-env-vars.json` in the same directory. `workrex uninstall` removes the hooks file, `managed_hooks_path`, and only the names in that record, so names you listed before setup stay.
+
+If `settings.json` already sets `managed_hooks_path` to another file, setup changes nothing and reports the conflict. Add the hooks from [`resources/muse/workmux-status.json`](https://github.com/kong109/workrex/blob/main/resources/muse/workmux-status.json) to that file, with the command renamed to `workrex`.
+
+`UserPromptSubmit`, `ToolUseStart`, `PostToolUse` and `PostToolUseFailure` mark the pane working, `Notification` marks it waiting, and `Stop`, `Interrupt` or `SessionEnd` marks it done. Muse sends `Notification` only while a permission prompt or a question is still unanswered a few seconds after it opens. A shell command you run with `!` does not change the status, and neither does an event that Muse marks as sent after the turn ended.
+
+Muse loads hooks when it starts, so restart running `muse` sessions after setup.
 
 ## Antigravity CLI (`agy`) setup
 

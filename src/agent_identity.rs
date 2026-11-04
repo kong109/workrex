@@ -33,6 +33,7 @@ pub enum AgentKind {
     Vibe,
     Copilot,
     Grok,
+    Muse,
 }
 
 impl AgentKind {
@@ -51,6 +52,7 @@ impl AgentKind {
             AgentKind::Vibe => "vibe",
             AgentKind::Copilot => "copilot",
             AgentKind::Grok => "grok",
+            AgentKind::Muse => "muse",
         }
     }
 
@@ -68,6 +70,7 @@ impl AgentKind {
             "vibe" => Some(AgentKind::Vibe),
             "copilot" => Some(AgentKind::Copilot),
             "grok" => Some(AgentKind::Grok),
+            "muse" => Some(AgentKind::Muse),
             _ => None,
         }
     }
@@ -87,6 +90,7 @@ impl AgentKind {
             AgentKind::Vibe => "V",
             AgentKind::Copilot => "CP",
             AgentKind::Grok => "GK",
+            AgentKind::Muse => "MU",
         }
     }
 
@@ -105,6 +109,7 @@ impl AgentKind {
             AgentKind::Vibe => "Vibe",
             AgentKind::Copilot => "Copilot",
             AgentKind::Grok => "Grok",
+            AgentKind::Muse => "Muse",
         }
     }
 
@@ -127,6 +132,7 @@ impl AgentKind {
             AgentKind::OpenCode => Color::Blue,
             AgentKind::KiroCli => return None,
             AgentKind::Grok => Color::Rgb(0x1d, 0x9b, 0xf0),
+            AgentKind::Muse => Color::Rgb(0x00, 0x82, 0xfb),
         })
     }
 }
@@ -168,6 +174,11 @@ fn classify_by_command(raw: &str, stem: &str) -> Option<AgentKind> {
 
     if stem == "codex" || stem.starts_with("codex-") {
         return Some(AgentKind::Codex);
+    }
+
+    // Muse's launcher execs a versioned binary, `muse-bin-1.4.14-R7309.1`.
+    if stem.starts_with("muse-bin-") {
+        return Some(AgentKind::Muse);
     }
 
     AgentKind::from_str(stem)
@@ -276,6 +287,18 @@ mod tests {
         assert_eq!(classify("grok", "anything"), Some("grok".into()));
         assert_eq!(classify("grok-build", ""), None);
         assert_eq!(classify("grokster", ""), None);
+    }
+
+    #[test]
+    fn muse_launcher_and_binary_match() {
+        assert_eq!(classify("muse", ""), Some("muse".into()));
+        assert_eq!(classify("muse-bin-1.4.14", ""), Some("muse".into()));
+        assert_eq!(
+            classify("/home/u/.local/bin/muse-bin-1.4.14-R7309.1", ""),
+            Some("muse".into())
+        );
+        assert_eq!(classify("museum", ""), None);
+        assert_eq!(classify("muse-bin", ""), None);
     }
 
     #[test]
@@ -401,6 +424,7 @@ mod tests {
             AgentKind::Vibe,
             AgentKind::Copilot,
             AgentKind::Grok,
+            AgentKind::Muse,
         ];
         for kind in all {
             assert!(!kind.default_icon().is_empty(), "{:?} icon empty", kind);

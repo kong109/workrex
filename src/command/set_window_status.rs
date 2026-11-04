@@ -90,7 +90,22 @@ pub fn run(cmd: SetWindowStatusCommand) -> Result<()> {
 
     let config = Config::load(None)?;
     let hook = read_hook_input();
+    let in_muse = std::env::var_os("MUSE_SESSION_ID").is_some();
+    if hook
+        .as_ref()
+        .is_some_and(|hook| hook.is_stale_muse_event(&cmd, in_muse))
+    {
+        return Ok(());
+    }
+    let only_clears_waiting = hook
+        .as_ref()
+        .is_some_and(|hook| hook.only_clears_waiting(in_muse));
     run_for_status_target(hook.as_ref(), |mux, pane_id| {
+        if only_clears_waiting
+            && crate::state::agent_status(mux, pane_id) != Some(AgentStatus::Waiting)
+        {
+            return Ok(());
+        }
         apply_status_update(
             &cmd,
             &config,
@@ -331,6 +346,20 @@ struct HookInput {
         deserialize_with = "lenient_string"
     )]
     initial_prompt: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    tool_use_id: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    hook_event_name: Option<String>,
+    /// Set by Muse on events it sends after the turn's `Stop`.
+    #[serde(default, deserialize_with = "lenient_bool")]
+    post_stop: Option<bool>,
+}
+
+fn lenient_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(serde_json::Value::deserialize(deserializer)?.as_bool())
 }
 
 fn lenient_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -367,6 +396,29 @@ impl HookInput {
             return None;
         }
         value.as_deref()
+    }
+
+    /// Muse events that belong to no running turn. No later event would
+    /// correct the status they set. A shell command the user runs with `!`
+    /// fires tool events outside any turn, and `post_stop` marks events sent
+    /// after the turn's `Stop`. A post-turn `Notification` still means an
+    /// approval is pending, so `waiting` always applies.
+    fn is_stale_muse_event(&self, cmd: &SetWindowStatusCommand, in_muse: bool) -> bool {
+        let user_shell = in_muse
+            && self
+                .tool_use_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("user_shell_"));
+        let post_stop =
+            self.post_stop == Some(true) && !matches!(cmd, SetWindowStatusCommand::Waiting);
+        user_shell || post_stop
+    }
+
+    /// Muse runs `ToolUseStart` hooks only asynchronously, so one can land
+    /// after the turn's `Stop` or `Interrupt`. Its only job is to clear
+    /// `waiting` once the user answers an approval.
+    fn only_clears_waiting(&self, in_muse: bool) -> bool {
+        in_muse && self.hook_event_name.as_deref() == Some("ToolUseStart")
     }
 
     fn transcript_path(&self) -> Option<&Path> {
@@ -853,6 +905,64 @@ mod tests {
     }
 
     #[test]
+    fn muse_user_shell_commands_are_not_agent_work() {
+        let working = SetWindowStatusCommand::Working;
+        let bang = parse_hook_input(
+            r#"{"hook_event_name":"PostToolUse","tool_name":"shell","tool_input":{"command":"true"},"tool_use_id":"user_shell_01a1a592-fd1e-7760-aeb1-941b77ee4599","session_id":"01a1a592-c141-7850-a3bc-4ce8f1634b27"}"#,
+        )
+        .unwrap();
+        assert!(bang.is_stale_muse_event(&working, true));
+        // The id scheme is Muse's, so other agents' events always apply.
+        assert!(!bang.is_stale_muse_event(&working, false));
+
+        let model_tool = parse_hook_input(
+            r#"{"hook_event_name":"PostToolUse","tool_name":"shell","tool_use_id":"call_01a1a592","session_id":"s"}"#,
+        )
+        .unwrap();
+        assert!(!model_tool.is_stale_muse_event(&working, true));
+
+        let prompt = parse_hook_input(r#"{"session_id":"s","prompt":"hi"}"#).unwrap();
+        assert!(!prompt.is_stale_muse_event(&working, true));
+        let malformed = parse_hook_input(r#"{"session_id":"s","tool_use_id":7}"#).unwrap();
+        assert!(!malformed.is_stale_muse_event(&working, true));
+    }
+
+    #[test]
+    fn only_muse_tool_use_start_is_limited_to_clearing_waiting() {
+        let start =
+            parse_hook_input(r#"{"hook_event_name":"ToolUseStart","session_id":"s"}"#).unwrap();
+        assert!(start.only_clears_waiting(true));
+        assert!(!start.only_clears_waiting(false));
+        let done =
+            parse_hook_input(r#"{"hook_event_name":"PostToolUse","session_id":"s"}"#).unwrap();
+        assert!(!done.only_clears_waiting(true));
+    }
+
+    #[test]
+    fn muse_post_stop_events_keep_the_finished_status() {
+        let tool = parse_hook_input(
+            r#"{"hook_event_name":"PostToolUse","tool_use_id":"call_1","session_id":"s","post_stop":true}"#,
+        )
+        .unwrap();
+        assert!(tool.is_stale_muse_event(&SetWindowStatusCommand::Working, true));
+        assert!(tool.is_stale_muse_event(&SetWindowStatusCommand::Done, true));
+        // A Notification after Stop is a pending approval, not a stale event.
+        assert!(!tool.is_stale_muse_event(&SetWindowStatusCommand::Waiting, true));
+
+        for payload in [
+            r#"{"session_id":"s","post_stop":false}"#,
+            r#"{"session_id":"s","post_stop":"true"}"#,
+            r#"{"session_id":"s"}"#,
+        ] {
+            let hook = parse_hook_input(payload).unwrap();
+            assert!(
+                !hook.is_stale_muse_event(&SetWindowStatusCommand::Working, true),
+                "{payload}"
+            );
+        }
+    }
+
+    #[test]
     fn malformed_prompt_fields_do_not_break_session_binding() {
         let hook =
             parse_hook_input(r#"{"session_id":"s","prompt":["text"],"agent_id":7}"#).unwrap();
@@ -1156,6 +1266,9 @@ mod tests {
             agent_id: None,
             subagent_type: None,
             initial_prompt: None,
+            tool_use_id: None,
+            post_stop: None,
+            hook_event_name: None,
         };
 
         assert!(continuation_owns_ancestry_pane(
@@ -1180,6 +1293,9 @@ mod tests {
             agent_id: None,
             subagent_type: None,
             initial_prompt: None,
+            tool_use_id: None,
+            post_stop: None,
+            hook_event_name: None,
         };
         assert!(!continuation_owns_ancestry_pane(
             &agents,

@@ -319,6 +319,22 @@ impl AgentProfile for GrokProfile {
     }
 }
 
+pub struct MuseProfile;
+
+impl AgentProfile for MuseProfile {
+    fn name(&self) -> &'static str {
+        "muse"
+    }
+
+    fn skip_permissions_flag(&self) -> Option<&'static str> {
+        Some("--yolo")
+    }
+
+    fn prompt_argument(&self, prompt_path: &str) -> String {
+        format!("\"$(cat {})\"", prompt_path)
+    }
+}
+
 pub struct PiProfile;
 
 impl AgentProfile for PiProfile {
@@ -388,6 +404,7 @@ static PROFILES: &[&dyn AgentProfile] = &[
     &KiroProfile,
     &VibeProfile,
     &GrokProfile,
+    &MuseProfile,
 ];
 
 /// Check if a command matches a known agent profile.
@@ -937,6 +954,17 @@ mod tests {
         assert_eq!(profile.skip_permissions_flag(), Some("--yolo"));
         assert_eq!(profile.auto_name_command(), None);
         assert_eq!(profile.continue_flag(), Some("--continue"));
+    }
+
+    #[test]
+    fn test_muse_profile() {
+        let profile = MuseProfile;
+        assert_eq!(profile.name(), "muse");
+        assert!(!profile.needs_auto_status());
+        assert_eq!(profile.prompt_argument("PROMPT.md"), "\"$(cat PROMPT.md)\"");
+        assert_eq!(profile.skip_permissions_flag(), Some("--yolo"));
+        assert_eq!(profile.continue_flag(), None);
+        assert!(is_known_agent("muse"));
     }
 
     #[test]
