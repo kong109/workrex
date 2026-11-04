@@ -89,7 +89,7 @@ The sections below install each agent's integration by hand. The files they down
 
 To add them by hand, copy the hooks from [.claude-plugin/plugin.json](https://github.com/kong109/workrex/blob/main/.claude-plugin/plugin.json) into `~/.claude/settings.json` and change each `workmux` command to `workrex`.
 
-The `workmux-status` plugin from the upstream marketplace (`claude plugin marketplace add raine/workmux`) runs the upstream `workmux` command, so it does not report status to workrex.
+The `workmux-status` plugin from the upstream marketplace (`claude plugin marketplace add raine/workmux`) runs the upstream `workmux` command, so it does not report status to workrex. `workrex setup` counts a Claude Code plugin as installed only when its key in `enabledPlugins` starts with `workrex-status@`. It treats a `workmux-status@…` key as upstream's plugin, so it still offers to install the workrex hooks.
 
 ## Pi setup
 
