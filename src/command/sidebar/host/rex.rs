@@ -80,10 +80,12 @@ impl SidebarHost for RexBackend {
 impl RexBackend {
     /// The daemon's control plane and what its event follower observes. The
     /// follower shares this backend's program statuses, so the daemon's
-    /// reconcile keeps each one until an event drops it.
+    /// reconcile keeps each one until an event drops it, and the panes its
+    /// reconcile reads again, so the next tick compares against them.
     fn daemon_parts(&self, files: &Files, config: Config) -> Result<(Plane, Arc<Observed>)> {
         let plane = daemon_plane(self, files.clone(), config)?;
-        let observed = Arc::new(Observed::new(self.program_statuses()));
+        let observed =
+            Arc::new(Observed::new(self.program_statuses()).with_pane_reads(self.pane_reads()));
         // The first tick must see the server, or the daemon would treat
         // every agent's pane as gone.
         let sidebars = control::sidebar_blocks(&files.records());

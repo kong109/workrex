@@ -568,6 +568,16 @@ def test_the_sidebar_keeps_an_agent_that_retitles_itself_after_it_starts(
         "setTimeout(() => { process.title = 'agy'; }, 1500);\n"
         "setInterval(() => {}, 1e6);\n"
     )
+    # Log every rex call, to count the sidebar's reads of the agent's pane.
+    real_rex = env.rex
+    shim = env.tmp_path / "rex-shim"
+    shim.mkdir()
+    calls = env.tmp_path / "rex-calls"
+    (shim / "rex").write_text(
+        f'#!/bin/sh\necho "$*" >> "{calls}"\nexec "{real_rex}" "$@"\n'
+    )
+    (shim / "rex").chmod(0o755)
+    env.env["REX_BIN_DIR"] = str(shim)
     write_workmux_config(repo_path, panes=[{"focus": True}])
     run_workmux_add(env, workmux_exe_path, repo_path, "title-agent")
     window = get_window_name("title-agent")
@@ -593,6 +603,19 @@ def test_the_sidebar_keeps_an_agent_that_retitles_itself_after_it_starts(
         assert poll_until(
             lambda: bool(SPINNER.search(env.capture_pane(sidebar) or "")), timeout=10
         ), env.capture_pane(sidebar)
+
+        # Once a second look has read the new title, the sidebar compares
+        # against it rather than reading the pane again every tick.
+        def process_reads() -> int:
+            return sum(
+                f"-b {block} process" in line for line in calls.read_text().splitlines()
+            )
+
+        time.sleep(2)
+        before = process_reads()
+        time.sleep(10)
+        assert process_reads() - before <= 2
+        assert SPINNER.search(env.capture_pane(sidebar) or "")
     finally:
         workmux(env, workmux_exe_path, repo_path, "sidebar", "off")
 

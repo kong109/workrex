@@ -55,6 +55,7 @@ fn reporting(pane_id: &str, reported: Option<ReportedStatus>) -> FakeMux {
             .map(|reported| (pane_id.to_string(), reported))
             .collect(),
         fresh: HashMap::new(),
+        fresh_fails: false,
         during_query: Mutex::new(None),
     }
 }
@@ -196,6 +197,7 @@ fn a_reporting_pane_outside_the_current_repository_is_not_adopted() {
         live: HashMap::from([("block:b".to_string(), live("/elsewhere"))]),
         reported: HashMap::from([("block:b".to_string(), working(200))]),
         fresh: HashMap::new(),
+        fresh_fails: false,
         during_query: Mutex::new(None),
     };
 
@@ -510,6 +512,7 @@ fn an_adopted_record_from_before_worktrees_were_stored_is_read_once_rewritten() 
             },
         )]),
         fresh: HashMap::new(),
+        fresh_fails: false,
         during_query: Mutex::new(None),
     };
     let mut reports = Reports::new(&mux, INSTANCE);
@@ -739,6 +742,7 @@ fn a_reader_in_the_repository_adopts_only_panes_in_its_linked_worktrees() {
             .map(|(pane, _)| (pane.to_string(), done))
             .collect(),
         fresh: HashMap::new(),
+        fresh_fails: false,
         during_query: Mutex::new(None),
     };
 
@@ -767,6 +771,7 @@ fn prune_while_reporting_in(store: &StateStore, adopted: &ReportedRecord, pane_d
             },
         )]),
         fresh: HashMap::new(),
+        fresh_fails: false,
         during_query: Mutex::new(None),
     };
     store.load_all_reconciled_agents(&mux).unwrap();
@@ -833,4 +838,21 @@ fn an_agent_that_retitled_itself_after_the_snapshot_stays_listed() {
 
     assert!(listed(&store, &mux, "block:a"));
     assert!(store.get_agent(&agent.pane_key).unwrap().is_some());
+}
+
+/// The re-read is the agent's last chance; a read that fails does not keep it.
+#[test]
+fn an_agent_whose_command_changed_drops_when_the_second_read_fails() {
+    let (_dir, store) = temp_store();
+    let mut agent = hooked("block:a", AgentStatus::Working, 100);
+    agent.command = "agy".to_string();
+    agent.agent_kind = Some("agy".to_string());
+    store.upsert_agent(&agent).unwrap();
+    let mux = FakeMux {
+        live: HashMap::from([("block:a".to_string(), running("zsh"))]),
+        fresh_fails: true,
+        ..FakeMux::default()
+    };
+
+    assert!(!listed(&store, &mux, "block:a"));
 }
