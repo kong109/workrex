@@ -23,15 +23,18 @@ pub fn show_once(remotes_configured: bool) {
     }
 }
 
-/// Remote agents run in tmux windows on the local machine, so the notice
-/// only makes sense in an interactive local tmux setup.
+/// Remote agents run in tmux or Rex windows on the local machine, so the
+/// notice only makes sense in an interactive local setup of either.
 fn eligible(
     interactive: bool,
     remote_session: bool,
     sandbox_guest: bool,
     backend: BackendType,
 ) -> bool {
-    interactive && !remote_session && !sandbox_guest && backend == BackendType::Tmux
+    interactive
+        && !remote_session
+        && !sandbox_guest
+        && matches!(backend, BackendType::Tmux | BackendType::Rex)
 }
 
 fn write_notice(output: &mut impl Write) -> io::Result<()> {
@@ -65,11 +68,12 @@ mod tests {
     }
 
     #[test]
-    fn notice_needs_an_interactive_local_tmux_command() {
+    fn notice_needs_an_interactive_local_tmux_or_rex_command() {
         assert!(eligible(true, false, false, BackendType::Tmux));
         assert!(!eligible(false, false, false, BackendType::Tmux));
         assert!(!eligible(true, true, false, BackendType::Tmux));
         assert!(!eligible(true, false, true, BackendType::Tmux));
+        assert!(eligible(true, false, false, BackendType::Rex));
         assert!(!eligible(true, false, false, BackendType::WezTerm));
     }
 }

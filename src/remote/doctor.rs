@@ -14,6 +14,8 @@ use super::protocol::{self, HelloFailure};
 use super::transport::{Input, Transport};
 use crate::config::{Config, RemoteIsolation};
 
+mod wsl;
+
 const MIN_TMUX: (u32, u32) = (3, 3);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -25,13 +27,16 @@ fact os "$(uname -s)"
 fact arch "$(uname -m)"
 fact user "$(id -un)"
 fact hostname "$(uname -n)"
+fact kernel "$(uname -r)"
 fact tmux "$(tmux -V 2>/dev/null)"
 fact git "$(git --version 2>/dev/null)"
 if command -v loginctl >/dev/null 2>&1; then
   fact linger "$(loginctl show-user "$(id -un)" --property=Linger --value 2>/dev/null)"
+  fact linger_error "$(loginctl show-user "$(id -un)" --property=Linger --value 2>&1 >/dev/null)"
 else
   fact linger unavailable
 fi
+if [ -d /run/systemd/system ]; then fact systemd yes; else fact systemd no; fi
 "#;
 
 const RUNTIME_FACTS_SCRIPT: &str = r#"if command -v docker >/dev/null 2>&1; then
@@ -167,7 +172,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
 
     rows.push(tmux_row(fact(facts, "tmux")));
 
-    rows.push(match fact(facts, "linger") {
+    let linger = match fact(facts, "linger") {
         "yes" => Row::new("linger", Level::Ok, format!("enabled for {user}")),
         "no" => Row::new(
             "linger",
@@ -183,7 +188,15 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
             format!("unknown linger state {other:?}"),
         )
         .fix(format!("sudo loginctl enable-linger {user}")),
-    });
+    };
+    rows.push(wsl::linger_row(
+        linger,
+        fact(facts, "kernel"),
+        fact(facts, "linger"),
+        fact(facts, "linger_error"),
+        fact(facts, "systemd") == "yes",
+        user,
+    ));
 
     rows.push(Row::new(
         "agents",
@@ -333,7 +346,7 @@ pub fn run(spec: &RemoteSpec, config: &Config) -> Result<bool> {
     println!("Remote {} ({})", spec.name, spec.host);
     let transport = Transport::open(spec)?;
     if let Err(err) = transport.connect() {
-        print_row(&Row::new("ssh", Level::Fail, format!("{err:#}")));
+        print_row(&wsl::ssh_row(&spec.name, &spec.host, &err));
         return Ok(false);
     }
     let script = if spec.isolation == RemoteIsolation::Container {
@@ -667,6 +680,46 @@ mod tests {
     }
 
     #[test]
+    fn wsl_linger_reads_the_systemd_and_error_facts() {
+        let mut facts = healthy_facts();
+        facts.insert("kernel".into(), "6.18.54.1-microsoft-standard-WSL2".into());
+        facts.insert("linger".into(), "".into());
+        for (systemd, error, level, detail) in [
+            (
+                "no",
+                "System has not been booted with systemd as init system (PID 1). Can't operate.",
+                Level::Warn,
+                "systemd is not running, so nothing keeps agents alive",
+            ),
+            (
+                "yes",
+                "Failed to get user: User ID 1000 is not logged in or lingering",
+                Level::Fail,
+                "disabled for dev: logind has no linger or session for dev, and WSL stops \
+                 agents when the distro shuts down",
+            ),
+            (
+                "yes",
+                "Failed to connect to bus: No such file or directory",
+                Level::Warn,
+                "loginctl failed, so linger is unknown: \
+                 \"Failed to connect to bus: No such file or directory\"",
+            ),
+        ] {
+            facts.insert("systemd".into(), systemd.into());
+            facts.insert("linger_error".into(), error.into());
+            let (rows, _) = rows_for(
+                &facts,
+                RemoteIsolation::Container,
+                NodeStatus::Ready(Hello::local()),
+            );
+            let linger = row(&rows, "linger");
+            assert_eq!(linger.level, level, "{error}");
+            assert_eq!(linger.detail, detail);
+        }
+    }
+
+    #[test]
     fn docker_permission_denied_suggests_group_and_reconnect() {
         let mut facts = healthy_facts();
         facts.insert("docker_status".into(), "1".into());
@@ -768,6 +821,55 @@ mod tests {
         assert!(!fact(&facts, "os").is_empty());
         assert!(!fact(&facts, "user").is_empty());
         assert!(facts.contains_key("linger"));
+        let booted = std::path::Path::new("/run/systemd/system").is_dir();
+        assert_eq!(fact(&facts, "systemd"), if booted { "yes" } else { "no" });
+    }
+
+    /// On a host without systemd, a misspelled probe also reports `no`, so
+    /// `facts_script_runs_locally` passes there. Pin sd_booted(3)'s directory.
+    #[test]
+    fn systemd_fact_probes_the_sd_booted_directory() {
+        assert!(
+            FACTS_SCRIPT.contains(
+                "if [ -d /run/systemd/system ]; then fact systemd yes; else fact systemd no; fi"
+            ),
+            "{FACTS_SCRIPT}"
+        );
+    }
+
+    #[test]
+    fn facts_script_keeps_loginctl_stdout_and_stderr_apart() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let loginctl = dir.path().join("loginctl");
+        let path = format!(
+            "{}:{}",
+            dir.path().display(),
+            std::env::var("PATH").unwrap()
+        );
+        for (fake, linger, error) in [
+            (
+                "echo 'Failed to connect to bus: No such file or directory' >&2; exit 1",
+                "",
+                "Failed to connect to bus: No such file or directory",
+            ),
+            ("echo yes", "yes", ""),
+        ] {
+            std::fs::write(&loginctl, format!("#!/bin/sh\n{fake}\n")).unwrap();
+            std::fs::set_permissions(
+                &loginctl,
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(FACTS_SCRIPT)
+                .env("PATH", &path)
+                .output()
+                .unwrap();
+            let facts = parse_facts(&String::from_utf8_lossy(&output.stdout));
+            assert_eq!(fact(&facts, "linger"), linger, "{fake}");
+            assert_eq!(fact(&facts, "linger_error"), error, "{fake}");
+        }
     }
 
     #[test]

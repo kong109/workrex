@@ -22,7 +22,7 @@ use super::protocol::{
     RemoveRequest, RemoveResponse, StartRequest, StartResponse, WorkspaceIdentity, code,
 };
 use crate::cmd::Cmd;
-use crate::config::{Config, ConfigLocation};
+use crate::config::{Config, ConfigLocation, MuxMode};
 use crate::multiplexer::{CreateWindowParams, Multiplexer, WindowOwnershipRecord, WindowTarget};
 use crate::prompt::Prompt;
 use crate::shell::shell_quote;
@@ -132,6 +132,10 @@ pub fn create(
         Some(record) => record.window_name.clone(),
         None => crate::multiplexer::util::prefixed(&context.prefix, &handle),
     };
+    // Session mode: the relay window opens in a session named like it.
+    let window_session = window_session.or_else(|| {
+        (resume.is_none() && request.options.mode == MuxMode::Session).then(|| window_name.clone())
+    });
     if let Some(conflict) = local_conflict(
         context,
         request.branch,
@@ -372,7 +376,8 @@ pub(super) fn local_conflict(
     }
     if window_name_taken(context.mux.as_ref(), window_name, window_session)? {
         return Ok(Some(format!(
-            "A tmux window named '{window_name}' already exists.{hint}"
+            "A {} window named '{window_name}' already exists.{hint}",
+            context.mux.name()
         )));
     }
     Ok(None)
@@ -701,16 +706,43 @@ fn collect_tree(
 /// Command a window pane runs to relay pane `index` of `ex_id`.
 fn attach_command_line(remote: &str, ex_id: &str, index: usize) -> Result<String> {
     let exe = std::env::current_exe().context("Failed to locate the workmux binary")?;
-    let loopback = if std::env::var_os(super::transport::LOOPBACK_ENV).is_some_and(|v| v == "1") {
-        format!("env {}=1 ", super::transport::LOOPBACK_ENV)
-    } else {
-        String::new()
-    };
-    Ok(format!(
-        "{loopback}{} remote attach {} {ex_id} --pane {index}",
-        shell_quote(&exe.to_string_lossy()),
-        shell_quote(remote)
+    Ok(attach_command(
+        &exe.to_string_lossy(),
+        remote,
+        ex_id,
+        index,
+        |name| std::env::var_os(name),
     ))
+}
+
+fn attach_command(
+    exe: &str,
+    remote: &str,
+    ex_id: &str,
+    index: usize,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> String {
+    let mut env: Vec<String> = Vec::new();
+    if var(super::transport::LOOPBACK_ENV).is_some_and(|v| v == "1") {
+        env.push(format!("{}=1", super::transport::LOOPBACK_ENV));
+    }
+    // Rex panes start with the Rex server's environment, which need not
+    // locate the config and state this command used.
+    for name in ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] {
+        if let Some(value) = var(name) {
+            env.push(format!("{name}={}", shell_quote(&value.to_string_lossy())));
+        }
+    }
+    let env = if env.is_empty() {
+        String::new()
+    } else {
+        format!("env {} ", env.join(" "))
+    };
+    format!(
+        "{env}{} remote attach {} {ex_id} --pane {index}",
+        shell_quote(exe),
+        shell_quote(remote)
+    )
 }
 
 /// Create the window for `record`'s execution: one pane per remote session,
@@ -871,8 +903,10 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
         }
     };
     super::homecoming::finish_pending(&node, &record.ws_id);
-    // Observing adopts siblings, which may open this window meanwhile.
+    // Observing adopts siblings, which may open this window meanwhile,
+    // through a backend of its own, so this one's earlier reads predate it.
     super::observe::current_on(&node);
+    mux.forget_reads();
     if !window && window_target(mux, &record)?.is_some() {
         return switch(&record);
     }
@@ -933,6 +967,7 @@ pub fn close(mux: &dyn Multiplexer, record: &WorkspaceRecord) -> Result<()> {
     };
     mux.kill_window_target(&target)
         .context("Failed to close window")?;
+    drop_emptied_session(mux, record);
     forget_attachments(record);
     println!(
         "✓ Closed the window of '{}'; its agent keeps running on '{}' (`{BIN} open {}` \
@@ -1289,6 +1324,24 @@ pub(crate) fn close_relay(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
             tracing::warn!(handle = %record.handle, "could not resolve relay window: {err:#}")
         }
     }
+    drop_emptied_session(mux, record);
+}
+
+/// tmux ends a session with its last window; Rex keeps it, empty. The
+/// relay's window may also have closed itself when its remote session ended,
+/// after this process last read the session.
+pub(crate) fn drop_emptied_session(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
+    let Some(session) = record.window_session.as_deref() else {
+        return;
+    };
+    mux.forget_reads();
+    let emptied = mux.session_exists(session).unwrap_or(false)
+        && mux
+            .get_window_names_in_session(session)
+            .is_ok_and(|names| names.is_empty());
+    if emptied && let Err(err) = mux.kill_session(session) {
+        tracing::warn!(handle = %record.handle, "could not close emptied session: {err:#}");
+    }
 }
 
 /// Drop the state of the closed window's panes now, so a later server
@@ -1385,5 +1438,28 @@ mod transfer_tests {
                 assert!(payload.len() > 46_000_000);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod attach_tests {
+    use super::*;
+
+    #[test]
+    fn relay_command_carries_the_config_and_state_dirs() {
+        let command = attach_command("/opt/bin/workrex", "winbox", "x1", 0, |name| match name {
+            "XDG_CONFIG_HOME" => Some("/home/me/my config".into()),
+            "XDG_STATE_HOME" => Some("/home/me/state".into()),
+            _ => None,
+        });
+        assert_eq!(
+            command,
+            "env XDG_CONFIG_HOME='/home/me/my config' XDG_STATE_HOME=/home/me/state \
+             /opt/bin/workrex remote attach winbox x1 --pane 0"
+        );
+        assert_eq!(
+            attach_command("/opt/bin/workrex", "winbox", "x1", 2, |_| None),
+            "/opt/bin/workrex remote attach winbox x1 --pane 2"
+        );
     }
 }

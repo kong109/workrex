@@ -271,6 +271,10 @@ pub trait Multiplexer: Send + Sync {
     /// For WezTerm, this may switch to a workspace.
     fn switch_to_session(&self, prefix: &str, name: &str) -> Result<()>;
 
+    /// Drop any reads this backend keeps for reuse, so the next read sees a
+    /// change made outside this process since the last one.
+    fn forget_reads(&self) {}
+
     /// Check if a session exists by its full name.
     fn session_exists(&self, _full_name: &str) -> Result<bool> {
         Ok(false)

@@ -5,8 +5,6 @@ and the laptop sees it later still."""
 import time
 from pathlib import Path
 
-import pytest
-
 from ..conftest import (
     TmuxEnvironment,
     get_window_name,
@@ -16,8 +14,6 @@ from ..conftest import (
 from ..support.bin_name import rebrand
 from .conftest import Node, git, wm
 from .test_status import start_workmux, status_rows
-
-pytestmark = pytest.mark.tmux_only
 
 
 def turn_agent(directory: Path) -> Path:

@@ -54,6 +54,7 @@ rex_id!(BlockId);
 rex_id!(ClientId);
 
 mod session;
+mod target;
 
 impl BlockId {
     fn parse(pane_id: &str) -> Result<Self> {
@@ -791,14 +792,6 @@ impl RexBackend {
         result
     }
 
-    /// Drops every reused read, and keeps a read already under way from
-    /// being stored.
-    fn forget_reads(&self) {
-        let mut reads = self.reads.lock().unwrap();
-        reads.writes += 1;
-        reads.answers.clear();
-    }
-
     fn spawn(
         &self,
         args: &[&str],
@@ -1440,7 +1433,7 @@ impl Multiplexer for RexBackend {
 
     fn create_window(&self, params: CreateWindowParams) -> Result<String> {
         let full_name = util::prefixed(params.prefix, params.name);
-        let after = params.after_window.map(|id| WindowId(id.to_string()));
+        let after = params.after_window.map(target::after_window);
         let view = match &after {
             Some(window) => self
                 .view_of_window(window)?
@@ -1574,6 +1567,13 @@ impl Multiplexer for RexBackend {
     fn switch_to_session(&self, prefix: &str, name: &str) -> Result<()> {
         self.first_session_labeled(&util::prefixed(prefix, name))?;
         Ok(())
+    }
+
+    /// Also keeps a read already under way from being stored.
+    fn forget_reads(&self) {
+        let mut reads = self.reads.lock().unwrap();
+        reads.writes += 1;
+        reads.answers.clear();
     }
 
     fn session_exists(&self, full_name: &str) -> Result<bool> {
@@ -3394,6 +3394,43 @@ mod tests {
             "updated_ts": 0,
         }))
         .unwrap()
+    }
+
+    /// A remote relay's window closes itself when its remote session ends,
+    /// possibly right after a command last read the relay's session. The
+    /// command must still see the session empty and destroy it.
+    #[test]
+    fn a_relay_session_emptied_after_a_reused_read_is_destroyed() {
+        let fake = FakeRex::new(&[
+            ("session.list", &session_list(&[("session:r", "wm-feat")])),
+            ("session.view", "$cat \"$dir/view\""),
+            ("session.destroy", "{}"),
+        ])
+        .reusing();
+        let relay = [("window:1", "wm-feat")];
+        fake.write("view", &view_json("session:r", "wm-feat", &relay));
+        let names = fake.rex.get_window_names_in_session("wm-feat").unwrap();
+        assert!(names.contains("wm-feat"), "{names:?}");
+        fake.write("view", &view_json("session:r", "wm-feat", &[]));
+
+        let mut record = crate::remote::cache::WorkspaceRecord::new(
+            "w1".into(),
+            "box",
+            "p".into(),
+            PathBuf::from("/src/app"),
+            "feat",
+            "feat",
+            "0".repeat(40),
+            None,
+            "wm-feat".into(),
+            PathBuf::from("/src/app__worktrees/feat"),
+        );
+        record.window_session = Some("wm-feat".into());
+        crate::remote::lifecycle::drop_emptied_session(&fake.rex, &record);
+
+        let destroys = fake.calls("session.destroy");
+        assert_eq!(destroys.len(), 1, "{destroys:?}");
+        assert!(destroys[0].contains("session:r"), "{destroys:?}");
     }
 
     #[test]
