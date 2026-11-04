@@ -30,12 +30,18 @@ sandbox:
   enabled: true
 ```
 
+These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
+
 The pre-built image (`ghcr.io/raine/workmux-sandbox:{agent}`) is pulled automatically on first run based on your configured agent. No manual build step is needed, but possible if required (see [custom images](#custom-images)).
+
+:::caution[The default image is upstream's]
+workrex publishes no sandbox image of its own. The default `image` is upstream workmux's `ghcr.io/raine/workmux-sandbox:{agent}`, which ships upstream's `workmux` binary rather than `workrex`. `workrex sandbox build` installs upstream `workmux` the same way, from the bundled Dockerfiles. To add this build to the configured image, run [`workrex sandbox install-dev`](/guide/sandbox/features/#installing-local-builds).
+:::
 
 To pull the latest image explicitly:
 
 ```bash
-workmux sandbox pull
+workrex sandbox pull
 ```
 
 ## Configuration
@@ -44,7 +50,7 @@ workmux sandbox pull
 | ------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `enabled`                 | `false`                                 | Enable container sandboxing                                                                                                                                                                                                                                                                           |
 | `container.runtime`       | auto-detect                             | Container runtime: `docker`, `podman`, or `apple-container`. Auto-detected from PATH when not set. On macOS, prefers Apple Container (`container`) over Docker/Podman.                                                                                                                                |
-| `container.memory`        | `16G` (Apple Container) / none (others) | Memory limit for the container. Apple Container VMs default to 1 GB which is too low, so workmux sets `16G` by default. This is a ceiling, not an upfront allocation. Works with any runtime when explicitly set.                                                                                     |
+| `container.memory`        | `16G` (Apple Container) / none (others) | Memory limit for the container. Apple Container VMs default to 1 GB which is too low, so workrex sets `16G` by default. This is a ceiling, not an upfront allocation. Works with any runtime when explicitly set.                                                                                     |
 | `container.cpus`          | none                                    | CPU count for the container. Only passed when explicitly set. Apple Container defaults to 4 CPUs which is sufficient for most workloads.                                                                                                                                                              |
 | `container.devices`       | `[]`                                    | Host device nodes exposed to the sandbox (e.g. `/dev/kvm`, `/dev/ttyUSB0`). Passed to the runtime as `--device`. Docker and Podman only; Apple Container rejects. **Global config only.**                                                                                                             |
 | `container.group_add`     | `[]`                                    | Supplementary groups added to the sandboxed process (e.g. `dialout`, `video`, or numeric GIDs). Passed to the runtime as `--group-add`. Docker and Podman only; Apple Container rejects. **Global config only.**                                                                                      |
@@ -97,9 +103,9 @@ sandbox:
     # cpus: 8       # optional, Apple Container defaults to 4
 ```
 
-Workmux requires an Apple Container build whose `container run` supports
+Workrex requires an Apple Container build whose `container run` supports
 `--read-only-path`. This capability protects Git policy files inside otherwise
-writable project mounts. Workmux fails before starting the guest when the
+writable project mounts. Workrex fails before starting the guest when the
 installed build lacks it.
 
 **With host hardware (USB serial, GPU, etc.):**
@@ -131,7 +137,7 @@ Notes on hardware access:
 - Group names (e.g. `dialout`) must resolve inside the container image.
   When the host and image disagree on GIDs (common across distros), use
   numeric GIDs.
-- In network-deny mode, workmux drops privileges inside the container via
+- In network-deny mode, workrex drops privileges inside the container via
   `setpriv` (replacing `gosu`), which preserves the configured supplementary
   groups. This means hardware access works in both `allow` and `deny`
   network modes.
@@ -150,11 +156,11 @@ sandbox:
       - .env.local
 ```
 
-Listed paths are relative to the worktree root. Each one is shadowed by a read-only `/dev/null` bind mount, so agents running inside the container cannot read the host file without having to restructure the project. Files reachable via workmux's main-worktree mount (including symlinks from the current worktree into it) are masked at both paths. Absolute paths and entries containing `..` components are rejected; files that don't exist on disk are skipped with a warning.
+Listed paths are relative to the worktree root. Each one is shadowed by a read-only `/dev/null` bind mount, so agents running inside the container cannot read the host file without having to restructure the project. Files reachable via workrex's main-worktree mount (including symlinks from the current worktree into it) are masked at both paths. Absolute paths and entries containing `..` components are rejected; files that don't exist on disk are skipped with a warning.
 
 **Security: global-only.** `excluded_files` is ignored when set in a project's `.workmux.yaml`; it must be configured in your global config (`~/.config/workmux/config.yaml`). This prevents a malicious repo from deleting protections via its own config.
 
-**Note:** `excluded_files` relies on file-level bind mounts, which Apple Container does not support (it only accepts directory mounts). When the runtime is Apple Container and `excluded_files` is set, workmux fails fast rather than silently leaving secrets readable. Use Docker or Podman if you need this feature.
+**Note:** `excluded_files` relies on file-level bind mounts, which Apple Container does not support (it only accepts directory mounts). When the runtime is Apple Container and `excluded_files` is set, workrex fails fast rather than silently leaving secrets readable. Use Docker or Podman if you need this feature.
 
 **Run under a VM-based OCI runtime (stronger isolation):**
 
@@ -188,7 +194,7 @@ Notes:
   so use `runtime: docker` for the `kata` example above.
 - **Podman support is local-only.** Other OCI runtimes may work with local Podman
   on Linux. Remote Podman clients, including all macOS and Windows builds, do
-  not expose `podman run --runtime`. Workmux rejects `oci_runtime` on non-Linux
+  not expose `podman run --runtime`. Workrex rejects `oci_runtime` on non-Linux
   hosts and when `CONTAINER_HOST` or `CONTAINER_CONNECTION` selects a remote
   service. Other remote Podman configurations are unsupported and may return
   `unknown flag: --runtime` directly from Podman.
@@ -237,7 +243,7 @@ sandbox:
 
 ## How it works
 
-When you run `workmux add feature-x`, the agent command is wrapped:
+When you run `workrex add feature-x`, the agent command is wrapped:
 
 ```bash
 # Without sandbox:
@@ -281,7 +287,7 @@ Configured content filters and merge drivers may execute programs from the
 writable worktree during host Git operations.
 
 Docker and Podman use nested bind mounts. Apple Container uses nested mounts
-with `--read-only-path`. Workmux checks for that capability before startup, so
+with `--read-only-path`. Workrex checks for that capability before startup, so
 Apple Container builds such as 0.10 that lack it fail closed. Container
 capabilities that permit mount changes and writable container-engine sockets
 are incompatible with this boundary and are rejected.
@@ -308,10 +314,10 @@ Start an interactive shell inside a container for debugging:
 
 ```bash
 # Start a new container with the same mounts
-workmux sandbox shell
+workrex sandbox shell
 
 # Exec into the currently running container for this worktree
-workmux sandbox shell --exec
+workrex sandbox shell --exec
 ```
 
 The `--exec` flag attaches to an existing running container instead of starting a new one. This is useful for inspecting the state of a running agent's environment.
@@ -377,7 +383,7 @@ Only HTTPS (port 443) to allowed domains gets through. The proxy also rejects co
 To add tools or customize the sandbox environment, export the Dockerfile and modify it:
 
 ```bash
-workmux sandbox init-dockerfile        # creates Dockerfile.sandbox
+workrex sandbox init-dockerfile        # creates Dockerfile.sandbox
 vim Dockerfile.sandbox                 # customize
 docker build -t my-sandbox -f Dockerfile.sandbox .
 ```
@@ -385,7 +391,7 @@ docker build -t my-sandbox -f Dockerfile.sandbox .
 To build the default image locally instead of pulling from the registry:
 
 ```bash
-workmux sandbox build
+workrex sandbox build
 ```
 
 Then set the image in your config:
@@ -396,7 +402,7 @@ sandbox:
   image: my-sandbox
 ```
 
-A custom image for Codex needs Codex 0.156 or newer, installed from its full release package (`codex-package-<arch>-unknown-linux-musl.tar.gz`) rather than the bare `codex` binary, which lacks helpers such as `codex-code-mode-host`. Workmux starts sandboxed Codex with `--no-daemon`, which older versions reject (see [Agent flags](/guide/sandbox/features/#agent-flags)).
+A custom image for Codex needs Codex 0.156 or newer, installed from its full release package (`codex-package-<arch>-unknown-linux-musl.tar.gz`) rather than the bare `codex` binary, which lacks helpers such as `codex-code-mode-host`. Workrex starts sandboxed Codex with `--no-daemon`, which older versions reject (see [Agent flags](/guide/sandbox/features/#agent-flags)).
 
 ## Security: hooks in sandbox
 

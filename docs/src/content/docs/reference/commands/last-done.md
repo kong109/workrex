@@ -8,7 +8,7 @@ Switches to the agent that most recently completed its task or is waiting for us
 This is a hidden command (not shown in `--help`), typically invoked via a tmux keybinding.
 
 ```bash
-workmux last-done
+workrex last-done
 ```
 
 ## How it works
@@ -24,19 +24,23 @@ workmux last-done
 Add to `~/.tmux.conf` for quick access:
 
 ```bash
-bind l run-shell "workmux last-done"
+bind l run-shell "workrex last-done"
 ```
 
 Then press `prefix + l` to jump to the last completed or waiting agent. Press again to cycle to the next oldest.
+
+## Under Rex
+
+Under [Rex](/guide/rex/), `last-done` moves Rex.app to the target. It asks the Rex.app client that owns your pane, and it needs Remote Control, which you turn on in Rex Settings. Without it, `last-done` prints `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings.` once.
 
 ## Examples
 
 ```bash
 # Jump to the most recently completed/waiting agent
-workmux last-done
+workrex last-done
 
 # Press again to cycle to the next oldest
-workmux last-done
+workrex last-done
 ```
 
 ## Related

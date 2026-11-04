@@ -3,31 +3,31 @@ title: "remote"
 description: Set up, check and manage SSH remotes that run agents
 ---
 
-Commands for [remote servers](/guide/remote/): SSH-reachable Linux machines that run individual agents. Remotes are defined under `remotes:` in the global config (see [configuration](/guide/configuration/#remotes)). Create a remote agent with [`workmux add --remote`](/reference/commands/add/).
+Commands for [remote servers](/guide/remote/): SSH-reachable Linux machines that run individual agents. Remotes are defined under `remotes:` in the global config (see [configuration](/guide/configuration/#remotes)). Create a remote agent with [`workrex add --remote`](/reference/commands/add/).
 
 ## remote
 
 List the configured remotes.
 
 ```bash
-workmux remote
+workrex remote
 ```
 
-Shows each remote's name, its SSH host and its status: reachable or not, whether the node is set up, and the workmux version and protocol it runs. The remote that `placement` selects is marked as the default.
+Shows each remote's name, its SSH host and its status: reachable or not, whether the node is set up, and the workrex version and protocol it runs. The remote that `placement` selects is marked as the default.
 
 ## remote setup
 
 Install the node on a remote.
 
 ```bash
-workmux remote setup <name>
+workrex remote setup <name>
 ```
 
 **Arguments:**
 
 - `<name>` - Remote name from `remotes:` in the global config
 
-Uploads the workmux binary for this workmux version into the remote's node root (the release, downloaded and checksum-verified on the local machine, or the configured `binary`), and installs workmux's status hooks for the supported agents in the remote user's agent directories. OpenCode's hooks are installed once the OpenCode sandbox image is on the remote. Running it again only installs what is missing. An interrupted install is recovered by the next run.
+Uploads the workrex binary for this workrex version into the remote's node root (the release, downloaded and checksum-verified on the local machine, or the configured `binary`), and installs workrex's status hooks for the supported agents in the remote user's agent directories. OpenCode's hooks are installed once the OpenCode sandbox image is on the remote. Running it again only installs what is missing. An interrupted install is recovered by the next run.
 
 Commands that need the node, such as `add --remote` and `remote login`, install it automatically, so `setup` is mostly useful as a first check, and after you make OpenCode's sandbox image available on the remote (its hooks depend on the OpenCode version in that image).
 
@@ -36,7 +36,7 @@ Commands that need the node, such as `add --remote` and `remote login`, install 
 Check that a remote can run agents.
 
 ```bash
-workmux remote doctor <name>
+workrex remote doctor <name>
 ```
 
 **Arguments:**
@@ -49,13 +49,13 @@ Prints one row per check, with a fix for each failing row:
 | ----------- | --------------------------------------------------------------------------------------------------------- |
 | `ssh`       | The SSH connection works without a prompt                                                                 |
 | `arch`      | The remote runs Linux on a supported architecture                                                         |
-| `node`      | The node binary is installed and speaks this workmux's protocol                                           |
+| `node`      | The node binary is installed and speaks this workrex's protocol                                           |
 | `git`       | Git is installed                                                                                          |
 | `tmux`      | tmux 3.3 or newer is installed                                                                            |
 | `linger`    | systemd linger is enabled, so agents survive logout                                                       |
 | `agents`    | Resolved mode and deciding setting; in host mode, default CLI required and other configured CLIs optional |
 | `container` | Docker works for the SSH user (Docker mode only)                                                          |
-| `hooks`     | workmux's status hooks are installed for each agent                                                       |
+| `hooks`     | workrex's status hooks are installed for each agent                                                       |
 | logins      | One row per configured agent, with the credential files found on the remote                               |
 | `image`     | The sandbox image of the default agent can be pulled (it is pulled as part of the check)                  |
 
@@ -66,9 +66,9 @@ Uses the current directory's effective config, like `add`; outside a project, us
 Log an agent in on a remote, where its remote agents find the login.
 
 ```bash
-workmux remote login <name> <agent> [-- <args>...]
-workmux remote login <name> <agent> --import
-workmux remote login <name> claude --setup-token
+workrex remote login <name> <agent> [-- <args>...]
+workrex remote login <name> <agent> --import
+workrex remote login <name> claude --setup-token
 ```
 
 **Arguments:**
@@ -89,7 +89,7 @@ Without `--import`, runs the agent's own login flow on the remote, attached to y
 Bring a remote workspace home.
 
 ```bash
-workmux remote pull <handle> [--no-hooks]
+workrex remote pull <handle> [--no-hooks]
 ```
 
 **Arguments:**
@@ -109,7 +109,7 @@ If the remote can't be reached after the work came home, the remote cleanup is l
 List what a remote holds that no workspace uses, and remove it.
 
 ```bash
-workmux remote gc <name> [--dry-run | --force]
+workrex remote gc <name> [--dry-run | --force]
 ```
 
 **Arguments:**
@@ -128,7 +128,7 @@ Lists workspaces this machine has no record of, stray worktrees, tmux sessions, 
 Show the output of merges and removals requested from remote panes.
 
 ```bash
-workmux remote logs <name> [<request>]
+workrex remote logs <name> [<request>]
 ```
 
 **Arguments:**
@@ -142,22 +142,22 @@ Without a request ID, lists the saved log files for the remote. With one, prints
 
 ```bash
 # Install and check a new remote
-workmux remote setup devbox
-workmux remote doctor devbox
+workrex remote setup devbox
+workrex remote doctor devbox
 
 # Log Codex in on the remote, using device auth instead of a browser callback
-workmux remote login devbox codex -- --device-auth
+workrex remote login devbox codex -- --device-auth
 
 # Give the remote's Claude agents a long-lived token
-workmux remote login devbox claude --setup-token
+workrex remote login devbox claude --setup-token
 
 # Copy Gemini's credential files from this machine
-workmux remote login devbox gemini --import
+workrex remote login devbox gemini --import
 
 # Move a remote workspace to the local machine
-workmux remote pull my-feature
+workrex remote pull my-feature
 
 # Preview, then remove leftovers
-workmux remote gc devbox --dry-run
-workmux remote gc devbox
+workrex remote gc devbox --dry-run
+workrex remote gc devbox
 ```

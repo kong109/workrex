@@ -6,12 +6,12 @@ description: Run individual agents on an SSH-reachable Linux server while others
 import RemoteDemo from "../../../../components/RemoteDemo.astro";
 
 :::note[Experimental]
-Remote servers are experimental. Try them out, and if something doesn't work or a workflow you need is missing, [open an issue on GitHub](https://github.com/raine/workmux/issues).
+Remote servers are experimental. Try them out, and if something doesn't work or a workflow you need is missing, [open an issue on GitHub](https://github.com/kong109/workrex/issues).
 :::
 
-workmux can run an agent on a Linux server you reach over SSH, such as a home server, a Proxmox VM or a cloud VM, while your other agents stay on the local machine. Each remote agent still gets a normal tmux or Rex window on the local machine, or with `terminal: rex` a session on the server's Rex server that Rex.app shows, and shows up in the dashboard, the sidebar, `workmux status` and `workmux list` like a local one.
+workrex can run an agent on a Linux server you reach over SSH, such as a home server, a Proxmox VM or a cloud VM, while your other agents stay on the local machine. Each remote agent still gets a normal tmux or Rex window on the local machine, or with `terminal: rex` a session on the server's Rex server that Rex.app shows, and shows up in the dashboard, the sidebar, `workrex status` and `workrex list` like a local one.
 
-The agent keeps running while the local machine sleeps, loses its network or closes the window. When you come back, the window reconnects by itself. When the work is done, `workmux merge` brings it home and merges it on the local machine.
+The agent keeps running while the local machine sleeps, loses its network or closes the window. When you come back, the window reconnects by itself. When the work is done, `workrex merge` brings it home and merges it on the local machine.
 
 <RemoteDemo caption="An agent starts on devbox, keeps working while the local machine sleeps, and merges home." />
 
@@ -27,7 +27,7 @@ If you only want to isolate agents on the local machine, use the [sandbox](/guid
 
 - The worktree, its panes and the agent run on the server, either directly or in a Docker container. The local window is a live view of them.
 - The local machine stays the source of truth for Git. A new workspace starts from a local commit, unpushed commits included, and its work comes back with `merge` or `remote pull`. The server never talks to your Git hosting.
-- workmux installs and updates its own copy on the server. You don't install workmux there yourself.
+- workrex installs and updates its own copy on the server. You don't install workrex there yourself.
 - Remote agents appear in every view labelled `handle@remote`, for example `my-feature@devbox`.
 
 ## Quick start
@@ -41,23 +41,25 @@ remotes:
     host: devbox # an ~/.ssh/config alias or user@host
 ```
 
+These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
+
 Then, from your project:
 
 ```bash
-workmux remote setup devbox        # install workmux on the server
-workmux remote doctor devbox       # check everything an agent needs
-workmux remote login devbox claude # log the agent in on the server
-workmux add my-feature --remote devbox -p "Implement the parser"
+workrex remote setup devbox        # install workrex on the server
+workrex remote doctor devbox       # check everything an agent needs
+workrex remote login devbox claude # log the agent in on the server
+workrex add my-feature --remote devbox -p "Implement the parser"
 ```
 
 The window opens on the local machine as usual. When the agent is done:
 
 ```bash
-workmux merge my-feature
+workrex merge my-feature
 ```
 
 :::caution[Put the branch before a bare `--remote`]
-`--remote` takes an optional name, so in `workmux add --remote my-feature` the branch is read as the remote name. Write `workmux add my-feature --remote`, or name the remote: `workmux add --remote devbox my-feature`.
+`--remote` takes an optional name, so in `workrex add --remote my-feature` the branch is read as the remote name. Write `workrex add my-feature --remote`, or name the remote: `workrex add --remote devbox my-feature`.
 :::
 
 ## Differences from local agents

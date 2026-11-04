@@ -6,7 +6,7 @@ description: Restore worktree windows after a tmux or computer crash
 Restores worktree windows after a tmux or computer crash. Uses persisted agent state files to detect which worktrees had active agents before the crash, then reopens them with each agent's resume arguments.
 
 ```bash
-workmux resurrect [--dry-run]
+workrex resurrect [--dry-run]
 ```
 
 ## Options
@@ -28,21 +28,23 @@ candidate per exact working directory. Unrestored worktrees remain recoverable
 across repeated restarts without retaining duplicate records for every boot.
 Current-boot records, records without a reliable boot identity, malformed files,
 and state owned by another multiplexer instance or backend are preserved. Each
-instance compacts its own history when workmux observes that instance with a
+instance compacts its own history when workrex observes that instance with a
 reliable boot identity.
+
+Config and state paths keep their workmux names so existing workmux configs work. See [Configuration](/guide/configuration/).
 
 ## Remote workspaces
 
-Agents on [remote servers](/guide/remote/) kept running while the local tmux was down, so `resurrect` reopens their windows and reattaches them without restarting anything. A remote agent whose session ended, for example because the remote host rebooted, is skipped: run `workmux open <handle>` to start it again.
+Agents on [remote servers](/guide/remote/) kept running while the local tmux was down, so `resurrect` reopens their windows and reattaches them without restarting anything. A remote agent whose session ended, for example because the remote host rebooted, is skipped: run `workrex open <handle>` to start it again.
 
 ## Examples
 
 ```bash
 # Preview what would be restored
-workmux resurrect --dry-run
+workrex resurrect --dry-run
 
 # Restore all worktrees that had agents running
-workmux resurrect
+workrex resurrect
 ```
 
 ## Example output

@@ -1,35 +1,37 @@
 ---
 title: "Nix"
-description: Installing and configuring workmux with Nix and Home Manager
+description: Installing and configuring workrex with Nix and Home Manager
 ---
 
 Requires [Nix with flakes enabled](https://nixos.wiki/wiki/Flakes).
 
+The workrex repo has a flake that builds the `workrex` binary from source. CI builds it on x86_64 Linux when a change touches the flake, the Cargo files, `src/` or `tests/` (the Nix workflow runs `nix build .#`). The flake also lists aarch64 Linux and both macOS architectures, but CI does not build those. If the flake does not build on your system, install a [release build](/guide/installation/) instead.
+
 ## Quick start
 
-Run workmux without installing:
+Run workrex without installing it:
 
 ```bash
-nix run github:raine/workmux -- --help
+nix run github:kong109/workrex -- --help
 ```
 
 ## Flake input
 
 ```nix
-inputs.workmux.url = "github:raine/workmux";
+inputs.workrex.url = "github:kong109/workrex";
 ```
 
 ## Installation
 
 ### Home Manager
 
-Install the package and write the config file directly:
+Install the package and write the config file. The config path keeps the workmux name, so an existing workmux config works. See [Configuration](/guide/configuration/).
 
 ```nix
 { inputs, pkgs, ... }:
 
 {
-  home.packages = [ inputs.workmux.packages.${pkgs.system}.default ];
+  home.packages = [ inputs.workrex.packages.${pkgs.system}.default ];
 
   xdg.configFile."workmux/config.yaml".text = ''
     merge_strategy: rebase
@@ -51,11 +53,13 @@ See [Configuration](/guide/configuration/) for all config options.
 
 {
   environment.systemPackages = [
-    inputs.workmux.packages.${pkgs.system}.default
+    inputs.workrex.packages.${pkgs.system}.default
   ];
 }
 ```
 
+The package's Nix name is `workmux`, after the Cargo package. The binary it installs is `workrex`.
+
 ## Shell completions
 
-The flake automatically installs completions for Bash, Zsh, and Fish. Do not add the manual `eval "$(workmux completions ...)"` lines from the [Installation](/guide/installation/#shell-completions) guide.
+The flake installs completions for Bash, Zsh and Fish. Do not add the manual `eval "$(workrex completions ...)"` lines from the [Installation](/guide/installation/#shell-completions) guide.
