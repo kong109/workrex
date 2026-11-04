@@ -5,8 +5,8 @@ edition = "2024"
 authors = ["workmux contributors"]
 description = "An opinionated workflow tool that orchestrates git worktrees and tmux"
 license = "MIT"
-documentation = "https://github.com/raine/workmux#readme"
-homepage = "https://github.com/raine/workmux"
+documentation = "https://kong109.github.io/workrex/"
+homepage = "https://github.com/kong109/workrex"
 repository = "https://github.com/raine/workmux"
 include = [
     "/src/**/*",

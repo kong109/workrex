@@ -1,78 +1,89 @@
 ---
 title: "Installation"
-description: Install workmux via Homebrew, pre-built binaries, Cargo, mise, or Nix
+description: Install workrex from a release binary or from source, and set up shell completions
 ---
 
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 
-## Bash YOLO
+workrex ships prebuilt binaries for macOS on Apple Silicon (`darwin-arm64`) and
+Linux on x86_64 (`linux-amd64`). On other platforms,
+[build from source](#build-from-source).
+
+workrex installs as `workrex`, so it does not replace an upstream `workmux`
+binary. To run agents in Rex, you also need Rex. See the
+[Rex installation docs](https://www.superlogical.com/rex/docs/).
+
+## Install script
+
+The install script downloads the latest release for your platform, checks its
+SHA-256 checksum, and puts `workrex` in `/usr/local/bin`, or in `~/.local/bin`
+when `/usr/local/bin` is not writable.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/raine/workmux/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/install-workrex.sh | bash
 ```
 
-## Homebrew (macOS/Linux)
+To pick the directory, set `WORKMUX_INSTALL_DIR`. To pin a release, set
+`WORKMUX_VERSION`:
 
 ```bash
-brew install raine/workmux/workmux
+curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/install-workrex.sh | WORKMUX_VERSION=v0.1.278-rex.1 bash
 ```
 
-## Other methods
+workrex keeps the workmux names for its environment variables and
+[configuration](/guide/configuration/) files, so existing workmux setups work
+unchanged.
 
-### Cargo
+## Release tarball
 
-Requires Rust. Install via [rustup](https://rustup.rs/) if you don't have it.
+Each [release](https://github.com/kong109/workrex/releases) has a
+`workrex-<platform>.tar.gz` and a matching `.sha256` file. This example installs
+the macOS build. For Linux, use `workrex-linux-amd64` and `sha256sum -c`.
 
 ```bash
-cargo install workmux
+curl -fsSLO https://github.com/kong109/workrex/releases/latest/download/workrex-darwin-arm64.tar.gz
+curl -fsSLO https://github.com/kong109/workrex/releases/latest/download/workrex-darwin-arm64.sha256
+shasum -a 256 -c workrex-darwin-arm64.sha256
+tar -xzf workrex-darwin-arm64.tar.gz
+mv workrex ~/.local/bin/
 ```
 
-### mise
+## Build from source
+
+Building needs Rust. Install it with [rustup](https://rustup.rs/) if you don't
+have it. The Cargo package keeps the upstream name `workmux`, so name the
+binary:
 
 ```bash
-mise use -g cargo:raine/workmux
+cargo install --git https://github.com/kong109/workrex --bin workrex
 ```
 
-### Nix
+## Update
 
-Requires [Nix with flakes enabled](https://nixos.wiki/wiki/Flakes).
+To update a binary from the install script or a tarball, run
+[`workrex update`](/reference/commands/update/). For a source build, run the
+`cargo install` command again.
+
+## Shell alias
+
+To type less, alias `workrex` to `wm` in your `.bashrc`, `.zshrc`, or other
+shell configuration file:
 
 ```bash
-nix profile install github:raine/workmux
+alias wm='workrex'
 ```
-
-Or try without installing:
-
-```bash
-nix run github:raine/workmux -- --help
-```
-
-See [Nix guide](/guide/nix/) for flake integration and home-manager setup.
-
----
-
-For manual installation, see [pre-built binaries](https://github.com/raine/workmux/releases/latest).
-
-## Shell alias (recommended)
-
-For faster typing, alias `workmux` to `wm`:
-
-```bash
-alias wm='workmux'
-```
-
-Add this to your `.bashrc`, `.zshrc`, or equivalent shell configuration file.
 
 ## Shell completions
 
-To enable tab completions for commands and branch names, add the following to your shell's configuration file.
+To complete commands and branch names, add the line for your shell to its
+configuration file.
 
 <Tabs syncKey="shell">
   <TabItem label="Bash">
 
 ```bash
 # Add to ~/.bashrc
-eval "$(workmux completions bash)"
+eval "$(workrex completions bash)"
 ```
 
   </TabItem>
@@ -80,7 +91,7 @@ eval "$(workmux completions bash)"
 
 ```bash
 # Add to ~/.zshrc
-eval "$(workmux completions zsh)"
+eval "$(workrex completions zsh)"
 ```
 
   </TabItem>
@@ -88,39 +99,25 @@ eval "$(workmux completions zsh)"
 
 ```bash
 # Add to ~/.config/fish/config.fish
-workmux completions fish | source
+workrex completions fish | source
 ```
 
   </TabItem>
 </Tabs>
 
-## Uninstalling
+## Uninstall
 
-### Automatic (recommended)
-
-Run the uninstall script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/raine/workmux/main/scripts/uninstall.sh | bash
-```
-
-If installed via [Homebrew](#homebrew-macoslinux), also run:
+The uninstall script runs `workrex uninstall`, which removes the status hooks
+and skills that `workrex setup` installed, workrex's state directory, and its
+update cache. Then the script deletes the binary from `/usr/local/bin`,
+`~/.local/bin`, and `~/.cargo/bin`. To see what `workrex uninstall` would remove,
+run `workrex uninstall --dry-run`.
 
 ```bash
-brew uninstall workmux
-brew untap raine/workmux
+curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/uninstall-workrex.sh | bash
 ```
 
-If installed via [Cargo](#cargo), also run:
-
-```bash
-cargo uninstall workmux
-```
-
-### Manual
-
-1. Remove hooks, skills, cache and state by running the uninstall script, or delete workmux data directly: `rm -rf ~/.cache/workmux ~/.local/state/workmux`
-2. Remove the binary from `/usr/local/bin`, `~/.local/bin`, or `~/.cargo/bin`
-3. Optionally remove config: `rm -rf ~/.config/workmux`
-4. Remove shell completions and `alias wm=workmux` from your shell config
-5. Clean up worktrees with `git worktree list` / `git worktree remove`
+The script keeps `~/.config/workmux/`, because workrex and upstream workmux both
+read it. Delete it yourself only if you use neither. Remove the completion line
+and the `wm` alias from your shell configuration. To find worktrees that
+are still on disk, run `git worktree list`.

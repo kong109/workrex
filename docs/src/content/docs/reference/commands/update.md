@@ -1,59 +1,61 @@
 ---
 title: "update"
-description: Update workmux to the latest version
+description: Update workrex to the latest release from kong109/workrex
 ---
 
-Updates workmux to the latest version by downloading the prebuilt binary from GitHub Releases.
+Replaces the running `workrex` binary with the latest release from
+[kong109/workrex](https://github.com/kong109/workrex/releases).
 
 ```bash
-workmux update
+workrex update
 ```
 
 ## What happens
 
-1. Checks the latest release version from the GitHub API
-2. Compares with the currently installed version
-3. Downloads the correct binary for your OS and architecture
-4. Verifies the SHA-256 checksum
-5. Atomically replaces the current binary (with rollback on failure)
+1. workrex asks the GitHub API for the latest release of `kong109/workrex`.
+2. If that release is the installed version, workrex prints
+   `Already up to date` and exits.
+3. workrex downloads `workrex-<platform>.tar.gz` and its `.sha256` file, and
+   checks the SHA-256 checksum.
+4. workrex copies the new binary next to the old one, then renames it into
+   place. If the rename fails, workrex restores the old binary.
 
-If workmux is already up to date, it reports this and exits.
+## Platforms
 
-## Homebrew installs
-
-If workmux was installed via Homebrew, the command will detect this and instruct you to use `brew upgrade` instead:
+Releases include binaries for macOS on Apple Silicon (`darwin-arm64`) and Linux
+on x86_64 (`linux-amd64`). On any other platform, `workrex update` stops and
+tells you to build from source:
 
 ```bash
-brew upgrade workmux
+cargo install --git https://github.com/kong109/workrex --bin workrex
 ```
 
-## Supported platforms
+workrex has no Homebrew formula. `workrex update` refuses to run when the
+binary's path contains `/Cellar/` or `/homebrew/`, so keep the binary out of a
+Homebrew prefix such as `/opt/homebrew/bin`.
 
-The command downloads prebuilt binaries for:
+## Update notices
 
-- macOS (Apple Silicon / Intel)
-- Linux (x86_64 / ARM64)
-
-## Automatic update check
-
-Workmux periodically checks for new versions in the background. When an update is available, a one-line notice is printed to stderr:
+Once every 24 hours at most, workrex checks for a new release in a background
+process. When one exists, it prints a notice to standard error:
 
 ```
-Update available: workmux v0.1.124 -> v0.1.125 (run `workmux update`)
+Update available: workrex v0.1.278-rex.1 -> v0.1.279 (run `workrex update`)
 ```
 
-The check runs at most once every 24 hours via a detached background process and never slows down your commands. The notice is shown at most once per day and only in interactive terminals.
+workrex prints the notice only when standard output and standard error are
+both terminals. After three notices, it waits seven days before it shows the
+notice again.
 
-### Disabling
+To turn the check off, do one of these:
 
-To disable the automatic update check, either:
+- Set `auto_update_check: false` in `~/.config/workmux/config.yaml`.
+- Set the environment variable `WORKMUX_NO_UPDATE_CHECK=1`.
 
-- Set `auto_update_check: false` in the global config (`~/.config/workmux/config.yaml`)
-- Set the environment variable `WORKMUX_NO_UPDATE_CHECK=1`
+The configuration path and the variable keep their workmux names, so existing
+workmux [configuration](/guide/configuration/) works with workrex.
 
 ## Requirements
 
-- `curl` must be available in PATH (used for downloading)
-- `tar` must be available in PATH (used for extraction)
-- `sha256sum` or `shasum` must be available (used for checksum verification)
-- Write permission to the directory containing the workmux binary
+- `curl` and `tar` on `PATH`.
+- Write permission on the directory that holds the `workrex` binary.

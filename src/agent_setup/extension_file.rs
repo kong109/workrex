@@ -34,12 +34,25 @@ pub(super) fn normalize_documentation_link(source: &str) -> String {
         return source.to_string();
     }
 
-    let header = header.replace(
-        "\n * See: https://workmux.raine.dev/guide/status-tracking\n",
-        "\n * See: https://workmux.dev/guide/status-tracking\n",
-    );
+    let header = LEGACY_DOCS_URLS
+        .iter()
+        .fold(header.to_string(), |header, old| {
+            header.replace(
+                &format!("\n * See: {old}\n"),
+                &format!("\n * See: {DOCS_URL}\n"),
+            )
+        });
     format!("{header}*/{rest}")
 }
+
+/// Status tracking guide linked from the bundled extension headers.
+const DOCS_URL: &str = "https://kong109.github.io/workrex/guide/status-tracking/";
+
+/// Guide links that earlier installs wrote into the same header.
+const LEGACY_DOCS_URLS: &[&str] = &[
+    "https://workmux.raine.dev/guide/status-tracking",
+    "https://workmux.dev/guide/status-tracking",
+];
 
 /// Create parent directories and write an extension source file.
 pub fn install_extension_file(
@@ -103,27 +116,32 @@ mod tests {
             include_str!("../../resources/pi/extensions/workmux-status.ts"),
             include_str!("../../resources/omp/extensions/workmux-status.ts"),
         ] {
-            let installed = source.replace("https://workmux.dev/", "https://workmux.raine.dev/");
-            assert_ne!(installed, source);
-            fs::write(&path, &installed).unwrap();
+            for legacy in [
+                "https://workmux.raine.dev/guide/status-tracking",
+                "https://workmux.dev/guide/status-tracking",
+            ] {
+                let installed = source.replace(DOCS_URL, legacy);
+                assert_ne!(installed, source);
+                fs::write(&path, &installed).unwrap();
 
-            assert!(matches!(
-                check_installed(Some(&path), source).unwrap(),
-                StatusCheck::Installed
-            ));
-            assert_eq!(normalize_documentation_link(&installed), source);
-            assert_eq!(fs::read_to_string(&path).unwrap(), installed);
+                assert!(matches!(
+                    check_installed(Some(&path), source).unwrap(),
+                    StatusCheck::Installed
+                ));
+                assert_eq!(normalize_documentation_link(&installed), source);
+                assert_eq!(fs::read_to_string(&path).unwrap(), installed);
 
-            let modified = format!("{installed}\n// custom behavior\n");
-            fs::write(&path, &modified).unwrap();
-            assert!(matches!(
-                check_installed(Some(&path), source).unwrap(),
-                StatusCheck::UpdateAvailable
-            ));
-            assert_eq!(
-                normalize_documentation_link(&modified),
-                format!("{source}\n// custom behavior\n")
-            );
+                let modified = format!("{installed}\n// custom behavior\n");
+                fs::write(&path, &modified).unwrap();
+                assert!(matches!(
+                    check_installed(Some(&path), source).unwrap(),
+                    StatusCheck::UpdateAvailable
+                ));
+                assert_eq!(
+                    normalize_documentation_link(&modified),
+                    format!("{source}\n// custom behavior\n")
+                );
+            }
         }
     }
 

@@ -158,7 +158,7 @@ fn run_skills_setup(checks: &[agent_setup::AgentCheck]) -> Result<()> {
     println!();
     println!(
         "  Learn more: {}",
-        style("https://workmux.dev/guide/skills").dim()
+        style("https://kong109.github.io/workrex/guide/skills/").dim()
     );
     println!();
 
