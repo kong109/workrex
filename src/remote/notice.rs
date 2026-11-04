@@ -64,7 +64,8 @@ mod tests {
         let text = console::strip_ansi_codes(&String::from_utf8(output).unwrap()).to_string();
         assert!(text.contains("New: remote servers"));
         assert!(text.contains(REMOTE_GUIDE_URL));
-        assert!(!text.chars().any(|c| c.is_ascii_digit()), "{text}");
+        let prose = text.replace(REMOTE_GUIDE_URL, "");
+        assert!(!prose.chars().any(|c| c.is_ascii_digit()), "{text}");
     }
 
     #[test]
