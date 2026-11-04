@@ -586,9 +586,35 @@ mod tests {
         let [select] = &selects[..] else {
             panic!("{selects:?}")
         };
-        assert!(select.contains("client:b"), "{select}");
-        assert!(select.contains("session:hosted"), "{select}");
-        assert!(!select.contains("client:a"), "{select}");
+        let (_, request) = select.split_once("client.perform - ").unwrap();
+        let request: Value = serde_json::from_str(request).unwrap();
+        // The app gets the tailnet's 10 s, and only the session: the
+        // laptop knows none of the node's windows.
+        assert_eq!(
+            request,
+            json!({
+                "client_id": "client:b",
+                "action": "session.select",
+                "args": { "session_id": "session:hosted" },
+                "timeout_ms": 10000,
+            })
+        );
+    }
+
+    #[test]
+    fn a_jump_the_app_cannot_take_says_the_session_was_not_shown() {
+        let fake = super::super::tests::app_fake(
+            "client:a",
+            &[app_labeled("client:a", "rexbook")],
+            "!Error: client is not connected",
+        );
+        let err = fake.rex.select_on_app(None, "session:hosted").unwrap_err();
+        assert!(!err.is::<AppRefused>());
+        assert!(
+            err.to_string()
+                .starts_with("Rex.app did not show the session: "),
+            "{err}"
+        );
     }
 
     #[test]
