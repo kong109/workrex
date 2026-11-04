@@ -383,8 +383,8 @@ impl RexBackend {
     /// default per move.
     fn move_session(&self, session: &str, place: [&str; 2]) -> Moved {
         let args = ["session", "move", session, place[0], place[1]];
-        // From the move itself: the version check before it waits on a
-        // process-wide lock, and that wait is not the move's.
+        // From the move itself: the version check before it can wait on
+        // another caller's check of this server, and that wait is not the move's.
         let mut started = Instant::now();
         let moved = self.ensure_supported().and_then(|()| {
             started = Instant::now();
