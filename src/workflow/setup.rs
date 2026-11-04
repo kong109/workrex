@@ -321,6 +321,7 @@ pub fn setup_environment(
     );
 
     // Focus the configured pane and optionally switch to the window/session.
+    let mut view_hint = None;
     if options.focus_window {
         match options.mode {
             MuxMode::Window => {
@@ -331,12 +332,12 @@ pub fn setup_environment(
                 }
             }
             MuxMode::Session => {
-                // switch_to_pane switches the client directly to the pane,
+                // focus_new_session switches the client directly to the pane,
                 // which also selects the correct window within the session.
                 // Using select_pane + switch_to_session would lose the window
                 // selection because switch_to_session targets the session by
                 // name, defaulting to its first window.
-                mux.switch_to_pane(&focus_pane_id, None)?;
+                view_hint = mux.focus_new_session(&focus_pane_id, handle)?;
             }
         }
     }
@@ -355,6 +356,7 @@ pub fn setup_environment(
         resolved_handle: handle.to_string(),
         mux_target_full_name,
         mode: options.mode,
+        view_hint,
     })
 }
 

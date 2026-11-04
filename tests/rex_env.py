@@ -56,6 +56,10 @@ class RexEnvironment(MuxEnvironment):
             self.env.pop(name, None)
         self.env["PATH"] = f"{Path(self.rex).parent}:{self.env['PATH']}"
 
+        from .conftest import write_global_workmux_config
+
+        write_global_workmux_config(self)
+
     @property
     def backend_name(self) -> str:
         return "rex"
@@ -313,6 +317,22 @@ class RexEnvironment(MuxEnvironment):
             if view.get("label") == session
             for window in view.get("windows", [])
         ]
+
+    def session_pane_path(self, session: str) -> str:
+        view = next(v for v in self.views() if v.get("label") == session)
+        window = next(
+            w for w in view["windows"] if w["window_id"] == view["active_window_id"]
+        )
+        block = window.get("focused_block_id") or self._window_block(window)
+        if block is None:
+            return ""
+        report = self.block_call(block, "process", {}) or {}
+        processes = [
+            report.get("foreground"),
+            *report.get("ancestors", []),
+            report.get("child"),
+        ]
+        return next((p["cwd"] for p in processes if p and p.get("cwd")), "")
 
     def configure_default_shell(self, shell: str) -> None:
         self.env["SHELL"] = shell

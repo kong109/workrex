@@ -5,6 +5,7 @@ from typing import cast
 import pytest
 
 from ..conftest import (
+    switch_fails_without_client,
     MuxEnvironment,
     TmuxEnvironment,
     assert_session_exists,
@@ -702,7 +703,6 @@ class TestExistingBranch:
         assert worktree_path.is_dir()
         assert_window_exists(env, get_window_name(branch_name))
 
-    @pytest.mark.tmux_only
     def test_add_open_if_exists_preserves_stored_mode_without_override(
         self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path
     ):
@@ -733,13 +733,12 @@ class TestExistingBranch:
             workmux_exe_path,
             mux_repo_path,
             f"add {branch_name} -o",
-            expect_fail=True,
+            expect_fail=switch_fails_without_client(env),
         )
 
         assert_session_exists(env, session_name)
         assert_window_not_exists(env, window_name)
 
-    @pytest.mark.tmux_only
     def test_add_open_if_exists_respects_session_mode_override(
         self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path
     ):
@@ -767,13 +766,12 @@ class TestExistingBranch:
             workmux_exe_path,
             mux_repo_path,
             f"add {branch_name} -o --mode session",
-            expect_fail=True,
+            expect_fail=switch_fails_without_client(env),
         )
 
         assert_session_exists(env, session_name)
         assert_window_not_exists(env, window_name)
 
-    @pytest.mark.tmux_only
     def test_add_mode_window_overrides_session_config(
         self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path
     ):

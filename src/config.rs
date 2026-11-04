@@ -1019,7 +1019,7 @@ pub struct Config {
 
     /// Mode for tmux operations: window (default) or session
     #[serde(default)]
-    /// None means "use default" (Window), Some means explicitly set
+    /// None means "use default" (Session under Rex, else Window), Some means explicitly set
     pub mode: Option<MuxMode>,
 
     /// Session mode only. Session to return to when a workmux-managed session
@@ -3588,9 +3588,20 @@ impl Config {
     }
 
     /// Get the mode (window or session).
-    /// Returns the configured value or defaults to Window.
+    /// Returns the configured value or the default for the detected backend.
     pub fn mode(&self) -> MuxMode {
+        self.mode_for(crate::multiplexer::detect_backend())
+    }
+
+    pub fn remote_mode(&self) -> MuxMode {
         self.mode.unwrap_or(MuxMode::Window)
+    }
+
+    pub fn mode_for(&self, backend: crate::multiplexer::BackendType) -> MuxMode {
+        self.mode.unwrap_or(match backend {
+            crate::multiplexer::BackendType::Rex => MuxMode::Session,
+            _ => MuxMode::Window,
+        })
     }
 
     /// Session to return to when a workmux-managed session closes.
@@ -4083,6 +4094,20 @@ mod tests {
     use super::{DashboardConfig, InputExitKey, RemoteConfig, RemoteIsolation};
     use crate::test_support;
     use tempfile::TempDir;
+
+    #[test]
+    fn unset_mode_is_session_under_rex_and_window_under_tmux() {
+        use super::MuxMode;
+        use crate::multiplexer::BackendType;
+        let config = Config::default();
+        assert_eq!(config.mode_for(BackendType::Rex), MuxMode::Session);
+        assert_eq!(config.mode_for(BackendType::Tmux), MuxMode::Window);
+        let window: Config = serde_yaml::from_str("mode: window\n").expect("config parses");
+        assert_eq!(window.mode_for(BackendType::Rex), MuxMode::Window);
+        assert_eq!(config.remote_mode(), MuxMode::Window);
+        let session: Config = serde_yaml::from_str("mode: session\n").expect("config parses");
+        assert_eq!(session.remote_mode(), MuxMode::Session);
+    }
 
     #[test]
     fn default_session_is_none_by_default() {

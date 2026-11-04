@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 from typing import cast
@@ -1287,7 +1288,6 @@ def test_open_target_name_session_owner_can_switch_existing_target(
     assert "no current client" in result.stderr
 
 
-@pytest.mark.tmux_only
 def test_open_rejects_parent_session_in_session_mode(
     mux_server: MuxEnvironment, workmux_exe_path: Path, repo_path: Path
 ):
@@ -1390,3 +1390,67 @@ def test_open_config_override_missing_file_fails(
     )
 
     assert "Config file not found" in result.stderr
+
+
+def test_open_of_a_remote_workspace_ignores_the_rex_session_default(
+    mux_server: MuxEnvironment, workmux_exe_path: Path, repo_path: Path
+):
+    """An unset mode means session for a local worktree under Rex, but a
+    remote agent opens in a window, so open does not refuse it."""
+    env = mux_server
+    write_workmux_config(repo_path)
+    global_config = env.home_path / ".config" / "workmux" / "config.yaml"
+    global_config.parent.mkdir(parents=True, exist_ok=True)
+    global_config.write_text(
+        "remotes:\n  box:\n    host: workmux-test-nonexistent.invalid\n"
+    )
+    root = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    ).resolve()
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    records = (
+        Path(env.env["XDG_STATE_HOME"]) / "workmux" / "remote" / "box" / "workspaces"
+    )
+    records.mkdir(parents=True)
+    (records / "ws-open.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "ws_id": "ws-open",
+                "remote": "box",
+                "project_id": "p-open",
+                "project_root": str(root),
+                "handle": "remote-open",
+                "branch": "remote-open",
+                "base_sha": sha,
+                "base_label": "main",
+                "window_name": get_window_name("remote-open"),
+                "remote_worktree": None,
+                "state": "provisioning",
+                "layout": [],
+                "execution": None,
+                "created_at": 1,
+                "observed_at": 1,
+                "local_path": f"{root}__worktrees/remote-open",
+            }
+        )
+    )
+
+    result = run_workmux_open(
+        env, workmux_exe_path, repo_path, "remote-open", expect_fail=True
+    )
+
+    assert "Session mode cannot be used" not in result.stderr, result.stderr
+    assert "did not finish provisioning" in result.stderr, result.stderr

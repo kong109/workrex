@@ -161,10 +161,10 @@ fn create_impl(
             placement_window_id =
                 setup::resolve_window_placement_target(context.mux.as_ref(), &context.config)?;
         }
-        if options.mode == MuxMode::Session && context.mux.name() != "tmux" {
+        if options.mode == MuxMode::Session && !context.mux.supports_session_mode() {
             return Err(anyhow!(
-                "Session mode (--mode session / --session) is only supported with tmux.\n\
-                 Current backend: {}. Use window mode instead.",
+                "Session mode (--mode session / --session) is not supported by the {} backend.\n\
+                 Use window mode instead.",
                 context.mux.name()
             ));
         }
@@ -1354,6 +1354,42 @@ mod tests {
             error
                 .to_string()
                 .contains("Failed to fetch base branch 'missing-base' from remote 'origin'")
+        );
+    }
+
+    #[test]
+    fn session_mode_on_a_backend_without_it_names_the_backend() {
+        let temp = tempfile::tempdir().unwrap();
+        test_support::init_repo(temp.path());
+        let ctx = WorkflowContext::new_in(temp.path(), Config::default(), Arc::new(TestMux), None)
+            .unwrap();
+        let mut options = SetupOptions::new(false, false, false);
+        options.focus_window = false;
+        options.mode = MuxMode::Session;
+        let error = match create(
+            &ctx,
+            CreateArgs {
+                branch_name: "feature",
+                handle: "feature",
+                base_branch: None,
+                remote_branch: None,
+                checkout_ref: None,
+                prompt: None,
+                options,
+                mode_override: None,
+                agent: None,
+                is_explicit_name: false,
+                prompt_file_only: false,
+                fork_source: None,
+            },
+        ) {
+            Ok(_) => panic!("session mode should be refused"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "Session mode (--mode session / --session) is not supported by the tmux backend.\n\
+             Use window mode instead."
         );
     }
 

@@ -333,6 +333,12 @@ pub trait Multiplexer: Send + Sync {
         self.schedule_window_close(&target.full_name, delay)
     }
 
+    /// Whether the backend supports session mode (`--mode session`), where
+    /// each worktree gets its own session.
+    fn supports_session_mode(&self) -> bool {
+        false
+    }
+
     /// Whether the backend handles client navigation as part of session closure.
     fn session_close_handles_navigation(&self) -> bool {
         false
@@ -504,6 +510,22 @@ pub trait Multiplexer: Send + Sync {
     /// (e.g., Zellij can't look up a pane by ID alone). Backends that can
     /// switch by pane ID directly (tmux, WezTerm) ignore this parameter.
     fn switch_to_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()>;
+
+    /// Focuses the first pane of a session `add` just created for the
+    /// worktree `handle`. tmux moves the caller's client there. A backend
+    /// that cannot tell which session the user's view shows only focuses the
+    /// pane in its session and returns a line that tells the user how to get
+    /// there.
+    fn focus_new_session(&self, pane_id: &str, _handle: &str) -> Result<Option<String>> {
+        self.switch_to_pane(pane_id, None).map(|()| None)
+    }
+
+    /// A pane in the session `full_name` that a user-initiated jump should
+    /// pass to `switch_to_pane`, for a backend whose `switch_to_session`
+    /// leaves the user's view alone. `None` opens the session instead.
+    fn session_pane(&self, _full_name: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
 
     /// Called when the dashboard quits without jumping, for backends that
     /// must hand focus back to the pane the dashboard was opened over.

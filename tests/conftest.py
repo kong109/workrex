@@ -325,6 +325,9 @@ class MuxEnvironment(ABC):
     def list_windows_in_session(self, session: str) -> list[str]:
         raise NotImplementedError(f"{self.backend_name} has no sessions")
 
+    def session_pane_path(self, session: str) -> str:
+        raise NotImplementedError(f"{self.backend_name} has no sessions")
+
     @abstractmethod
     def configure_default_shell(self, shell: str) -> None:
         """Configure the default shell for new panes.
@@ -467,6 +470,11 @@ class TmuxEnvironment(MuxEnvironment):
             ["list-windows", "-t", f"{session}:", "-F", "#{window_name}"]
         )
         return [w for w in result.stdout.strip().split("\n") if w]
+
+    def session_pane_path(self, session: str) -> str:
+        return self.mux_command(
+            ["display-message", "-t", f"={session}:", "-p", "#{pane_current_path}"]
+        ).stdout
 
     def configure_default_shell(self, shell: str) -> None:
         """Configure tmux to use the specified shell for new panes."""
@@ -752,6 +760,10 @@ def assert_window_exists(env: MuxEnvironment, window_name: str) -> None:
     )
 
 
+def switch_fails_without_client(env: "MuxEnvironment") -> bool:
+    return env.backend_name == "tmux"
+
+
 def assert_session_exists(env: "MuxEnvironment", session_name: str) -> None:
     """Ensure a session with the provided name exists."""
     existing_sessions = env.list_sessions()
@@ -768,13 +780,9 @@ def assert_session_not_exists(env: "MuxEnvironment", session_name: str) -> None:
     )
 
 
-def assert_window_not_exists(env: "TmuxEnvironment", window_name: str) -> None:
-    """Ensure a tmux window with the provided name does NOT exist."""
-    result = env.tmux(["list-windows", "-F", "#{window_name}"], check=False)
-    if result.returncode != 0:
-        # No windows exist at all
-        return
-    existing_windows = [w for w in result.stdout.strip().split("\n") if w]
+def assert_window_not_exists(env: "MuxEnvironment", window_name: str) -> None:
+    """Ensure a window with the provided name does NOT exist."""
+    existing_windows = env.list_windows()
     assert window_name not in existing_windows, (
         f"Window {window_name!r} should not exist but was found. Existing: {existing_windows!r}"
     )
@@ -1469,6 +1477,8 @@ def write_global_workmux_config(
 ) -> Path:
     """Creates the global ~/.config/workmux/config.yaml file within the isolated HOME."""
     config: Dict[str, Any] = {}
+    if env.backend_name == "rex":
+        config["mode"] = "window"
     if panes is not None:
         config["panes"] = panes
     if post_create is not None:

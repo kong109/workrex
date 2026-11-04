@@ -630,20 +630,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn invokes_opencode_version_and_fails_closed_on_unknown_or_failed_commands() {
-        use std::os::unix::fs::PermissionsExt;
-
         let tmp = tempfile::tempdir().unwrap();
         let binary = tmp.path().join("opencode");
-        fs::write(&binary, "#!/bin/sh\nprintf 'opencode v2.0.18\\n'\n").unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_script(&binary, "#!/bin/sh\nprintf 'opencode v2.0.18\\n'\n");
         assert_eq!(version_from_command(&binary).unwrap(), OpenCodeVersion::V2);
 
-        fs::write(&binary, "#!/bin/sh\nprintf 'opencode v1.18.29\\n'\n").unwrap();
+        crate::test_support::write_script(&binary, "#!/bin/sh\nprintf 'opencode v1.18.29\\n'\n");
         assert_eq!(version_from_command(&binary).unwrap(), OpenCodeVersion::V1);
 
-        fs::write(&binary, "#!/bin/sh\nprintf 'opencode v3.0.0\\n'\n").unwrap();
+        crate::test_support::write_script(&binary, "#!/bin/sh\nprintf 'opencode v3.0.0\\n'\n");
         assert!(version_from_command(&binary).is_err());
-        fs::write(&binary, "#!/bin/sh\nexit 1\n").unwrap();
+        crate::test_support::write_script(&binary, "#!/bin/sh\nexit 1\n");
         assert!(version_from_command(&binary).is_err());
         assert!(version_from_command(&tmp.path().join("missing")).is_err());
     }
