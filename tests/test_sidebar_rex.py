@@ -213,13 +213,24 @@ def gets_sidebars(env: SidebarRex, session_id: str) -> bool:
     )
 
 
+def shape(window: dict) -> object:
+    """The tiled layout as nested [before, after] lists of block labels."""
+    labels = {
+        block["block_id"]: block.get("label") for block in tiled(window)["blocks"]
+    }
+
+    def node(tree: dict) -> object:
+        if tree.get("split"):
+            split = tree["split"]
+            return [node(split["before"]), node(split["after"])]
+        return labels.get(tree["block_id"])
+
+    return node(tiled(window)["layout"])
+
+
 def layouts(env: SidebarRex, session_id: str) -> dict:
     return {
-        window.get("label"): [
-            block.get("label")
-            for layer in window["layers"]
-            for block in layer["blocks"]
-        ]
+        window.get("label"): shape(window)
         for window in windows(env, session_id).values()
     }
 
@@ -243,9 +254,9 @@ def test_add_gets_a_sidebar_in_either_mode(rex, _template_git_repo, mode):
     shutil.copy(_template_git_repo / ".gitignore", repo / ".gitignore")
     (env.home_path / ".config" / "workmux").mkdir(parents=True, exist_ok=True)
     (env.home_path / ".config" / "workmux" / "config.yaml").write_text("{}\n")
-    # One pane: a split that lands between the daemon's read and its
-    # placement nests the sidebar, in either mode.
-    write_workmux_config(repo, panes=[{"focus": True}])
+    # Two panes: the add splits its first pane while the daemon places the
+    # sidebar, and the sidebar must still wrap the whole window.
+    write_workmux_config(repo)
     cli(env, "on")
     branch = f"feat-{mode}"
     args = "--background" if mode == "session" else "--mode window --background"
@@ -255,11 +266,18 @@ def test_add_gets_a_sidebar_in_either_mode(rex, _template_git_repo, mode):
     if mode == "session":
         session_id = session_labeled(env, get_session_name(branch))
         assert session_id is not None
-        assert gets_sidebars(env, session_id), layouts(env, session_id)
+        [added] = windows(env, session_id).values()
     else:
-        assert gets_sidebars(env, env.session_id), layouts(env, env.session_id)
-        labels = [w.get("label") for w in windows(env, env.session_id).values()]
-        assert get_window_name(branch) in labels
+        session_id = env.session_id
+        [added] = [
+            w
+            for w in windows(env, session_id).values()
+            if w.get("label") == get_window_name(branch)
+        ]
+    assert gets_sidebars(env, session_id), layouts(env, session_id)
+    for window in windows(env, session_id).values():
+        assert sidebar_count(window) == 1, layouts(env, session_id)
+    assert len(tiled(windows(env, session_id)[added["window_id"]])["blocks"]) == 3
 
 
 def test_dragging_one_sidebar_moves_every_sidebar_and_persists(rex):

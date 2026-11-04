@@ -88,6 +88,7 @@ mod tests {
             window_id: "window:1".into(),
             block_id: "block:1".into(),
             split_id: "split:1".into(),
+            stray: None,
             applied_ratio,
             last_cols: 30,
             window_cols: 218,
