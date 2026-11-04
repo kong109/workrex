@@ -94,12 +94,6 @@ impl Window {
             .flat_map(|layer| layer.blocks.iter().map(|block| block.block_id.as_str()))
     }
 
-    /// Whether `block` sits in the tiled layer rather than a floating one.
-    pub(crate) fn tiles(&self, block: &str) -> bool {
-        self.tiled()
-            .is_some_and(|layer| layer.blocks.iter().any(|b| b.block_id == block))
-    }
-
     /// The tiled layer's root split, when the root is a split.
     pub(crate) fn root_split(&self) -> Option<&Split> {
         self.tiled()?.layout.as_ref()?.split.as_deref()

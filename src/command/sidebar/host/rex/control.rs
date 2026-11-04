@@ -403,13 +403,21 @@ impl Plane {
                 // A split that lands between a pass's read and its placement
                 // nests the sidebar, and Rex has no anchor for the window's
                 // root. Placing again anchors the root split, which a block
-                // split cannot displace.
-                if window.tiles(&record.block_id)
-                    && let Some(placed) = self.place(session_id, window, synced)?
-                {
+                // split cannot displace. A sidebar the user moved elsewhere
+                // is not this shape and stays where it is.
+                let nested = window
+                    .root_split()
+                    .and_then(|root| root.before.split.as_deref())
+                    .is_some_and(|inner| {
+                        inner.before.block_id.as_deref() == Some(&record.block_id)
+                    });
+                if nested && let Some(placed) = self.place(session_id, window, synced)? {
+                    if let Err(error) = self.rex.close_sidebar_block(session_id, &record.block_id) {
+                        let _ = self.rex.close_sidebar_block(session_id, &placed.block_id);
+                        return Err(error);
+                    }
                     records.insert(window_id.clone(), placed);
                     result.placed.insert(window_id.clone());
-                    self.rex.close_sidebar_block(session_id, &record.block_id)?;
                 }
                 continue;
             };
@@ -1388,7 +1396,8 @@ mod tests {
 
     /// A follower over a scripted rex that logs each call to `dir/calls`
     /// and shows `views[n]` after its n-th sidebar split, with a global
-    /// sidebar on.
+    /// sidebar on. While `dir/split-fails` or `dir/close-fails` exists,
+    /// every split or close fails.
     fn follower_replaying(path: &std::path::Path, views: &[String]) -> Follower {
         for (n, view) in views.iter().enumerate() {
             std::fs::write(path.join(format!("view-{n}")), view).unwrap();
@@ -1403,9 +1412,11 @@ mod tests {
                  \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
                  \x20 *session.view*) cat \"{dir}/view-$n\";;\n\
                  \x20 *' size '*) echo '{{\"columns\":120,\"rows\":40}}';;\n\
-                 \x20 *session.new_split*) n=$((n + 1)); echo $n > '{splits}'; \
+                 \x20 *session.new_split*) [ -f '{dir}/split-fails' ] && exit 1; \
+                 n=$((n + 1)); echo $n > '{splits}'; \
                  echo \"{{\\\"block_ids\\\":[\\\"block:sidebar$n\\\"],\\\"split_ids\\\":[\\\"split:sidebar$n\\\"]}}\";;\n\
-                 \x20 *block.close*|*session.resize_pane*) echo '{{}}';;\n\
+                 \x20 *block.close*) [ -f '{dir}/close-fails' ] && exit 1; echo '{{}}';;\n\
+                 \x20 *session.resize_pane*) echo '{{}}';;\n\
                  \x20 *) exit 1;;\nesac\n",
                 calls = calls.display(),
                 splits = splits.display(),
@@ -1430,6 +1441,26 @@ mod tests {
         }
     }
 
+    /// The race's result: sidebar1 nested beside `a` inside the add's split.
+    fn nested_view() -> String {
+        view_of(
+            split(
+                "split:add",
+                0.5,
+                [0.0, 0.0, 1.0, 1.0],
+                split(
+                    "split:sidebar1",
+                    0.3125,
+                    [0.0, 0.0, 0.5, 1.0],
+                    leaf("block:sidebar1", [0.0, 0.0, 0.156, 1.0]),
+                    leaf("block:a", [0.156, 0.0, 0.344, 1.0]),
+                ),
+                leaf("block:b", [0.5, 0.0, 0.5, 1.0]),
+            ),
+            &["block:sidebar1", "block:a", "block:b"],
+        )
+    }
+
     /// Replays the race WR-3 fix8 found. The daemon reads the add's new
     /// window while it has one block, the add splits that block, and the
     /// daemon's split, anchored on the block, lands inside the add's split.
@@ -1440,22 +1471,7 @@ mod tests {
         let whole = [0.0, 0.0, 1.0, 1.0];
         let views = [
             view_of(leaf("block:a", whole), &["block:a"]),
-            view_of(
-                split(
-                    "split:add",
-                    0.5,
-                    whole,
-                    split(
-                        "split:sidebar1",
-                        0.3125,
-                        [0.0, 0.0, 0.5, 1.0],
-                        leaf("block:sidebar1", [0.0, 0.0, 0.156, 1.0]),
-                        leaf("block:a", [0.156, 0.0, 0.344, 1.0]),
-                    ),
-                    leaf("block:b", [0.5, 0.0, 0.5, 1.0]),
-                ),
-                &["block:sidebar1", "block:a", "block:b"],
-            ),
+            nested_view(),
             view_of(
                 split(
                     "split:sidebar2",
@@ -1511,6 +1527,11 @@ mod tests {
             "the nested sidebar is closed: {log}"
         );
         assert_eq!(sidebar(&follower).as_deref(), Some("block:sidebar2"));
+        let applied = follower.plane.files.records()[NEW_WINDOW].applied_ratio;
+        assert!(
+            (applied - 0.18).abs() < 1e-9,
+            "the moved sidebar's ratio is read back from the root: {applied}"
+        );
 
         follower.handle(changed());
         let log = std::fs::read_to_string(&calls).unwrap();
@@ -1570,5 +1591,173 @@ mod tests {
                 .map(|record| record.block_id.as_str()),
             Some("block:sidebar1")
         );
+    }
+
+    fn sidebar_of(follower: &Follower) -> Option<String> {
+        let records = follower.plane.files.records();
+        records
+            .get(NEW_WINDOW)
+            .map(|record| record.block_id.clone())
+    }
+
+    fn place_then_change(follower: &mut Follower) {
+        follower.handle(vec![Event::WindowCreated {
+            session_id: NEW_SESSION.into(),
+            window_id: NEW_WINDOW.into(),
+        }]);
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+    }
+
+    /// A sidebar left as the only tile, its window's other block floated,
+    /// has no root split to move to; placing it again would never settle.
+    #[test]
+    fn a_sidebar_that_is_the_only_tile_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let whole = [0.0, 0.0, 1.0, 1.0];
+        let mut alone: serde_json::Value =
+            serde_json::from_str(&view_of(leaf("block:sidebar1", whole), &["block:sidebar1"]))
+                .unwrap();
+        alone["windows"][0]["layers"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "kind": "floating",
+                "layout": leaf("block:a", [0.3, 0.1, 0.6, 0.8]),
+                "blocks": [{ "block_id": "block:a" }],
+            }));
+        let views = [
+            view_of(leaf("block:a", whole), &["block:a"]),
+            alone.to_string(),
+            alone.to_string().replace("sidebar1", "sidebar2"),
+        ];
+        let mut follower = follower_replaying(path, &views);
+        place_then_change(&mut follower);
+        let log = std::fs::read_to_string(path.join("calls")).unwrap();
+        assert_eq!(log.matches("session.new_split").count(), 1, "{log}");
+        assert!(!log.contains("block.close"), "{log}");
+        assert_eq!(sidebar_of(&follower).as_deref(), Some("block:sidebar1"));
+    }
+
+    /// A tiled sidebar the user moved to the right of `b` is not the race's
+    /// nesting, so it stays where they put it.
+    #[test]
+    fn a_tiled_sidebar_the_user_moved_stays_where_they_put_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let whole = [0.0, 0.0, 1.0, 1.0];
+        let views = [
+            view_of(leaf("block:a", whole), &["block:a"]),
+            view_of(
+                split(
+                    "split:add",
+                    0.5,
+                    whole,
+                    leaf("block:a", [0.0, 0.0, 0.5, 1.0]),
+                    split(
+                        "split:moved",
+                        0.7,
+                        [0.5, 0.0, 0.5, 1.0],
+                        leaf("block:b", [0.5, 0.0, 0.35, 1.0]),
+                        leaf("block:sidebar1", [0.85, 0.0, 0.15, 1.0]),
+                    ),
+                ),
+                &["block:a", "block:b", "block:sidebar1"],
+            ),
+        ];
+        let mut follower = follower_replaying(path, &views);
+        place_then_change(&mut follower);
+        let log = std::fs::read_to_string(path.join("calls")).unwrap();
+        assert_eq!(log.matches("session.new_split").count(), 1, "{log}");
+        assert!(!log.contains("block.close"), "{log}");
+        assert_eq!(sidebar_of(&follower).as_deref(), Some("block:sidebar1"));
+    }
+
+    /// The new sidebar goes in before the nested one is closed, so a failed
+    /// placement leaves the window as it was for the next pass.
+    #[test]
+    fn a_failed_move_to_the_root_keeps_the_nested_sidebar() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let views = [
+            view_of(leaf("block:a", [0.0, 0.0, 1.0, 1.0]), &["block:a"]),
+            nested_view(),
+        ];
+        let mut follower = follower_replaying(path, &views);
+        follower.handle(vec![Event::WindowCreated {
+            session_id: NEW_SESSION.into(),
+            window_id: NEW_WINDOW.into(),
+        }]);
+        std::fs::write(path.join("split-fails"), "").unwrap();
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        let log = std::fs::read_to_string(path.join("calls")).unwrap();
+        assert_eq!(log.matches("session.new_split").count(), 2, "{log}");
+        assert!(!log.contains("block.close"), "{log}");
+        assert_eq!(sidebar_of(&follower).as_deref(), Some("block:sidebar1"));
+    }
+
+    /// When the nested sidebar will not close, the new one is closed and the
+    /// record keeps the nested one, so the next pass repairs it again.
+    #[test]
+    fn a_failed_close_of_the_nested_sidebar_is_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let whole = [0.0, 0.0, 1.0, 1.0];
+        let views = [
+            view_of(leaf("block:a", whole), &["block:a"]),
+            nested_view(),
+            nested_view(),
+            view_of(
+                split(
+                    "split:sidebar3",
+                    0.18,
+                    whole,
+                    leaf("block:sidebar3", [0.0, 0.0, 0.18, 1.0]),
+                    split(
+                        "split:add",
+                        0.5,
+                        [0.18, 0.0, 0.82, 1.0],
+                        leaf("block:a", [0.18, 0.0, 0.41, 1.0]),
+                        leaf("block:b", [0.59, 0.0, 0.41, 1.0]),
+                    ),
+                ),
+                &["block:sidebar3", "block:a", "block:b"],
+            ),
+        ];
+        let mut follower = follower_replaying(path, &views);
+        let closes = || {
+            let log = std::fs::read_to_string(path.join("calls")).unwrap();
+            log.lines()
+                .filter(|line| line.contains("block.close"))
+                .map(|line| {
+                    let at = line.find("block:sidebar").unwrap();
+                    line[at..at + "block:sidebarN".len()].to_string()
+                })
+                .collect::<Vec<_>>()
+        };
+        follower.handle(vec![Event::WindowCreated {
+            session_id: NEW_SESSION.into(),
+            window_id: NEW_WINDOW.into(),
+        }]);
+        std::fs::write(path.join("close-fails"), "").unwrap();
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        assert_eq!(closes(), ["block:sidebar1", "block:sidebar2"]);
+        assert_eq!(sidebar_of(&follower).as_deref(), Some("block:sidebar1"));
+
+        std::fs::remove_file(path.join("close-fails")).unwrap();
+        follower.handle(vec![Event::ViewChanged {
+            session_id: NEW_SESSION.into(),
+        }]);
+        assert_eq!(
+            closes(),
+            ["block:sidebar1", "block:sidebar2", "block:sidebar1"]
+        );
+        assert_eq!(sidebar_of(&follower).as_deref(), Some("block:sidebar3"));
     }
 }
