@@ -81,7 +81,7 @@ Under tmux, workrex modifies your `window-status-format` to display the status i
 
 ## Manual setup
 
-The sections below install each agent's integration by hand. The files they download from the workrex repo call the `workmux` command, because the fork keeps upstream's files unchanged. `workrex setup` installs the same files with each command changed to `workrex` and each file named `workrex-status`. If you copy a file by hand, change every `workmux` command in it to `workrex`.
+The sections below install each agent's integration by hand. The files they download from the workrex repo call the `workmux` command, because the fork keeps upstream's files unchanged. `workrex setup` installs the same content with each `workmux` command changed to `workrex`, and names each separate file or hook group `workrex-status`. If you copy a file by hand, change every `workmux` command in it to `workrex`. For OpenCode, also change the plugin ids `workmux.status` and `workmux.status.server` to `workrex.status` and `workrex.status.server`.
 
 ## Claude Code setup
 

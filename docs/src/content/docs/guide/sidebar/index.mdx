@@ -28,8 +28,11 @@ while you work.
 ## Setup
 
 :::caution[Prerequisites]
-The sidebar requires [status tracking hooks](/guide/status-tracking/) to be
-configured, and tmux or [Rex](/guide/rex/#sidebar) as the backend.
+The sidebar lists agents that report their status. Configure
+[status tracking hooks](/guide/status-tracking/), and use tmux or
+[Rex](/guide/rex/#sidebar) as the backend. Under Rex, Claude Code reports its
+status without hooks. See
+[Rex program status](/guide/status-tracking/#rex-program-status).
 :::
 
 Toggle the sidebar with:
@@ -50,6 +53,12 @@ When the global sidebar is active, `workrex sidebar --session` hides it in the
 current tmux session only. Run it again to show the sidebar in that session
 again without affecting other sessions.
 
+Optionally, add a tmux binding to toggle it:
+
+```bash
+bind C-t run-shell "workrex sidebar"
+```
+
 ### Under Rex
 
 The commands, keys, filters, groups and views on this page work the same under
@@ -63,12 +72,6 @@ Rex. The differences:
 - Jumping to an agent moves Rex.app, which needs Remote Control.
 
 See [Rex: Sidebar](/guide/rex/#sidebar) for width, state and daemon behavior.
-
-Optionally, add a tmux binding to toggle it:
-
-```bash
-bind C-t run-shell "workrex sidebar"
-```
 
 ## What it shows
 

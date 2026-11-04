@@ -39,7 +39,7 @@ workrex open feature-branch --mode window
 
 - **Persistence**: The mode is stored per-worktree in git config. Once a worktree is created with session mode, `open`, `close`, `remove`, and `merge` automatically use the correct mode.
 - **Navigation under tmux**: `workrex add` switches your client to the new session. When a session closes, clients still viewing it return to their previous sessions. For an in-session `merge`, the merge target's managed session takes precedence when available; for `remove`, the main branch's managed session takes precedence. A configured [`default_session`](#returning-to-a-default-session) is used when no managed session is available. Clients already viewing other sessions stay put. If preferred navigation is unavailable or cannot be safely targeted, tmux chooses another session. Closing the last session detaches its clients.
-- **Navigation under Rex**: `workrex add` does not move Rex.app to the new session. It prints which dashboard row to open instead. When a session that Rex.app shows closes, workrex picks the destination in the same order as under tmux. See [Rex session mode](/guide/rex/#session-mode) for the details.
+- **Navigation under Rex**: `workrex add` does not move Rex.app to the new session. It prints which dashboard row to open instead. When a session that Rex.app shows closes, workrex prefers the same managed session and `default_session` as under tmux, then falls back to the session the worktree was added from. See [Rex session mode](/guide/rex/#session-mode) for the details.
 
 ## Returning to a default session
 
@@ -51,7 +51,7 @@ mode: session
 default_session: main
 ```
 
-`close`, `remove` and `merge` then send clients to the `main` session rather than to whatever each was viewing before. A managed session for the destination branch still wins, so this only applies where tmux would otherwise fall back to the previous session.
+`close`, `remove` and `merge` then send clients to the `main` session rather than to whatever each was viewing before. A managed session for the destination branch still wins, so this applies only where workrex would otherwise fall back to the previous session (under tmux) or to the session the worktree was added from (under Rex).
 
 The value is a literal session name, so `window_prefix` is not applied and it can name a session workrex does not manage. If no session matches it exactly, clients fall back to their previous sessions as before.
 

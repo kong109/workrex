@@ -5,7 +5,7 @@ description: Installing and configuring workrex with Nix and Home Manager
 
 Requires [Nix with flakes enabled](https://nixos.wiki/wiki/Flakes).
 
-The workrex repo has a flake that builds the `workrex` binary from source. CI builds it on x86_64 Linux for every change to `flake.nix` (the Nix workflow runs `nix build .#`). The flake also lists aarch64 Linux and both macOS architectures, but CI does not build those. If the flake does not build on your system, install a [release build](/guide/installation/) instead.
+The workrex repo has a flake that builds the `workrex` binary from source. CI builds it on x86_64 Linux when a change touches the flake, the Cargo files, `src/` or `tests/` (the Nix workflow runs `nix build .#`). The flake also lists aarch64 Linux and both macOS architectures, but CI does not build those. If the flake does not build on your system, install a [release build](/guide/installation/) instead.
 
 ## Quick start
 

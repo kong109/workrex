@@ -140,7 +140,7 @@ Side-by-side leaves less width for each pane. On narrow terminals, use the stack
 
 The `preview_size` option controls the preview as a percentage of the content area: height in `stacked` layout, width in `side_by_side` layout. A higher value means more space for the preview and less for the table.
 
-You can also adjust the preview size interactively with `+`/`-` keys. These adjustments persist across dashboard sessions in the workrex state directory.
+You can also adjust the preview size interactively with `+`/`-` keys. These adjustments persist across dashboard sessions in `~/.local/state/workmux/settings.json`.
 
 The CLI flag `--preview-size` (`-P`) overrides both the config and saved preference for that session.
 
