@@ -8,7 +8,7 @@ The local machine stays the source of truth for your repository. Work goes to th
 ## Merging
 
 ```bash
-workmux merge my-feature
+workrex merge my-feature
 ```
 
 This copies the workspace's branch, staged and unstaged changes and untracked files into a local worktree, runs your normal local merge there, then removes the remote workspace, its agent and its branch. `merge_strategy`, `--rebase`, `--squash`, `--into` and `--keep` work as for a local worktree, and `pre_merge` hooks run on the local machine.
@@ -34,7 +34,7 @@ Keep setup hooks repeatable: they run for every fresh merge attempt. If setup fa
 ### Uncommitted work, conflicts and cleanup
 
 - Unstaged changes and untracked files on the server refuse the merge unless you pass `--ignore-uncommitted` or `--keep`. With `--ignore-uncommitted`, they aren't merged and are removed with the workspace.
-- On a conflict, resolve it in the local worktree and run `workmux merge my-feature` again.
+- On a conflict, resolve it in the local worktree and run `workrex merge my-feature` again.
 - If the agent changed the workspace after its work was copied, the remote workspace is kept and the merge says so.
 - If the server can't be reached after the merge, its cleanup is left pending. The next command that reaches the server finishes it without merging again.
 - With `--keep` (or `merge_keep: true`), the remote workspace and agent stay, and the remote branch moves to the merged result.
@@ -44,24 +44,26 @@ Keep setup hooks repeatable: they run for every fresh merge attempt. If setup fa
 A merge or removal [requested from a remote pane](/guide/remote/usage/#remove-or-merge-from-a-remote-pane) runs in the background on the local machine. Its output, including hook output, is saved on the local machine:
 
 ```bash
-workmux remote logs devbox                # list log files
-workmux remote logs devbox r0123456789ab   # print one request's output
+workrex remote logs devbox                # list log files
+workrex remote logs devbox r0123456789ab   # print one request's output
 ```
 
 The pane prints the exact command for its request. Logs are private files under `~/.local/state/workmux/remote/<remote>/operation-logs/`, readable without a connection to the server. They may contain sensitive hook output and aren't deleted automatically. Hook output never goes to the server.
 
+These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
+
 ## Rebasing
 
 ```bash
-workmux rebase my-feature
+workrex rebase my-feature
 ```
 
-Sends the local machine's base branch to the server and rebases the workspace there, committing as your local Git identity. The agent keeps running. Conflicts stay on the server: run `workmux open my-feature` and resolve them in the remote worktree.
+Sends the local machine's base branch to the server and rebases the workspace there, committing as your local Git identity. The agent keeps running. Conflicts stay on the server: run `workrex open my-feature` and resolve them in the remote worktree.
 
 ## Moving a workspace to the local machine
 
 ```bash
-workmux remote pull my-feature
+workrex remote pull my-feature
 ```
 
 Stops the remote agent, brings the branch, staged and unstaged changes and untracked files home as a local worktree, opens its window and removes the remote workspace. The window runs your configured panes, so a fresh local agent starts there; the remote agent's conversation isn't carried over. Pass `--no-hooks` to skip the local `post_create` hooks.

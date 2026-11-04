@@ -1,18 +1,22 @@
 ---
 title: "Configuration"
-description: Configure workmux with global defaults and project-specific settings
+description: Configure workrex with global defaults and project-specific settings
 ---
 
-workmux uses a two-level configuration system:
+workrex uses a two-level configuration system:
 
-- **Global** (`~/.config/workmux/config.yaml`): Personal defaults for all projects. Run `workmux config edit` to open it in your editor.
+- **Global** (`~/.config/workmux/config.yaml`): Personal defaults for all projects. Run `workrex config edit` to open it in your editor.
 - **Project** (`.workmux.yaml`): Project-specific overrides
 
-Project settings override global settings. When you run workmux from a subdirectory, it walks upward to find the nearest `.workmux.yaml`, allowing nested configs for monorepos. See [Monorepos](/guide/monorepos/#nested-configuration) for details. For hook lists (`post_create`, `pre_merge`, `pre_remove`) and file operation lists (`files.copy`, `files.symlink`, `remote_files.copy`, `remote_files.symlink`), you can use `"<global>"` to include global values alongside project-specific ones. Other settings like `panes` are replaced entirely when defined in the project config.
+Project settings override global settings. When you run workrex from a subdirectory, it walks upward to find the nearest `.workmux.yaml`, allowing nested configs for monorepos. See [Monorepos](/guide/monorepos/#nested-configuration) for details. For hook lists (`post_create`, `pre_merge`, `pre_remove`) and file operation lists (`files.copy`, `files.symlink`, `remote_files.copy`, `remote_files.symlink`), you can use `"<global>"` to include global values alongside project-specific ones. Other settings like `panes` are replaced entirely when defined in the project config.
+
+:::note[workmux names]
+workrex is a fork of [workmux](https://github.com/raine/workmux). It keeps workmux's config paths (`~/.config/workmux/`, `.workmux.yaml`), cache and state directories, and `WORKMUX_*` environment variables, so an existing workmux config works unchanged. Only the binary and the files both tools would write, such as the remote node root `~/.workrex-node`, use the workrex name.
+:::
 
 ## XDG Base Directory support
 
-workmux respects the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/):
+workrex respects the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/):
 
 | Purpose       | Environment variable | Default          |
 | ------------- | -------------------- | ---------------- |
@@ -20,7 +24,7 @@ workmux respects the [XDG Base Directory Specification](https://specifications.f
 | Cache         | `XDG_CACHE_HOME`     | `~/.cache`       |
 | State         | `XDG_STATE_HOME`     | `~/.local/state` |
 
-All workmux files live under a `workmux/` subdirectory within these base directories. If you have an existing config at the default location and later set a custom `XDG_CONFIG_HOME`, workmux will fall back to reading from `~/.config/workmux/` if no config exists at the new location.
+All workrex files live under a `workmux/` subdirectory within these base directories. If you have an existing config at the default location and later set a custom `XDG_CONFIG_HOME`, workrex will fall back to reading from `~/.config/workmux/` if no config exists at the new location.
 
 The host-side log lives at `$XDG_STATE_HOME/workmux/workmux.log` and includes sandbox network-proxy rejections - see [Debugging blocked requests](/guide/sandbox/features/#debugging-blocked-requests).
 
@@ -30,7 +34,7 @@ The host-side log lives at `$XDG_STATE_HOME/workmux/workmux.log` and includes sa
 
 ```yaml
 nerdfont: true # Enable nerdfont icons (prompted on first run)
-merge_strategy: rebase # Make workmux merge do rebase by default
+merge_strategy: rebase # Make workrex merge do rebase by default
 merge_keep: true # Keep worktree, window, and branch after merge by default
 agent: claude
 
@@ -63,7 +67,7 @@ panes:
     split: vertical
 ```
 
-For a real-world example, see [workmux's own `.workmux.yaml`](https://github.com/raine/workmux/blob/main/.workmux.yaml).
+For a real-world example, see [workrex's own `.workmux.yaml`](https://github.com/kong109/workrex/blob/main/.workmux.yaml).
 
 ## Configuration options
 
@@ -71,28 +75,31 @@ Most options have sensible defaults. You only need to configure what you want to
 
 ### Basic options
 
-| Option             | Description                                                                            | Default                     |
-| ------------------ | -------------------------------------------------------------------------------------- | --------------------------- |
-| `main_branch`      | Branch to merge into                                                                   | Auto-detected               |
-| `base_branch`      | Default base ref for new worktrees, or `auto` for the effective main branch            | Current branch              |
-| `worktree_dir`     | Directory for worktrees (absolute or relative). Supports `~` and `{project}`.          | `<project>__worktrees/`     |
-| `nerdfont`         | Enable nerdfont icons (prompted on first run)                                          | Prompted                    |
-| `window_prefix`    | Override tmux window/session prefix. Supports `{project}`.                             | Icon or `wm-`               |
-| `window_placement` | New tmux window placement (`after_current` or `rightmost`)                             | `after_current`             |
-| `agent`            | Default agent for `<agent>` placeholder                                                | `claude`                    |
-| `agents`           | Named agent commands (global-only). See [named agents](/guide/agents/#named-agents).   | `{}`                        |
-| `prompt_file_only` | Write prompt files without injecting into agent commands                               | `false`                     |
-| `merge_strategy`   | Default merge strategy (`merge`, `rebase`, `squash`)                                   | `merge`                     |
-| `merge_keep`       | Keep resources after `workmux merge` by default                                        | `false`                     |
-| `theme`            | Dashboard color scheme (see [themes](#themes))                                         | `default` (auto dark/light) |
-| `mode`             | Tmux mode (`window` or `session`). See [session mode](/guide/session-mode/).           | `window`                    |
-| `default_session`  | Session to return to when a workmux session closes (session mode)                      | Previous session            |
-| `placement`        | Where `workmux add` creates agents: `local` or a remote name. See [remotes](#remotes). | `local`                     |
+| Option                     | Description                                                                                   | Default                            |
+| -------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `main_branch`              | Branch to merge into                                                                          | Auto-detected                      |
+| `base_branch`              | Default base ref for new worktrees, or `auto` for the effective main branch                   | Current branch                     |
+| `worktree_dir`             | Directory for worktrees (absolute or relative). Supports `~` and `{project}`.                 | `<project>__worktrees/`            |
+| `nerdfont`                 | Enable nerdfont icons (prompted on first run)                                                 | Prompted                           |
+| `window_prefix`            | Override tmux window/session prefix. Supports `{project}`.                                    | Icon or `wm-`                      |
+| `window_placement`         | New tmux window placement (`after_current` or `rightmost`)                                    | `after_current`                    |
+| `agent`                    | Default agent for `<agent>` placeholder                                                       | `claude`                           |
+| `agents`                   | Named agent commands (global-only). See [named agents](/guide/agents/#named-agents).          | `{}`                               |
+| `prompt_file_only`         | Write prompt files without injecting into agent commands                                      | `false`                            |
+| `merge_strategy`           | Default merge strategy (`merge`, `rebase`, `squash`)                                          | `merge`                            |
+| `merge_keep`               | Keep resources after `workrex merge` by default                                               | `false`                            |
+| `theme`                    | Dashboard color scheme (see [themes](#themes))                                                | `default` (auto dark/light)        |
+| `mode`                     | `window` or `session`. See [session mode](/guide/session-mode/). Remote agents need `window`. | `session` under Rex, else `window` |
+| `default_session`          | Session to return to when a workrex session closes (session mode)                             | Previous session                   |
+| `stale_after`              | Inactivity before an agent counts as stale: seconds, or a duration such as `90m` or `5h`      | `1h`                               |
+| `confirm_unmerged_removal` | Ask before deleting a branch with commits not merged into its base                            | `true`                             |
+| `auto_update_check`        | Check for a new workrex release in the background                                             | `true`                             |
+| `placement`                | Where `workrex add` creates agents: `local` or a remote name. See [remotes](#remotes).        | `local`                            |
 
 Set `base_branch: auto` to create new branches from the effective main branch,
-regardless of the currently checked-out branch. Workmux uses configured
+regardless of the currently checked-out branch. Workrex uses configured
 `main_branch`, then the local `origin/HEAD`, `main`, or `master`. Detection uses
-local Git state and does not fetch. An explicit `workmux add --base` takes
+local Git state and does not fetch. An explicit `workrex add --base` takes
 precedence. When `base_branch` is omitted, new branches use the checked-out
 branch.
 
@@ -105,7 +112,7 @@ branch.
 remotes:
   devbox:
     host: devbox
-    path: ~/.workmux-node
+    path: ~/.workrex-node
     # isolation: container # optional: force Docker regardless of sandbox.enabled
 
 placement: devbox
@@ -114,15 +121,17 @@ placement: devbox
 | Option                      | Description                                                                                                                                                                                                        | Default                   |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------- |
 | `remotes.<name>.host`       | SSH destination: an alias from `~/.ssh/config` or `user@host`                                                                                                                                                      | required                  |
-| `remotes.<name>.path`       | Node root on the remote: `~`, a path starting with `~/` (expanded on the remote), or an absolute path                                                                                                              | `~/.workmux-node`         |
+| `remotes.<name>.path`       | Node root on the remote: `~`, a path starting with `~/` (expanded on the remote), or an absolute path                                                                                                              | `~/.workrex-node`         |
 | `remotes.<name>.isolation`  | `container` forces Docker; `none` forces host execution. See [server or Docker](/guide/remote/setup/#server-or-docker)                                                                                             | follows `sandbox.enabled` |
-| `remotes.<name>.binary`     | Local path to a Linux `workmux` binary to install instead of the matching release                                                                                                                                  | none                      |
+| `remotes.<name>.binary`     | Local path to a Linux `workrex` binary to install instead of the matching release. Releases exist for linux-amd64 only, so an ARM64 server needs this                                                              | none                      |
 | `remotes.<name>.terminal`   | Where agent terminals run: `tmux` on the server with a local relay window, or `rex` on the server's Rex server. See [agent terminals on the server's Rex](/guide/remote/setup/#agent-terminals-on-the-servers-rex) | `tmux`                    |
-| `remotes.<name>.rex_client` | Label of the Rex.app client `workmux open` switches when several are connected to the server's Rex server                                                                                                          | the only one              |
+| `remotes.<name>.rex_client` | Label of the Rex.app client `workrex open` switches when several are connected to the server's Rex server                                                                                                          | the only one              |
 
 `remotes` is global-only: in a project's `.workmux.yaml` it is ignored with a warning. Unknown keys under a remote are an error.
 
-`placement` sets where `workmux add` creates agents when neither `--remote` nor `--local` is given. It can be set globally or per project; the project value wins. It can only name a remote from the global `remotes`, and it is ignored when no remotes are configured.
+`placement` sets where `workrex add` creates agents when neither `--remote` nor `--local` is given. It can be set globally or per project; the project value wins. It can only name a remote from the global `remotes`, and it is ignored when no remotes are configured.
+
+The `dashboard` and `sidebar` blocks have their own pages: [dashboard configuration](/guide/dashboard/configuration/) and [sidebar customization](/guide/sidebar/customization/).
 
 ### Themes
 
@@ -258,7 +267,7 @@ panes:
 
 Each agent receives the prompt (via `-p`/`-P`/`-e`) using the correct format for that agent. Auto-detection matches the executable name regardless of flags or path.
 
-Antigravity CLI support covers command detection, prompt injection, and status tracking through lifecycle hooks installed by `workmux setup`.
+Antigravity CLI support covers command detection, prompt injection, and status tracking through lifecycle hooks installed by `workrex setup`.
 
 ### Named layouts
 
@@ -278,7 +287,7 @@ layouts:
 ```
 
 ```bash
-workmux add my-feature -l design
+workrex add my-feature -l design
 ```
 
 When `-l` is used, the layout's `panes` replace the top-level `panes` for that worktree. All other config (hooks, files, agent, etc.) comes from the top-level as usual. The `-l` flag cannot be combined with `--agent`.
@@ -326,19 +335,19 @@ remote_files:
 
 These lists follow the same config-relative path and `"<global>"` merge rules as `files`. Remote symlink sources are uploaded once and shared, not synchronized. See [Remote supplemental files](/guide/remote/setup/#supplemental-files) for cache behavior and disabling inherited transfers.
 
-To re-apply file operations to existing worktrees (e.g., after updating the config), use [`workmux sync-files`](/reference/commands/sync-files/).
+To re-apply file operations to existing worktrees (e.g., after updating the config), use [`workrex sync-files`](/reference/commands/sync-files/).
 
 ### Lifecycle hooks
 
 Run commands at specific points in the worktree lifecycle, such as installing dependencies or running database migrations. All hooks run with the **worktree directory** as the working directory (or the nested config directory for [nested configs](/guide/monorepos/#nested-configuration)) and receive environment variables: `WM_HANDLE`, `WM_WORKTREE_PATH`, `WM_PROJECT_ROOT`, `WM_CONFIG_DIR`.
 
-`hook_shell` is an argv list containing the executable followed by its arguments. Workmux appends each hook command as the final argument. It defaults to `["bash", "-c"]` for compatibility. To select a specific Bash installation on macOS, set the machine-specific path in your global configuration:
+`hook_shell` is an argv list containing the executable followed by its arguments. Workrex appends each hook command as the final argument. It defaults to `["bash", "-c"]` for compatibility. To select a specific Bash installation on macOS, set the machine-specific path in your global configuration:
 
 ```yaml
 hook_shell: ["/opt/homebrew/bin/bash", "-c"]
 ```
 
-A project can override the complete `hook_shell` argv in `.workmux.yaml`; when omitted, it inherits the global value. The argv must contain a non-empty executable. Workmux reports the configured executable when it cannot be launched. Shell flags such as error handling or login behavior are applied only when included explicitly in `hook_shell` or the hook command. Remote workspaces run hooks with `bash -c` when `hook_shell` names an absolute path, since that path refers to a local program; see [What the server uses from your config](/guide/remote/setup/#what-the-server-uses-from-your-config).
+A project can override the complete `hook_shell` argv in `.workmux.yaml`; when omitted, it inherits the global value. The argv must contain a non-empty executable. Workrex reports the configured executable when it cannot be launched. Shell flags such as error handling or login behavior are applied only when included explicitly in `hook_shell` or the hook command. Remote workspaces run hooks with `bash -c` when `hook_shell` names an absolute path, since that path refers to a local program; see [What the server uses from your config](/guide/remote/setup/#what-the-server-uses-from-your-config).
 
 | Hook          | When it runs                                      | Additional env vars                  |
 | ------------- | ------------------------------------------------- | ------------------------------------ |
@@ -415,12 +424,12 @@ To override back to `llm` when an agent is configured, set `auto_name.command: "
 | `background`    | Always run in background when using `--auto-name`                | `false`                    |
 | `system_prompt` | Custom system prompt for branch name generation                  | Built-in prompt            |
 
-See [`workmux add --auto-name`](/reference/commands/add/#automatic-branch-name-generation) for usage details.
+See [`workrex add --auto-name`](/reference/commands/add/#automatic-branch-name-generation) for usage details.
 
 ## Default behavior
 
 - Worktrees are created in `<project>__worktrees` as a sibling directory to your project by default
-- If no `panes` configuration is defined, workmux provides opinionated defaults:
+- If no `panes` configuration is defined, workrex provides opinionated defaults:
   - For projects with a `CLAUDE.md` file: Opens the configured agent (see `agent` option) in the first pane, defaulting to `claude` if none is set.
   - For all other projects: Opens your default shell.
   - Both configurations include a second pane split horizontally

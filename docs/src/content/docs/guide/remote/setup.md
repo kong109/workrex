@@ -5,8 +5,8 @@ description: Prepare a Linux server, add it to your config and choose how its ag
 
 ## Requirements
 
-- Linux on x86-64 or ARM64.
-- SSH that works without a prompt. workmux never asks for a password or to accept a host key, so use a key loaded in your SSH agent or one without a passphrase, and run `ssh <host>` once yourself. Aliases from `~/.ssh/config`, including `ProxyJump`, `Port` and `User`, work.
+- Linux on x86-64. workrex publishes release builds for linux-amd64 only. For an ARM64 server, build a Linux ARM64 `workrex` yourself and point [`remotes.<name>.binary`](/guide/configuration/#remotes) at it.
+- SSH that works without a prompt. workrex never asks for a password or to accept a host key, so use a key loaded in your SSH agent or one without a passphrase, and run `ssh <host>` once yourself. Aliases from `~/.ssh/config`, including `ProxyJump`, `Port` and `User`, work.
 - Git and tmux 3.3 or newer.
 - systemd linger for the SSH user, so agents survive the end of the SSH session:
 
@@ -16,7 +16,7 @@ description: Prepare a Linux server, add it to your config and choose how its ag
 
 - Network access to the APIs your agents use.
 
-The server doesn't need access to GitHub: the local machine downloads the workmux release, verifies it and uploads it. What else the server needs depends on [where agents run](#server-or-docker).
+The server doesn't need access to GitHub. The local machine downloads `workrex-linux-amd64.tar.gz` from the [kong109/workrex releases](https://github.com/kong109/workrex/releases), checks it against its `.sha256` file and uploads it. What else the server needs depends on [where agents run](#server-or-docker).
 
 ## Add the server to your config
 
@@ -27,13 +27,15 @@ remotes:
     host: devbox # an ~/.ssh/config alias or user@host
 ```
 
+These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
+
 Names may contain letters, digits, `.`, `_` and `-`, and must start with a letter or digit. `local` is reserved.
 
-`remotes` only works in your global config. A project's `.workmux.yaml` can't add a server, so a repository can't send your code anywhere; it can only choose among your servers with [`placement`](#choosing-where-new-agents-go). The other keys, `path`, `isolation` and `binary`, are in the [configuration reference](/guide/configuration/#remotes).
+`remotes` only works in your global config. A project's `.workmux.yaml` can't add a server, so a repository can't send your code anywhere; it can only choose among your servers with [`placement`](#choosing-where-new-agents-go). The other keys, `path`, `isolation`, `binary`, `terminal` and `rex_client`, are in the [configuration reference](/guide/configuration/#remotes).
 
 ## A server in WSL
 
-A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside the distro on its own port, because port 22 on the Windows machine usually belongs to Windows OpenSSH, which can't run agents. This example uses port 2222 on a Windows machine named `winbox` (its Tailscale or LAN name) and the WSL user `cicero`.
+A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside the distro on its own port, because port 22 on the Windows machine usually belongs to Windows OpenSSH, which can't run agents. This example uses port 2222 on a Windows machine named `winpc` (its Tailscale or LAN name) and the WSL user `dev`.
 
 1. In WSL, turn on systemd, so linger and the `ssh` socket work. Add this to `/etc/wsl.conf`, then run `wsl.exe --shutdown` on Windows and open the distro again:
 
@@ -48,7 +50,7 @@ A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside
    sudo apt install openssh-server
    sudo systemctl edit ssh.socket
    sudo systemctl restart ssh.socket
-   sudo loginctl enable-linger cicero
+   sudo loginctl enable-linger dev
    ```
 
    In the editor that `systemctl edit` opens, add this drop-in. The empty `ListenStream=` line clears the default port 22. Without it, the socket listens on port 22 and port 2222. Give both addresses: Ubuntu's `ssh.socket` sets `BindIPv6Only=ipv6-only`, so a bare `ListenStream=2222` accepts IPv6 connections only.
@@ -62,13 +64,13 @@ A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside
 
    With WSL's mirrored networking, port 2222 in WSL is port 2222 on Windows. Otherwise forward it from Windows to WSL, or reach the distro through [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh) running inside it.
 
-3. On your machine, add an alias to `~/.ssh/config` and check that `ssh winbox-wsl-ssh` logs in without a prompt:
+3. On your machine, add an alias to `~/.ssh/config` and check that `ssh wsl-ssh` logs in without a prompt:
 
    ```
-   Host winbox-wsl-ssh
-     HostName winbox
+   Host wsl-ssh
+     HostName winpc
      Port 2222
-     User cicero
+     User dev
    ```
 
 4. Point the remote at the alias:
@@ -76,13 +78,33 @@ A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside
    ```yaml
    # ~/.config/workmux/config.yaml
    remotes:
-     winbox:
-       host: winbox-wsl-ssh
+     wsl:
+       host: wsl-ssh
+       isolation: none
    ```
 
-`workmux remote doctor winbox` names the WSL fix when the connection fails: Windows OpenSSH answering on the configured port, or nothing answering because the distro or its `ssh.socket` is down. It also names the systemd fix when systemd is not running in the distro, and `loginctl enable-linger` when systemd runs but linger is off.
+   `isolation: none` runs agents directly in the distro, so the server needs no Docker. See [server or Docker](#server-or-docker).
 
-Remote agents run under the tmux and Rex backends. Under Rex, where workmux defaults to sessions, each remote agent's relay window opens in a Rex session of its own, and closing the window closes the session.
+5. Install workrex on the server and check it:
+
+   ```bash
+   workrex remote setup wsl
+   workrex remote doctor wsl
+   ```
+
+   `setup` downloads the linux-amd64 release on your machine, uploads it and prints where it installed it:
+
+   ```
+   Downloading workrex v<version> for linux-amd64...
+   Uploading workrex-<version> (<size> MB) to wsl...
+   ✓ wsl: installed workrex <version> (protocol <n>) at ~/.workrex-node/bin/workrex-<version>
+   ```
+
+   When every `doctor` check passes, [log your agents in](/guide/remote/logins/).
+
+`workrex remote doctor wsl` names the WSL fix when the connection fails: Windows OpenSSH answering on the configured port, or nothing answering because the distro or its `ssh.socket` is down. It also names the systemd fix when systemd is not running in the distro, and `loginctl enable-linger` when systemd runs but linger is off.
+
+Remote agents run under the tmux and Rex backends. Under Rex, where workrex defaults to sessions, each remote agent's relay window opens in a Rex session of its own, and closing the window closes the session.
 
 ## Agent terminals on the server's Rex
 
@@ -91,19 +113,19 @@ By default a remote agent runs in tmux on the server, and your machine shows it 
 ```yaml
 # ~/.config/workmux/config.yaml
 remotes:
-  winbox:
-    host: winbox-wsl-ssh
+  wsl:
+    host: wsl-ssh
     isolation: none
     terminal: rex
 ```
 
-`add --remote winbox` then creates one Rex session per pane on the server, and opens no relay window on your machine. Rex.app lists the sessions under the server's host, and `workmux open <name>` selects the first one in Rex.app. The dashboard, `send`, `wait`, `capture`, `merge`, `remove` and `remote gc` work as with tmux.
+`add --remote wsl` then creates one Rex session per pane on the server, and opens no relay window on your machine. Rex.app lists the sessions under the server's host, and `workrex open <name>` selects the first one in Rex.app. The dashboard, `send`, `wait`, `capture`, `merge`, `remove` and `remote gc` work as with tmux.
 
 - `terminal: rex` needs `isolation: none`. Agents in Docker can't run in a Rex session yet.
-- The server's Rex server must be on Tailscale when the workspace is created, and `workmux open` needs Remote Control on in Rex.app. When several Rex.app clients are connected to the server, set `remotes.<name>.rex_client` to the label of the one to switch.
-- Each workspace keeps the terminal it was created with. If the server's Rex server restarts, its sessions are gone; `workmux open` starts the agents again in new ones.
+- The server's Rex server must be on Tailscale when the workspace is created, and `workrex open` needs Remote Control on in Rex.app. When several Rex.app clients are connected to the server, set `remotes.<name>.rex_client` to the label of the one to switch.
+- Each workspace keeps the terminal it was created with. If the server's Rex server restarts, its sessions are gone; `workrex open` starts the agents again in new ones.
 - Secrets reach the agent through a file its shell reads once and removes, so they don't appear in the session's command line or screen.
-- `workmux remote shell` still opens its shells in tmux on the server.
+- [`workrex shell`](/reference/commands/shell/) still opens its shells in tmux on the server.
 
 ## Server or Docker
 
@@ -123,10 +145,10 @@ The two modes need different things on the server and behave differently in a fe
 | Agent CLIs                                | Install each one on the SSH user's login `PATH`   | Come from the sandbox image                        |
 | Also needs                                | Your project's tools, if hooks or agents use them | Docker, usable without `sudo`; access to `ghcr.io` |
 | Sandbox                                   | None, with the agent's normal permission prompts  | The [container sandbox](/guide/sandbox/container/) |
-| `workmux rm` and `merge` in a remote pane | Ask the local machine to do it                    | Agents can ask the local machine, without hooks    |
+| `workrex rm` and `merge` in a remote pane | Ask the local machine to do it                    | Agents can ask the local machine, without hooks    |
 | `sandbox.env` and `env_passthrough`       | Not used                                          | Used                                               |
 
-workmux doesn't install agents on the server and doesn't fall back to Docker: if the agent's CLI is missing on the server, `add --remote` stops before creating anything. Podman isn't supported on servers.
+workrex doesn't install agents on the server and doesn't fall back to Docker: if the agent's CLI is missing on the server, `add --remote` stops before creating anything. Podman isn't supported on servers.
 
 :::danger[No sandbox on the server]
 Agents running directly on the server have the SSH user's full access to it. Only use this mode on a machine you'd let the agent use freely.
@@ -139,19 +161,19 @@ Each workspace keeps the mode it was created with, even if your settings change 
 ## Install and check
 
 ```bash
-workmux remote setup devbox
+workrex remote setup devbox
 ```
 
-Installs the workmux that matches your local version on the server, plus workmux's [status hooks](/guide/status-tracking/) for the supported agents. It is safe to run again. `add --remote` and `remote login` install workmux on first use too, but running `setup` first shows problems early.
+Installs the workrex that matches your local version on the server, under the node root (`~/.workrex-node` by default, set with [`path`](/guide/configuration/#remotes)). Each version lives at `bin/workrex-<version>` in the node root, so running agents keep the version they started with. `setup` also installs workrex's [status hooks](/guide/status-tracking/) for the supported agents. It is safe to run again. `add --remote` and `remote login` install workrex on first use too, but running `setup` first shows problems early.
 
 ```bash
-workmux remote doctor devbox
+workrex remote doctor devbox
 ```
 
-Checks SSH, the server's architecture, workmux, Git, tmux, linger, agent CLIs or Docker, status hooks and logins, and prints a fix for each failing check. In Docker mode it also pulls the sandbox image, so the first run can take a while. See [`remote doctor`](/reference/commands/remote/#remote-doctor) for every check.
+Checks SSH, the server's architecture, workrex, Git, tmux, linger, agent CLIs or Docker, status hooks and logins, and prints a fix for each failing check. In Docker mode it also pulls the sandbox image, so the first run can take a while. See [`remote doctor`](/reference/commands/remote/#remote-doctor) for every check.
 
 ```bash
-workmux remote
+workrex remote
 ```
 
 Lists your servers and whether each one is reachable and set up.
@@ -162,8 +184,8 @@ Then [log your agents in](/guide/remote/logins/).
 
 Agents are created locally unless you ask otherwise:
 
-- `workmux add <branch> --remote [<name>]` creates the agent on a server. The name is optional when `placement` names a server or only one is configured.
-- `workmux add <branch> --local` creates it locally, overriding `placement`.
+- `workrex add <branch> --remote [<name>]` creates the agent on a server. The name is optional when `placement` names a server or only one is configured.
+- `workrex add <branch> --local` creates it locally, overriding `placement`.
 - `placement` sets the default: `local` (the default) or a server name.
 
 ```yaml
@@ -177,13 +199,13 @@ Where a workspace lives is decided when it is created. Later commands such as `o
 
 ## What the server uses from your config
 
-A remote workspace runs a copy of the local machine's effective config, taken when the workspace is created. The server's own workmux config and the worktree's `.workmux.yaml` are never read. `add --remote` warns about settings it couldn't apply.
+A remote workspace runs a copy of the local machine's effective config, taken when the workspace is created. The server's own workrex config and the worktree's `.workmux.yaml` are never read. `add --remote` warns about settings it couldn't apply.
 
 - **Applied:** `panes`, `agent`, `agents`, `post_create`, `pre_remove`, `remote_files`, the status icons and format, and `hook_shell` unless it is an absolute local path. An absolute `hook_shell` such as `/opt/homebrew/bin/bash` names a local program, so remote hooks run with `bash -c` instead.
 - **Applied in Docker mode:** `sandbox.image`, `target`, `network`, `toolchain`, `env`, `env_passthrough`, and `container.cpus`, `memory`, `group_add`, `cap_add`, `security_opt` and `excluded_files`. The sandbox is always Docker there.
 - **Not applied**, because they name local resources: Lima, other container runtimes, `rpc_host`, `extra_mounts`, `agent_config_dir`, `host_commands`, `container.devices` and `container.oci_runtime`.
 
-Two routine adjustments are not shown on every `add`: falling back to `bash -c` for an absolute `hook_shell`, and leaving local `files` behind when `remote_files` is not configured. Both are recorded in the workmux log, `$XDG_STATE_HOME/workmux/workmux.log` (`~/.local/state/workmux/workmux.log` by default), as lines starting with `remote config:`:
+Two routine adjustments are not shown on every `add`: falling back to `bash -c` for an absolute `hook_shell`, and leaving local `files` behind when `remote_files` is not configured. Both are recorded in the workrex log, `$XDG_STATE_HOME/workmux/workmux.log` (`~/.local/state/workmux/workmux.log` by default), as lines starting with `remote config:`:
 
 ```bash
 grep 'remote config:' ~/.local/state/workmux/workmux.log
@@ -221,7 +243,7 @@ remote_files:
   symlink: []
 ```
 
-An empty object (`remote_files: {}`) still inherits global lists. When local file settings exist but remote lists are unset, workmux records a `remote config:` note in the log; explicit empty lists suppress it.
+An empty object (`remote_files: {}`) still inherits global lists. When local file settings exist but remote lists are unset, workrex records a `remote config:` note in the log; explicit empty lists suppress it.
 
 Selection changes apply to new workspaces, not existing ones, and do not delete cached sources. Workspaces spawned by a remote agent reuse their parent's saved copies and symlink selections without contacting the laptop. Resuming creation does not repeat an already completed file stage.
 
@@ -230,9 +252,9 @@ Selection changes apply to new workspaces, not existing ones, and do not delete 
 Treat the server as an extension of your local machine: the SSH user runs every agent and holds their logins. Use a server or VM dedicated to agents, and treat what agents produce there as untrusted, as with a [local sandbox](/guide/sandbox/#security-model).
 
 - **No host commands.** [Host command proxying](/guide/sandbox/features/#host-command-proxying) is off on servers. In Docker mode, agents can only run what their container has.
-- **No Git credentials.** The server has no `origin`, and workmux connects without SSH agent or X11 forwarding. Anything else you give agents, such as tokens in `sandbox.env`, is up to you.
-- **Local actions stay local.** A remote pane or agent can ask the local machine to remove or merge its own workspace, and nothing else; hook output from that work stays on the local machine. A request from a container runs no hooks. `workmux close` and image paste fail with a message saying what to run on the local machine.
+- **No Git credentials.** The server has no `origin`, and workrex connects without SSH agent or X11 forwarding. Anything else you give agents, such as tokens in `sandbox.env`, is up to you.
+- **Local actions stay local.** A remote pane or agent can ask the local machine to remove or merge its own workspace, and nothing else; hook output from that work stays on the local machine. A request from a container runs no hooks. `workrex close` and image paste fail with a message saying what to run on the local machine.
 - **Hooks run outside the container.** `post_create` and `pre_remove` run on the server as the SSH user, as they run on the local machine for local agents. They come from your local config.
 - **Firewall the Docker bridge** if the server routes or forwards it to the outside. The sandbox's RPC bridge and proxy listen on the bridge address.
 
-workmux marks remote worktrees as trusted in Claude and Codex, so they start without asking whether to trust the folder. Folders you marked untrusted stay untrusted. A trusted folder lets the agent load the repository's own agent settings, such as `.codex/config.toml`.
+workrex marks remote worktrees as trusted in Claude and Codex, so they start without asking whether to trust the folder. Folders you marked untrusted stay untrusted. A trusted folder lets the agent load the repository's own agent settings, such as `.codex/config.toml`.
