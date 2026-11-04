@@ -104,7 +104,7 @@ When using the Lima backend, each sandboxed pane runs a supervisor process (`wor
 1. Ensures the Lima VM is running (creates it on first use)
 2. Starts a TCP RPC server on a random port
 3. Runs the agent command inside the VM via `limactl shell`
-4. Handles RPC requests from the guest workrex binary
+4. Handles RPC requests from the `workmux` binary in the guest
 
 The guest VM connects back to the host via `host.lima.internal` (Lima's built-in hostname) to send RPC requests like status updates and agent spawning.
 
@@ -146,7 +146,7 @@ The agent CLI installed depends on your `agent` configuration:
 | `pi`               | Pi CLI via npm                             |
 | `omp`              | Oh My Pi CLI via Bun + Python              |
 
-Codex needs the whole Codex package, which VMs created by older workrex versions don't have. Codex also needs to be 0.156 or newer (see [Agent flags](/guide/sandbox/features/#agent-flags)). Recreate such a VM with `workrex sandbox prune`.
+Codex needs the whole Codex package, which VMs created by older workmux versions don't have. Codex also needs to be 0.156 or newer (see [Agent flags](/guide/sandbox/features/#agent-flags)). Recreate such a VM with `workrex sandbox prune`.
 
 Changing the `agent` setting after VM creation has no effect on existing VMs. Recreate the VM with `workrex sandbox prune` to provision with a different agent.
 
@@ -205,7 +205,7 @@ When `image` is set, it replaces the default Debian 13 genericcloud image. The v
 When `skip_default_provision` is true, the built-in provisioning steps are skipped:
 
 - System provision (apt-get install of curl, ca-certificates, git)
-- User provision (agent CLI, workrex, Nix/Devbox)
+- User provision (agent CLI, upstream workmux, Nix/Devbox)
 
 Custom `provision` scripts still run even when `skip_default_provision` is true, so you can layer additional setup on top of a pre-built image.
 
@@ -340,7 +340,7 @@ workrex sandbox prune --force
 **Example output:**
 
 ```
-Found 2 workrex Lima VM(s):
+Found 2 workmux Lima VM(s):
 
 1. wm-myproject-bbeb2cbf (Running)
    Age: 2 hours ago

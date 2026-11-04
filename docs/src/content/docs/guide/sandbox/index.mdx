@@ -30,8 +30,6 @@ Host-side hooks and pane commands from `.workmux.yaml` and explicitly proxied
 host commands are also outside the sandbox boundary. Lima exposes writable Git
 metadata.
 
-These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
-
 **Do not use workrex sandbox if your threat model requires sandboxed agents to
 have no influence over code that runs on the host.**
 :::
@@ -103,6 +101,8 @@ Install [Docker](https://www.docker.com/), [Podman](https://podman.io/), or [App
 sandbox:
   enabled: true
 ```
+
+These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
 
 The pre-built image is pulled automatically on first run. See the [container backend](/guide/sandbox/container/) page for details.
 

@@ -11,7 +11,7 @@ workrex uses a two-level configuration system:
 Project settings override global settings. When you run workrex from a subdirectory, it walks upward to find the nearest `.workmux.yaml`, allowing nested configs for monorepos. See [Monorepos](/guide/monorepos/#nested-configuration) for details. For hook lists (`post_create`, `pre_merge`, `pre_remove`) and file operation lists (`files.copy`, `files.symlink`, `remote_files.copy`, `remote_files.symlink`), you can use `"<global>"` to include global values alongside project-specific ones. Other settings like `panes` are replaced entirely when defined in the project config.
 
 :::note[workmux names]
-workrex is a fork of [workmux](https://github.com/raine/workmux). It keeps workmux's config paths (`~/.config/workmux/`, `.workmux.yaml`), cache and state directories, and `WORKMUX_*` environment variables, so an existing workmux config works unchanged. Only the binary and the files both tools would write, such as the remote node root `~/.workrex-node`, use the workrex name.
+workrex is a fork of [workmux](https://github.com/raine/workmux). It keeps workmux's config paths (`~/.config/workmux/`, `.workmux.yaml`), cache and state directories, and `WORKMUX_*` environment variables, so an existing workmux config works unchanged. Only the binary and the files that would collide with a workmux install, such as the remote node root `~/.workrex-node` and the agent status hooks, use the workrex name.
 :::
 
 ## XDG Base Directory support
@@ -75,26 +75,26 @@ Most options have sensible defaults. You only need to configure what you want to
 
 ### Basic options
 
-| Option                     | Description                                                                                   | Default                            |
-| -------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------- |
-| `main_branch`              | Branch to merge into                                                                          | Auto-detected                      |
-| `base_branch`              | Default base ref for new worktrees, or `auto` for the effective main branch                   | Current branch                     |
-| `worktree_dir`             | Directory for worktrees (absolute or relative). Supports `~` and `{project}`.                 | `<project>__worktrees/`            |
-| `nerdfont`                 | Enable nerdfont icons (prompted on first run)                                                 | Prompted                           |
-| `window_prefix`            | Override tmux window/session prefix. Supports `{project}`.                                    | Icon or `wm-`                      |
-| `window_placement`         | New tmux window placement (`after_current` or `rightmost`)                                    | `after_current`                    |
-| `agent`                    | Default agent for `<agent>` placeholder                                                       | `claude`                           |
-| `agents`                   | Named agent commands (global-only). See [named agents](/guide/agents/#named-agents).          | `{}`                               |
-| `prompt_file_only`         | Write prompt files without injecting into agent commands                                      | `false`                            |
-| `merge_strategy`           | Default merge strategy (`merge`, `rebase`, `squash`)                                          | `merge`                            |
-| `merge_keep`               | Keep resources after `workrex merge` by default                                               | `false`                            |
-| `theme`                    | Dashboard color scheme (see [themes](#themes))                                                | `default` (auto dark/light)        |
-| `mode`                     | `window` or `session`. See [session mode](/guide/session-mode/). Remote agents need `window`. | `session` under Rex, else `window` |
-| `default_session`          | Session to return to when a workrex session closes (session mode)                             | Previous session                   |
-| `stale_after`              | Inactivity before an agent counts as stale: seconds, or a duration such as `90m` or `5h`      | `1h`                               |
-| `confirm_unmerged_removal` | Ask before deleting a branch with commits not merged into its base                            | `true`                             |
-| `auto_update_check`        | Check for a new workrex release in the background                                             | `true`                             |
-| `placement`                | Where `workrex add` creates agents: `local` or a remote name. See [remotes](#remotes).        | `local`                            |
+| Option                     | Description                                                                                                  | Default                            |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| `main_branch`              | Branch to merge into                                                                                         | Auto-detected                      |
+| `base_branch`              | Default base ref for new worktrees, or `auto` for the effective main branch                                  | Current branch                     |
+| `worktree_dir`             | Directory for worktrees (absolute or relative). Supports `~` and `{project}`.                                | `<project>__worktrees/`            |
+| `nerdfont`                 | Enable nerdfont icons (prompted on first run)                                                                | Prompted                           |
+| `window_prefix`            | Override tmux window/session prefix. Supports `{project}`.                                                   | Icon or `wm-`                      |
+| `window_placement`         | New tmux window placement (`after_current` or `rightmost`)                                                   | `after_current`                    |
+| `agent`                    | Default agent for `<agent>` placeholder                                                                      | `claude`                           |
+| `agents`                   | Named agent commands (global-only). See [named agents](/guide/agents/#named-agents).                         | `{}`                               |
+| `prompt_file_only`         | Write prompt files without injecting into agent commands                                                     | `false`                            |
+| `merge_strategy`           | Default merge strategy (`merge`, `rebase`, `squash`)                                                         | `merge`                            |
+| `merge_keep`               | Keep resources after `workrex merge` by default                                                              | `false`                            |
+| `theme`                    | Dashboard color scheme (see [themes](#themes))                                                               | `default` (auto dark/light)        |
+| `mode`                     | `window` or `session`. See [session mode](/guide/session-mode/). Remote agents refuse an explicit `session`. | `session` under Rex, else `window` |
+| `default_session`          | Session to return to when a workrex session closes (session mode)                                            | Previous session                   |
+| `stale_after`              | Inactivity before an agent counts as stale: seconds, or a duration such as `90m` or `5h`                     | `1h`                               |
+| `confirm_unmerged_removal` | Ask before deleting a branch with commits not merged into its base                                           | `true`                             |
+| `auto_update_check`        | Check for a new workrex release in the background                                                            | `true`                             |
+| `placement`                | Where `workrex add` creates agents: `local` or a remote name. See [remotes](#remotes).                       | `local`                            |
 
 Set `base_branch: auto` to create new branches from the effective main branch,
 regardless of the currently checked-out branch. Workrex uses configured

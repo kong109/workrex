@@ -7,7 +7,7 @@ description: Day-to-day commands, remote panes, disconnects and reboots for agen
 
 Remote workspaces use the usual commands. Run them from the project on the local machine and name the workspace by its handle.
 
-`workrex` isn't on the `PATH` of a shell you open on the server yourself, such as an SSH login or a Rex window on the server's Rex server. That is expected. `remote setup` installs only a version-pinned binary at `~/.workrex-node/bin/workrex-<version>`, which workrex runs with the node root's own state, so it never sees the local machine's workspaces. Run commands such as `status`, `send`, `merge` and `remove` on your own machine and name the workspace by its handle. A separate workrex installed on the server would be an unrelated local install with its own workspaces.
+A shell you open on the server yourself, such as an SSH login or a Rex window on the server's Rex server, has no `workrex` on its `PATH`. `remote setup` installs only a version-pinned binary, `~/.workrex-node/bin/workrex-<version>`. Remote workspaces run it with the node root's own state, and the workspace's panes get a `workrex` wrapper on their `PATH`. Run commands such as `status`, `send`, `merge` and `remove` on your own machine, and name the workspace by its handle. A separate workrex installed on the server would be an unrelated install with its own workspaces.
 
 | Command                                                                        | On a remote workspace                                                                                       |
 | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
