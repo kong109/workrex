@@ -82,7 +82,7 @@ fn run_reference() -> Result<()> {
 
 const DEFAULT_GLOBAL_CONFIG: &str = r#"# workmux global configuration
 # Settings here apply to all projects. Project-specific .workmux.yaml overrides these.
-# See: https://workmux.dev/guide/configuration
+# See: https://kong109.github.io/workrex/guide/configuration/
 
 # nerdfont: true
 # agent: claude

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use crate::state::store::get_state_dir;
 
 /// Guide linked from the remote servers tip and notice.
-pub const REMOTE_GUIDE_URL: &str = "https://workmux.dev/guide/remote/";
+pub const REMOTE_GUIDE_URL: &str = "https://kong109.github.io/workrex/guide/remote/";
 
 /// Dashboard opens that show the remote servers tip before it retires.
 const REMOTE_TIP_MAX_VIEWS: u32 = 5;

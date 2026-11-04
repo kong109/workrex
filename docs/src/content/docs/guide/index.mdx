@@ -1,173 +1,93 @@
 ---
-title: "What is workmux?"
+title: "What is workrex?"
 description:
-  A workflow tool for managing git worktrees and tmux windows as isolated
-  development environments for AI agents
+  workrex runs AI coding agents in parallel, each in its own git worktree and
+  its own Rex session
 ---
 
-import Screenshot from "../../../components/Screenshot.astro";
-import screenshot from "../../../assets/screenshots/hero-screenshot.webp";
+workrex runs AI coding agents in parallel. Each task gets its own
+[git worktree](https://git-scm.com/docs/git-worktree), its own branch, and its
+own session in [Rex](https://www.superlogical.com/rex/docs/), with the agent
+already started. Agents never share a working directory, so one agent's edits
+and builds never get in another agent's way. When a task is done,
+`workrex merge` merges the branch and removes the worktree, the Rex session,
+and the local branch.
 
-workmux is a giga opinionated zero-friction workflow tool for managing
-[git worktrees](https://git-scm.com/docs/git-worktree) and tmux windows as
-isolated development environments. Also supports [kitty](/guide/kitty/),
-[WezTerm](/guide/wezterm/), and [Zellij](/guide/zellij/) (experimental). Perfect
-for running multiple AI agents in parallel without conflict.
+workrex is a fork of [workmux](https://github.com/raine/workmux) by Raine Virta.
+The fork adds a Rex backend and installs as its own binary, `workrex`, so it can
+run next to an upstream `workmux` install. It reads the same configuration
+files as workmux. The rest of workmux works the same way, including tmux,
+WezTerm, kitty, and Zellij support.
+[NOTICE.md](https://github.com/kong109/workrex/blob/main/NOTICE.md) lists what
+the fork renames.
 
-**Philosophy**: Build on tools you already use. tmux/zellij/kitty/etc. for
-windowing, git for worktrees, your agent for coding - workmux orchestrates the
-rest.
+## A task from start to finish
 
-:::tip[New to workmux?]
-Read the [introduction blog post](https://raine.dev/blog/introduction-to-workmux/) for a quick overview.
-:::
-
-## Why workmux?
-
-**Parallel workflows.** Work on multiple features at the same time, each with
-its own AI agent. No stashing, no branch switching, no conflicts.
-
-**One window per task.** A natural mental model. Each has its own terminal
-state, editor session, dev server, and AI agent. Context switching is switching
-tabs.
-
-**Automated setup.** New worktrees start broken (no `.env`, no `node_modules`,
-no dev server). workmux can copy config files, symlink dependencies, and run
-install commands on creation.
-
-**One-command cleanup.** `workmux merge` handles the full lifecycle: merge the
-branch, delete the worktree, close the tmux window, remove the local branch. Or
-go next level and use the [`/merge` skill](/guide/skills/#merge) to let your
-agent commit, rebase, and merge autonomously.
-
-**Terminal workflow.** Build on your terminal setup instead of yet another
-agentic GUI that won't exist next year. If you don't have one yet,
-[tmux might be worth picking up](https://raine.dev/blog/my-tmux-setup/). Also
-supports [Kitty](/guide/kitty/), [WezTerm](/guide/wezterm/), and
-[Zellij](/guide/zellij/).
-
-<Screenshot
-  src={screenshot}
-  alt="workmux sidebar alongside an AI agent and editor in tmux"
-  callout="Worktrees"
-/>
-
-## Features
-
-- Create git worktrees with matching tmux windows (or kitty/WezTerm/Zellij tabs)
-  in a single command (`add`)
-- Merge branches and clean up everything (worktree, tmux window, branches) in
-  one command (`merge`)
-- [Dashboard](/guide/dashboard/) for monitoring agents, reviewing changes, and
-  sending commands
-- [Delegate tasks to worktree agents](/guide/skills/#worktree) with a
-  `/worktree` skill
-- [Display Claude agent status in tmux window names](/guide/status-tracking/)
-- Automatically set up your preferred tmux pane layout (editor, shell, watchers,
-  etc.)
-- Run post-creation hooks (install dependencies, setup database, etc.)
-- Copy or symlink configuration files (`.env`, `node_modules`) into new
-  worktrees
-- [Sandbox agents](/guide/sandbox/) in containers or VMs for enhanced security
-- [Automatic branch name generation](/reference/commands/add/#automatic-branch-name-generation)
-  from prompts using LLM
-- Shell completions
-
-## Before and after
-
-workmux turns a multi-step manual workflow into simple commands, making parallel
-development workflows practical.
-
-### Without workmux
+Run these commands from a Rex pane inside your project's repository:
 
 ```bash
-# 1. Manually create the worktree and environment
-git worktree add ../worktrees/user-auth -b user-auth
-cd ../worktrees/user-auth
-cp ../../project/.env.example .env
-ln -s ../../project/node_modules .
-npm install
-# ... and other setup steps
+# Start an agent in a new worktree and Rex session
+workrex add user-auth -p "Add password reset"
 
-# 2. Manually create and configure the tmux window
-tmux new-window -n user-auth
-tmux split-window -h 'npm run dev'
-tmux send-keys -t 0 'claude' C-m
-# ... repeat for every pane in your desired layout
+# Watch every agent; Enter jumps to its session
+workrex dashboard
 
-# 3. When done, manually merge and clean everything up
-cd ../../project
-git switch main && git pull
-git merge --no-ff user-auth
-tmux kill-window -t user-auth
-git worktree remove ../worktrees/user-auth
-git branch -d user-auth
+# Merge, then remove the worktree, session, and branch
+workrex merge user-auth
 ```
 
-### With workmux
+Without workrex, the same task takes a `git worktree add`, a copy of your
+`.env`, a dependency install, a new session with the right panes, and the agent
+command typed by hand. Cleanup takes several more commands. workrex runs those
+steps from your [configuration](/guide/configuration/).
 
-```bash
-# Create the environment
-workmux add user-auth
+## How workrex uses Rex
 
-# ... work on the feature ...
+workrex detects Rex from the `$REX_BLOCK` variable that Rex sets in every pane.
+It needs no extra setup.
 
-# Merge and clean up
-workmux merge
-```
+- **One session per task.** Each worktree gets its own Rex session. To get one
+  tab per task in the current session instead, set `mode: window`.
+- **Rex.app stays where it is.** `workrex add` can run from a background agent's
+  pane, so it never switches the app. It prints how to open the new session.
+- **Status without hooks.** Agents that report Rex program status, such as
+  Claude Code, show whether they are working, waiting, or done.
+- **A floating dashboard.** With the bundled Lua file loaded, a key opens the
+  [dashboard](/guide/dashboard/) as a layer over the current tab.
 
-## Why git worktrees?
+The [Rex guide](/guide/rex/) covers each of these, and the differences from
+tmux.
 
-[Git worktrees](https://git-scm.com/docs/git-worktree) let you have multiple
-branches checked out at once in the same repository, each in a separate
-directory. This provides two main advantages over a standard single-directory
-setup:
+## What else workrex does
 
-- **Painless context switching**: Switch between tasks just by changing
-  directories (`cd ../other-branch`). There's no need to `git stash` or make
-  temporary commits. Your work-in-progress, editor state, and command history
-  remain isolated and intact for each branch.
+- Copies or symlinks files such as `.env` and `node_modules` into new worktrees,
+  and runs setup commands after creation. See
+  [Configuration](/guide/configuration/).
+- Lets an agent hand tasks to new worktrees with the
+  [`/worktree` skill](/guide/skills/#worktree).
+- Names branches from your prompt with
+  [`--auto-name`](/reference/commands/add/#automatic-branch-name-generation).
+- Runs agents in [containers or VMs](/guide/sandbox/), or on
+  [remote servers](/guide/remote/) over SSH.
+- Sends prompts to running agents and waits on them from scripts, with `send`,
+  `capture`, and `wait`. See the [command reference](/reference/commands/).
 
-- **True parallel development**: Work on multiple branches simultaneously
-  without interference. You can run builds, install dependencies
-  (`npm install`), or run tests in one worktree while actively coding in
-  another. This isolation is perfect for running multiple AI agents in parallel
-  on different tasks.
+## Why git worktrees
 
-In a standard Git setup, switching branches disrupts your flow by requiring a
-clean working tree. Worktrees remove this friction. `workmux` automates the
-entire process and pairs each worktree with a dedicated tmux window, creating
-fully isolated development environments.
+A git worktree is a second checkout of the same repository, on its own branch,
+in its own directory. Switching tasks is a `cd`, with no stash and no
+temporary commit. Two worktrees can build, install dependencies, and run tests
+at the same time without touching each other's files. That isolation lets
+several agents work on one repository at once.
 
 ## Requirements
 
-- Git 2.5+ (for worktree support)
-- tmux (or [WezTerm](/guide/wezterm/), [kitty](/guide/kitty/), or
-  [Zellij](/guide/zellij/))
+- macOS on Apple Silicon or Linux on x86_64 for the prebuilt binaries. Other
+  platforms can [build from source](/guide/installation/#build-from-source).
+- Git 2.5 or later.
+- Rex, with a server that speaks API revision 8 or 9. workrex also works with
+  tmux, [WezTerm](/guide/wezterm/), [kitty](/guide/kitty/), or
+  [Zellij](/guide/zellij/).
 
-## Inspiration and related tools
-
-workmux is inspired by [wtp](https://github.com/satococoa/wtp), an excellent git
-worktree management tool. While wtp streamlines worktree creation and setup,
-workmux takes this further by tightly coupling worktrees with tmux window
-management.
-
-For managing multiple AI agents in parallel, tools like
-[claude-squad](https://github.com/smtg-ai/claude-squad) and
-[vibe-kanban](https://github.com/BloopAI/vibe-kanban/) offer dedicated
-interfaces, like a TUI or kanban board. In contrast, workmux adheres to its
-philosophy that **tmux is the interface**, providing a native tmux experience
-for managing parallel workflows without requiring a separate interface to learn.
-
-## Related projects
-
-- [tmux-tools](https://github.com/raine/tmux-tools) - Collection of tmux
-  utilities including file picker, smart sessions, and more
-- [tmux-file-picker](https://github.com/raine/tmux-file-picker) - Pop up fzf in
-  tmux to quickly insert file paths, perfect for AI coding assistants
-- [tmux-bro](https://github.com/raine/tmux-bro) - Smart tmux session manager
-  that sets up project-specific sessions automatically
-- [claude-history](https://github.com/raine/claude-history) - Search and view
-  Claude Code conversation history with fzf
-- [consult-llm-mcp](https://github.com/raine/consult-llm-mcp) - MCP server that
-  lets Claude Code consult stronger AI models (o3, Gemini, GPT-5.1 Codex)
+To get started, [install workrex](/guide/installation/), then follow the
+[quick start](/guide/quick-start/).

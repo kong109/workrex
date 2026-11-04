@@ -339,7 +339,7 @@ verify_installation() {
 	echo "Recommended:"
 	echo "  alias wm='workrex'   # add to your shell profile for faster typing"
 	echo ""
-	echo "Documentation: https://workmux.dev"
+	echo "Documentation: https://kong109.github.io/workrex/"
 	echo ""
 }
 

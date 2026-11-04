@@ -7,8 +7,6 @@ on:
       - 'docs/**'
       - 'CHANGELOG.md'
       - '.github/workflows/docs.yml'
-  schedule:
-    - cron: '0 6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -42,8 +40,7 @@ jobs:
           bun run format:check
           bun run check
           bun run build
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          bun scripts/check-dist-links.mjs
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5

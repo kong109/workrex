@@ -2,7 +2,7 @@
  * Workmux status tracking extension for oh-my-pi.
  *
  * Reports agent status to workmux for tmux window status display.
- * See: https://workmux.dev/guide/status-tracking
+ * See: https://kong109.github.io/workrex/guide/status-tracking/
  */
 
 import { spawn } from "node:child_process";

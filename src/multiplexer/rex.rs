@@ -8,7 +8,7 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -217,9 +217,19 @@ impl ServerVersion {
 type Verdict = std::result::Result<(), String>;
 
 /// One verdict per server for the life of the process, keyed on the
-/// canonical address so every spelling of one socket shares it.
-static SERVER_VERDICTS: LazyLock<Mutex<HashMap<Option<String>, Verdict>>> =
+/// canonical address so every spelling of one socket shares it. Each server
+/// has its own lock, held while its version is checked, so a check that
+/// stalls holds up only the calls to that server.
+static SERVER_VERDICTS: LazyLock<Mutex<HashMap<Option<String>, VerdictSlot>>> =
     LazyLock::new(Default::default);
+
+/// `None` until a version check answers. A check that fails stores nothing,
+/// so the next call checks again.
+type VerdictSlot = Arc<Mutex<Option<Verdict>>>;
+
+/// Longer than rex's own 10 s request limit, so a server that never answers
+/// fails with rex's error. This bounds a `rex` process that never finishes.
+const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How long a command reuses a session list or view it already fetched. A
 /// loop that polls for a change made outside workmux sees it within this time.
@@ -625,6 +635,24 @@ fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Ve
     })
 }
 
+/// Reads `pipe` to its end on another thread. On macOS a process started
+/// on another thread can inherit the pipe's write end, which delays the end
+/// past `rex`'s exit until that process exits too. A refused thread is an
+/// error, not a panic, since callers may hold a server's verdict slot.
+fn drain(
+    pipe: Option<impl std::io::Read + Send + 'static>,
+) -> std::io::Result<mpsc::Receiver<Vec<u8>>> {
+    let (tx, rx) = mpsc::channel();
+    thread::Builder::new().spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        let _ = tx.send(bytes);
+    })?;
+    Ok(rx)
+}
+
 /// Never a real endpoint, so state written while the server is unreachable
 /// cannot be mistaken for any server's.
 const UNRESOLVED_INSTANCE: &str = "unresolved";
@@ -728,6 +756,7 @@ pub struct RexBackend {
     program: String,
     reads: Mutex<Reads>,
     reuse: Duration,
+    version_timeout: Duration,
     server: Option<String>,
     caller: Caller,
     endpoint: OnceLock<String>,
@@ -765,6 +794,7 @@ impl RexBackend {
                 .ok()
                 .and_then(|ms| ms.parse().ok())
                 .map_or(READ_REUSE, Duration::from_millis),
+            version_timeout: VERSION_CHECK_TIMEOUT,
             server,
             caller: Caller::from_env(),
             endpoint: OnceLock::new(),
@@ -822,15 +852,16 @@ impl RexBackend {
     /// Fails every call on a server whose API this backend does not speak,
     /// before a changed response shape surfaces as a parse error.
     fn ensure_supported(&self) -> CallResult<()> {
-        let key = self.verdict_key();
-        let mut verdicts = SERVER_VERDICTS.lock().unwrap();
-        let verdict = match verdicts.get(&key) {
+        let slot = self.verdict_slot();
+        // Concurrent first calls to one server wait here for one check.
+        let mut known = slot.lock().unwrap();
+        let verdict = match known.as_ref() {
             Some(verdict) => verdict.clone(),
             None => {
-                let output = self.exec(&["api", "call", "server.version"], None)?;
+                let check = ["api", "call", "server.version"];
+                let output = self.exec_within(&check, None, Some(self.version_timeout), &check)?;
                 let verdict = Self::parse::<ServerVersion>("server.version", &output)?.check();
-                verdicts.insert(key, verdict.clone());
-                verdict
+                known.insert(verdict).clone()
             }
         };
         verdict.map_err(CallError::Unsupported)
@@ -838,11 +869,21 @@ impl RexBackend {
 
     /// Why this server's API is unsupported, once a call has found it so.
     pub fn unsupported(&self) -> Option<String> {
+        self.verdict_slot()
+            .lock()
+            .unwrap()
+            .clone()
+            .and_then(Result::err)
+    }
+
+    fn verdict_slot(&self) -> VerdictSlot {
+        let key = self.verdict_key();
         SERVER_VERDICTS
             .lock()
             .unwrap()
-            .get(&self.verdict_key())
-            .and_then(|verdict| verdict.clone().err())
+            .entry(key)
+            .or_default()
+            .clone()
     }
 
     fn verdict_key(&self) -> Option<String> {
@@ -855,10 +896,7 @@ impl RexBackend {
     /// so later calls skip their own check.
     fn record_verdict(&self, version: &ServerVersion) -> CallResult<()> {
         let verdict = version.check();
-        SERVER_VERDICTS
-            .lock()
-            .unwrap()
-            .insert(self.verdict_key(), verdict.clone());
+        *self.verdict_slot().lock().unwrap() = Some(verdict.clone());
         verdict.map_err(CallError::Unsupported)
     }
 
@@ -947,29 +985,55 @@ impl RexBackend {
                 .context("Failed to write rex input")
                 .map_err(CallError::Failed)?;
         }
-        if let Some(timeout) = timeout {
-            let deadline = std::time::Instant::now() + timeout;
-            while child
+        let Some(timeout) = timeout else {
+            return child
+                .wait_with_output()
+                .context("Failed to wait for rex")
+                .map_err(CallError::Failed);
+        };
+        let deadline = Instant::now() + timeout;
+        let late = || {
+            CallError::Failed(anyhow!(
+                "rex {} gave no answer within {timeout:?}",
+                args.join(" ")
+            ))
+        };
+        let drains =
+            drain(child.stdout.take()).and_then(|out| Ok((out, drain(child.stderr.take())?)));
+        let (stdout, stderr) = match drains {
+            Ok(drains) => drains,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(CallError::Failed(
+                    anyhow!(error).context("Failed to read rex output"),
+                ));
+            }
+        };
+        let status = loop {
+            if let Some(status) = child
                 .try_wait()
                 .context("Failed to wait for rex")
                 .map_err(CallError::Failed)?
-                .is_none()
             {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(CallError::Failed(anyhow!(
-                        "rex {} gave no answer within {timeout:?}",
-                        args.join(" ")
-                    )));
-                }
-                thread::sleep(Duration::from_millis(5));
+                break status;
             }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(late());
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        let left = || deadline.saturating_duration_since(Instant::now());
+        match (stdout.recv_timeout(left()), stderr.recv_timeout(left())) {
+            (Ok(stdout), Ok(stderr)) => Ok(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            }),
+            _ => Err(late()),
         }
-        child
-            .wait_with_output()
-            .context("Failed to wait for rex")
-            .map_err(CallError::Failed)
     }
 
     fn block_layout(&self, cwd: &Path, script: Option<&str>) -> Result<Value> {
@@ -3588,6 +3652,100 @@ mod tests {
             rex.sessions().unwrap();
         }
         assert_eq!(fake.calls("server.version").len(), 1);
+    }
+
+    const STALLED_VERSION: &str = r#"$touch "$dir/started"; while [ ! -e "$dir/release" ]; do sleep 0.01; done; touch "$dir/answered"; echo '{"rex_version":"t","api_revision":8}'"#;
+
+    #[test]
+    fn a_stalled_version_check_holds_up_no_other_server() {
+        let mut stalled = FakeRex::new(&[("server.version", STALLED_VERSION)]);
+        // Only the release ends the check, so the wait below cannot outlast it.
+        stalled.rex.version_timeout = Duration::from_secs(3600);
+        let other = FakeRex::new(&[("session.list", &session_list(&[]))]);
+        thread::scope(|scope| {
+            scope.spawn(|| stalled.rex.sessions());
+            stalled.wait_for("started");
+            let (answered, answer) = mpsc::channel();
+            scope.spawn(move || answered.send(other.rex.sessions().is_ok()));
+            let answer = answer.recv_timeout(Duration::from_secs(20));
+            stalled.write("release", "");
+            assert_eq!(answer, Ok(true), "the other server's call waited");
+        });
+    }
+
+    #[test]
+    fn a_version_check_that_times_out_is_made_again() {
+        let mut fake = FakeRex::new(&[
+            ("server.version", STALLED_VERSION),
+            ("session.list", &session_list(&[])),
+        ]);
+        fake.rex.version_timeout = Duration::from_millis(200);
+        let rex = &fake.rex;
+        let first = thread::scope(|scope| {
+            let (answered, answer) = mpsc::channel();
+            scope.spawn(move || answered.send(rex.sessions().map(|_| ())));
+            let answer = answer.recv_timeout(Duration::from_secs(20));
+            fake.write("release", "");
+            answer
+        });
+        let error = first.expect("the check outlived its timeout").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("server.version gave no answer within"),
+            "{error:#}"
+        );
+        fake.rex.sessions().unwrap();
+        assert!(fake.dir.path().join("answered").exists());
+    }
+
+    #[test]
+    fn a_version_check_ends_at_its_timeout_while_its_output_stays_open() {
+        let mut fake = FakeRex::new(&[(
+            "server.version",
+            r#"$sleep 60 & echo $! > "$dir/holder"; echo '{"rex_version":"t","api_revision":8}'"#,
+        )]);
+        fake.rex.version_timeout = Duration::from_secs(1);
+        let started = Instant::now();
+        let error = fake.rex.sessions().unwrap_err();
+        let took = started.elapsed();
+        if let Ok(holder) = std::fs::read_to_string(fake.dir.path().join("holder")) {
+            Command::new("kill").arg(holder.trim()).status().unwrap();
+        }
+        assert!(
+            format!("{error:#}").contains("server.version gave no answer within"),
+            "{error:#}"
+        );
+        assert!(
+            took < Duration::from_secs(10),
+            "the check outlived its timeout: {took:?}"
+        );
+    }
+
+    #[test]
+    fn concurrent_first_calls_to_one_server_share_one_version_check() {
+        let fake = FakeRex::new(&[
+            ("server.version", STALLED_VERSION),
+            ("session.list", &session_list(&[])),
+        ]);
+        thread::scope(|scope| {
+            let first = scope.spawn(|| fake.rex.sessions().map(|_| ()));
+            fake.wait_for("started");
+            let second = scope.spawn(|| fake.rex.sessions().map(|_| ()));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline && fake.calls("server.version").len() < 2 {
+                thread::sleep(Duration::from_millis(10));
+            }
+            let checks = fake.calls("server.version").len();
+            fake.write("release", "");
+            first.join().unwrap().unwrap();
+            second.join().unwrap().unwrap();
+            assert_eq!(checks, 1, "the second caller ran its own check");
+        });
+        assert_eq!(fake.calls("server.version").len(), 1);
+    }
+
+    #[test]
+    fn a_version_check_outlasts_rexs_own_request_limit() {
+        assert_eq!(RexBackend::new().version_timeout, Duration::from_secs(15));
     }
 
     const SESSION_VIEW: [&str; 4] = ["api", "call", "session.view", "-"];

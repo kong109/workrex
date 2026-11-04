@@ -1,10 +1,12 @@
 ---
 import SocialIcons from '@astrojs/starlight/components/SocialIcons.astro';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 ---
 
-<a class="header-link docs-link" href="/guide/">Docs</a>
-<a class="header-link" href="/changelog/">Changelog</a>
-<a class="header-link" href="/llms.txt">LLMs</a>
+<a class="header-link docs-link" href={`${base}/guide/`}>Docs</a>
+<a class="header-link" href={`${base}/changelog/`}>Changelog</a>
+<a class="header-link" href={`${base}/llms.txt`}>LLMs</a>
 <span class="github-link"><SocialIcons /></span>
 
 <style>

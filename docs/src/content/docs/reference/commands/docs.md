@@ -1,35 +1,31 @@
 ---
 title: "docs"
-description: Display the README with terminal formatting
+description: Show the README of the installed workrex in the terminal
 ---
 
-Displays the README with terminal formatting. Useful for quick reference without leaving the terminal.
+Shows the README that was built into the installed `workrex` binary, so it
+always matches the version you run.
 
 ```bash
-workmux docs
+workrex docs
 ```
 
-When run interactively, renders markdown with colors and uses a pager (`less`). When piped (e.g., to an LLM), outputs raw markdown for clean context.
+When standard output is a terminal, `workrex docs` renders the Markdown with
+colors and opens it in `$PAGER`, or `less -R` when `$PAGER` is not set. When
+output goes to a pipe or a file, it prints the raw Markdown, which suits an
+agent's context.
 
-## Using with AI agents
+## Use with an agent
 
-You can ask an agent to read the docs and configure workmux for you:
+To have an agent configure workrex for you, ask it to read the docs first:
 
+```text
+> run `workrex docs` and write a .workmux.yaml with the agent in the left pane,
+  and neovim above an empty shell on the right
 ```
-> run `workmux docs` and configure workmux so that on the left pane
-  there is claude as agent, and on the right side neovim and empty
-  shell on top of each other
 
-⏺ Bash(workmux docs)
-  ⎿  <p align="center">
-       <picture>
-     … +923 lines
+The agent reads the raw Markdown from the command's output and writes the
+project's `.workmux.yaml`.
 
-⏺ Write(.workmux.yaml)
-  ⎿  Wrote 9 lines to .workmux.yaml
-
-⏺ Created .workmux.yaml with the layout:
-  - Left: claude agent (focused)
-  - Right top: neovim
-  - Right bottom: empty shell
-```
+The project file keeps its workmux name, so existing workmux configs work. See
+[Configuration](/guide/configuration/).

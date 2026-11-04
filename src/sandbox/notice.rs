@@ -5,7 +5,7 @@ use std::path::Path;
 use console::style;
 
 const NOTICE_VERSION: &str = "security-boundary-v1";
-const DOCS_URL: &str = "https://workmux.dev/guide/sandbox/#security-model";
+const DOCS_URL: &str = "https://kong109.github.io/workrex/guide/sandbox/#security-model";
 
 /// Show the sandbox boundary notice once during an interactive invocation.
 pub(crate) fn show_once() {
