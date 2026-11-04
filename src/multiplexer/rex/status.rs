@@ -453,6 +453,21 @@ mod tests {
     }
 
     #[test]
+    fn a_read_across_its_own_blocks_process_change_is_not_kept() {
+        let statuses = ProgramStatuses::default();
+        statuses.follow(true);
+        let block = BlockId("block:1".into());
+        let reading = statuses.begin(Read::Look);
+        statuses.apply(&block_event("process_changed", "block:1"));
+        statuses.keep(&block, reading, recorded(working()));
+        assert_eq!(
+            statuses.get(&block),
+            None,
+            "the read may have seen the foreground before the change"
+        );
+    }
+
+    #[test]
     fn a_read_across_a_drop_or_a_change_of_stream_is_not_kept() {
         let statuses = ProgramStatuses::default();
         let block = BlockId("block:1".into());

@@ -508,6 +508,33 @@ mod tests {
     const SIDEBAR: &str = "block:01a19e93-b76d-7c44-9a83-651cbd8da21e";
 
     #[test]
+    fn the_daemon_starts_with_the_windows_the_server_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let view = dir.path().join("view");
+        std::fs::write(&view, WITH_SIDEBAR).unwrap();
+        let rex = RexBackend::scripted(
+            dir.path(),
+            format!(
+                "cat > /dev/null\ncase \"$*\" in\n\
+                 \x20 *server.version*) echo '{{\"rex_version\":\"t\",\"api_revision\":8}}';;\n\
+                 \x20 *session.list*) echo '{{\"sessions\":[{{\"session_id\":\"{SESSION}\"}}]}}';;\n\
+                 \x20 *session.view*) cat '{}';;\n\
+                 \x20 *) exit 1;;\nesac\n",
+                view.display(),
+            ),
+        );
+        let files = Files::at(dir.path().join("state"), "test");
+        let (_plane, observed) = rex.daemon_parts(&files, Config::default()).unwrap();
+        assert_eq!(
+            observed.window_ids(),
+            std::collections::HashSet::from([
+                "window:01a19e92-e5ba-7c40-bd4e-37d60b3ba9bb".to_string()
+            ]),
+            "the first tick sees the server's windows"
+        );
+    }
+
+    #[test]
     fn the_daemon_keeps_each_status_its_follower_has_not_dropped() {
         use crate::multiplexer::rex::events::Event;
         use crate::multiplexer::{AgentStatus, ReportedStatus};
