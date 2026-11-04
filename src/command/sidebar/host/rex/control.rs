@@ -408,8 +408,17 @@ impl Plane {
                 .unwrap_or(record.window_cols);
             let cols = observed_cols.unwrap_or(record.last_cols);
             let target = self.target(window_cols, synced);
-            let action = size::decide(&record, root.ratio, cols, window_cols, target, configured);
             let record = records.get_mut(&window_id).expect("record exists");
+            let panes_changed = size::note_panes(record, window, unix_ms());
+            let action = size::decide(
+                record,
+                root.ratio,
+                cols,
+                window_cols,
+                target,
+                configured,
+                panes_changed,
+            );
             record.window_cols = window_cols;
             match action {
                 SizeAction::Keep => record.last_cols = cols,
@@ -471,6 +480,9 @@ impl Plane {
         let created =
             self.rex
                 .new_sidebar_split(session_id, anchor, ratio, &self.cwd, &self.command)?;
+        // Rex keeps the ratio the sidebar's split is created with, so placing
+        // the sidebar is not a pane change.
+        let panes = size::panes(window, Some(&created.block_id));
         Ok(Some(WindowSidebar {
             session_id: session_id.to_string(),
             window_id: window.window_id.clone(),
@@ -479,6 +491,8 @@ impl Plane {
             applied_ratio: ratio,
             last_cols: u32::from(target),
             window_cols,
+            panes,
+            panes_changed_ms: 0,
         }))
     }
 
@@ -505,6 +519,12 @@ impl Plane {
         }
         Some(view)
     }
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
 }
 
 fn persist_width(cols: u16) -> Result<()> {

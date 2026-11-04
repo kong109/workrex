@@ -929,3 +929,34 @@ def test_a_balance_for_fewer_panes_is_not_a_drag(rex):
     )
     now = placed_sidebar(windows(env, env.session_id)[window_id])["ratio"]
     assert width is None and abs(now - applied) < 0.02, (width, applied, now)
+
+
+def test_a_keyboard_step_onto_an_even_share_is_saved(rex):
+    """Rex's pane.resize moves the ratio by 0.05, so a press can land on 1/5
+    or 1/20 with no pane opened or closed. That is the user's width."""
+    env = rex
+    cli(env, "on")
+    assert poll_until(lambda: all_have_sidebars(env, env.session_id), timeout=2)
+    [window_id] = list(windows(env, env.session_id))
+    settings = env.home_path / ".local/state/workmux/settings.json"
+
+    def saved() -> Optional[int]:
+        if not settings.exists():
+            return None
+        return json.loads(settings.read_text()).get("sidebar_width")
+
+    for ratio, cols in [(0.2, 16), (0.05, 4)]:
+        side = placed_sidebar(windows(env, env.session_id)[window_id])
+        env.api(
+            "session.resize_pane",
+            {
+                "session_id": env.session_id,
+                "direction": "horizontal",
+                "before_block_id": side["block_id"],
+                "after_block_id": first_block(side["split"]["after"]),
+                "ratio": ratio,
+            },
+        )
+        assert poll_until(lambda: saved() == cols, timeout=2), (ratio, saved())
+        now = placed_sidebar(windows(env, env.session_id)[window_id])["ratio"]
+        assert abs(now - ratio) < 0.01, (ratio, now)
