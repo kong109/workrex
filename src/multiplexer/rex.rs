@@ -3584,7 +3584,9 @@ mod tests {
 
     #[test]
     fn a_stalled_version_check_holds_up_no_other_server() {
-        let stalled = FakeRex::new(&[("server.version", STALLED_VERSION)]);
+        let mut stalled = FakeRex::new(&[("server.version", STALLED_VERSION)]);
+        // Only the release ends the check, so the wait below cannot outlast it.
+        stalled.rex.version_timeout = Duration::from_secs(3600);
         let other = FakeRex::new(&[("session.list", &session_list(&[]))]);
         thread::scope(|scope| {
             scope.spawn(|| stalled.rex.sessions());
