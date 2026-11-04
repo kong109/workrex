@@ -3,7 +3,7 @@ title: "last-agent"
 description: Switch back to the agent you visited last
 ---
 
-Switches to the agent pane you visited before the current one. Run it again to switch back, so it toggles between two agents.
+Switches to the pane you were in before your last jump from `workrex dashboard` or `last-agent`. Run it again to switch back, so it toggles between two panes.
 
 This is a hidden command (not shown in `--help`), typically bound to a key.
 
@@ -28,7 +28,7 @@ bind Tab run-shell "workrex last-agent"
 
 ## Under Rex
 
-Under [Rex](/guide/rex/), `last-agent` moves Rex.app to the target. It asks the Rex.app client that owns your pane, and it needs Remote Control, which you turn on in Rex Settings. Without it, `last-agent` prints `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings.` once.
+Under [Rex](/guide/rex/), `last-agent` moves Rex.app to the target. It asks the Rex.app client that owns your pane, and it needs Remote Control, which you turn on in Rex Settings. Without it, `last-agent` prints `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings.` and then `Failed to switch to last agent`.
 
 ## Related
 

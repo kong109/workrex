@@ -3,7 +3,7 @@ title: "wait"
 description: Block until agents reach a target status
 ---
 
-Blocks until the agents in the given worktrees reach a status. By default it waits until every agent is `done`.
+Blocks until the agents in the given worktrees reach a status. By default it waits until each worktree has an agent that is `done`.
 
 ```bash
 workrex wait <worktree>... [--status <status>] [--timeout <seconds>] [--any]
@@ -25,11 +25,11 @@ workrex wait <worktree>... [--status <status>] [--timeout <seconds>] [--any]
 
 ## Exit status
 
-| Status | Meaning                                                                  |
-| ------ | ------------------------------------------------------------------------ |
-| `0`    | The worktrees reached the status.                                        |
-| `1`    | The timeout passed. `wait` names the worktrees it was still waiting for. |
-| `3`    | An agent that was running stopped while its worktree still exists.       |
+| Status | Meaning                                                                                                                                           |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`    | The worktrees reached the status.                                                                                                                 |
+| `1`    | The timeout passed, and `wait` names the worktrees it was still waiting for. `wait` also exits with `1` on an error, such as an unknown worktree. |
+| `3`    | An agent that was running stopped while its worktree still exists.                                                                                |
 
 `wait` keeps waiting for an agent that has not started yet. Use `--timeout` to bound that.
 

@@ -49,7 +49,7 @@ Git repository and only provides conservative evidence for tmux placement.
 
 ## Under Rex
 
-Under [Rex](/guide/rex/), each worktree opens in its own Rex session unless you set `mode: window` or pass `--mode window`. `open` makes the window or session active in Rex, but it never moves Rex.app. Open the tab in the app yourself, or press Enter on the worktree's row in [`workrex dashboard`](/reference/commands/dashboard/). `--new` needs window mode, as under tmux.
+Under [Rex](/guide/rex/), `open` uses the mode the worktree was created or last opened with. A worktree with no stored mode opens in its own Rex session unless you set `mode: window` or pass `--mode window`. `open` makes the window or session active in Rex, but it never moves Rex.app. Open the tab in the app yourself, or press Enter on the worktree's row in [`workrex dashboard`](/reference/commands/dashboard/). `--new` needs window mode, as under tmux.
 
 ## Remote workspaces
 

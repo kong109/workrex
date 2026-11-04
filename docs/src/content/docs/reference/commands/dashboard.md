@@ -37,7 +37,7 @@ workrex dashboard --tab worktrees
 
 ## Under Rex
 
-Under [Rex](/guide/rex/), choosing an agent moves Rex.app to the agent's tab and focuses its block. The jump asks the Rex.app client that owns your pane, and it needs Remote Control, which you turn on in Rex Settings. Without it, the dashboard stays open and shows the fix in its footer. Enter on a worktree row moves Rex.app to that worktree's session.
+Under [Rex](/guide/rex/), choosing an agent moves Rex.app to the agent's tab and focuses its block. The jump asks the Rex.app client that owns your pane, and it needs Remote Control, which you turn on in Rex Settings. Without it, the dashboard stays open and shows the fix in its footer. Enter on a worktree row moves Rex.app to the worktree's agent, or in session mode to the worktree's session. A window-mode worktree with no agent is opened but Rex.app does not move.
 
 To open the dashboard in a floating layer over the current tab, the Rex counterpart of a tmux popup, load `resources/rex/workrex.lua` from your Rex `init.lua`. The layer binds `Shift+Cmd+D` and passes its `args` to `workrex dashboard`. See [Rex dashboard](/guide/rex/#dashboard) for the setup.
 

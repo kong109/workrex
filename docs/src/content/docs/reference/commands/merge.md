@@ -24,7 +24,7 @@ If your workflow uses pull requests, the merge happens on the remote after revie
 | Flag                   | Description                                                                                                                                                                                                                                              |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--into <branch>`      | Merge into the specified branch instead of main. Useful for stacked PRs, git-flow workflows, or merging subtasks into a parent feature branch. If the target branch has its own worktree, the merge happens there; otherwise, the main worktree is used. |
-| `--ignore-uncommitted` | Commit any staged changes before merging without opening an editor.                                                                                                                                                                                      |
+| `--ignore-uncommitted` | Merge even when the worktree has unstaged, untracked or staged changes. `merge` does not commit the staged changes.                                                                                                                                      |
 | `--keep, -k`           | Keep the worktree, window, and branch after merging (skip cleanup). Useful when you want to verify the merge before cleaning up.                                                                                                                         |
 | `--cleanup`            | Clean up after merging, overriding `merge_keep: true`.                                                                                                                                                                                                   |
 | `-n, --no-verify`      | Skip the `pre_merge` hooks.                                                                                                                                                                                                                              |
@@ -76,7 +76,7 @@ See [merging remote workspaces](/guide/remote/git/#merging) for preparing the me
 
 ## Under Rex
 
-When `merge` closes a Rex session that Rex.app shows, the app moves to the first of these sessions that exists: the managed session of the merge target, then [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session the worktree was added from. Without a destination, the app lands on the first session. An app that shows another session stays where it is. Closing a session does not need Rex Remote Control. See [Rex session mode](/guide/rex/#session-mode).
+When `merge` closes a Rex session that Rex.app shows, the app moves to the first of these sessions that exists: the managed session of the merge target, then [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session that `add` or `open` ran in when it created the worktree's session. Without a destination, the app lands on the first session. An app that shows another session stays where it is. Closing a session does not need Rex Remote Control. See [Rex session mode](/guide/rex/#session-mode).
 
 ## Typical workflow
 

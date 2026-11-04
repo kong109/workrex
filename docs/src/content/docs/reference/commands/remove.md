@@ -66,7 +66,7 @@ In a remote workspace's pane, or from its agent, `workrex rm` asks the local mac
 
 ## Under Rex
 
-When `remove` closes a Rex session that Rex.app shows, the app moves to the first of these sessions that exists: [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session the worktree was added from. Without a destination, the app lands on the first session. An app that shows another session stays where it is. Closing a session does not need Rex Remote Control. See [Rex session mode](/guide/rex/#session-mode).
+When `remove` closes a Rex session that Rex.app shows, the app moves to the first of these sessions that exists: the managed session of the main branch, then [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session that `add` or `open` ran in when it created the worktree's session. Without a destination, the app lands on the first session. An app that shows another session stays where it is. Closing a session does not need Rex Remote Control. See [Rex session mode](/guide/rex/#session-mode).
 
 ## Deferred filesystem cleanup
 

@@ -3,7 +3,7 @@ title: "send"
 description: Send a prompt or instruction to a running agent
 ---
 
-Sends text to the agent running in a worktree, as if you typed it into the agent's pane.
+Sends text to the agent running in a worktree and presses Enter, as if you typed it into the agent's pane.
 
 ```bash
 workrex send <name> [text]
@@ -25,7 +25,7 @@ workrex send <name> --file <file>
 
 For a workspace on a [remote server](/guide/remote/), `send` delivers the text to the remote agent. See [commands on remote workspaces](/guide/remote/usage/#commands-on-remote-workspaces).
 
-Under [Rex](/guide/rex/), `send` delivers the text as a paste event, bracketed when the agent needs it. tmux uses a paste buffer.
+`send` types single-line text into the pane. Multiline text, and all text for Codex, goes in as a paste. Under [Rex](/guide/rex/), a paste is a Rex paste event, which Rex brackets when the agent turned on bracketed paste. tmux pastes through a paste buffer.
 
 ## Examples
 

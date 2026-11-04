@@ -28,7 +28,7 @@ workrex run <name> [options] -- <command>...
 2. Splits that pane vertically and gives the new pane 30% of the space.
 3. Runs the command in the new pane, in the worktree's directory.
 4. Streams the command's stdout and stderr to your terminal, unless you pass `--background`.
-5. Exits with the command's exit status, then deletes the artifacts unless you pass `--keep`.
+5. Deletes the artifacts unless you pass `--keep`, then exits with the command's exit status. With `--background`, `run` does not delete the artifacts.
 
 Under [Rex](/guide/rex/), the new pane is a Rex block in the agent's window.
 
