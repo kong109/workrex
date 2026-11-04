@@ -30,7 +30,28 @@
         ]
       }
     ],
+    "ToolUseStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "workmux set-window-status working",
+            "async": true
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "workmux set-window-status working"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
       {
         "hooks": [
           {

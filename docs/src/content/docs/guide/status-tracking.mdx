@@ -217,9 +217,11 @@ Muse runs hooks from its `settings.json` with most environment variables removed
 - `managed_hooks_path` names the hooks file.
 - `managed_hooks_env_vars` lists the multiplexer, `WORKMUX_*` and XDG variables that the hooks need.
 
+Setup records the variable names it adds in `workrex-env-vars.json` in the same directory. `workrex uninstall` removes the hooks file, `managed_hooks_path`, and only the names in that record, so names you listed before setup stay.
+
 If `settings.json` already sets `managed_hooks_path` to another file, setup changes nothing and reports the conflict. Add the hooks from [`resources/muse/workmux-status.json`](https://github.com/kong109/workrex/blob/main/resources/muse/workmux-status.json) to that file, with the command renamed to `workrex`.
 
-`UserPromptSubmit` and `PostToolUse` mark the pane working, `Notification` marks it waiting, and `Stop`, `Interrupt` or `SessionEnd` marks it done. Muse sends `Notification` only while a permission prompt is still unanswered a few seconds after it opens. A shell command you run with `!` does not change the status.
+`UserPromptSubmit`, `ToolUseStart`, `PostToolUse` and `PostToolUseFailure` mark the pane working, `Notification` marks it waiting, and `Stop`, `Interrupt` or `SessionEnd` marks it done. Muse sends `Notification` only while a permission prompt or a question is still unanswered a few seconds after it opens. A shell command you run with `!` does not change the status, and neither does an event that Muse marks as sent after the turn ended.
 
 Muse loads hooks when it starts, so restart running `muse` sessions after setup.
 

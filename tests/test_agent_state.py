@@ -1007,3 +1007,83 @@ def test_status_update_overwrites_state(
     assert len(state_files) == 1, (
         f"Expected 1 state file after update, got {len(state_files)}"
     )
+
+
+@pytest.mark.tmux_only
+def test_set_window_status_ignores_muse_events_outside_a_turn(
+    mux_server: TmuxEnvironment, workmux_exe_path: Path, mux_repo_path: Path
+):
+    """Muse fires tool events for a `!cmd` and after a turn's Stop."""
+    env = mux_server
+    branch_name = "feature-status-muse-stale"
+    window_name = get_window_name(branch_name)
+    write_workmux_config(mux_repo_path, panes=[{"focus": True}])
+    run_workmux_add(env, workmux_exe_path, mux_repo_path, branch_name)
+    wait_for_window_ready(env, window_name)
+
+    pane_id = env.tmux(
+        ["list-panes", "-t", window_name, "-F", "#{pane_id}"]
+    ).stdout.strip()
+    target_env = env.env.copy()
+    target_env.pop("TMUX", None)
+    target_env.pop("TMUX_PANE", None)
+    target_env.update(
+        {
+            "WORKMUX_STATUS_BACKEND": "tmux",
+            "WORKMUX_STATUS_INSTANCE": str(env.socket_path),
+            "WORKMUX_STATUS_PANE_ID": pane_id,
+        }
+    )
+    muse_env = {**target_env, "MUSE_SESSION_ID": "s"}
+
+    def run_status(status: str, hook: dict, run_env: dict = muse_env) -> None:
+        result = subprocess.run(
+            [str(workmux_exe_path), "set-window-status", status],
+            cwd=get_worktree_path(mux_repo_path, branch_name),
+            env=run_env,
+            input=json.dumps(hook),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def status() -> str | None:
+        files = list_agent_state_files(env)
+        return read_agent_state(files[0])["status"] if files else None
+
+    def assert_stays(expected: str) -> None:
+        time.sleep(0.5)
+        assert status() == expected
+
+    run_status("done", {"hook_event_name": "Stop", "session_id": "s"})
+    assert poll_until(lambda: status() == "done", timeout=5.0)
+
+    user_shell = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "shell",
+        "tool_use_id": "user_shell_01a1a5bb-a828-71b0-acf7-d5b3f6964050",
+        "session_id": "s",
+    }
+    run_status("working", user_shell)
+    assert_stays("done")
+
+    late_tool = {**user_shell, "tool_use_id": "call_01a1a5bb", "post_stop": True}
+    run_status("working", late_tool)
+    assert_stays("done")
+
+    # A Notification after Stop is a pending approval.
+    run_status(
+        "waiting",
+        {"hook_event_name": "Notification", "session_id": "s", "post_stop": True},
+    )
+    assert poll_until(lambda: status() == "waiting", timeout=5.0)
+
+    run_status("working", {**late_tool, "post_stop": False})
+    assert poll_until(lambda: status() == "working", timeout=5.0)
+
+    run_status("done", {"hook_event_name": "Stop", "session_id": "s"})
+    assert poll_until(lambda: status() == "done", timeout=5.0)
+    # Outside Muse the user_shell_ prefix means nothing.
+    run_status("working", user_shell, target_env)
+    assert poll_until(lambda: status() == "working", timeout=5.0)
