@@ -106,6 +106,10 @@ pub(super) struct WindowSidebar {
     pub applied_ratio: f64,
     pub last_cols: u32,
     pub window_cols: u32,
+    /// An older sidebar block in the window that failed to close. The next
+    /// pass closes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stray: Option<String>,
 }
 
 pub(super) type Records = BTreeMap<String, WindowSidebar>;
@@ -264,6 +268,7 @@ mod tests {
             applied_ratio: 0.18,
             last_cols: 30,
             window_cols: 166,
+            stray: None,
         }
     }
 

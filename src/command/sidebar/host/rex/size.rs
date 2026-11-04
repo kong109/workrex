@@ -91,6 +91,7 @@ mod tests {
             applied_ratio,
             last_cols: 30,
             window_cols: 218,
+            stray: None,
         }
     }
 
