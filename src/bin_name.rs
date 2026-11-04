@@ -277,6 +277,7 @@ pub fn upstream_hook_files(agent: Agent) -> Vec<PathBuf> {
         Agent::Antigravity => vec![antigravity::hooks_path()],
         Agent::Copilot => vec![copilot::copilot_dir().map(|d| d.join("hooks/workmux-status.json"))],
         Agent::Grok => vec![grok::hooks_dir().map(|d| d.join("workmux-status.json"))],
+        Agent::Muse => vec![],
         Agent::Pi => vec![ext(pi::extension_path())],
         Agent::Omp => vec![ext(omp::extension_path())],
         Agent::OpenCode => [

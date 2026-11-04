@@ -90,6 +90,9 @@ pub fn run(cmd: SetWindowStatusCommand) -> Result<()> {
 
     let config = Config::load(None)?;
     let hook = read_hook_input();
+    if hook.as_ref().is_some_and(HookInput::is_user_shell) {
+        return Ok(());
+    }
     run_for_status_target(hook.as_ref(), |mux, pane_id| {
         apply_status_update(
             &cmd,
@@ -331,6 +334,8 @@ struct HookInput {
         deserialize_with = "lenient_string"
     )]
     initial_prompt: Option<String>,
+    #[serde(default, deserialize_with = "lenient_string")]
+    tool_use_id: Option<String>,
 }
 
 fn lenient_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -367,6 +372,14 @@ impl HookInput {
             return None;
         }
         value.as_deref()
+    }
+
+    /// Muse reports a shell command the user runs with `!` as a tool use,
+    /// outside any turn, so no later event would reset its status.
+    fn is_user_shell(&self) -> bool {
+        self.tool_use_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("user_shell_"))
     }
 
     fn transcript_path(&self) -> Option<&Path> {
@@ -853,6 +866,26 @@ mod tests {
     }
 
     #[test]
+    fn muse_user_shell_commands_are_not_agent_work() {
+        let bang = parse_hook_input(
+            r#"{"hook_event_name":"PostToolUse","tool_name":"shell","tool_input":{"command":"true"},"tool_use_id":"user_shell_01a1a592-fd1e-7760-aeb1-941b77ee4599","session_id":"01a1a592-c141-7850-a3bc-4ce8f1634b27"}"#,
+        )
+        .unwrap();
+        assert!(bang.is_user_shell());
+
+        let model_tool = parse_hook_input(
+            r#"{"hook_event_name":"PostToolUse","tool_name":"shell","tool_use_id":"call_01a1a592","session_id":"s"}"#,
+        )
+        .unwrap();
+        assert!(!model_tool.is_user_shell());
+
+        let prompt = parse_hook_input(r#"{"session_id":"s","prompt":"hi"}"#).unwrap();
+        assert!(!prompt.is_user_shell());
+        let malformed = parse_hook_input(r#"{"session_id":"s","tool_use_id":7}"#).unwrap();
+        assert!(!malformed.is_user_shell());
+    }
+
+    #[test]
     fn malformed_prompt_fields_do_not_break_session_binding() {
         let hook =
             parse_hook_input(r#"{"session_id":"s","prompt":["text"],"agent_id":7}"#).unwrap();
@@ -1156,6 +1189,7 @@ mod tests {
             agent_id: None,
             subagent_type: None,
             initial_prompt: None,
+            tool_use_id: None,
         };
 
         assert!(continuation_owns_ancestry_pane(
@@ -1180,6 +1214,7 @@ mod tests {
             agent_id: None,
             subagent_type: None,
             initial_prompt: None,
+            tool_use_id: None,
         };
         assert!(!continuation_owns_ancestry_pane(
             &agents,

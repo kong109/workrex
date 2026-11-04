@@ -13,6 +13,7 @@ pub mod gemini;
 pub mod grok;
 pub mod hooks;
 pub mod json_config;
+pub mod muse;
 pub mod omp;
 pub mod opencode;
 pub mod pi;
@@ -39,6 +40,7 @@ pub enum Agent {
     Copilot,
     Gemini,
     Grok,
+    Muse,
     OpenCode,
     Pi,
     #[serde(rename = "omp")]
@@ -54,6 +56,7 @@ impl Agent {
             Agent::Copilot => "Copilot CLI",
             Agent::Gemini => "Gemini CLI",
             Agent::Grok => "Grok",
+            Agent::Muse => "Muse Code",
             Agent::OpenCode => "OpenCode",
             Agent::Pi => "pi",
             Agent::Omp => "Oh My Pi",
@@ -70,6 +73,7 @@ impl Agent {
             Agent::Copilot,
             Agent::Gemini,
             Agent::Grok,
+            Agent::Muse,
             Agent::OpenCode,
             Agent::Pi,
             Agent::Omp,
@@ -112,6 +116,7 @@ pub(crate) fn print_update_diff(agent: Agent) {
         Agent::Copilot => copilot::update_preview(),
         Agent::Gemini => gemini::update_preview(),
         Agent::Grok => grok::update_preview(),
+        Agent::Muse => muse::update_preview(),
         Agent::OpenCode => opencode::update_preview(),
         Agent::Pi => pi::update_preview(),
         Agent::Omp => omp::update_preview(),
@@ -330,6 +335,18 @@ fn check_all_with_opencode_check(check_opencode: fn() -> Result<StatusCheck>) ->
         });
     }
 
+    if let Some(reason) = muse::detect() {
+        let status = match muse::check() {
+            Ok(s) => s,
+            Err(e) => StatusCheck::Error(e.to_string()),
+        };
+        results.push(AgentCheck {
+            agent: Agent::Muse,
+            reason,
+            status,
+        });
+    }
+
     let pi_detected = pi::detect();
     if let Some(reason) = pi_detected {
         let status = match pi::check() {
@@ -385,6 +402,7 @@ pub fn install(agent: Agent) -> Result<String> {
         Agent::Copilot => copilot::install(),
         Agent::Gemini => gemini::install(),
         Agent::Grok => grok::install(),
+        Agent::Muse => muse::install(),
         Agent::OpenCode => opencode::install(),
         Agent::Pi => pi::install(),
         Agent::Omp => omp::install(),
@@ -402,7 +420,7 @@ pub fn check_in(agent: Agent, dir: &Path) -> Result<StatusCheck> {
         Agent::Gemini => gemini::check_dir(dir),
         Agent::Pi => pi::check_dir(dir),
         Agent::Omp => omp::check_dir(dir),
-        Agent::Antigravity | Agent::Copilot | Agent::Grok | Agent::OpenCode => {
+        Agent::Antigravity | Agent::Copilot | Agent::Grok | Agent::Muse | Agent::OpenCode => {
             anyhow::bail!("{} cannot be set up in a given directory", agent.name())
         }
     }
@@ -416,7 +434,7 @@ pub fn install_in(agent: Agent, dir: &Path) -> Result<String> {
         Agent::Gemini => gemini::install_dir(dir),
         Agent::Pi => pi::install_dir(dir),
         Agent::Omp => omp::install_dir(dir),
-        Agent::Antigravity | Agent::Copilot | Agent::Grok | Agent::OpenCode => {
+        Agent::Antigravity | Agent::Copilot | Agent::Grok | Agent::Muse | Agent::OpenCode => {
             anyhow::bail!("{} cannot be set up in a given directory", agent.name())
         }
     }
@@ -431,6 +449,7 @@ pub fn uninstall_one(agent: Agent) -> Result<String> {
         Agent::Copilot => copilot::uninstall(),
         Agent::Gemini => gemini::uninstall(),
         Agent::Grok => grok::uninstall(),
+        Agent::Muse => muse::uninstall(),
         Agent::OpenCode => opencode::uninstall(),
         Agent::Pi => pi::uninstall(),
         Agent::Omp => omp::uninstall(),
@@ -698,6 +717,7 @@ mod tests {
         assert_eq!(Agent::Copilot.name(), "Copilot CLI");
         assert_eq!(Agent::Gemini.name(), "Gemini CLI");
         assert_eq!(Agent::Grok.name(), "Grok");
+        assert_eq!(Agent::Muse.name(), "Muse Code");
         assert_eq!(Agent::OpenCode.name(), "OpenCode");
         assert_eq!(Agent::Pi.name(), "pi");
         assert_eq!(Agent::Omp.name(), "Oh My Pi");
@@ -717,6 +737,7 @@ mod tests {
         );
         assert_eq!(serde_json::to_string(&Agent::Gemini).unwrap(), "\"gemini\"");
         assert_eq!(serde_json::to_string(&Agent::Grok).unwrap(), "\"grok\"");
+        assert_eq!(serde_json::to_string(&Agent::Muse).unwrap(), "\"muse\"");
         assert_eq!(
             serde_json::to_string(&Agent::OpenCode).unwrap(),
             "\"opencode\""
@@ -739,6 +760,8 @@ mod tests {
         assert_eq!(agent, Agent::Gemini);
         let agent: Agent = serde_json::from_str("\"grok\"").unwrap();
         assert_eq!(agent, Agent::Grok);
+        let agent: Agent = serde_json::from_str("\"muse\"").unwrap();
+        assert_eq!(agent, Agent::Muse);
         let agent: Agent = serde_json::from_str("\"opencode\"").unwrap();
         assert_eq!(agent, Agent::OpenCode);
         let agent: Agent = serde_json::from_str("\"pi\"").unwrap();
