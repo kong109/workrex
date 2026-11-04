@@ -1,6 +1,7 @@
 """Agent status from Rex program status (OSC 7501), falling back to hooks."""
 
 import json
+import shutil
 import subprocess
 import textwrap
 import time
@@ -12,6 +13,7 @@ import pytest
 from .conftest import (
     MuxEnvironment,
     get_window_name,
+    get_worktree_path,
     poll_until,
     run_workmux_add,
     wait_for_window_ready,
@@ -366,6 +368,68 @@ def test_last_done_agrees_with_status_after_a_hook_change_in_the_reports_second(
     assert_last_done_focuses(rex, workmux_exe_path, repo_path, block)
 
 
+UPDATED_AGY = "agy.1793778097211245000.old"
+
+
+def start_native_agy(env: RexEnvironment, exe: Path, repo: Path, branch: str):
+    """Start a native fake `agy` in a new worktree window. A self-updating
+    agent renames its running binary to agy.<n>.old, and Rex then names the
+    process after the renamed file."""
+    cc = shutil.which("cc")
+    if not cc:
+        pytest.skip("needs a C compiler to build a native fake agent")
+    agent = env.tmp_path / "agent-bin" / "agy"
+    agent.parent.mkdir()
+    source = env.tmp_path / "agy.c"
+    source.write_text("#include <unistd.h>\nint main(void) { for (;;) pause(); }\n")
+    subprocess.run([cc, "-o", str(agent), str(source)], check=True)
+    write_workmux_config(repo, panes=[{"focus": True}])
+    run_workmux_add(env, exe, repo, branch)
+    window = get_window_name(branch)
+    wait_for_window_ready(env, window)
+    block = env._target_block(window)
+    env.send_keys(block, f"exec {agent}")
+    assert poll_until(lambda: foreground_name(env, block) == "agy", timeout=10)
+    return block, agent
+
+
+def agy_hooks(env: RexEnvironment, exe: Path, block: str):
+    # agy runs its hooks from its config directory, not the agent's.
+    hooks_dir = env.tmp_path / "agy-config"
+    hooks_dir.mkdir(exist_ok=True)
+    for args in (["register-agent"], ["set-window-status", "working"]):
+        hook = workmux(env, exe, hooks_dir, *args, block=block)
+        assert hook.returncode == 0, hook.stderr
+
+
+def update_agy(env: RexEnvironment, agent: Path, block: str):
+    agent.rename(agent.with_name(UPDATED_AGY))
+    assert poll_until(lambda: foreground_name(env, block) == UPDATED_AGY, timeout=5)
+
+
+def test_a_hooked_agent_stays_listed_after_renaming_its_running_binary(
+    rex, workmux_exe_path, repo_path
+):
+    branch = "renamed-agent"
+    block, agent = start_native_agy(rex, workmux_exe_path, repo_path, branch)
+    agy_hooks(rex, workmux_exe_path, block)
+    assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"
+
+    update_agy(rex, agent, block)
+
+    result = workmux(rex, workmux_exe_path, repo_path, "status", "--json")
+    assert result.returncode == 0, result.stderr
+    agents = [a for a in json.loads(result.stdout)["agents"] if a["pane_id"] == block]
+    assert len(agents) == 1, result.stdout
+    assert agents[0]["status"] == "working"
+    assert agents[0]["agent_kind"] == "agy"
+    assert agents[0]["worktree"] == branch
+    assert (
+        Path(agents[0]["workdir"]).resolve()
+        == get_worktree_path(repo_path, branch).resolve()
+    )
+
+
 def test_a_reporting_pane_in_the_main_worktree_is_not_adopted(
     rex, workmux_exe_path, repo_path
 ):
@@ -429,3 +493,202 @@ def test_the_sidebar_follows_each_status_the_agent_reports(
             )
     finally:
         workmux(env, workmux_exe_path, repo_path, "sidebar", "off")
+
+
+def test_the_sidebar_shows_an_agent_that_registers_after_renaming_its_binary(
+    rex, workmux_exe_path, repo_path
+):
+    env = rex
+    short_tmp = env.socket_dir / "t"
+    short_tmp.mkdir()
+    env.env["TMPDIR"] = str(short_tmp)
+    block, agent = start_native_agy(env, workmux_exe_path, repo_path, "side-agy")
+
+    result = workmux(env, workmux_exe_path, repo_path, "sidebar", "on")
+    assert result.returncode == 0, result.stderr
+    try:
+        assert poll_until(lambda: bool(sidebar_blocks(env)), timeout=10), env.views()
+        sidebar = sidebar_blocks(env)[0]
+        assert poll_until(
+            lambda: "No agents running" in (env.capture_pane(sidebar) or ""),
+            timeout=10,
+        ), env.capture_pane(sidebar)
+
+        # The daemon read the pane before the update, and a rename sends no
+        # process event, so it keeps the name it read then.
+        update_agy(env, agent, block)
+        agy_hooks(env, workmux_exe_path, block)
+        assert poll_until(
+            lambda: bool(SPINNER.search(env.capture_pane(sidebar) or "")), timeout=10
+        ), env.capture_pane(sidebar)
+    finally:
+        workmux(env, workmux_exe_path, repo_path, "sidebar", "off")
+
+
+def test_the_sidebar_shows_an_agent_that_renamed_its_binary_before_it_started(
+    rex, workmux_exe_path, repo_path
+):
+    env = rex
+    short_tmp = env.socket_dir / "t"
+    short_tmp.mkdir()
+    env.env["TMPDIR"] = str(short_tmp)
+    block, agent = start_native_agy(env, workmux_exe_path, repo_path, "scan-agy")
+    agy_hooks(env, workmux_exe_path, block)
+    update_agy(env, agent, block)
+
+    result = workmux(env, workmux_exe_path, repo_path, "sidebar", "on")
+    assert result.returncode == 0, result.stderr
+    try:
+        assert poll_until(lambda: bool(sidebar_blocks(env)), timeout=10), env.views()
+        sidebar = sidebar_blocks(env)[0]
+        assert poll_until(
+            lambda: bool(SPINNER.search(env.capture_pane(sidebar) or "")), timeout=10
+        ), env.capture_pane(sidebar)
+    finally:
+        workmux(env, workmux_exe_path, repo_path, "sidebar", "off")
+
+
+def test_the_sidebar_keeps_an_agent_that_retitles_itself_after_it_starts(
+    rex, workmux_exe_path, repo_path
+):
+    # A node program that sets process.title changes its argv0, and Rex sends
+    # no event for it, so the sidebar's snapshot still says node.
+    if not shutil.which("node"):
+        pytest.skip("needs node to set a process title")
+    # Version-manager shims resolve node from HOME, which the test moves.
+    node = subprocess.run(
+        ["node", "-p", "process.execPath"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    env = rex
+    short_tmp = env.socket_dir / "t"
+    short_tmp.mkdir()
+    env.env["TMPDIR"] = str(short_tmp)
+    script = env.tmp_path / "agent.js"
+    script.write_text(
+        "setTimeout(() => { process.title = 'agy'; }, 1500);\n"
+        "setInterval(() => {}, 1e6);\n"
+    )
+    # Log every rex call, to count the sidebar's reads of the agent's pane.
+    real_rex = env.rex
+    shim = env.tmp_path / "rex-shim"
+    shim.mkdir()
+    calls = env.tmp_path / "rex-calls"
+    (shim / "rex").write_text(
+        f'#!/bin/sh\necho "$*" >> "{calls}"\nexec "{real_rex}" "$@"\n'
+    )
+    (shim / "rex").chmod(0o755)
+    env.env["REX_BIN_DIR"] = str(shim)
+    write_workmux_config(repo_path, panes=[{"focus": True}])
+    run_workmux_add(env, workmux_exe_path, repo_path, "title-agent")
+    window = get_window_name("title-agent")
+    wait_for_window_ready(env, window)
+    block = env._target_block(window)
+
+    def argv0() -> str:
+        process = env.block_call(block, "process") or {}
+        return (process.get("foreground") or {}).get("argv0", "")
+
+    result = workmux(env, workmux_exe_path, repo_path, "sidebar", "on")
+    assert result.returncode == 0, result.stderr
+    try:
+        assert poll_until(lambda: bool(sidebar_blocks(env)), timeout=10), env.views()
+        sidebar = sidebar_blocks(env)[0]
+        assert poll_until(
+            lambda: "No agents running" in (env.capture_pane(sidebar) or ""),
+            timeout=10,
+        ), env.capture_pane(sidebar)
+        env.send_keys(block, f"exec {node} {script}")
+        assert poll_until(lambda: argv0() == "agy", timeout=10), argv0()
+        agy_hooks(env, workmux_exe_path, block)
+        assert poll_until(
+            lambda: bool(SPINNER.search(env.capture_pane(sidebar) or "")), timeout=10
+        ), env.capture_pane(sidebar)
+
+        # Once a second look has read the new title, the sidebar compares
+        # against it rather than reading the pane again every tick.
+        def process_reads() -> int:
+            return sum(
+                f"-b {block} process" in line for line in calls.read_text().splitlines()
+            )
+
+        time.sleep(2)
+        before = process_reads()
+        time.sleep(10)
+        assert process_reads() - before <= 2
+        assert SPINNER.search(env.capture_pane(sidebar) or "")
+    finally:
+        workmux(env, workmux_exe_path, repo_path, "sidebar", "off")
+
+
+def test_an_agent_stored_by_an_older_build_stays_listed_until_it_exits(
+    rex, workmux_exe_path, repo_path
+):
+    # Claude Code runs as a `claude` symlink to `claude.exe`. Builds before
+    # argv0 naming stored the file name.
+    cc = shutil.which("cc")
+    if not cc:
+        pytest.skip("needs a C compiler to build a native fake agent")
+    env = rex
+    bindir = env.tmp_path / "agent-bin"
+    bindir.mkdir()
+    source = env.tmp_path / "claude.c"
+    source.write_text("#include <unistd.h>\nint main(void) { for (;;) pause(); }\n")
+    subprocess.run([cc, "-o", str(bindir / "claude.exe"), str(source)], check=True)
+    (bindir / "claude").symlink_to("claude.exe")
+    write_workmux_config(repo_path, panes=[{"focus": True}])
+    run_workmux_add(env, workmux_exe_path, repo_path, "old-state")
+    window = get_window_name("old-state")
+    wait_for_window_ready(env, window)
+    block = env._target_block(window)
+    env.send_keys(block, str(bindir / "claude"))
+    assert poll_until(lambda: foreground_name(env, block) == "claude.exe", timeout=10)
+    for args in (["register-agent"], ["set-window-status", "waiting"]):
+        hook = workmux(env, workmux_exe_path, repo_path, *args, block=block)
+        assert hook.returncode == 0, hook.stderr
+
+    states = Path(env.env["XDG_STATE_HOME"]) / "workmux" / "agents"
+    [state_file] = list(states.glob("*.json"))
+    state = json.loads(state_file.read_text())
+    assert state["command"] == "claude"
+    state["command"] = "claude.exe"
+    state_file.write_text(json.dumps(state))
+
+    assert agent_status(env, workmux_exe_path, repo_path, block) == "waiting"
+    assert agent_status(env, workmux_exe_path, repo_path, block) == "waiting"
+
+    process = env.block_call(block, "process") or {}
+    subprocess.run(["kill", str(process["foreground"]["pid"])], check=True)
+    assert poll_until(lambda: foreground_name(env, block) == "zsh", timeout=5)
+    assert agent_status(env, workmux_exe_path, repo_path, block) is None
+
+
+def test_program_status_survives_the_agent_renaming_its_running_binary(
+    rex, workmux_exe_path, repo_path
+):
+    cc = shutil.which("cc")
+    if not cc:
+        pytest.skip("needs a C compiler to build a native fake agent")
+    env = rex
+    agent = env.tmp_path / "agent-bin" / "agy"
+    agent.parent.mkdir()
+    source = env.tmp_path / "agy.c"
+    source.write_text(
+        "#include <stdio.h>\n#include <unistd.h>\nint main(void) {\n"
+        '  printf("\\033]7501;state=working:app=agy\\033\\\\");\n'
+        "  fflush(stdout);\n  for (;;) pause();\n}\n"
+    )
+    subprocess.run([cc, "-o", str(agent), str(source)], check=True)
+    write_workmux_config(repo_path, panes=[{"focus": True}])
+    run_workmux_add(env, workmux_exe_path, repo_path, "osc-agy")
+    window = get_window_name("osc-agy")
+    wait_for_window_ready(env, window)
+    block = env._target_block(window)
+    env.send_keys(block, f"exec {agent}")
+    assert poll_until(
+        lambda: agent_status(env, workmux_exe_path, repo_path, block) == "working",
+        timeout=10,
+    )
+
+    update_agy(env, agent, block)
+
+    assert agent_status(env, workmux_exe_path, repo_path, block) == "working"

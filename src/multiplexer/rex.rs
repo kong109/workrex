@@ -256,12 +256,99 @@ fn changes_nothing(args: &[&str]) -> bool {
     }
 }
 
+impl RexBackend {
+    /// `forget_reads` for one session's view.
+    fn forget_view(&self, session: &SessionId) {
+        let key = read_key(
+            "session.view",
+            &json!({ "session_id": session.as_str() }).to_string(),
+        );
+        let mut reads = self.reads.lock().unwrap();
+        reads.writes += 1;
+        reads.answers.remove(&key);
+    }
+
+    /// One pane, read through its session's view. `afresh` first forgets
+    /// that view, so the read cannot repeat an earlier answer.
+    fn read_pane(&self, pane_id: &str, afresh: bool) -> Result<Option<LivePaneInfo>> {
+        let Ok(block) = BlockId::parse(pane_id) else {
+            return Ok(None);
+        };
+        let Some(target) = self.resolve("block", block.as_str())? else {
+            return Ok(None);
+        };
+        if afresh {
+            self.forget_view(&target.session_id);
+        }
+        let Some(view) = found(self.view(&target.session_id))? else {
+            return Ok(None);
+        };
+        let Some((window, _)) = view.terminal_blocks().find(|(_, id)| **id == block) else {
+            return Ok(None);
+        };
+        self.live_pane(&view, window, &block, Read::Look)
+    }
+
+    /// The panes second looks read, for the daemon's snapshot.
+    pub(crate) fn pane_reads(&self) -> Arc<PaneReads> {
+        self.pane_reads.clone()
+    }
+}
+
+/// The key a reusable read is kept under.
+fn read_key(method: &str, stdin: &str) -> String {
+    format!("{method} {stdin}")
+}
+
 /// Session reads a command can reuse. `writes` counts the writes that have
 /// returned and each forget, so a read that overlapped one is not stored.
 #[derive(Debug, Default)]
 struct Reads {
     writes: u64,
     answers: HashMap<String, (Instant, String)>,
+}
+
+/// Panes a second look read afresh, for the sidebar daemon's snapshot.
+/// Rex sends no event when a program retitles itself or renames its
+/// binary, so without them the snapshot would keep the stale command and
+/// every tick would look again.
+#[derive(Debug, Default)]
+pub(crate) struct PaneReads(Mutex<KeptReads>);
+
+#[derive(Debug, Default)]
+struct KeptReads {
+    panes: HashMap<String, LivePaneInfo>,
+    /// Counts the events applied, so a read that overlapped one is not kept.
+    events: u64,
+}
+
+impl PaneReads {
+    /// Mark the start of a read, for `put`.
+    pub(crate) fn begin(&self) -> u64 {
+        self.0.lock().unwrap().events
+    }
+
+    /// Keep a read that `begin` started, unless an event came in since.
+    /// The event may describe a later foreground, such as the shell the
+    /// agent exited to, and no later event would correct the read.
+    pub(crate) fn put(&self, block: &str, pane: LivePaneInfo, begun: u64) {
+        let mut reads = self.0.lock().unwrap();
+        if reads.events == begun {
+            reads.panes.insert(block.to_string(), pane);
+        }
+    }
+
+    /// An event about `block` makes its pending read, and any read under
+    /// way, older news.
+    pub(crate) fn discard(&self, block: &str) {
+        let mut reads = self.0.lock().unwrap();
+        reads.events += 1;
+        reads.panes.remove(block);
+    }
+
+    pub(crate) fn take(&self) -> HashMap<String, LivePaneInfo> {
+        std::mem::take(&mut self.0.lock().unwrap().panes)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,7 +375,22 @@ struct ProcessEntry {
     pid: u32,
     name: String,
     #[serde(default)]
+    argv0: Option<String>,
+    #[serde(default)]
     cwd: Option<PathBuf>,
+}
+
+/// The command a process was started as. Rex's `name` follows the
+/// executable file, so an agent that renames its running binary to update
+/// itself (`agy` to `agy.<n>.old`) would read as a different command, and
+/// no `process_changed` event says so.
+fn process_command(name: &str, argv0: Option<&str>) -> String {
+    argv0
+        .map(|argv0| argv0.strip_prefix('-').unwrap_or(argv0))
+        .and_then(|argv0| Path::new(argv0).file_name())
+        .and_then(|file| file.to_str())
+        .unwrap_or(name)
+        .to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -298,6 +400,12 @@ impl ProcessReport {
     /// A block outlives its program, so an exited agent still has a block.
     fn has_exited(&self) -> bool {
         self.last_exit.is_some()
+    }
+
+    fn foreground_command(&self) -> Option<String> {
+        self.foreground
+            .as_ref()
+            .map(|fg| process_command(&fg.name, fg.argv0.as_deref()))
     }
 
     fn working_dir(&self) -> PathBuf {
@@ -581,7 +689,7 @@ fn pane_info(
     }
     Some(LivePaneInfo {
         pid: process.child.as_ref().map(|child| child.pid),
-        current_command: process.foreground.as_ref().map(|fg| fg.name.clone()),
+        current_command: process.foreground_command(),
         working_dir: process.working_dir(),
         title: (!title.is_empty()).then_some(title),
         session: Some(session.label.clone()),
@@ -745,6 +853,7 @@ pub struct RexBackend {
     /// Env file the next respawned block sources (see `hosting`).
     respawn_env: Mutex<Option<PathBuf>>,
     program_status: Arc<ProgramStatuses>,
+    pane_reads: Arc<PaneReads>,
 }
 
 impl RexBackend {
@@ -783,6 +892,7 @@ impl RexBackend {
                 .map(|dir| dir.join("rex-sessions.json")),
             respawn_env: Mutex::new(None),
             program_status: Arc::default(),
+            pane_reads: Arc::default(),
         }
     }
 
@@ -809,7 +919,7 @@ impl RexBackend {
         else {
             return self.exec(args, stdin);
         };
-        let key = format!("{method} {}", stdin.unwrap_or_default());
+        let key = read_key(method, stdin.unwrap_or_default());
         let writes = {
             let reads = self.reads.lock().unwrap();
             if let Some((fetched, output)) = reads.answers.get(&key)
@@ -2222,26 +2332,19 @@ impl Multiplexer for RexBackend {
     }
 
     fn get_live_pane_info(&self, pane_id: &str) -> Result<Option<LivePaneInfo>> {
-        let Ok(block) = BlockId::parse(pane_id) else {
-            return Ok(None);
-        };
-        let Some(target) = self.resolve("block", block.as_str())? else {
-            return Ok(None);
-        };
-        let Some(view) = found(self.view(&target.session_id))? else {
-            return Ok(None);
-        };
-        let Some((window, _)) = view.terminal_blocks().find(|(_, id)| **id == block) else {
-            return Ok(None);
-        };
-        self.live_pane(&view, window, &block, Read::Look)
+        self.read_pane(pane_id, false)
     }
 
-    /// Runs only for a pane the batch read missed. A reused view would
-    /// repeat the batch's answer, and a miss prunes the agent.
+    /// Runs for a pane the batch read missed, and for one whose command the
+    /// batch read says changed. A reused view would repeat the batch's
+    /// answer, and a miss prunes the agent.
     fn validate_agent_alive(&self, state: &crate::state::AgentState) -> Result<bool> {
-        self.forget_reads();
-        let live_pane = self.get_live_pane_info(&state.pane_key.pane_id)?;
+        let begun = self.pane_reads.begin();
+        let live_pane = self.read_pane(&state.pane_key.pane_id, true)?;
+        if let Some(pane) = &live_pane {
+            self.pane_reads
+                .put(&state.pane_key.pane_id, pane.clone(), begun);
+        }
         Ok(super::pane_runs_agent(live_pane, state))
     }
 
@@ -2328,6 +2431,45 @@ mod tests {
         assert_eq!(report.child.as_ref().unwrap().pid, 85152);
         assert_eq!(report.foreground.as_ref().unwrap().name, "sleep");
         assert_eq!(report.working_dir(), PathBuf::from("/private/tmp"));
+    }
+
+    #[test]
+    fn an_agent_keeps_its_command_when_it_renames_its_running_binary() {
+        let view = view();
+        let window = &view.windows[1];
+        let command = |foreground: Value| {
+            let report: ProcessReport =
+                serde_json::from_value(json!({ "foreground": foreground })).unwrap();
+            pane_info(&view, window, &report, String::new())
+                .unwrap()
+                .current_command
+        };
+        let started = command(json!({ "pid": 9, "name": "agy", "argv0": "agy" }));
+        let updated = command(json!({
+            "pid": 9,
+            "name": "agy.1793778097211245000.old",
+            "path": "/Users/dev/.local/bin/agy.1793778097211245000.old",
+            "argv0": "agy",
+        }));
+        assert_eq!(started.as_deref(), Some("agy"));
+        assert_eq!(updated, started);
+        assert_eq!(
+            command(json!({ "pid": 9, "name": "agy", "argv0": "/Users/dev/.local/bin/agy" }))
+                .as_deref(),
+            Some("agy")
+        );
+        assert_eq!(
+            command(json!({ "pid": 8, "name": "zsh", "argv0": "-zsh" })).as_deref(),
+            Some("zsh")
+        );
+        assert_eq!(
+            command(json!({ "pid": 7, "name": "claude" })).as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            command(json!({ "pid": 6, "name": "agy", "argv0": "-" })).as_deref(),
+            Some("agy")
+        );
     }
 
     #[test]
@@ -3956,6 +4098,90 @@ mod tests {
                 .validate_agent_alive(&agent_in_view(85152))
                 .unwrap()
         );
+    }
+
+    /// An event that arrives while a second look waits on Rex may describe a
+    /// later foreground, so the read is not kept for the snapshot. Rex's
+    /// `process` answer waits until the event has been applied.
+    #[test]
+    fn a_second_look_that_overlapped_an_event_is_not_kept() {
+        let fake = FakeRex::new(&[
+            ("session.view", VIEW),
+            ("target.resolve", RESOLVE),
+            (
+                " process ",
+                "$touch \"$dir/asked\"; i=0; while [ ! -e \"$dir/answer\" ] && [ $i -lt 2000 ]; do sleep 0.01; i=$((i+1)); done; cat \"$dir/process\"",
+            ),
+            (" title ", r#"{"title":""}"#),
+        ]);
+        fake.write("process", PROCESS);
+        let reads = fake.rex.pane_reads();
+        let dir = fake.dir.path().to_path_buf();
+        let event = reads.clone();
+        let during = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !dir.join("asked").exists() {
+                assert!(Instant::now() < deadline, "the second look never asked");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            event.discard("block:another-pane");
+            std::fs::write(dir.join("answer"), "").unwrap();
+        });
+        assert!(
+            fake.rex
+                .validate_agent_alive(&agent_in_view(85152))
+                .unwrap()
+        );
+        during.join().unwrap();
+        assert!(reads.take().is_empty());
+    }
+
+    /// A second look forgets only its own session's view, and leaves what
+    /// it read for the sidebar daemon's snapshot, which no event corrects.
+    #[test]
+    fn a_second_look_rereads_only_its_session_and_keeps_what_it_read() {
+        let session = "session:01a19e60-6410-7e09-a3ee-f675512a3a06";
+        let fake = FakeRex::new(&[
+            (
+                "session.view*session:other",
+                &view_json("session:other", "other", &[]),
+            ),
+            ("session.view", VIEW),
+            ("target.resolve", RESOLVE),
+            (" process ", PROCESS),
+            (" title ", r#"{"title":""}"#),
+        ])
+        .reusing();
+        let other = SessionId("session:other".into());
+        fake.rex.view(&other).unwrap();
+        fake.rex.view(&SessionId(session.into())).unwrap();
+        // A plain pane read reuses the view; only a second look reads afresh.
+        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
+        assert!(fake.rex.get_live_pane_info(block).unwrap().is_some());
+        assert_eq!(fake.calls(session).len(), 1);
+        assert!(fake.rex.pane_reads().take().is_empty());
+        assert!(
+            fake.rex
+                .validate_agent_alive(&agent_in_view(85152))
+                .unwrap()
+        );
+        fake.rex.view(&other).unwrap();
+        assert_eq!(fake.calls("session:other").len(), 1);
+        assert_eq!(fake.calls(session).len(), 2);
+        let reads = fake.rex.pane_reads().take();
+        assert_eq!(reads[block].current_command.as_deref(), Some("sleep"));
+    }
+
+    /// A view read that overlapped a forget must not be kept, or the next
+    /// read would reuse what Rex said before the forget.
+    #[test]
+    fn forgetting_a_view_keeps_an_overlapping_read_from_being_stored() {
+        let fake = FakeRex::new(&[]);
+        let session = SessionId("session:a".into());
+        let writes = || fake.rex.reads.lock().unwrap().writes;
+        let before = writes();
+        fake.rex.forget_view(&session);
+        assert_eq!(writes(), before + 1);
     }
 
     /// The second look checks the pid and command like the batch does, so a

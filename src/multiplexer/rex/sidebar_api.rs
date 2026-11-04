@@ -320,7 +320,7 @@ impl RexBackend {
             .unwrap_or_default();
         Ok(Some(LivePaneInfo {
             pid: process.child.as_ref().map(|child| child.pid),
-            current_command: process.foreground.as_ref().map(|fg| fg.name.clone()),
+            current_command: process.foreground_command(),
             working_dir: process.working_dir(),
             title: (!title.is_empty()).then_some(title),
             session: Some(view.label.clone()),
@@ -339,6 +339,25 @@ mod tests {
     const WITH_SIDEBAR: &str = include_str!("../testdata/rex_sidebar_view.json");
     const BEFORE_SIDEBAR: &str = include_str!("../testdata/rex_sidebar_view_before.json");
     const MULTI_WINDOW: &str = include_str!("../testdata/rex_sidebar_view_multi.json");
+
+    /// The scan names a process the way pane reads and events do, by the
+    /// command it started as, not the file its binary was renamed to.
+    #[test]
+    fn the_scan_names_a_renamed_agent_by_the_command_it_started_as() {
+        let fake = super::super::tests::FakeRex::new(&[
+            (
+                " process ",
+                r#"{"child":{"pid":5,"name":"zsh"},"foreground":{"pid":9,"name":"agy.1793778097211245000.old","argv0":"agy","cwd":"/repo"}}"#,
+            ),
+            (" title ", r#"{"title":""}"#),
+        ]);
+        let view: View = serde_json::from_str(WITH_SIDEBAR).unwrap();
+        let panes = fake.rex.sidebar_live_panes(&[view], &HashSet::new());
+        assert!(!panes.is_empty());
+        for pane in panes.values() {
+            assert_eq!(pane.current_command.as_deref(), Some("agy"));
+        }
+    }
 
     #[test]
     fn a_window_with_a_sidebar_has_it_as_the_root_split_before_side() {

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::multiplexer::rex::events::Event;
 use crate::multiplexer::rex::sidebar_api::View;
-use crate::multiplexer::rex::{ProgramStatuses, RexBackend};
+use crate::multiplexer::rex::{PaneReads, ProgramStatuses, RexBackend};
 use crate::multiplexer::tmux::TmuxSidebarSnapshot;
 use crate::multiplexer::{DaemonIo, LivePaneInfo};
 
@@ -49,6 +49,8 @@ pub(super) struct Observed {
     pub events_pid: AtomicU32,
     /// The program statuses the daemon's tick reads through its own backend.
     pub program_status: Arc<ProgramStatuses>,
+    /// Panes the daemon's reconcile read again, which no event reports.
+    pane_reads: Arc<PaneReads>,
 }
 
 impl Observed {
@@ -57,6 +59,10 @@ impl Observed {
             program_status,
             ..Self::default()
         }
+    }
+
+    pub fn with_pane_reads(self, pane_reads: Arc<PaneReads>) -> Self {
+        Self { pane_reads, ..self }
     }
 
     /// Replace every session's view, as at start and on the safety rebuild.
@@ -104,6 +110,9 @@ impl Observed {
     /// Fold a terminal event into the pane it describes.
     pub fn apply(&self, event: &Event) {
         self.program_status.apply(event);
+        if let Event::ProcessChanged { block_id, .. } = event {
+            self.pane_reads.discard(block_id);
+        }
         let mut cache = self.cache.lock().unwrap();
         match event {
             Event::ProcessChanged {
@@ -112,7 +121,7 @@ impl Observed {
                 ..
             } => {
                 if let Some(pane) = cache.panes.get_mut(block_id) {
-                    pane.current_command = Some(foreground.name.clone());
+                    pane.current_command = Some(foreground.command());
                     if let Some(cwd) = &foreground.cwd {
                         pane.working_dir = cwd.clone();
                     }
@@ -151,7 +160,14 @@ impl Observed {
     }
 
     pub fn snapshot(&self, prefs: &Options, settings: &Persisted) -> TmuxSidebarSnapshot {
-        let cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap();
+        for (block, read) in self.pane_reads.take() {
+            if let Some(pane) = cache.panes.get_mut(&block) {
+                pane.pid = read.pid;
+                pane.current_command = read.current_command;
+                pane.working_dir = read.working_dir;
+            }
+        }
         build(
             &cache.views,
             &cache.panes,
@@ -364,6 +380,77 @@ mod tests {
         assert_eq!(pane.current_command.as_deref(), Some("claude"));
         assert_eq!(pane.working_dir, PathBuf::from("/repo/wt"));
         assert_eq!(pane.title.as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn a_process_event_names_the_command_the_agent_started_as() {
+        let observed = Observed::default();
+        observed
+            .cache
+            .lock()
+            .unwrap()
+            .panes
+            .insert("block:1".into(), pane("/repo"));
+        observed.apply(
+            &Event::parse(r#"{"type":"session_event","payload":{"session_id":"session:1","event":{"type":"block_event","payload":{"block_id":"block:1","name":"process_changed","payload":{"generation":4,"foreground":{"pid":9,"name":"agy.1793778097211245000.old","argv0":"agy","cwd":"/repo/wt"}}}}}}"#)
+                .unwrap(),
+        );
+        let cache = observed.cache.lock().unwrap();
+        assert_eq!(
+            cache.panes["block:1"].current_command.as_deref(),
+            Some("agy")
+        );
+    }
+
+    /// Rex sends no event when a program retitles itself, so the snapshot
+    /// takes the command the daemon's reconcile read again.
+    #[test]
+    fn the_snapshot_takes_the_command_a_second_look_read() {
+        let view: View = serde_json::from_str(MULTI_WINDOW).unwrap();
+        let block = view.windows[0].block_ids().next().unwrap().to_string();
+        let reads = Arc::new(PaneReads::default());
+        let observed = Observed::default().with_pane_reads(reads.clone());
+        {
+            let mut cache = observed.cache.lock().unwrap();
+            cache.views.insert(view.session_id.clone(), view.clone());
+            cache.panes.insert(block.clone(), pane("/repo"));
+        }
+        let shown = |observed: &Observed| {
+            observed
+                .snapshot(&Options::default(), &Persisted::default())
+                .live_panes[&block]
+                .clone()
+        };
+        let read_again = LivePaneInfo {
+            pid: Some(42),
+            current_command: Some("agy".into()),
+            ..pane("/repo/wt")
+        };
+        let process_changed = Event::parse(&format!(
+            r#"{{"type":"session_event","payload":{{"session_id":"{}","event":{{"type":"block_event","payload":{{"block_id":"{block}","name":"process_changed","payload":{{"generation":5,"foreground":{{"pid":9,"name":"zsh","argv0":"-zsh"}}}}}}}}}}}}"#,
+            view.session_id
+        ))
+        .unwrap();
+
+        reads.put(&block, read_again.clone(), reads.begin());
+        let pane = shown(&observed);
+        assert_eq!(pane.current_command.as_deref(), Some("agy"));
+        assert_eq!(pane.pid, Some(42));
+        assert_eq!(pane.working_dir, PathBuf::from("/repo/wt"));
+        assert!(reads.take().is_empty());
+        assert_eq!(shown(&observed).current_command.as_deref(), Some("agy"));
+
+        // An event after the read is newer news than the read.
+        reads.put(&block, read_again.clone(), reads.begin());
+        observed.apply(&process_changed);
+        assert_eq!(shown(&observed).current_command.as_deref(), Some("zsh"));
+
+        // So is an event that arrives while the read is under way, as when
+        // the agent exits between Rex's answer and the read being kept.
+        let begun = reads.begin();
+        observed.apply(&process_changed);
+        reads.put(&block, read_again, begun);
+        assert_eq!(shown(&observed).current_command.as_deref(), Some("zsh"));
     }
 
     #[test]

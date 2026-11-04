@@ -19,6 +19,10 @@ pub(crate) const INSTANCE: &str = "unix:///tmp/rex.sock";
 #[derive(Default)]
 pub(crate) struct FakeMux {
     pub live: HashMap<String, LivePaneInfo>,
+    /// What a fresh read of one pane finds.
+    pub fresh: HashMap<String, LivePaneInfo>,
+    /// A fresh read fails, as a Rex call that times out would.
+    pub fresh_fails: bool,
     pub reported: HashMap<String, ReportedStatus>,
     /// Runs once, inside the first status query, as a hook racing a reader would.
     pub during_query: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -224,8 +228,11 @@ impl Multiplexer for FakeMux {
         INSTANCE.to_string()
     }
 
-    fn get_live_pane_info(&self, _pane_id: &str) -> Result<Option<LivePaneInfo>> {
-        Ok(None)
+    fn get_live_pane_info(&self, pane_id: &str) -> Result<Option<LivePaneInfo>> {
+        if self.fresh_fails {
+            anyhow::bail!("rex timed out");
+        }
+        Ok(self.fresh.get(pane_id).cloned())
     }
 
     fn get_all_live_pane_info(&self) -> Result<HashMap<String, LivePaneInfo>> {

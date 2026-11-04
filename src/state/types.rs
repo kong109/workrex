@@ -160,6 +160,25 @@ impl AgentState {
             .or_else(|| self.status.is_none().then_some(self.updated_ts))
     }
 
+    /// Whether a pane whose foreground runs `live_command` still runs this
+    /// agent. Builds before Rex processes were named by argv0 stored Rex's
+    /// executable file name (`claude.exe` for `claude`), so such a Rex entry
+    /// also matches a live command that classifies as its agent. An entry
+    /// stored under its agent's own name (`codex`) is how this build names
+    /// an agent started by that name, so it matches only exactly: a pane's
+    /// pid is its shell's, and `codex-acp` run after quitting `codex` is
+    /// not the agent. The agent's next hook stores the exact command.
+    pub fn runs_command(&self, live_command: &str) -> bool {
+        live_command == self.command
+            || (self.pane_key.backend == "rex"
+                && self
+                    .agent_kind
+                    .as_deref()
+                    .is_some_and(|kind| kind != self.command)
+                && crate::agent_identity::classify_agent_kind(Some(live_command), None)
+                    == self.agent_kind)
+    }
+
     /// Convert to AgentPane for dashboard display.
     ///
     /// The caller is responsible for providing the best available session/window names

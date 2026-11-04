@@ -1104,7 +1104,7 @@ pub(crate) fn pane_runs_agent(
             if live
                 .current_command
                 .as_ref()
-                .is_some_and(|cmd| *cmd != state.command) =>
+                .is_some_and(|cmd| !state.runs_command(cmd)) =>
         {
             false // Command changed
         }
@@ -1526,6 +1526,51 @@ mod tests {
             pane_with(Some(7), Some("zsh")),
             &agent_with(7, "node")
         ));
+    }
+
+    fn rex_agent(command: &str, agent_kind: Option<&str>) -> crate::state::AgentState {
+        let mut agent = agent_with(7, command);
+        agent.pane_key.backend = "rex".to_string();
+        agent.agent_kind = agent_kind.map(str::to_string);
+        agent
+    }
+
+    /// Older builds stored a Rex agent's executable name (`claude.exe`).
+    #[test]
+    fn a_rex_agent_stored_under_its_executable_name_runs_in_its_pane() {
+        let agent = rex_agent("claude.exe", Some("claude"));
+        assert!(pane_runs_agent(pane_with(Some(7), Some("claude")), &agent));
+        assert!(!pane_runs_agent(pane_with(Some(7), Some("zsh")), &agent));
+    }
+
+    #[test]
+    fn only_a_rex_agent_matches_a_command_by_its_kind() {
+        let mut agent = rex_agent("claude.exe", Some("claude"));
+        agent.pane_key.backend = "tmux".to_string();
+        assert!(!pane_runs_agent(pane_with(Some(7), Some("claude")), &agent));
+    }
+
+    /// An entry stored under its agent's own name is how this build names
+    /// that agent, so another command of the same kind is not it.
+    #[test]
+    fn a_rex_agent_stored_under_its_own_name_matches_only_that_name() {
+        let agent = rex_agent("codex", Some("codex"));
+        assert!(pane_runs_agent(pane_with(Some(7), Some("codex")), &agent));
+        assert!(!pane_runs_agent(
+            pane_with(Some(7), Some("codex-acp")),
+            &agent
+        ));
+        let agent = rex_agent("claude", Some("claude"));
+        assert!(!pane_runs_agent(
+            pane_with(Some(7), Some("2.1.119")),
+            &agent
+        ));
+    }
+
+    #[test]
+    fn a_rex_agent_without_a_kind_matches_only_its_command() {
+        let agent = rex_agent("bash", None);
+        assert!(!pane_runs_agent(pane_with(Some(7), Some("zsh")), &agent));
     }
 
     /// A backend that does not report a pid skips the pid check.
