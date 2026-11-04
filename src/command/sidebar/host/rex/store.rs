@@ -101,17 +101,17 @@ pub(super) struct WindowSidebar {
     pub window_id: String,
     pub block_id: String,
     pub split_id: String,
+    /// The root split ratio as Rex reported it after the last placement.
+    /// A different ratio in a later view means the user dragged the border.
+    pub applied_ratio: f64,
+    pub last_cols: u32,
+    pub window_cols: u32,
     /// The window's tiled blocks as the last pass saw them, and when a pass
     /// first saw them change, in Unix milliseconds.
     #[serde(default)]
     pub panes: String,
     #[serde(default)]
     pub panes_changed_ms: u64,
-    /// The root split ratio as Rex reported it after the last placement.
-    /// A different ratio in a later view means the user dragged the border.
-    pub applied_ratio: f64,
-    pub last_cols: u32,
-    pub window_cols: u32,
 }
 
 pub(super) type Records = BTreeMap<String, WindowSidebar>;
@@ -267,11 +267,11 @@ mod tests {
             window_id: window.into(),
             block_id: format!("block:{window}"),
             split_id: format!("split:{window}"),
-            panes: String::new(),
-            panes_changed_ms: 0,
             applied_ratio: 0.18,
             last_cols: 30,
             window_cols: 166,
+            panes: String::new(),
+            panes_changed_ms: 0,
         }
     }
 

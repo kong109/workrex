@@ -488,11 +488,11 @@ impl Plane {
             window_id: window.window_id.clone(),
             block_id: created.block_id,
             split_id: created.split_id,
-            panes,
-            panes_changed_ms: 0,
             applied_ratio: ratio,
             last_cols: u32::from(target),
             window_cols,
+            panes,
+            panes_changed_ms: 0,
         }))
     }
 
