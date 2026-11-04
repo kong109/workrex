@@ -24,6 +24,7 @@ pub mod execution;
 pub mod gc;
 pub mod git;
 pub mod hooks;
+pub mod host;
 pub mod observe;
 pub mod operation;
 pub mod provision;
@@ -322,6 +323,10 @@ pub struct Execution {
     /// The tombstones live only as long as this execution.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub closed_shells: std::collections::BTreeSet<String>,
+    /// Set when its terminals are on the node's Rex server instead of the
+    /// node tmux server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rex: Option<crate::remote::protocol::RexPlacement>,
 }
 
 impl Execution {

@@ -271,6 +271,10 @@ pub trait Multiplexer: Send + Sync {
     /// For WezTerm, this may switch to a workspace.
     fn switch_to_session(&self, prefix: &str, name: &str) -> Result<()>;
 
+    /// Drop any reads this backend keeps for reuse, so the next read sees a
+    /// change made outside this process since the last one.
+    fn forget_reads(&self) {}
+
     /// Check if a session exists by its full name.
     fn session_exists(&self, _full_name: &str) -> Result<bool> {
         Ok(false)
@@ -331,6 +335,12 @@ pub trait Multiplexer: Send + Sync {
 
     fn schedule_window_target_close(&self, target: &WindowTarget, delay: Duration) -> Result<()> {
         self.schedule_window_close(&target.full_name, delay)
+    }
+
+    /// Whether the backend supports session mode (`--mode session`), where
+    /// each worktree gets its own session.
+    fn supports_session_mode(&self) -> bool {
+        false
     }
 
     /// Whether the backend handles client navigation as part of session closure.
@@ -505,6 +515,22 @@ pub trait Multiplexer: Send + Sync {
     /// switch by pane ID directly (tmux, WezTerm) ignore this parameter.
     fn switch_to_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()>;
 
+    /// Focuses the first pane of a session `add` just created for the
+    /// worktree `handle`. tmux moves the caller's client there. A backend
+    /// that cannot tell which session the user's view shows only focuses the
+    /// pane in its session and returns a line that tells the user how to get
+    /// there.
+    fn focus_new_session(&self, pane_id: &str, _handle: &str) -> Result<Option<String>> {
+        self.switch_to_pane(pane_id, None).map(|()| None)
+    }
+
+    /// A pane in the session `full_name` that a user-initiated jump should
+    /// pass to `switch_to_pane`, for a backend whose `switch_to_session`
+    /// leaves the user's view alone. `None` opens the session instead.
+    fn session_pane(&self, _full_name: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Called when the dashboard quits without jumping, for backends that
     /// must hand focus back to the pane the dashboard was opened over.
     fn dashboard_quit(&self) {}
@@ -557,6 +583,13 @@ pub trait Multiplexer: Send + Sync {
     fn send_keys(&self, pane_id: &str, command: &str) -> Result<()> {
         self.send_text_fragment(pane_id, command)?;
         self.send_enter(pane_id)
+    }
+
+    /// Type `command` into the shell of `pane_id` and run it. A shell takes
+    /// the command and its Enter alike however they arrive, so a backend may
+    /// send both at once.
+    fn run_in_shell(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.send_keys(pane_id, command)
     }
 
     /// Whether this backend requires focusing a pane before sending input to it.
@@ -874,7 +907,7 @@ pub trait Multiplexer: Send + Sync {
                 };
 
                 let _ = self.clear_pane(&spawned_id);
-                self.send_keys(&spawned_id, &final_command)?;
+                self.run_in_shell(&spawned_id, &final_command)?;
 
                 // Set working status for agent panes with injected prompts
                 if resolved.prompt_injected
@@ -915,7 +948,7 @@ pub trait Multiplexer: Send + Sync {
                 && !has_command
             {
                 // The keys reach the shell once it starts reading input.
-                self.send_keys(
+                self.run_in_shell(
                     &pane_id,
                     &format!(
                         " {}; printf '\\033[H\\033[2J\\033[3J'",
@@ -1054,20 +1087,28 @@ pub trait Multiplexer: Send + Sync {
     /// and command matching). Default implementation queries the pane individually.
     fn validate_agent_alive(&self, state: &crate::state::AgentState) -> Result<bool> {
         let live_pane = self.get_live_pane_info(&state.pane_key.pane_id)?;
+        Ok(pane_runs_agent(live_pane, state))
+    }
+}
 
-        match live_pane {
-            None => Ok(false), // Pane no longer exists
-            Some(ref live) if live.pid.is_some_and(|pid| pid != state.pane_pid) => Ok(false), // PID mismatch
-            Some(ref live)
-                if live
-                    .current_command
-                    .as_ref()
-                    .is_some_and(|cmd| *cmd != state.command) =>
-            {
-                Ok(false) // Command changed
-            }
-            Some(_) => Ok(true), // Valid
+/// Whether a pane, as `get_live_pane_info` found it, still runs the agent
+/// `state` recorded.
+pub(crate) fn pane_runs_agent(
+    live_pane: Option<LivePaneInfo>,
+    state: &crate::state::AgentState,
+) -> bool {
+    match live_pane {
+        None => false, // Pane no longer exists
+        Some(ref live) if live.pid.is_some_and(|pid| pid != state.pane_pid) => false, // PID mismatch
+        Some(ref live)
+            if live
+                .current_command
+                .as_ref()
+                .is_some_and(|cmd| *cmd != state.command) =>
+        {
+            false // Command changed
         }
+        Some(_) => true, // Valid
     }
 }
 
@@ -1435,6 +1476,81 @@ mod tests {
             }),
             BackendType::Tmux
         );
+    }
+
+    fn pane_with(pid: Option<u32>, command: Option<&str>) -> Option<LivePaneInfo> {
+        Some(util::build_live_pane_info(
+            pid,
+            command.map(str::to_string),
+            PathBuf::from("/private/tmp"),
+            "",
+            "main".to_string(),
+            "wm-work".to_string(),
+        ))
+    }
+
+    fn agent_with(pane_pid: u32, command: &str) -> crate::state::AgentState {
+        serde_json::from_value(serde_json::json!({
+            "pane_key": { "backend": "tmux", "instance": "default", "pane_id": "%1" },
+            "workdir": "/private/tmp",
+            "pane_pid": pane_pid,
+            "command": command,
+            "updated_ts": 0,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_pane_with_the_recorded_pid_and_command_runs_the_agent() {
+        assert!(pane_runs_agent(
+            pane_with(Some(7), Some("node")),
+            &agent_with(7, "node")
+        ));
+    }
+
+    #[test]
+    fn a_missing_pane_runs_no_agent() {
+        assert!(!pane_runs_agent(None, &agent_with(7, "node")));
+    }
+
+    #[test]
+    fn a_pane_with_another_pid_runs_no_agent() {
+        let agent = agent_with(7, "node");
+        assert!(!pane_runs_agent(pane_with(Some(8), Some("node")), &agent));
+        assert!(!pane_runs_agent(pane_with(Some(6), Some("node")), &agent));
+    }
+
+    #[test]
+    fn a_pane_with_another_command_runs_no_agent() {
+        assert!(!pane_runs_agent(
+            pane_with(Some(7), Some("zsh")),
+            &agent_with(7, "node")
+        ));
+    }
+
+    /// A backend that does not report a pid skips the pid check.
+    #[test]
+    fn a_pane_without_a_pid_is_judged_by_its_command() {
+        let agent = agent_with(7, "node");
+        assert!(pane_runs_agent(pane_with(None, Some("node")), &agent));
+        assert!(!pane_runs_agent(pane_with(None, Some("zsh")), &agent));
+    }
+
+    /// A backend that does not report a command skips the command check.
+    #[test]
+    fn a_pane_without_a_command_is_judged_by_its_pid() {
+        let agent = agent_with(7, "node");
+        assert!(pane_runs_agent(pane_with(Some(7), None), &agent));
+        assert!(!pane_runs_agent(pane_with(Some(8), None), &agent));
+    }
+
+    /// With neither value reported, neither check runs.
+    #[test]
+    fn a_pane_without_a_pid_or_a_command_runs_the_agent() {
+        assert!(pane_runs_agent(
+            pane_with(None, None),
+            &agent_with(7, "node")
+        ));
     }
 
     #[test]

@@ -76,13 +76,13 @@ Git repository and only provides conservative evidence for tmux placement.
 
 ## Remote workspaces
 
-With `--remote`, or when `placement` names a remote, the worktree, its panes and the agent are created on a [remote server](/guide/remote/). The tmux window opens locally and relays to the remote session. The workspace starts from a local commit, so remote branch references aren't accepted: fetch the branch, then pass a new branch name with `--base origin/<branch>`. Unpushed local commits are sent along.
+With `--remote`, or when `placement` names a remote, the worktree, its panes and the agent are created on a [remote server](/guide/remote/). A local window opens and relays to the remote session. Under Rex it opens in a Rex session of its own, unless `mode: window` is set. When the remote sets `terminal: rex`, no local window opens: each pane gets a session on the server's Rex server, which Rex.app shows (see [Agent terminals on the server's Rex](/guide/remote/setup/#agent-terminals-on-the-servers-rex)). The workspace starts from a local commit, so remote branch references aren't accepted: fetch the branch, then pass a new branch name with `--base origin/<branch>`. Unpushed local commits are sent along.
 
 File operations and `post_create` hooks run on the remote, and agent isolation follows `sandbox.enabled` unless the remote explicitly overrides it. See [server or Docker](/guide/remote/setup/#server-or-docker). If an add fails part way, run the same command again to resume it.
 
 `--parent-session <name>` places the local relay window in that exact tmux session, creating it if needed. `--background` leaves focus unchanged. The parent is remembered for `open`, `close`, and `list`, including when run from another session.
 
-These options aren't available for remote workspaces: `--headless`, `--sandbox`, `--pr`, `--with-changes`, `--fork`, `--continue`, `--open-if-exists`, `--target-name`, `--dry-run`, session mode, and the `windows:` config. Remote workspaces need the tmux backend.
+These options aren't available for remote workspaces: `--headless`, `--sandbox`, `--pr`, `--with-changes`, `--fork`, `--continue`, `--open-if-exists`, `--target-name`, `--dry-run`, an explicit session mode (`mode: session` or `--mode session`), and the `windows:` config. Remote workspaces need the tmux or Rex backend.
 
 ## Resume a session at a recreated worktree path
 

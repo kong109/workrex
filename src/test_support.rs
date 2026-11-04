@@ -163,3 +163,19 @@ pub(crate) fn clear_local_git_env(command: &mut Command) {
         command.env_remove(format!("GIT_CONFIG_VALUE_{i}"));
     }
 }
+
+/// Write `script` to `path` as an executable without this process ever
+/// opening the file for writing. Another test thread that forks while the
+/// file is open hands the descriptor to its child until the child execs,
+/// and Linux refuses to run the file meanwhile with "Text file busy".
+pub fn write_script(path: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let status = Command::new("/bin/sh")
+        .args(["-c", "printf '%s' \"$2\" > \"$1\"", "sh"])
+        .arg(path)
+        .arg(script)
+        .status()
+        .unwrap();
+    assert!(status.success(), "writing {}", path.display());
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}

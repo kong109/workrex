@@ -27,6 +27,8 @@ def configure(
     global_config: Dict[str, Any] = {"nerdfont": False}
     if remotes is not None:
         global_config["remotes"] = remotes
+    if env.backend_name == "rex":
+        global_config["mode"] = "window"
     config_dir = env.home_path / ".config" / "workmux"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "config.yaml").write_text(yaml.dump(global_config))

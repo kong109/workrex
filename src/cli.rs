@@ -298,6 +298,13 @@ enum Commands {
         #[arg(long, allow_hyphen_values = true)]
         source_id: Option<String>,
     },
+    /// The deferred half of closing a Rex session, under the registry lock.
+    #[command(name = "_session-close", hide = true)]
+    SessionClose {
+        session_id: String,
+        #[arg(long, allow_hyphen_values = true)]
+        to: Option<String>,
+    },
 
     /// Create a new worktree and tmux window
     Add {
@@ -1209,6 +1216,8 @@ pub fn run() -> Result<()> {
                 config.as_deref(),
             )
         }
+        Commands::SessionClose { session_id, to } => crate::multiplexer::rex::RexBackend::new()
+            .close_session_with_id(&session_id, to.as_deref()),
         Commands::RemoteOperation { remote, ws_id, id } => {
             crate::remote::operation::run(&remote, &ws_id, &id)
         }

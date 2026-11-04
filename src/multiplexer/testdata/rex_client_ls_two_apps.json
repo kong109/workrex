@@ -1,0 +1,131 @@
+{
+  "clients": [
+    {
+      "client_id": "client:01a19e67-c952-7923-a102-902347c1c3c1",
+      "info": {
+        "kind": "app",
+        "platform": "macos",
+        "name": "Rex Beta",
+        "version": "0.1.0 (1696)",
+        "label": "rexbook"
+      },
+      "principal": {
+        "kind": "peer",
+        "transport": "unix",
+        "display": "uid 501",
+        "uid": 501,
+        "gid": 20,
+        "pid": 21023
+      },
+      "connected_at": "2026-11-02T14:36:04.3066-08:00",
+      "connection_state": "connected",
+      "session_ids": [
+        "session:01a19a0d-248b-7036-a995-09504a4b77e2",
+        "session:01a19de1-8768-7dfa-a348-64425299992c",
+        "session:01a19e94-f9b3-7101-bf0a-ccc553775252",
+        "session:01a19e96-8d53-79ee-b34c-90dc87c37f4b",
+        "session:01a19e96-8d93-7d52-b8d2-aabeafb940b6"
+      ]
+    },
+    {
+      "client_id": "client:01a19e67-c953-7236-b796-f3c7b6be252e",
+      "principal": {
+        "kind": "peer",
+        "transport": "unix",
+        "display": "uid 501",
+        "uid": 501,
+        "gid": 20,
+        "pid": 21023
+      },
+      "connected_at": "2026-11-02T14:36:04.307146-08:00",
+      "connection_state": "connected"
+    },
+    {
+      "client_id": "client:01a19e96-8d50-77e7-887d-ab3610d6082c",
+      "info": {
+        "kind": "cli",
+        "platform": "macos",
+        "name": "rex",
+        "version": "0.0.1793377904-ge6592f"
+      },
+      "principal": {
+        "kind": "peer",
+        "transport": "unix",
+        "display": "uid 501",
+        "uid": 501,
+        "gid": 20,
+        "pid": 1242
+      },
+      "connected_at": "2026-11-02T15:27:09.136518-08:00",
+      "connection_state": "connected"
+    },
+    {
+      "client_id": "client:01a19e96-8dc4-79c4-8e70-096be127fedd",
+      "info": {
+        "kind": "cli",
+        "platform": "macos",
+        "name": "rex",
+        "version": "0.0.1793377904-ge6592f"
+      },
+      "principal": {
+        "kind": "peer",
+        "transport": "unix",
+        "display": "uid 501",
+        "uid": 501,
+        "gid": 20,
+        "pid": 1270
+      },
+      "connected_at": "2026-11-02T15:27:09.25264-08:00",
+      "connection_state": "connected",
+      "session_ids": [
+        "session:01a19e96-8d93-7d52-b8d2-aabeafb940b6"
+      ]
+    },
+    {
+      "client_id": "client:01a19e96-91b8-723e-88da-8132b5fdf15f",
+      "info": {
+        "kind": "cli",
+        "platform": "macos",
+        "name": "rex",
+        "version": "0.0.1793377904-ge6592f"
+      },
+      "principal": {
+        "kind": "peer",
+        "transport": "unix",
+        "display": "uid 501",
+        "uid": 501,
+        "gid": 20,
+        "pid": 1525
+      },
+      "connected_at": "2026-11-02T15:27:10.264147-08:00",
+      "connection_state": "connected"
+    },
+    {
+      "client_id": "client:01a19e9a-1111-7000-8000-000000000002",
+      "info": {
+        "kind": "app",
+        "platform": "macos",
+        "name": "Rex Beta",
+        "version": "0.1.0 (1696)",
+        "label": "second-mac"
+      },
+      "principal": {
+        "kind": "peer",
+        "transport": "unix",
+        "display": "uid 501",
+        "uid": 501,
+        "gid": 20,
+        "pid": 21023
+      },
+      "connected_at": "2026-11-02T15:30:00.5-08:00",
+      "connection_state": "connected",
+      "session_ids": [
+        "session:01a19a0d-248b-7036-a995-09504a4b77e2",
+        "session:01a19de1-8768-7dfa-a348-64425299992c",
+        "session:01a19e94-f9b3-7101-bf0a-ccc553775252",
+        "session:01a19e96-8d53-79ee-b34c-90dc87c37f4b",
+        "session:01a19e96-8d93-7d52-b8d2-aabeafb940b6"
+      ]
+    }
+  ]
+}

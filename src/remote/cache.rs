@@ -38,6 +38,10 @@ pub struct ExecutionRecord {
     /// Pinned node binary that started the execution; attaching uses it, so
     /// a laptop upgrade does not strand running agents.
     pub node_bin: String,
+    /// Set when the agents' terminals are on the node's Rex server, which
+    /// Rex.app shows; no local window relays them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rex: Option<crate::remote::protocol::RexPlacement>,
 }
 
 /// How far bringing the workspace's work to the laptop got.

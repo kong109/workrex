@@ -1019,7 +1019,7 @@ pub struct Config {
 
     /// Mode for tmux operations: window (default) or session
     #[serde(default)]
-    /// None means "use default" (Window), Some means explicitly set
+    /// None means "use default" (Session under Rex, else Window), Some means explicitly set
     pub mode: Option<MuxMode>,
 
     /// Session mode only. Session to return to when a workmux-managed session
@@ -1525,6 +1525,22 @@ pub struct RemoteConfig {
     /// the release matching this workmux version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
+    /// Where the agents' terminals live: the node's tmux, relayed into a
+    /// local window (default), or the node's Rex server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<RemoteTerminal>,
+    /// Label of the Rex.app client to switch when jumping to a Rex-hosted
+    /// agent; unset picks the only app connected to the node's server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rex_client: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteTerminal {
+    #[default]
+    Tmux,
+    Rex,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
@@ -3588,9 +3604,20 @@ impl Config {
     }
 
     /// Get the mode (window or session).
-    /// Returns the configured value or defaults to Window.
+    /// Returns the configured value or the default for the detected backend.
     pub fn mode(&self) -> MuxMode {
+        self.mode_for(crate::multiplexer::detect_backend())
+    }
+
+    pub fn remote_mode(&self) -> MuxMode {
         self.mode.unwrap_or(MuxMode::Window)
+    }
+
+    pub fn mode_for(&self, backend: crate::multiplexer::BackendType) -> MuxMode {
+        self.mode.unwrap_or(match backend {
+            crate::multiplexer::BackendType::Rex => MuxMode::Session,
+            _ => MuxMode::Window,
+        })
     }
 
     /// Session to return to when a workmux-managed session closes.
@@ -4083,6 +4110,20 @@ mod tests {
     use super::{DashboardConfig, InputExitKey, RemoteConfig, RemoteIsolation};
     use crate::test_support;
     use tempfile::TempDir;
+
+    #[test]
+    fn unset_mode_is_session_under_rex_and_window_under_tmux() {
+        use super::MuxMode;
+        use crate::multiplexer::BackendType;
+        let config = Config::default();
+        assert_eq!(config.mode_for(BackendType::Rex), MuxMode::Session);
+        assert_eq!(config.mode_for(BackendType::Tmux), MuxMode::Window);
+        let window: Config = serde_yaml::from_str("mode: window\n").expect("config parses");
+        assert_eq!(window.mode_for(BackendType::Rex), MuxMode::Window);
+        assert_eq!(config.remote_mode(), MuxMode::Window);
+        let session: Config = serde_yaml::from_str("mode: session\n").expect("config parses");
+        assert_eq!(session.remote_mode(), MuxMode::Session);
+    }
 
     #[test]
     fn default_session_is_none_by_default() {
@@ -5823,6 +5864,8 @@ agents:
             path: None,
             isolation: None,
             binary: None,
+            terminal: None,
+            rex_client: None,
         };
         let global = Config {
             remotes: [("hetzner".to_string(), remote("trusted"))]

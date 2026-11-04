@@ -20,7 +20,7 @@ use crate::remote::protocol::code;
 use crate::shell::shell_quote;
 
 /// Slot prefix of shell sessions; pane sessions use a bare index.
-const SHELL_SLOT: &str = "shell";
+pub const SHELL_SLOT: &str = "shell";
 
 /// What a container shell runs: bash where the image has it.
 const CONTAINER_SHELL: &str =

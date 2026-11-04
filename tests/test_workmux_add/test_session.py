@@ -3,6 +3,7 @@
 import pytest
 
 from ..conftest import (
+    switch_fails_without_client,
     assert_session_exists,
     assert_session_not_exists,
     assert_window_not_exists,
@@ -14,8 +15,40 @@ from ..conftest import (
 )
 from .conftest import add_branch_and_get_worktree
 
-# Session mode is tmux-only until WR-3 lifts the gate for Rex.
-pytestmark = pytest.mark.tmux_only
+
+def test_add_without_mode_creates_session_under_rex(
+    mux_server, workmux_exe_path, repo_path
+):
+    env = mux_server
+    if env.backend_name != "rex":
+        pytest.skip("only Rex defaults to session mode")
+    branch_name = "feature-rex-default"
+    (env.home_path / ".config" / "workmux" / "config.yaml").write_text("{}\n")
+    write_workmux_config(repo_path)
+
+    add_branch_and_get_worktree(
+        env, workmux_exe_path, repo_path, branch_name, extra_args="--background"
+    )
+
+    assert_session_exists(env, get_session_name(branch_name))
+    assert_window_not_exists(env, get_window_name(branch_name))
+
+
+def test_a_session_add_under_rex_names_the_worktree_in_its_hint(
+    mux_server, workmux_exe_path, repo_path
+):
+    env = mux_server
+    if env.backend_name != "rex":
+        pytest.skip("only Rex leaves the app put and prints a hint")
+    branch_name = "feature-hint"
+    write_workmux_config(repo_path)
+
+    result = run_workmux_command(
+        env, workmux_exe_path, repo_path, f"add {branch_name} --session"
+    )
+
+    # The hint names the worktree, not the session label an agent renames.
+    assert f"to see {branch_name}, press Enter" in result.stdout, result.stdout
 
 
 class TestSessionCreation:
@@ -241,10 +274,7 @@ class TestSessionBackground:
         assert worktree_path.is_dir()
 
         # Verify the session's pane is in the worktree directory
-        pane_path_result = env.tmux(
-            ["display-message", "-t", f"={session_name}:", "-p", "#{pane_current_path}"]
-        )
-        assert str(worktree_path) in pane_path_result.stdout
+        assert str(worktree_path) in env.session_pane_path(session_name)
 
 
 class TestSessionRemove:
@@ -356,15 +386,12 @@ class TestSessionOpen:
             workmux_exe_path,
             repo_path,
             f"open {branch_name}",
-            expect_fail=True,  # May fail due to switch-client, but session should exist
+            expect_fail=switch_fails_without_client(env),
         )
 
         # Even if switch-client fails, the session should be recreated
         # Check if session exists OR if it was a switch-client error
-        sessions_result = env.tmux(
-            ["list-sessions", "-F", "#{session_name}"], check=False
-        )
-        existing_sessions = [s for s in sessions_result.stdout.strip().split("\n") if s]
+        existing_sessions = env.list_sessions()
 
         # The session should exist (even if switching to it failed)
         assert session_name in existing_sessions, (
@@ -389,7 +416,11 @@ class TestOpenSessionFlag:
 
         # Create as window-mode worktree
         add_branch_and_get_worktree(
-            env, workmux_exe_path, repo_path, branch_name, extra_args="--background"
+            env,
+            workmux_exe_path,
+            repo_path,
+            branch_name,
+            extra_args="--mode window --background",
         )
 
         # Close the window
@@ -401,14 +432,11 @@ class TestOpenSessionFlag:
             workmux_exe_path,
             repo_path,
             f"open {branch_name} --session",
-            expect_fail=True,  # May fail due to switch-client in test env
+            expect_fail=switch_fails_without_client(env),
         )
 
         # The session should be created
-        sessions_result = env.tmux(
-            ["list-sessions", "-F", "#{session_name}"], check=False
-        )
-        existing_sessions = [s for s in sessions_result.stdout.strip().split("\n") if s]
+        existing_sessions = env.list_sessions()
 
         assert session_name in existing_sessions, (
             f"Session {session_name!r} should exist after open --session. "
@@ -428,7 +456,11 @@ class TestOpenSessionFlag:
 
         # Create as window-mode worktree
         add_branch_and_get_worktree(
-            env, workmux_exe_path, repo_path, branch_name, extra_args="--background"
+            env,
+            workmux_exe_path,
+            repo_path,
+            branch_name,
+            extra_args="--mode window --background",
         )
 
         # Close the window
@@ -440,7 +472,7 @@ class TestOpenSessionFlag:
             workmux_exe_path,
             repo_path,
             f"open {branch_name} --session",
-            expect_fail=True,
+            expect_fail=switch_fails_without_client(env),
         )
 
         # Close again
@@ -458,13 +490,10 @@ class TestOpenSessionFlag:
             workmux_exe_path,
             repo_path,
             f"open {branch_name}",
-            expect_fail=True,
+            expect_fail=switch_fails_without_client(env),
         )
 
-        sessions_result = env.tmux(
-            ["list-sessions", "-F", "#{session_name}"], check=False
-        )
-        existing_sessions = [s for s in sessions_result.stdout.strip().split("\n") if s]
+        existing_sessions = env.list_sessions()
 
         assert session_name in existing_sessions, (
             f"Session {session_name!r} should exist after subsequent open (mode persisted). "
@@ -484,12 +513,15 @@ class TestOpenSessionFlag:
 
         # Create as window-mode worktree
         add_branch_and_get_worktree(
-            env, workmux_exe_path, repo_path, branch_name, extra_args="--background"
+            env,
+            workmux_exe_path,
+            repo_path,
+            branch_name,
+            extra_args="--mode window --background",
         )
 
         # Verify window exists
-        result = env.tmux(["list-windows", "-t", "test:", "-F", "#{window_name}"])
-        existing_windows = [w for w in result.stdout.strip().split("\n") if w]
+        existing_windows = env.list_windows_in_session("test")
         assert window_name in existing_windows
 
         # Open with --session (should close old window and create session)
@@ -498,21 +530,17 @@ class TestOpenSessionFlag:
             workmux_exe_path,
             repo_path,
             f"open {branch_name} --session",
-            expect_fail=True,
+            expect_fail=switch_fails_without_client(env),
         )
 
         # Old window should be gone
-        result = env.tmux(["list-windows", "-t", "test:", "-F", "#{window_name}"])
-        existing_windows = [w for w in result.stdout.strip().split("\n") if w]
+        existing_windows = env.list_windows_in_session("test")
         assert window_name not in existing_windows, (
             f"Window {window_name!r} should have been closed during mode conversion"
         )
 
         # New session should exist
-        sessions_result = env.tmux(
-            ["list-sessions", "-F", "#{session_name}"], check=False
-        )
-        existing_sessions = [s for s in sessions_result.stdout.strip().split("\n") if s]
+        existing_sessions = env.list_sessions()
         assert session_name in existing_sessions, (
             f"Session {session_name!r} should exist after conversion. "
             f"Existing sessions: {existing_sessions!r}"
@@ -534,7 +562,11 @@ class TestMixedMode:
 
         # Create window-mode worktree (use --background to stay in test session)
         add_branch_and_get_worktree(
-            env, workmux_exe_path, repo_path, window_branch, extra_args="--background"
+            env,
+            workmux_exe_path,
+            repo_path,
+            window_branch,
+            extra_args="--mode window --background",
         )
 
         # Create session-mode worktree
@@ -547,8 +579,7 @@ class TestMixedMode:
         )
 
         # Verify window exists for window-mode (specify test session explicitly)
-        result = env.tmux(["list-windows", "-t", "test:", "-F", "#{window_name}"])
-        existing_windows = [w for w in result.stdout.strip().split("\n") if w]
+        existing_windows = env.list_windows_in_session("test")
         window_name = get_window_name(window_branch)
         assert window_name in existing_windows, (
             f"Window {window_name!r} not found in test session. Existing: {existing_windows!r}"
@@ -569,7 +600,11 @@ class TestMixedMode:
 
         # Create both types in background
         add_branch_and_get_worktree(
-            env, workmux_exe_path, repo_path, window_branch, extra_args="--background"
+            env,
+            workmux_exe_path,
+            repo_path,
+            window_branch,
+            extra_args="--mode window --background",
         )
         add_branch_and_get_worktree(
             env,
@@ -580,8 +615,7 @@ class TestMixedMode:
         )
 
         # Verify both exist (specify test session for window check)
-        result = env.tmux(["list-windows", "-t", "test:", "-F", "#{window_name}"])
-        existing_windows = [w for w in result.stdout.strip().split("\n") if w]
+        existing_windows = env.list_windows_in_session("test")
         window_name = get_window_name(window_branch)
         assert window_name in existing_windows, (
             f"Window {window_name!r} not found in test session. Existing: {existing_windows!r}"
@@ -595,8 +629,7 @@ class TestMixedMode:
 
         # Verify session is gone but window still exists
         assert_session_not_exists(env, get_session_name(session_branch))
-        result = env.tmux(["list-windows", "-t", "test:", "-F", "#{window_name}"])
-        existing_windows = [w for w in result.stdout.strip().split("\n") if w]
+        existing_windows = env.list_windows_in_session("test")
         assert window_name in existing_windows, (
             f"Window {window_name!r} should still exist after session removal"
         )
@@ -607,8 +640,7 @@ class TestMixedMode:
         )
 
         # Verify window is gone
-        result = env.tmux(["list-windows", "-t", "test:", "-F", "#{window_name}"])
-        existing_windows = [w for w in result.stdout.strip().split("\n") if w]
+        existing_windows = env.list_windows_in_session("test")
         assert window_name not in existing_windows, (
             f"Window {window_name!r} should be removed"
         )

@@ -54,6 +54,8 @@ pub struct CreateResult {
     pub mux_target_full_name: String,
     /// The mux mode that was actually used (window or session)
     pub mode: MuxMode,
+    /// How to reach the new session when the backend left the view alone.
+    pub view_hint: Option<String>,
 }
 
 /// Result of merging a worktree

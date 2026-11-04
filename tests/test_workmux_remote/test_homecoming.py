@@ -18,8 +18,6 @@ from ..conftest import (
 from ..support.bin_name import rebrand
 from .conftest import Node, git, local_records, wm, write_script
 
-pytestmark = pytest.mark.tmux_only
-
 
 def configure(repo: Path, **extra) -> None:
     project = {"nerdfont": False, "panes": [{"command": "echo AGENT-READY"}], **extra}
@@ -165,6 +163,8 @@ def test_rebase_conflict_is_resolved_on_the_laptop(
     assert not copy.exists()
 
 
+# Rex opens the homecoming worktree in a session of its own, not beside the caller.
+@pytest.mark.tmux_only
 def test_keep_then_cleanup_pending_never_merges_twice(
     mux_server: TmuxEnvironment,
     workmux_exe_path: Path,
@@ -260,6 +260,8 @@ def test_existing_branch_merges_into_its_stored_base(
     assert git(repo, "ls-tree", "--name-only", "main", "work.txt") == ""
 
 
+# Rex opens the homecoming worktree in a session of its own, not beside the caller.
+@pytest.mark.tmux_only
 def test_remote_pull_brings_the_workspace_home(
     mux_server: TmuxEnvironment,
     workmux_exe_path: Path,

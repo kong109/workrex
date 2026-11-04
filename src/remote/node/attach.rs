@@ -17,6 +17,9 @@ use crate::remote::protocol::code;
 pub const SESSION_GONE: i32 = 103;
 /// The client was detached; the session is still running.
 pub const DETACHED: i32 = 104;
+/// The pane's terminal is on the node's Rex server, which Rex.app shows;
+/// there is nothing to relay.
+pub const HOSTED_ON_REX: i32 = 105;
 
 /// Terminal type used when the laptop's is unknown to the node.
 const FALLBACK_TERM: &str = "xterm-256color";
@@ -28,6 +31,10 @@ pub fn attach(root: &NodeRoot, ex_id: &str, slot: &str) -> Result<i32> {
             code::BAD_REQUEST,
             format!("invalid session '{slot}'"),
         ));
+    }
+    if !slot.starts_with(super::shell::SHELL_SLOT) && hosted_on_rex(root, ex_id) {
+        eprintln!("{ex_id}-{slot} is hosted on the node's Rex server; open it in Rex.app");
+        return Ok(HOSTED_ON_REX);
     }
     let socket = tmux_socket(root)?;
     let name = format!("{ex_id}-{slot}");
@@ -56,6 +63,16 @@ pub fn attach(root: &NodeRoot, ex_id: &str, slot: &str) -> Result<i32> {
         bail!("tmux attach failed with {status}");
     }
     Ok(DETACHED)
+}
+
+/// Whether `ex_id` is a Rex-hosted execution of a workspace on the node.
+/// Its shells stay on the node tmux server.
+fn hosted_on_rex(root: &NodeRoot, ex_id: &str) -> bool {
+    root.workspaces().iter().any(|ws| {
+        ws.execution
+            .as_ref()
+            .is_some_and(|execution| execution.ex_id == ex_id && execution.rex.is_some())
+    })
 }
 
 fn has_terminfo(term: &str) -> bool {

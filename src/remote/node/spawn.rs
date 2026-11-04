@@ -150,6 +150,11 @@ pub fn spawn(root: &NodeRoot, request: SpawnRequest) -> Result<SpawnResponse> {
                 ex_id: cache::new_id('x'),
                 use_prompt: true,
                 run_commands: true,
+                // A sibling's terminals live where its parent's do.
+                terminal: match parent.execution.as_ref().and_then(|ex| ex.rex.as_ref()) {
+                    Some(_) => crate::config::RemoteTerminal::Rex,
+                    None => crate::config::RemoteTerminal::Tmux,
+                },
             },
         )
     });

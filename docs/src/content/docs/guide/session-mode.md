@@ -5,6 +5,8 @@ description: Create worktrees in their own tmux sessions instead of windows
 
 By default, workmux creates tmux **windows** within your current session. With session mode, each worktree gets its own **tmux session** instead.
 
+Under [Rex](/guide/rex/#session-mode), session mode is the default and each worktree gets its own Rex session.
+
 This is useful when you want each worktree to have multiple windows, or when you prefer the isolation of separate sessions (each with its own window list, history, and layout).
 
 ## Enabling session mode

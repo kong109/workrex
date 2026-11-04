@@ -31,6 +31,80 @@ Names may contain letters, digits, `.`, `_` and `-`, and must start with a lette
 
 `remotes` only works in your global config. A project's `.workmux.yaml` can't add a server, so a repository can't send your code anywhere; it can only choose among your servers with [`placement`](#choosing-where-new-agents-go). The other keys, `path`, `isolation` and `binary`, are in the [configuration reference](/guide/configuration/#remotes).
 
+## A server in WSL
+
+A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside the distro on its own port, because port 22 on the Windows machine usually belongs to Windows OpenSSH, which can't run agents. This example uses port 2222 on a Windows machine named `winbox` (its Tailscale or LAN name) and the WSL user `cicero`.
+
+1. In WSL, turn on systemd, so linger and the `ssh` socket work. Add this to `/etc/wsl.conf`, then run `wsl.exe --shutdown` on Windows and open the distro again:
+
+   ```ini
+   [boot]
+   systemd=true
+   ```
+
+2. In WSL, install the OpenSSH server, move the `ssh.socket` unit from port 22 to 2222, and turn on linger:
+
+   ```bash
+   sudo apt install openssh-server
+   sudo systemctl edit ssh.socket
+   sudo systemctl restart ssh.socket
+   sudo loginctl enable-linger cicero
+   ```
+
+   In the editor that `systemctl edit` opens, add this drop-in. The empty `ListenStream=` line clears the default port 22. Without it, the socket listens on port 22 and port 2222. Give both addresses: Ubuntu's `ssh.socket` sets `BindIPv6Only=ipv6-only`, so a bare `ListenStream=2222` accepts IPv6 connections only.
+
+   ```ini
+   [Socket]
+   ListenStream=
+   ListenStream=0.0.0.0:2222
+   ListenStream=[::]:2222
+   ```
+
+   With WSL's mirrored networking, port 2222 in WSL is port 2222 on Windows. Otherwise forward it from Windows to WSL, or reach the distro through [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh) running inside it.
+
+3. On your machine, add an alias to `~/.ssh/config` and check that `ssh winbox-wsl-ssh` logs in without a prompt:
+
+   ```
+   Host winbox-wsl-ssh
+     HostName winbox
+     Port 2222
+     User cicero
+   ```
+
+4. Point the remote at the alias:
+
+   ```yaml
+   # ~/.config/workmux/config.yaml
+   remotes:
+     winbox:
+       host: winbox-wsl-ssh
+   ```
+
+`workmux remote doctor winbox` names the WSL fix when the connection fails: Windows OpenSSH answering on the configured port, or nothing answering because the distro or its `ssh.socket` is down. It also names the systemd fix when systemd is not running in the distro, and `loginctl enable-linger` when systemd runs but linger is off.
+
+Remote agents run under the tmux and Rex backends. Under Rex, where workmux defaults to sessions, each remote agent's relay window opens in a Rex session of its own, and closing the window closes the session.
+
+## Agent terminals on the server's Rex
+
+By default a remote agent runs in tmux on the server, and your machine shows it in a relay window. If the server runs a Rex server that Rex.app on your machine reaches over Tailscale, the agent's terminal can live on that Rex server instead:
+
+```yaml
+# ~/.config/workmux/config.yaml
+remotes:
+  winbox:
+    host: winbox-wsl-ssh
+    isolation: none
+    terminal: rex
+```
+
+`add --remote winbox` then creates one Rex session per pane on the server, and opens no relay window on your machine. Rex.app lists the sessions under the server's host, and `workmux open <name>` selects the first one in Rex.app. The dashboard, `send`, `wait`, `capture`, `merge`, `remove` and `remote gc` work as with tmux.
+
+- `terminal: rex` needs `isolation: none`. Agents in Docker can't run in a Rex session yet.
+- The server's Rex server must be on Tailscale when the workspace is created, and `workmux open` needs Remote Control on in Rex.app. When several Rex.app clients are connected to the server, set `remotes.<name>.rex_client` to the label of the one to switch.
+- Each workspace keeps the terminal it was created with. If the server's Rex server restarts, its sessions are gone; `workmux open` starts the agents again in new ones.
+- Secrets reach the agent through a file its shell reads once and removes, so they don't appear in the session's command line or screen.
+- `workmux remote shell` still opens its shells in tmux on the server.
+
 ## Server or Docker
 
 Remote agents are sandboxed exactly when the same agent would be sandboxed locally. `remotes.<name>.isolation` overrides that for one server, in either direction.

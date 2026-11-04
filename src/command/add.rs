@@ -389,8 +389,8 @@ fn check_remote_options(spec: &RemoteSpec, options: &[(bool, &str)]) -> Result<(
             spec.name
         );
     }
-    if detect_backend() != BackendType::Tmux {
-        bail!("remote agents need tmux; pass --local to create a local agent");
+    if !matches!(detect_backend(), BackendType::Tmux | BackendType::Rex) {
+        bail!("remote agents need tmux or Rex; pass --local to create a local agent");
     }
     Ok(())
 }
@@ -555,7 +555,11 @@ pub fn run(
     } else {
         None
     };
-    let mode = mode_override.unwrap_or(initial_config.mode());
+    let mode = mode_override.unwrap_or(if remote.is_some() {
+        initial_config.remote_mode()
+    } else {
+        initial_config.mode()
+    });
     if let Some(spec) = &remote {
         check_remote_options(spec, &[(mode == MuxMode::Session, "Session mode")])?;
     }
@@ -705,6 +709,11 @@ pub fn run(
     } else {
         options.target_window_name = target_name;
         options.window_session_name = parent_session;
+    }
+    // Under Rex sessions are the default, so a remote agent's relay window
+    // gets a session of its own.
+    if remote.is_some() && mode_override.is_none() && initial_config.mode() == MuxMode::Session {
+        options.mode = MuxMode::Session;
     }
 
     // Validate multi-worktree arguments
@@ -1212,8 +1221,15 @@ impl<'a> CreationPlan<'a> {
                 if self.max_concurrent.is_some() {
                     active_targets.push(record.window_name.clone());
                 }
+                // A hosted workspace's terminals are sessions on the node's
+                // Rex server; no local window holds them.
+                let holder = match record.execution.as_ref().and_then(|e| e.rex.as_ref()) {
+                    Some(rex) if rex.sessions.len() == 1 => "Rex session".to_string(),
+                    Some(_) => "Rex sessions".to_string(),
+                    None => format!("{} window", mux.name()),
+                };
                 println!(
-                    "✓ Successfully created remote workspace and tmux window for '{}' on '{}'",
+                    "✓ Successfully created remote workspace and {holder} for '{}' on '{}'",
                     record.branch, record.remote
                 );
                 if let Some(base) = &record.base_label {
@@ -1293,6 +1309,9 @@ impl<'a> CreationPlan<'a> {
                 println!("  Base: {}", base);
             }
             println!("  Worktree: {}", result.worktree_path.display());
+            if let Some(hint) = &result.view_hint {
+                println!("{hint}");
+            }
         }
 
         for target in remote_wait_targets {

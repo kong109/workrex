@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -55,6 +55,12 @@ rex_id!(SessionId);
 rex_id!(WindowId);
 rex_id!(BlockId);
 rex_id!(ClientId);
+
+mod hosting;
+mod session;
+mod target;
+
+pub use hosting::{HostedRead, HostedSession};
 
 impl BlockId {
     fn parse(pane_id: &str) -> Result<Self> {
@@ -241,7 +247,7 @@ fn changes_nothing(args: &[&str]) -> bool {
 }
 
 /// Session reads a command can reuse. `writes` counts the writes that have
-/// returned, so a read that overlapped one is not stored.
+/// returned and each forget, so a read that overlapped one is not stored.
 #[derive(Debug, Default)]
 struct Reads {
     writes: u64,
@@ -320,14 +326,34 @@ struct CreatedWindow {
 }
 
 #[derive(Debug, Deserialize)]
-struct CreatedSession {
-    #[serde(default)]
-    initial_windows: Vec<CreatedWindow>,
-}
-
-#[derive(Debug, Deserialize)]
 struct CreatedSplit {
     block_ids: Vec<BlockId>,
+}
+
+/// Starts the replacement for block `old` beside it and closes `old`, in
+/// one `rex do`. `rex do` drops error codes, so each step returns the error
+/// Rex gave for it.
+const RESPAWN: &str = r#"
+local a = rex.args
+local attached, failed = rex.session.attach{session_id = a.session_id}
+if not attached then return {split_error = failed} end
+local split, err = rex.call("session.new_split", {
+  session_id = a.session_id, anchor_id = a.old, direction = "horizontal",
+  side = "after", layout = a.layout,
+})
+if not split then return {split_error = err} end
+local _, closed = rex.call("block.close", {session_id = a.session_id, block_id = a.old})
+return {block_ids = split.block_ids, close_error = closed}
+"#;
+
+#[derive(Debug, Deserialize)]
+struct Respawned {
+    #[serde(default)]
+    block_ids: Vec<BlockId>,
+    #[serde(default)]
+    split_error: Option<String>,
+    #[serde(default)]
+    close_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -367,12 +393,16 @@ struct ClientEntry {
 }
 
 impl ClientList {
-    fn is_app_attached_to(&self, client: &ClientId, session: &SessionId) -> bool {
-        self.clients.iter().any(|entry| {
-            &entry.client_id == client
-                && entry.connection_state != "lost"
+    fn connected_apps(&self) -> impl Iterator<Item = &ClientEntry> {
+        self.clients.iter().filter(|entry| {
+            entry.connection_state != "lost"
                 && entry.info.as_ref().is_some_and(|info| info.kind == "app")
-                && entry.session_ids.iter().flatten().any(|id| id == session)
+        })
+    }
+
+    fn is_app_attached_to(&self, client: &ClientId, session: &SessionId) -> bool {
+        self.connected_apps().any(|entry| {
+            &entry.client_id == client && entry.session_ids.iter().flatten().any(|id| id == session)
         })
     }
 }
@@ -391,6 +421,8 @@ fn shows_caller(clients: &ClientList, owner: &ClientId, caller_session: &Session
 struct ClientInfo {
     #[serde(default)]
     kind: String,
+    #[serde(default)]
+    label: Option<String>,
 }
 
 /// Workmux's identity for a window it created. Rex windows carry only a
@@ -447,9 +479,10 @@ impl std::error::Error for CallError {}
 impl CallError {
     fn from_stderr(args: &[&str], stderr: &str) -> Self {
         let stderr = stderr.trim();
-        let gone_block =
-            stderr.starts_with("Error: block target ") && stderr.ends_with(" not found");
-        if gone_block
+        let gone_target = (stderr.starts_with("Error: block target ")
+            || stderr.starts_with("Error: session target "))
+            && stderr.ends_with(" not found");
+        if gone_target
             || stderr.contains("code=not_found")
             || stderr.contains("code=session_not_found")
         {
@@ -678,6 +711,10 @@ pub struct RexBackend {
     caller: Caller,
     endpoint: OnceLock<String>,
     block_sessions: Mutex<HashMap<BlockId, SessionId>>,
+    /// Where `session` keeps the IDs of the sessions workmux created.
+    registry: Option<PathBuf>,
+    /// Env file the next respawned block sources (see `hosting`).
+    respawn_env: Mutex<Option<PathBuf>>,
     program_status: Arc<ProgramStatuses>,
 }
 
@@ -711,6 +748,10 @@ impl RexBackend {
             caller: Caller::from_env(),
             endpoint: OnceLock::new(),
             block_sessions: Mutex::new(HashMap::new()),
+            registry: crate::xdg::state_dir()
+                .ok()
+                .map(|dir| dir.join("rex-sessions.json")),
+            respawn_env: Mutex::new(None),
             program_status: Arc::default(),
         }
     }
@@ -760,10 +801,7 @@ impl RexBackend {
     /// Fails every call on a server whose API this backend does not speak,
     /// before a changed response shape surfaces as a parse error.
     fn ensure_supported(&self) -> CallResult<()> {
-        let key = self
-            .server
-            .as_deref()
-            .map(|server| canonical_unix_endpoint(server).unwrap_or_else(|| server.to_string()));
+        let key = self.verdict_key();
         let mut verdicts = SERVER_VERDICTS.lock().unwrap();
         let verdict = match verdicts.get(&key) {
             Some(verdict) => verdict.clone(),
@@ -777,23 +815,82 @@ impl RexBackend {
         verdict.map_err(CallError::Unsupported)
     }
 
-    fn exec(&self, args: &[&str], stdin: Option<&str>) -> CallResult<String> {
-        self.exec_within(args, stdin, None)
+    /// Why this server's API is unsupported, once a call has found it so.
+    pub fn unsupported(&self) -> Option<String> {
+        SERVER_VERDICTS
+            .lock()
+            .unwrap()
+            .get(&self.verdict_key())
+            .and_then(|verdict| verdict.clone().err())
     }
 
+    fn verdict_key(&self) -> Option<String> {
+        self.server
+            .as_deref()
+            .map(|server| canonical_unix_endpoint(server).unwrap_or_else(|| server.to_string()))
+    }
+
+    /// Keeps the verdict on a `server.version` answer read some other way,
+    /// so later calls skip their own check.
+    fn record_verdict(&self, version: &ServerVersion) -> CallResult<()> {
+        let verdict = version.check();
+        SERVER_VERDICTS
+            .lock()
+            .unwrap()
+            .insert(self.verdict_key(), verdict.clone());
+        verdict.map_err(CallError::Unsupported)
+    }
+
+    /// Runs Lua `script` with `args` in one `rex do`, on a supported server.
+    fn run_script(&self, name: &str, script: &str, args: &Value) -> CallResult<String> {
+        self.ensure_supported()?;
+        self.exec_script(name, script, args)
+    }
+
+    /// Like `run_script` without the version check; a failure names the
+    /// script `name` instead of quoting it.
+    fn exec_script(&self, name: &str, script: &str, args: &Value) -> CallResult<String> {
+        self.exec_within(
+            &["do", "-e", script, "--args", "-", "--json"],
+            Some(&args.to_string()),
+            None,
+            &["do", name],
+        )
+    }
+
+    fn exec(&self, args: &[&str], stdin: Option<&str>) -> CallResult<String> {
+        self.exec_within(args, stdin, None, args)
+    }
+
+    /// Every `rex` process a backend runs goes through here. A failure is
+    /// named `name`: the arguments, or a short name for ones that quote a
+    /// script.
     fn exec_within(
         &self,
         args: &[&str],
         stdin: Option<&str>,
         timeout: Option<Duration>,
+        name: &[&str],
     ) -> CallResult<String> {
-        let result = self.spawn(args, stdin, timeout);
+        let result = self
+            .spawn(args, stdin, timeout)
+            .and_then(|output| Self::answer(name, output));
         if !changes_nothing(args) {
-            let mut reads = self.reads.lock().unwrap();
-            reads.writes += 1;
-            reads.answers.clear();
+            self.forget_reads();
         }
         result
+    }
+
+    /// Stdout of a successful call; the error a failed one names as `args`.
+    fn answer(args: &[&str], output: std::process::Output) -> CallResult<String> {
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(CallError::from_stderr(
+                args,
+                &String::from_utf8_lossy(&output.stderr),
+            ))
+        }
     }
 
     fn spawn(
@@ -801,7 +898,7 @@ impl RexBackend {
         args: &[&str],
         stdin: Option<&str>,
         timeout: Option<Duration>,
-    ) -> CallResult<String> {
+    ) -> CallResult<std::process::Output> {
         let program = &self.program;
         let mut command = Command::new(program);
         for var in Self::INHERITED_SCOPE_VARS {
@@ -848,19 +945,10 @@ impl RexBackend {
                 thread::sleep(Duration::from_millis(5));
             }
         }
-        let output = child
+        child
             .wait_with_output()
             .context("Failed to wait for rex")
-            .map_err(CallError::Failed)?;
-
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-        } else {
-            Err(CallError::from_stderr(
-                args,
-                &String::from_utf8_lossy(&output.stderr),
-            ))
-        }
+            .map_err(CallError::Failed)
     }
 
     fn block_layout(&self, cwd: &Path, script: Option<&str>) -> Result<Value> {
@@ -899,12 +987,21 @@ impl RexBackend {
         Ok(Self::parse("whoami", &output)?)
     }
 
-    fn sessions(&self) -> Result<Vec<SessionSummary>> {
+    fn raw_sessions(&self) -> Result<Vec<SessionSummary>> {
         Ok(self.api::<SessionList>("session.list", json!({}))?.sessions)
     }
 
+    fn sessions(&self) -> Result<Vec<SessionSummary>> {
+        let mut sessions = self.raw_sessions()?;
+        self.apply_managed_names(&mut sessions);
+        Ok(sessions)
+    }
+
     fn view(&self, session: &SessionId) -> CallResult<SessionView> {
-        self.api("session.view", json!({ "session_id": session.as_str() }))
+        let mut view: SessionView =
+            self.api("session.view", json!({ "session_id": session.as_str() }))?;
+        self.name_view(&mut view);
+        Ok(view)
     }
 
     fn views(&self) -> Result<Vec<SessionView>> {
@@ -1123,10 +1220,6 @@ impl RexBackend {
             .join("; ")
     }
 
-    fn shell_destroy_cmd(&self, session: &SessionId) -> String {
-        self.shell_api_cmd("session.destroy", json!({ "session_id": session.as_str() }))
-    }
-
     fn schedule(delay: Duration, commands: &str) -> Result<()> {
         if commands.is_empty() {
             return Ok(());
@@ -1201,11 +1294,8 @@ impl RexBackend {
         })
         .to_string();
         match self.ensure_supported().and_then(|()| {
-            self.exec_within(
-                &["api", "call", "client.perform", "-"],
-                Some(&request),
-                Some(timeout),
-            )
+            let perform = ["api", "call", "client.perform", "-"];
+            self.exec_within(&perform, Some(&request), Some(timeout), &perform)
         }) {
             Ok(_) => Ok(()),
             Err(error) if error.to_string().contains("code=refused") => Err(AppRefused.into()),
@@ -1402,9 +1492,9 @@ impl Multiplexer for RexBackend {
     fn shell_close_session_by_id_guard_cmd(
         &self,
         id: &str,
-        _preferred_session: Option<&str>,
+        preferred_session: Option<&str>,
     ) -> Result<String> {
-        Ok(self.shell_destroy_cmd(&SessionId(id.to_string())))
+        self.shell_close_cmd(&SessionId(id.to_string()), preferred_session)
     }
 
     fn current_pane_id(&self) -> Option<String> {
@@ -1443,7 +1533,7 @@ impl Multiplexer for RexBackend {
 
     fn create_window(&self, params: CreateWindowParams) -> Result<String> {
         let full_name = util::prefixed(params.prefix, params.name);
-        let after = params.after_window.map(|id| WindowId(id.to_string()));
+        let after = params.after_window.map(target::after_window);
         let view = match &after {
             Some(window) => self
                 .view_of_window(window)?
@@ -1473,24 +1563,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn create_session(&self, params: CreateSessionParams) -> Result<String> {
-        let full_name = util::prefixed(params.prefix, params.name);
-        let mut window = json!({ "layout": self.block_layout(params.cwd, None)? });
-        if let Some(label) = params.initial_window_name {
-            window["window_label"] = json!(label);
-        }
-        let created: CreatedSession = self
-            .api(
-                "session.create",
-                json!({ "label": full_name, "initial_windows": [window] }),
-            )
-            .context("Failed to create Rex session")?;
-        created
-            .initial_windows
-            .into_iter()
-            .next()
-            .and_then(|window| window.block_ids.into_iter().next())
-            .map(|block| block.0)
-            .ok_or_else(|| anyhow!("Rex created a session without a block"))
+        self.create_managed_session(params)
     }
 
     fn create_window_in_session(&self, params: CreateWindowInSessionParams) -> Result<String> {
@@ -1596,15 +1669,31 @@ impl Multiplexer for RexBackend {
         Ok(())
     }
 
+    /// Also keeps a read already under way from being stored.
+    fn forget_reads(&self) {
+        let mut reads = self.reads.lock().unwrap();
+        reads.writes += 1;
+        reads.answers.clear();
+    }
+
     fn session_exists(&self, full_name: &str) -> Result<bool> {
-        Ok(!self.sessions_labeled(full_name)?.is_empty())
+        self.session_named(full_name)
     }
 
     fn kill_session(&self, full_name: &str) -> Result<()> {
-        if let Some(session) = self.labeled_session(full_name)? {
-            self.destroy_session(&session)?;
-        }
-        Ok(())
+        self.close_session_to(full_name, None)
+    }
+
+    fn kill_session_to(&self, full_name: &str, destination: Option<&str>) -> Result<()> {
+        self.close_session_to(full_name, destination)
+    }
+
+    fn supports_session_mode(&self) -> bool {
+        true
+    }
+
+    fn session_close_handles_navigation(&self) -> bool {
+        true
     }
 
     fn kill_window(&self, full_name: &str) -> Result<()> {
@@ -1656,12 +1745,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn rename_session(&self, old_full_name: &str, new_full_name: &str) -> Result<()> {
-        let session = self.first_session_labeled(old_full_name)?;
-        self.api::<Value>(
-            "session.set_label",
-            json!({ "session_id": session.as_str(), "label": new_full_name }),
-        )?;
-        Ok(())
+        self.rename_managed_session(old_full_name, new_full_name)
     }
 
     fn schedule_window_close(&self, full_name: &str, delay: Duration) -> Result<()> {
@@ -1675,11 +1759,19 @@ impl Multiplexer for RexBackend {
     }
 
     fn schedule_session_close(&self, full_name: &str, delay: Duration) -> Result<()> {
-        let commands = self
-            .labeled_session(full_name)?
-            .map(|session| self.shell_destroy_cmd(&session))
-            .unwrap_or_default();
-        Self::schedule(delay, &commands)
+        self.schedule_session_close_to(full_name, None, delay)
+    }
+
+    fn schedule_session_close_to(
+        &self,
+        full_name: &str,
+        destination: Option<&str>,
+        delay: Duration,
+    ) -> Result<()> {
+        Self::schedule(
+            delay,
+            &self.shell_close_session_named_cmd(full_name, destination)?,
+        )
     }
 
     fn run_deferred_script(&self, script: &str) -> Result<()> {
@@ -1716,7 +1808,7 @@ impl Multiplexer for RexBackend {
     }
 
     fn shell_kill_session_cmd(&self, full_name: &str) -> Result<String> {
-        Ok(self.shell_destroy_cmd(&self.first_session_labeled(full_name)?))
+        self.shell_close_cmd(&self.first_session_labeled(full_name)?, None)
     }
 
     fn select_window(&self, prefix: &str, name: &str) -> Result<()> {
@@ -1795,6 +1887,9 @@ impl Multiplexer for RexBackend {
         Ok(())
     }
 
+    /// Like tmux `select-pane`, this moves no client: `select_window` and
+    /// `switch_to_pane` switch the app, so a window-mode `add` that runs
+    /// both asks the app once.
     fn select_pane(&self, pane_id: &str) -> Result<()> {
         let block = BlockId::parse(pane_id)?;
         self.block_session_call(
@@ -1813,6 +1908,18 @@ impl Multiplexer for RexBackend {
             json!({ "block_id": block.as_str(), "zoom": true }),
         )?;
         Ok(())
+    }
+
+    /// A session-mode `add` may run in a background agent's pane, and Rex
+    /// cannot tell that from the pane the user looks at, so the app stays
+    /// put and the user is told how to get there.
+    fn focus_new_session(&self, pane_id: &str, handle: &str) -> Result<Option<String>> {
+        self.select_pane(pane_id)?;
+        Ok(Some(session::new_session_hint(handle)))
+    }
+
+    fn session_pane(&self, full_name: &str) -> Result<Option<String>> {
+        RexBackend::session_pane(self, full_name)
     }
 
     /// The one call that moves Rex.app. Rex does not say which session an
@@ -1859,24 +1966,34 @@ impl Multiplexer for RexBackend {
         })?;
         let old = BlockId::parse(pane_id)?;
         let session = self.require_session_of(&old)?;
-        let split: CreatedSplit = self
-            .api(
-                "session.new_split",
-                json!({
+        let output = self
+            .run_script(
+                "respawn",
+                RESPAWN,
+                &json!({
                     "session_id": session.as_str(),
-                    "anchor_id": old.as_str(),
-                    "direction": "horizontal",
-                    "side": "after",
-                    "layout": self.block_layout(cwd, Some(cmd))?,
+                    "old": old.as_str(),
+                    "layout": self.respawn_layout(cwd, cmd)?,
                 }),
             )
+            .map_err(anyhow::Error::from)
             .context("Failed to start the replacement Rex block")?;
-        let new = self.cache_first_block(split.block_ids, session.clone())?;
-        found(self.api::<Value>(
-            "block.close",
-            json!({ "session_id": session.as_str(), "block_id": old.as_str() }),
-        ))?;
+        let respawned: Respawned = Self::parse("respawn", &output)?;
+        if let Some(error) = respawned.split_error {
+            bail!("Failed to start the replacement Rex block: {error}");
+        }
+        let new = self.cache_first_block(respawned.block_ids, session)?;
+        if let Some(error) = respawned.close_error {
+            found(Err::<(), _>(CallError::from_stderr(
+                &["block.close"],
+                &error,
+            )))?;
+        }
         Ok(new.0)
+    }
+
+    fn run_in_shell(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.send_text_fragment(pane_id, &format!("{command}\r"))
     }
 
     fn set_pane_name(&self, pane_id: &str, name: &str) -> Result<()> {
@@ -2056,6 +2173,14 @@ impl Multiplexer for RexBackend {
         self.live_pane(&view, window, &block, Read::Look)
     }
 
+    /// Runs only for a pane the batch read missed. A reused view would
+    /// repeat the batch's answer, and a miss prunes the agent.
+    fn validate_agent_alive(&self, state: &crate::state::AgentState) -> Result<bool> {
+        self.forget_reads();
+        let live_pane = self.get_live_pane_info(&state.pane_key.pane_id)?;
+        Ok(super::pane_runs_agent(live_pane, state))
+    }
+
     fn get_all_live_pane_info(&self) -> Result<HashMap<String, LivePaneInfo>> {
         let views = self.views()?;
         let blocks: Vec<(&SessionView, &WindowView, &BlockId)> = views
@@ -2188,6 +2313,11 @@ mod tests {
             "Error: ... session session:x not found (status=404 code=session_not_found)",
         );
         assert!(matches!(session, CallError::NotFound(_)));
+        let gone_neighbor = CallError::from_stderr(
+            &["session", "move"],
+            "Error: session target \"session:01a1a022-f6a9\" not found",
+        );
+        assert!(matches!(gone_neighbor, CallError::NotFound(_)));
         let down = CallError::from_stderr(
             &["api", "call"],
             "Error: no Rex server is running at /tmp/x.sock, and autostart is disabled",
@@ -2451,14 +2581,15 @@ mod tests {
     }
 
     /// A `rex` that answers each call with the reply of the first pattern
-    /// its arguments and stdin match, and logs every call.
-    struct FakeRex {
-        dir: tempfile::TempDir,
-        rex: RexBackend,
+    /// its arguments and stdin match, and logs every call. A reply starting
+    /// with `!` fails with the rest on stderr; one starting with `$` is shell.
+    pub(super) struct FakeRex {
+        pub(super) dir: tempfile::TempDir,
+        pub(super) rex: RexBackend,
     }
 
     impl FakeRex {
-        fn new(cases: &[(&str, &str)]) -> Self {
+        pub(super) fn new(cases: &[(&str, &str)]) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let mut arms = String::new();
             for (index, (pattern, reply)) in cases.iter().enumerate() {
@@ -2489,10 +2620,14 @@ mod tests {
                     log = dir.path().join("calls").display(),
                 ),
             );
+            let rex = RexBackend {
+                registry: Some(dir.path().join("rex-sessions.json")),
+                ..rex
+            };
             Self { dir, rex }
         }
 
-        fn in_pane(mut self, session: &str, block: &str) -> Self {
+        pub(super) fn in_pane(mut self, session: &str, block: &str) -> Self {
             self.rex.caller = Caller {
                 session: Some(SessionId(session.into())),
                 block: Some(BlockId(block.into())),
@@ -2501,7 +2636,7 @@ mod tests {
             self
         }
 
-        fn calls(&self, needle: &str) -> Vec<String> {
+        pub(super) fn calls(&self, needle: &str) -> Vec<String> {
             std::fs::read_to_string(self.dir.path().join("calls"))
                 .unwrap_or_default()
                 .lines()
@@ -2509,6 +2644,47 @@ mod tests {
                 .map(str::to_string)
                 .collect()
         }
+    }
+
+    #[test]
+    fn a_shell_command_goes_in_one_write_and_keys_for_an_agent_in_two() {
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let fake = FakeRex::new(&[("write", "{}")]).in_pane("session:s", block);
+        fake.rex.run_in_shell(block, "echo hi").unwrap();
+        let writes = fake.calls("write");
+        let [write] = &writes[..] else {
+            panic!("{writes:?}")
+        };
+        // The fake logs with `echo`, which may turn the escaped `\r` into a CR.
+        assert!(
+            write.ends_with(r#"{"data":"echo hi\r"}"#)
+                || write.ends_with("{\"data\":\"echo hi\r\"}"),
+            "{write:?}"
+        );
+        // An agent may take text and Enter that arrive together as a paste.
+        fake.rex
+            .send_keys_to_agent(block, "do it", Some("claude"))
+            .unwrap();
+        assert_eq!(fake.calls("write").len(), 3);
+    }
+
+    #[test]
+    fn a_script_never_reaches_an_unsupported_server() {
+        let block = "block:01a19e59-43d8-72fd-860c-3a1d6f183cc3";
+        let fake = FakeRex::new(&[("server.version", r#"{"rex_version":"t","api_revision":3}"#)])
+            .in_pane("session:s", block);
+        // The block's session is known, so the script is the first call.
+        fake.rex
+            .block_sessions
+            .lock()
+            .unwrap()
+            .insert(BlockId(block.into()), SessionId("session:s".into()));
+        let err = fake
+            .rex
+            .respawn_pane(block, Path::new("/work"), Some("handshake"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("unsupported Rex t"), "{err:#}");
+        assert!(fake.calls(" do ").is_empty(), "{:?}", fake.calls(""));
     }
 
     #[test]
@@ -2787,9 +2963,9 @@ mod tests {
         );
     }
 
-    const APP: &str = "client:app-1";
-    const CALLER_SESSION: &str = "session:b";
-    const CALLER_BLOCK: &str = "block:caller";
+    pub(super) const APP: &str = "client:app-1";
+    pub(super) const CALLER_SESSION: &str = "session:b";
+    pub(super) const CALLER_BLOCK: &str = "block:caller";
 
     fn client(id: &str, kind: &str, state: &str, sessions: &[&str]) -> Value {
         json!({
@@ -2800,16 +2976,16 @@ mod tests {
         })
     }
 
-    fn app(id: &str, sessions: &[&str]) -> Value {
+    pub(super) fn app(id: &str, sessions: &[&str]) -> Value {
         client(id, "app", "connected", sessions)
     }
 
-    fn owner(client: &str) -> String {
+    pub(super) fn owner(client: &str) -> String {
         json!({ "columns": 80, "rows": 24, "owner": client }).to_string()
     }
 
     /// Rex.app's answer to `client.perform` with Remote Control off.
-    const REFUSED: &str = "!Error: stream response \"control-1\" failed: Rex.app is not \
+    pub(super) const REFUSED: &str = "!Error: stream response \"control-1\" failed: Rex.app is not \
          accepting actions. Turn on Remote Control in its Settings under Rex Server. \
          (status=403 code=refused)";
     const UNAVAILABLE: &str = "!Error: stream response \"control-1\" failed: client \
@@ -2825,7 +3001,7 @@ mod tests {
 
     /// The caller's pane is in session B, window W, the pane `block:agent`
     /// is in the same window, and `clients` are connected.
-    fn app_fake(owner_id: &str, clients: &[Value], select: &str) -> FakeRex {
+    pub(super) fn app_fake(owner_id: &str, clients: &[Value], select: &str) -> FakeRex {
         let resolved = json!({ "results": [{
             "status": "resolved",
             "target": { "session_id": "session:b", "window_id": "window:w" },
@@ -3062,6 +3238,109 @@ mod tests {
         assert!(!list.is_app_attached_to(&cli, &background));
     }
 
+    #[test]
+    fn show_on_app_reports_each_outcome() {
+        let session = SessionId(CALLER_SESSION.into());
+        let outcome = |owner: &str, select: &str| {
+            app_fake(owner, &[app(APP, &[CALLER_SESSION])], select)
+                .rex
+                .show_on_app(&session, None)
+        };
+        assert_eq!(outcome(APP, "{}"), AppSwitch::Shown);
+        assert_eq!(outcome("client:cli", "{}"), AppSwitch::NoApp);
+        assert_eq!(outcome(APP, REFUSED), AppSwitch::Refused);
+        assert_eq!(
+            outcome(
+                APP,
+                "!Error: stream response \"control-1\" failed: client client:app-1 \
+                 not found (status=404 code=not_found)"
+            ),
+            AppSwitch::NoApp
+        );
+        assert_eq!(outcome(APP, UNAVAILABLE), AppSwitch::NoApp);
+    }
+
+    #[test]
+    fn a_session_mode_add_focuses_the_pane_and_leaves_the_app_alone() {
+        let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
+        let hint = fake.rex.focus_new_session("block:agent", "feat-a").unwrap();
+        assert_eq!(
+            hint.as_deref(),
+            Some(crate::rebrand!(
+                "Rex.app stays put: to see feat-a, press Enter on its row in workmux dashboard."
+            ))
+        );
+        assert!(
+            fake.calls("client.perform").is_empty(),
+            "{:?}",
+            fake.calls("client.perform")
+        );
+        assert_eq!(fake.calls("session.focus_block").len(), 1);
+    }
+
+    fn attached(fixture: &str, client: &str, session: &str) -> bool {
+        let list: ClientList = serde_json::from_str(fixture).unwrap();
+        shows_caller(&list, &ClientId(client.into()), &SessionId(session.into()))
+    }
+
+    const MAC_APP: &str = "client:01a19e67-c952-7923-a102-902347c1c3c1";
+
+    #[test]
+    fn zero_app_clients_select_nothing() {
+        let fixture = include_str!("testdata/rex_client_ls_zero_app.json");
+        let session = "session:01a19e97-3026-7897-b1a6-a54e15ff9e5e";
+        assert!(!attached(
+            fixture,
+            "client:01a19e97-3049-7b94-8f35-faafebfdc5ac",
+            session
+        ));
+    }
+
+    #[test]
+    fn one_app_client_is_chosen_over_cli_and_unnamed_clients() {
+        let fixture = include_str!("testdata/rex_client_ls_one_app.json");
+        let session = "session:01a19de1-8768-7dfa-a348-64425299992c";
+        assert!(attached(fixture, MAC_APP, session));
+        assert!(!attached(
+            fixture,
+            "client:01a19e67-c953-7236-b796-f3c7b6be252e",
+            session
+        ));
+        assert!(!attached(
+            fixture,
+            "client:01a19e93-0f29-7674-99f1-b67fbf633f3c",
+            session
+        ));
+    }
+
+    #[test]
+    fn cli_clients_attached_to_the_session_are_never_chosen() {
+        let fixture = include_str!("testdata/rex_client_ls_app_plus_cli.json");
+        let session = "session:01a19e96-8d93-7d52-b8d2-aabeafb940b6";
+        assert!(attached(fixture, MAC_APP, session));
+        assert!(!attached(
+            fixture,
+            "client:01a19e96-8dc4-79c4-8e70-096be127fedd",
+            session
+        ));
+    }
+
+    #[test]
+    fn two_apps_attached_to_the_session_both_qualify_and_ownership_decides() {
+        let fixture = include_str!("testdata/rex_client_ls_two_apps.json");
+        let session = "session:01a19e96-8d93-7d52-b8d2-aabeafb940b6";
+        let second = "client:01a19e9a-1111-7000-8000-000000000002";
+        assert!(attached(fixture, MAC_APP, session));
+        assert!(attached(fixture, second, session));
+    }
+
+    #[test]
+    fn lost_app_clients_are_skipped() {
+        let list = r#"{"clients":[
+            {"client_id":"client:a","info":{"kind":"app"},"connection_state":"lost","session_ids":["session:1"]}]}"#;
+        assert!(!attached(list, "client:a", "session:1"));
+    }
+
     fn view_json(session: &str, label: &str, windows: &[(&str, &str)]) -> String {
         let windows: Vec<Value> = windows
             .iter()
@@ -3070,7 +3349,7 @@ mod tests {
         json!({ "session_id": session, "label": label, "windows": windows }).to_string()
     }
 
-    fn session_list(sessions: &[(&str, &str)]) -> String {
+    pub(super) fn session_list(sessions: &[(&str, &str)]) -> String {
         let sessions: Vec<Value> = sessions
             .iter()
             .map(|(id, label)| json!({ "session_id": id, "label": label }))
@@ -3256,7 +3535,7 @@ mod tests {
 
     impl FakeRex {
         /// Reuses reads for as long as a test runs, so only writes drop them.
-        fn reusing(mut self) -> Self {
+        pub(super) fn reusing(mut self) -> Self {
             self.rex.reuse = Duration::from_secs(3600);
             self
         }
@@ -3361,6 +3640,22 @@ mod tests {
     }
 
     #[test]
+    fn a_script_drops_the_reads_before_it() {
+        let fake = FakeRex::new(&[
+            ("session.view", "{}"),
+            ("server.version", r#"{"rex_version":"t","api_revision":8}"#),
+            ("", "{}"),
+        ])
+        .reusing();
+        fake.view();
+        fake.rex
+            .exec_script("probe", "return {}", &serde_json::json!({}))
+            .unwrap();
+        fake.view();
+        assert_eq!(fake.calls("session.view").len(), 2);
+    }
+
+    #[test]
     fn a_read_that_spans_a_write_is_not_reused() {
         let fake = FakeRex::new(&[
             (
@@ -3429,9 +3724,12 @@ mod tests {
         .reusing();
         fake.view();
         let perform = ["api", "call", "client.perform", "-"];
-        let result = fake
-            .rex
-            .exec_within(&perform, Some("{}"), Some(Duration::from_millis(100)));
+        let result = fake.rex.exec_within(
+            &perform,
+            Some("{}"),
+            Some(Duration::from_millis(100)),
+            &perform,
+        );
         assert!(result.is_err());
         fake.view();
         assert_eq!(fake.calls("session.view").len(), 2);
@@ -3475,6 +3773,123 @@ mod tests {
                 .unwrap();
             assert_eq!(view.label, label);
         }
+    }
+
+    /// reconcile looks again at each agent whose pane its batch read missed,
+    /// and prunes the agent when the second look also misses it. A pane
+    /// made after the batch, or a window that moved between two sessions
+    /// while the batch read them, must show on the second look.
+    #[test]
+    fn a_second_look_at_a_pane_the_batch_missed_reads_afresh() {
+        let session = "session:01a19e60-6410-7e09-a3ee-f675512a3a06";
+        let fake = FakeRex::new(&[
+            ("session.list", &session_list(&[(session, "fixture")])),
+            ("session.view", "$cat \"$dir/view\""),
+            ("target.resolve", RESOLVE),
+            (" process ", PROCESS),
+            (" title ", r#"{"title":""}"#),
+        ])
+        .reusing();
+        fake.write("view", &view_json(session, "fixture", &[]));
+        assert!(fake.rex.get_all_live_pane_info().unwrap().is_empty());
+        fake.write("view", VIEW);
+        assert!(
+            fake.rex
+                .validate_agent_alive(&agent_in_view(85152))
+                .unwrap()
+        );
+    }
+
+    /// The second look checks the pid and command like the batch does, so a
+    /// pane that now runs another process reads as dead.
+    #[test]
+    fn a_second_look_at_a_pane_running_another_process_reads_as_dead() {
+        let fake = FakeRex::new(&[
+            (
+                "session.list",
+                &session_list(&[("session:01a19e60-6410-7e09-a3ee-f675512a3a06", "fixture")]),
+            ),
+            ("session.view", VIEW),
+            ("target.resolve", RESOLVE),
+            (" process ", PROCESS),
+            (" title ", r#"{"title":""}"#),
+        ]);
+        assert!(!fake.rex.validate_agent_alive(&agent_in_view(4242)).unwrap());
+    }
+
+    /// Only not_found reads as a gone pane. Any other failed call must reach
+    /// reconcile as an error, or it would prune a live agent.
+    #[test]
+    fn a_second_look_that_fails_is_an_error_not_a_dead_pane() {
+        let fake = FakeRex::new(&[
+            (
+                "session.list",
+                &session_list(&[("session:01a19e60-6410-7e09-a3ee-f675512a3a06", "fixture")]),
+            ),
+            ("session.view", VIEW),
+            ("target.resolve", RESOLVE),
+            (" process ", "!Error: connection reset by peer"),
+            (" title ", r#"{"title":""}"#),
+        ]);
+        assert!(
+            fake.rex
+                .validate_agent_alive(&agent_in_view(85152))
+                .is_err()
+        );
+    }
+
+    /// An agent recorded in VIEW's block, which PROCESS shows running
+    /// `sleep` under pid 85152.
+    fn agent_in_view(pane_pid: u32) -> crate::state::AgentState {
+        serde_json::from_value(json!({
+            "pane_key": {
+                "backend": "rex",
+                "instance": "unix:///s.sock",
+                "pane_id": "block:01a19e60-6442-727c-b026-9bb98fffd538",
+            },
+            "workdir": "/private/tmp",
+            "pane_pid": pane_pid,
+            "command": "sleep",
+            "updated_ts": 0,
+        }))
+        .unwrap()
+    }
+
+    /// A remote relay's window closes itself when its remote session ends,
+    /// possibly right after a command last read the relay's session. The
+    /// command must still see the session empty and destroy it.
+    #[test]
+    fn a_relay_session_emptied_after_a_reused_read_is_destroyed() {
+        let fake = FakeRex::new(&[
+            ("session.list", &session_list(&[("session:r", "wm-feat")])),
+            ("session.view", "$cat \"$dir/view\""),
+            ("session.destroy", "{}"),
+        ])
+        .reusing();
+        let relay = [("window:1", "wm-feat")];
+        fake.write("view", &view_json("session:r", "wm-feat", &relay));
+        let names = fake.rex.get_window_names_in_session("wm-feat").unwrap();
+        assert!(names.contains("wm-feat"), "{names:?}");
+        fake.write("view", &view_json("session:r", "wm-feat", &[]));
+
+        let mut record = crate::remote::cache::WorkspaceRecord::new(
+            "w1".into(),
+            "box",
+            "p".into(),
+            PathBuf::from("/src/app"),
+            "feat",
+            "feat",
+            "0".repeat(40),
+            None,
+            "wm-feat".into(),
+            PathBuf::from("/src/app__worktrees/feat"),
+        );
+        record.window_session = Some("wm-feat".into());
+        crate::remote::lifecycle::drop_emptied_session(&fake.rex, &record);
+
+        let destroys = fake.calls("session.destroy");
+        assert_eq!(destroys.len(), 1, "{destroys:?}");
+        assert!(destroys[0].contains("session:r"), "{destroys:?}");
     }
 
     #[test]

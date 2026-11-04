@@ -4,7 +4,7 @@ description: Use Rex as an alternative multiplexer backend
 ---
 
 :::caution[Experimental]
-The Rex backend is new. It supports window mode. Session mode is not supported yet.
+The Rex backend is new.
 :::
 
 Rex can be used as an alternative to tmux. workmux detects it automatically from `$REX_BLOCK`, which Rex sets in every pane. To force it, set `WORKMUX_BACKEND=rex`.
@@ -23,7 +23,7 @@ workmux needs a Rex server that speaks API revision 8 or 9. On first use it read
 | Pane IDs             | `%12`                | `block:<uuid>`                      |
 | Prompt delivery      | Paste buffer         | Paste event (bracketed when needed) |
 | Respawning a pane    | Same pane ID         | New block in the same place         |
-| Session mode         | Yes                  | Not yet                             |
+| Default mode         | Window               | Session                             |
 | View follows `add`   | Caller's session     | No                                  |
 
 - **Tabs.** A workmux window is a Rex window, labeled with the window name. New windows open right after the current one.
@@ -35,9 +35,17 @@ workmux needs a Rex server that speaks API revision 8 or 9. On first use it read
 - **Jumps.** The dashboard, `last-agent` and `last-done` do move the app. They ask the Rex.app client that owns your pane, which is the app that last showed it, to show the target.
 - **Shells.** workmux starts each block's shell directly as a login shell (`$SHELL -l`), as tmux does. It does not go through `/usr/bin/login`, so the environment of the Rex server reaches the pane unchanged.
 
-## Remote Control
+## Session mode
 
-A jump needs Remote Control, which you turn on in Rex Settings. Without it, the app refuses the jump and the target is not focused. The dashboard stays open and shows the fix in its footer until you press a key and at least 5 s have passed. The [dashboard layer](#dashboard) shows its own hint instead. `last-agent` and `last-done` print `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings.` once.
+Under Rex, workmux uses [session mode](/guide/session-mode/) unless you set `mode` or pass `--mode`. Each worktree gets its own Rex session. Set `mode: window` to get tabs in the current session instead, as under tmux.
+
+- **Adding.** `workmux add` creates the session and focuses its pane in that session, but leaves Rex.app where it is, because the command may run in a background agent's pane. It prints `Rex.app stays put: to see feat-a, press Enter on its row in workmux dashboard.`, naming the worktree because an agent may rename its Rex session. Enter on a worktree row in the dashboard moves Rex.app to that session. `--background` prints nothing.
+- **Closing.** When `remove`, `close` or `merge` closes a session that Rex.app shows, the app lands on the destination: the managed session of the merge target, then [`default_session`](/guide/session-mode/#returning-to-a-default-session), then the session the worktree was added from. Rex.app shows the first session in the order when the session it shows closes, so workmux moves the destination first for the close and then back next to its old neighbors. Closes take a lock, so two closes never interleave, and a close that is killed midway leaves the order for the next close to put back. A close gives up on a move after 2 s. Rex may still apply that move later, so later closes keep putting the destination back for 10 s after it timed out. An app showing another session stays where it is. Without a destination, the app lands on the first session.
+- **Renamed sessions.** Agents may rename their Rex session (Rex tells Claude Code to name its session after the task). workmux records each session it creates by its Rex session ID under `$XDG_STATE_HOME/workmux/rex-sessions.json`, so it still finds the session after a rename.
+
+### Remote Control
+
+A jump needs Remote Control, which you turn on in Rex Settings. Without it, the app refuses the jump and the target is not focused. The dashboard stays open and shows the fix in its footer until you press a key and at least 5 s have passed. The [dashboard layer](#dashboard) shows its own hint instead. `last-agent` and `last-done` print `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings.` once. `add` and closing a session do not need Remote Control.
 
 ## Dashboard
 
@@ -94,6 +102,4 @@ workmux identifies the server by its address, which stays the same across restar
 
 ## Known limitations
 
-- Session mode (`--session` or `mode: session`) is not supported yet
-- `add` and `open` do not move Rex.app to the new window
-- Remote agents need tmux
+- `add` and `open` do not move Rex.app to the new window or session

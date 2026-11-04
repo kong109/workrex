@@ -11,7 +11,7 @@
 //! newer one starts; each generation elects its own observer and keeps its
 //! own file, and no build reads what another generation writes as current.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -155,17 +155,48 @@ fn save(name: &str, observation: &Observation) -> Result<()> {
     crate::util::write_atomic(&path, &serde_json::to_vec(observation)?)
 }
 
+/// The remotes this process observes, with when it started (laptop clock).
+static STARTED: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+
+fn started() -> std::sync::MutexGuard<'static, HashMap<String, u64>> {
+    STARTED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
+/// Whether this process started observing remote `name` within the last
+/// [`STALE_AFTER`] and has not heard from it since: the last observation is
+/// from before the view opened, so its age says nothing about the remote.
+pub fn connecting(name: &str, observation: Option<&Observation>, now: u64) -> bool {
+    let since = started().get(name).copied();
+    awaiting_first_answer(since, observation, now)
+}
+
+fn awaiting_first_answer(since: Option<u64>, observation: Option<&Observation>, now: u64) -> bool {
+    let Some(since) = since else {
+        return false;
+    };
+    let answered = observation
+        .and_then(|o| o.last_seen)
+        .is_some_and(|seen| seen >= since);
+    !answered && now.saturating_sub(since) <= STALE_AFTER.as_secs()
+}
+
+/// Mark remote `name` as observed by this process since `at`, as
+/// [`spawn`] does, without starting an observer.
+#[cfg(test)]
+pub(crate) fn observing_since(name: &str, at: u64) {
+    started().insert(name.to_string(), at);
+}
+
 /// Keep the observations of `names` current from background threads of
 /// this process, for as long as it runs. Remotes this process already
 /// observes, and names not in `config`, are skipped.
 pub fn spawn(config: &Config, names: &[String]) {
-    static STARTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let mut started = STARTED
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+    let mut started = started();
     for name in names {
-        if started.contains(name) {
+        if started.contains_key(name) {
             continue;
         }
         let spec = match RemoteSpec::resolve(config, name) {
@@ -175,7 +206,7 @@ pub fn spawn(config: &Config, names: &[String]) {
                 continue;
             }
         };
-        started.insert(name.clone());
+        started.insert(name.clone(), now());
         // Elect now, so that on return the file is either kept current by
         // another process or marked as not current.
         let lock = take_lock(name).unwrap_or_else(|err| {
@@ -265,7 +296,10 @@ impl Drop for Child {
 /// saving it, until the stream ends or goes quiet. Returns why it ended.
 fn stream(spec: &RemoteSpec, observation: &mut Observation) -> Result<String> {
     let node = Node::connect_reader(spec, protocol::WATCH)?;
-    let request = serde_json::to_vec(&WatchRequest { stream: true })?;
+    let request = serde_json::to_vec(&WatchRequest {
+        stream: true,
+        siblings: false,
+    })?;
     let mut child = Child(
         node.transport
             .spawn(&node.verb_script(protocol::WATCH), request)?,
@@ -340,15 +374,17 @@ fn stream(spec: &RemoteSpec, observation: &mut Observation) -> Result<String> {
 pub fn current(config: &Config, name: &str) -> Observation {
     let observation = fetch(name, || {
         let spec = RemoteSpec::resolve(config, name)?;
-        watch_once(&Node::connect_reader(&spec, protocol::WATCH)?)
+        watch_once(&Node::connect_reader(&spec, protocol::WATCH)?, false)
     });
     adopt_siblings(name, observation)
 }
 
-/// [`current`] through `node`, a connection the caller already holds.
-pub fn current_on(node: &Node) -> Observation {
+/// Adopt the siblings `node`, a connection the caller already holds,
+/// reports. Without an observer this reads only the siblings, so its cost
+/// does not grow with the node's other agents.
+pub fn adopt_on(node: &Node) {
     let name = &node.spec.name;
-    adopt_siblings(name, fetch(name, || watch_once(node)))
+    adopt_siblings(name, fetch(name, || watch_once(node, true)));
 }
 
 fn adopt_siblings(name: &str, observation: Observation) -> Observation {
@@ -358,8 +394,12 @@ fn adopt_siblings(name: &str, observation: Observation) -> Observation {
     observation
 }
 
-fn watch_once(node: &Node) -> Result<Snapshot> {
-    node.call(protocol::WATCH, &WatchRequest { stream: false }, false)
+fn watch_once(node: &Node, siblings: bool) -> Result<Snapshot> {
+    let request = WatchRequest {
+        stream: false,
+        siblings,
+    };
+    node.call(protocol::WATCH, &request, false)
 }
 
 fn fetch(name: &str, snapshot: impl FnOnce() -> Result<Snapshot>) -> Observation {
@@ -406,8 +446,84 @@ mod tests {
                 sibling: None,
                 operation: None,
                 ended: None,
+                rex: None,
             }],
         })
+    }
+
+    #[test]
+    fn a_view_is_connecting_until_its_remote_first_answers() {
+        // The last observation is two minutes older than the view.
+        let mut observation = Observation {
+            connected: false,
+            last_seen: Some(880),
+            ..Default::default()
+        };
+        assert!(awaiting_first_answer(Some(1000), Some(&observation), 1002));
+        assert!(awaiting_first_answer(Some(1000), None, 1002));
+        // Quiet past the deadline: disconnected after all.
+        assert!(!awaiting_first_answer(
+            Some(1000),
+            Some(&observation),
+            1001 + STALE_AFTER.as_secs()
+        ));
+        // An answer after the view started, even one since lost.
+        observation.apply(snapshot(1001, AgentStatus::Working), 1003);
+        observation.connected = false;
+        assert!(!awaiting_first_answer(Some(1000), Some(&observation), 1004));
+        // A process that observes nothing says nothing.
+        assert!(!awaiting_first_answer(None, None, 1002));
+    }
+
+    #[test]
+    fn a_view_is_connecting_through_the_whole_deadline() {
+        let deadline = 1000 + STALE_AFTER.as_secs();
+        assert!(awaiting_first_answer(Some(1000), None, deadline));
+        assert!(!awaiting_first_answer(Some(1000), None, deadline + 1));
+    }
+
+    #[test]
+    fn an_answer_in_the_second_the_view_started_ends_connecting() {
+        let observation = Observation {
+            last_seen: Some(1000),
+            ..Default::default()
+        };
+        assert!(!awaiting_first_answer(Some(1000), Some(&observation), 1000));
+    }
+
+    #[test]
+    fn spawning_an_observer_marks_its_remote_connecting() {
+        const TEST: &str =
+            "remote::observe::tests::spawning_an_observer_marks_its_remote_connecting";
+        if !crate::test_support::is_isolated_child(TEST) {
+            let state = tempfile::tempdir().unwrap();
+            crate::test_support::run_isolated_test(
+                TEST,
+                state.path(),
+                &[("XDG_STATE_HOME", state.path())],
+            );
+            return;
+        }
+        let name = "box-spawned";
+        // Holding the observer lock keeps the spawned observer waiting to
+        // take over, so it never connects.
+        let _held = take_lock(name).unwrap().expect("the lock is free");
+        let remote = crate::config::RemoteConfig {
+            host: "example".into(),
+            path: None,
+            isolation: None,
+            binary: None,
+            terminal: None,
+            rex_client: None,
+        };
+        let config = Config {
+            remotes: [(name.to_string(), remote)].into_iter().collect(),
+            ..Config::default()
+        };
+        assert!(!connecting(name, None, now()));
+        spawn(&config, &[name.to_string()]);
+        assert!(connecting(name, None, now()));
+        println!("{}", crate::test_support::ISOLATED_TEST_CANARY);
     }
 
     #[test]

@@ -9,7 +9,7 @@ import RemoteDemo from "../../../../components/RemoteDemo.astro";
 Remote servers are experimental. Try them out, and if something doesn't work or a workflow you need is missing, [open an issue on GitHub](https://github.com/raine/workmux/issues).
 :::
 
-workmux can run an agent on a Linux server you reach over SSH, such as a home server, a Proxmox VM or a cloud VM, while your other agents stay on the local machine. Each remote agent still gets a normal tmux window on the local machine, and shows up in the dashboard, the sidebar, `workmux status` and `workmux list` like a local one.
+workmux can run an agent on a Linux server you reach over SSH, such as a home server, a Proxmox VM or a cloud VM, while your other agents stay on the local machine. Each remote agent still gets a normal tmux or Rex window on the local machine, or with `terminal: rex` a session on the server's Rex server that Rex.app shows, and shows up in the dashboard, the sidebar, `workmux status` and `workmux list` like a local one.
 
 The agent keeps running while the local machine sleeps, loses its network or closes the window. When you come back, the window reconnects by itself. When the work is done, `workmux merge` brings it home and merges it on the local machine.
 
@@ -63,7 +63,7 @@ workmux merge my-feature
 ## Differences from local agents
 
 - Agents run directly on the server unless the sandbox is enabled. See [server or Docker](/guide/remote/setup/#server-or-docker).
-- Remote agents need tmux in window mode, and the dashboard can't create them.
+- Remote agents need the tmux or Rex backend, and they don't support an explicit session mode or `windows:` configs. The dashboard can't create them.
 - Agents on the server can't push. Bring the work home and push from the local machine.
 - Files ignored by Git, such as `node_modules` or build output, don't come home.
 - `rename`, `path`, `run` and `sync-files` don't work on remote workspaces.

@@ -161,10 +161,10 @@ fn create_impl(
             placement_window_id =
                 setup::resolve_window_placement_target(context.mux.as_ref(), &context.config)?;
         }
-        if options.mode == MuxMode::Session && context.mux.name() != "tmux" {
+        if options.mode == MuxMode::Session && !context.mux.supports_session_mode() {
             return Err(anyhow!(
-                "Session mode (--mode session / --session) is only supported with tmux.\n\
-                 Current backend: {}. Use window mode instead.",
+                "Session mode (--mode session / --session) is not supported by the {} backend.\n\
+                 Use window mode instead.",
                 context.mux.name()
             ));
         }
@@ -1068,13 +1068,34 @@ mod tests {
             "test".to_string()
         }
 
-        fn get_live_pane_info(&self, _pane_id: &str) -> Result<Option<LivePaneInfo>> {
+        fn get_live_pane_info(&self, pane_id: &str) -> Result<Option<LivePaneInfo>> {
+            if pane_id == FAILING_PANE {
+                return Err(anyhow!("tmux call failed"));
+            }
             Ok(None)
         }
 
         fn get_all_live_pane_info(&self) -> Result<HashMap<String, LivePaneInfo>> {
             Ok(HashMap::new())
         }
+    }
+
+    /// A pane whose `get_live_pane_info` call fails.
+    const FAILING_PANE: &str = "%failing";
+
+    /// reconcile prunes an agent when the trait default's second look says
+    /// its pane is gone, so a failed call must reach it as an error.
+    #[test]
+    fn a_failed_second_look_is_an_error_not_a_dead_pane() {
+        let agent: crate::state::AgentState = serde_json::from_value(serde_json::json!({
+            "pane_key": { "backend": "tmux", "instance": "test", "pane_id": FAILING_PANE },
+            "workdir": "/private/tmp",
+            "pane_pid": 7,
+            "command": "node",
+            "updated_ts": 0,
+        }))
+        .unwrap();
+        assert!(TestMux.validate_agent_alive(&agent).is_err());
     }
 
     #[test]
@@ -1333,6 +1354,42 @@ mod tests {
             error
                 .to_string()
                 .contains("Failed to fetch base branch 'missing-base' from remote 'origin'")
+        );
+    }
+
+    #[test]
+    fn session_mode_on_a_backend_without_it_names_the_backend() {
+        let temp = tempfile::tempdir().unwrap();
+        test_support::init_repo(temp.path());
+        let ctx = WorkflowContext::new_in(temp.path(), Config::default(), Arc::new(TestMux), None)
+            .unwrap();
+        let mut options = SetupOptions::new(false, false, false);
+        options.focus_window = false;
+        options.mode = MuxMode::Session;
+        let error = match create(
+            &ctx,
+            CreateArgs {
+                branch_name: "feature",
+                handle: "feature",
+                base_branch: None,
+                remote_branch: None,
+                checkout_ref: None,
+                prompt: None,
+                options,
+                mode_override: None,
+                agent: None,
+                is_explicit_name: false,
+                prompt_file_only: false,
+                fork_source: None,
+            },
+        ) {
+            Ok(_) => panic!("session mode should be refused"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "Session mode (--mode session / --session) is not supported by the tmux backend.\n\
+             Use window mode instead."
         );
     }
 

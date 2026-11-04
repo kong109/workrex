@@ -24,6 +24,7 @@ pub mod observe;
 pub mod operation;
 pub mod portable;
 pub mod protocol;
+pub mod rex_jump;
 pub mod shell;
 pub mod siblings;
 pub mod transfer;
@@ -34,7 +35,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::config::{Config, RemoteIsolation};
+use crate::config::{Config, RemoteIsolation, RemoteTerminal};
 use crate::shell::shell_quote;
 
 /// Default node root on the remote.
@@ -52,6 +53,8 @@ pub struct RemoteSpec {
     pub isolation_explicit: bool,
     /// Local binary to upload, with `~` expanded.
     pub binary: Option<PathBuf>,
+    /// The host new executions on the remote request for their terminals.
+    pub terminal: RemoteTerminal,
 }
 
 impl RemoteSpec {
@@ -73,13 +76,21 @@ impl RemoteSpec {
             .as_deref()
             .map(|binary| expand_local_tilde(name, binary))
             .transpose()?;
+        let isolation = resolve_isolation(remote.isolation, config.sandbox.is_enabled());
+        if remote.terminal == Some(RemoteTerminal::Rex) && isolation != RemoteIsolation::None {
+            bail!(
+                "remotes.{name}.terminal: rex needs isolation: none; Rex-hosted agents \
+                 cannot run in a container yet"
+            );
+        }
         Ok(Self {
             name: name.to_string(),
             host: remote.host.clone(),
             path,
-            isolation: resolve_isolation(remote.isolation, config.sandbox.is_enabled()),
+            isolation,
             isolation_explicit: remote.isolation.is_some(),
             binary,
+            terminal: remote.terminal.unwrap_or_default(),
         })
     }
 
@@ -117,6 +128,11 @@ impl RemoteSpec {
         script.push_str(body);
         script
     }
+}
+
+/// `remotes.<name>.rex_client`.
+pub fn rex_client(config: &Config, name: &str) -> Option<String> {
+    config.remotes.get(name)?.rex_client.clone()
 }
 
 /// Resolve only from the effective config: an explicit machine override wins.
@@ -297,6 +313,8 @@ mod tests {
             path: None,
             isolation: None,
             binary: None,
+            terminal: None,
+            rex_client: None,
         }
     }
 
@@ -309,6 +327,33 @@ mod tests {
             placement: placement.map(str::to_string),
             ..Config::default()
         }
+    }
+
+    #[test]
+    fn rex_terminals_need_agents_on_the_host() {
+        let with = |isolation| Config {
+            remotes: [(
+                "box".to_string(),
+                RemoteConfig {
+                    terminal: Some(RemoteTerminal::Rex),
+                    isolation,
+                    ..remote("example")
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Config::default()
+        };
+        let err = RemoteSpec::resolve(&with(Some(RemoteIsolation::Container)), "box").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("terminal: rex needs isolation: none"),
+            "{err}"
+        );
+        RemoteSpec::resolve(&with(Some(RemoteIsolation::None)), "box").unwrap();
+        let terminal = |config| RemoteSpec::resolve(&config, "box").unwrap().terminal;
+        assert_eq!(terminal(with(None)), RemoteTerminal::Rex);
+        assert_eq!(terminal(config_with(&["box"], None)), RemoteTerminal::Tmux);
     }
 
     #[test]
