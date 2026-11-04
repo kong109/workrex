@@ -3,35 +3,38 @@ import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 import starlightLinksValidator from "starlight-links-validator";
 import starlightLlmsTxt from "starlight-llms-txt";
+import baseLinks from "./plugins/base-links.mjs";
 import changelogReleases from "./plugins/changelog-releases.mjs";
 
-const site = "https://workmux.dev";
-const socialImage = `${site}/social-preview.png`;
+const site = "https://kong109.github.io";
+const base = "/workrex";
+const repo = "https://github.com/kong109/workrex";
+const socialImage = `${site}${base}/social-preview.png`;
 
 export default defineConfig({
   site,
+  base,
   trailingSlash: "always",
   build: { format: "directory" },
-  redirects: { "/guide/sandbox/remote/": "/guide/remote/" },
-  markdown: { remarkPlugins: [changelogReleases] },
+  redirects: {
+    "/": `${base}/guide/`,
+    "/guide/sandbox/remote/": `${base}/guide/remote/`,
+  },
+  markdown: { remarkPlugins: [changelogReleases, baseLinks({ base })] },
   image: {
     layout: "constrained",
     responsiveStyles: true,
   },
   integrations: [
     starlight({
-      title: "workmux",
+      title: "workrex",
       description:
-        "A CLI tool for parallel development with AI coding agents using git worktrees and tmux",
+        "Run parallel AI coding agents in git worktrees, each in its own Rex session",
       locales: {
         root: { label: "English", lang: "en-US" },
       },
-      logo: {
-        dark: "./src/assets/icon-dark.svg",
-        light: "./src/assets/icon.svg",
-        alt: "workmux branch logo",
-      },
-      favicon: "/branch-icon.svg",
+      logo: { src: "./src/assets/workrex-mark.svg", alt: "" },
+      favicon: "/favicon.svg",
       lastUpdated: true,
       plugins: [
         starlightLlmsTxt(),
@@ -41,13 +44,13 @@ export default defineConfig({
         }),
       ],
       editLink: {
-        baseUrl: "https://github.com/raine/workmux/edit/main/docs/",
+        baseUrl: `${repo}/edit/main/docs/`,
       },
       social: [
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/raine/workmux",
+          href: repo,
         },
       ],
       components: {
@@ -76,7 +79,7 @@ export default defineConfig({
           tag: "meta",
           attrs: {
             property: "og:image:alt",
-            content: "workmux terminal workflow",
+            content: "workrex: parallel AI agents in git worktrees, run in Rex",
           },
         },
         {
@@ -85,16 +88,17 @@ export default defineConfig({
         },
         {
           tag: "script",
-          attrs: { src: "/image-zoom.js", defer: true },
+          attrs: { src: `${base}/image-zoom.js`, defer: true },
         },
       ],
       sidebar: [
         {
           label: "Getting Started",
           items: [
-            { label: "What is workmux?", slug: "guide" },
+            { label: "What is workrex?", slug: "guide" },
             { label: "Installation", slug: "guide/installation" },
             { label: "Quick start", slug: "guide/quick-start" },
+            { label: "Rex", slug: "guide/rex" },
             { label: "Configuration", slug: "guide/configuration" },
             { label: "Commands", slug: "reference/commands" },
           ],
@@ -154,10 +158,9 @@ export default defineConfig({
           ],
         },
         {
-          label: "Alternative backends",
+          label: "Other backends",
           items: [
             { label: "kitty", slug: "guide/kitty" },
-            { label: "Rex", slug: "guide/rex" },
             { label: "WezTerm", slug: "guide/wezterm" },
             { label: "Zellij", slug: "guide/zellij" },
           ],
@@ -196,15 +199,22 @@ export default defineConfig({
             { label: "dashboard", slug: "reference/commands/dashboard" },
             { label: "sidebar", slug: "reference/commands/sidebar" },
             { label: "reap-agents", slug: "reference/commands/reap-agents" },
+            { label: "send", slug: "reference/commands/send" },
+            { label: "capture", slug: "reference/commands/capture" },
+            { label: "wait", slug: "reference/commands/wait" },
+            { label: "run", slug: "reference/commands/run" },
             { label: "config edit", slug: "reference/commands/config" },
             { label: "init", slug: "reference/commands/init" },
+            { label: "setup", slug: "reference/commands/setup" },
             { label: "claude prune", slug: "reference/commands/claude" },
             { label: "sandbox", slug: "reference/commands/sandbox" },
             { label: "remote", slug: "reference/commands/remote" },
             { label: "completions", slug: "reference/commands/completions" },
             { label: "docs", slug: "reference/commands/docs" },
+            { label: "changelog", slug: "reference/commands/changelog" },
             { label: "update", slug: "reference/commands/update" },
             { label: "last-done", slug: "reference/commands/last-done" },
+            { label: "last-agent", slug: "reference/commands/last-agent" },
           ],
         },
       ],
