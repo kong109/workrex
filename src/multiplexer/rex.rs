@@ -616,17 +616,20 @@ fn parallel_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Ve
 
 /// Reads `pipe` to its end on another thread. On macOS a process started
 /// on another thread can inherit the pipe's write end, which delays the end
-/// past `rex`'s exit until that process exits too.
-fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
+/// past `rex`'s exit until that process exits too. A refused thread is an
+/// error, not a panic, since callers may hold a server's verdict slot.
+fn drain(
+    pipe: Option<impl std::io::Read + Send + 'static>,
+) -> std::io::Result<mpsc::Receiver<Vec<u8>>> {
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
+    thread::Builder::new().spawn(move || {
         let mut bytes = Vec::new();
         if let Some(mut pipe) = pipe {
             let _ = pipe.read_to_end(&mut bytes);
         }
         let _ = tx.send(bytes);
-    });
-    rx
+    })?;
+    Ok(rx)
 }
 
 /// Never a real endpoint, so state written while the server is unreachable
@@ -974,7 +977,18 @@ impl RexBackend {
                 args.join(" ")
             ))
         };
-        let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
+        let drains =
+            drain(child.stdout.take()).and_then(|out| Ok((out, drain(child.stderr.take())?)));
+        let (stdout, stderr) = match drains {
+            Ok(drains) => drains,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(CallError::Failed(
+                    anyhow!(error).context("Failed to read rex output"),
+                ));
+            }
+        };
         let status = loop {
             if let Some(status) = child
                 .try_wait()
@@ -3630,7 +3644,9 @@ mod tests {
             r#"$sleep 60 & echo $! > "$dir/holder"; echo '{"rex_version":"t","api_revision":8}'"#,
         )]);
         fake.rex.version_timeout = Duration::from_secs(1);
+        let started = Instant::now();
         let error = fake.rex.sessions().unwrap_err();
+        let took = started.elapsed();
         if let Ok(holder) = std::fs::read_to_string(fake.dir.path().join("holder")) {
             Command::new("kill").arg(holder.trim()).status().unwrap();
         }
@@ -3638,6 +3654,38 @@ mod tests {
             format!("{error:#}").contains("server.version gave no answer within"),
             "{error:#}"
         );
+        assert!(
+            took < Duration::from_secs(10),
+            "the check outlived its timeout: {took:?}"
+        );
+    }
+
+    #[test]
+    fn concurrent_first_calls_to_one_server_share_one_version_check() {
+        let fake = FakeRex::new(&[
+            ("server.version", STALLED_VERSION),
+            ("session.list", &session_list(&[])),
+        ]);
+        thread::scope(|scope| {
+            let first = scope.spawn(|| fake.rex.sessions().map(|_| ()));
+            fake.wait_for("started");
+            let second = scope.spawn(|| fake.rex.sessions().map(|_| ()));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline && fake.calls("server.version").len() < 2 {
+                thread::sleep(Duration::from_millis(10));
+            }
+            let checks = fake.calls("server.version").len();
+            fake.write("release", "");
+            first.join().unwrap().unwrap();
+            second.join().unwrap().unwrap();
+            assert_eq!(checks, 1, "the second caller ran its own check");
+        });
+        assert_eq!(fake.calls("server.version").len(), 1);
+    }
+
+    #[test]
+    fn a_version_check_outlasts_rexs_own_request_limit() {
+        assert_eq!(RexBackend::new().version_timeout, Duration::from_secs(15));
     }
 
     const SESSION_VIEW: [&str; 4] = ["api", "call", "session.view", "-"];
