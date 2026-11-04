@@ -51,9 +51,9 @@ into the git directory and adds `/README.md merge=workrex-readme` to
 `# workrex` when only one side has it, and makes a normal three-way merge when
 both or neither side has it. It works for `git rebase` and `git merge`.
 
-Fork commits older than the README rewrite, such as "Ship the binary as workrex", have a README
-that does not start with `# workrex`. A rebase can still stop on one of them
-when upstream edits the top of its README. To go on, keep upstream's copy for
+Fork commits older than the README rewrite, such as "Ship the binary as
+workrex", have a README that does not start with `# workrex`. A rebase can
+still stop on one of them when upstream edits the top of its README. To go on, keep upstream's copy for
 that step. A later fork commit puts the fork's README back:
 
 ```bash
