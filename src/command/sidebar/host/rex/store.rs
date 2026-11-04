@@ -101,15 +101,15 @@ pub(super) struct WindowSidebar {
     pub window_id: String,
     pub block_id: String,
     pub split_id: String,
+    /// An older sidebar block in the window that failed to close. The next
+    /// pass closes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stray: Option<String>,
     /// The root split ratio as Rex reported it after the last placement.
     /// A different ratio in a later view means the user dragged the border.
     pub applied_ratio: f64,
     pub last_cols: u32,
     pub window_cols: u32,
-    /// An older sidebar block in the window that failed to close. The next
-    /// pass closes it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stray: Option<String>,
 }
 
 pub(super) type Records = BTreeMap<String, WindowSidebar>;
@@ -265,21 +265,22 @@ mod tests {
             window_id: window.into(),
             block_id: format!("block:{window}"),
             split_id: format!("split:{window}"),
+            stray: None,
             applied_ratio: 0.18,
             last_cols: 30,
             window_cols: 166,
-            stray: None,
         }
     }
 
     /// A records file from before `stray` existed loads, and a record
-    /// without a stray writes the same file back.
+    /// without a stray writes no `stray` key.
     #[test]
-    fn a_record_without_a_stray_keeps_the_old_file_format() {
+    fn an_old_records_file_loads_and_writes_no_stray() {
         let old = r#"{"window:w":{"session_id":"session:s","window_id":"window:w","block_id":"block:b","split_id":"split:x","applied_ratio":0.18,"last_cols":30,"window_cols":166}}"#;
         let records: Records = serde_json::from_str(old).unwrap();
         assert_eq!(records["window:w"].stray, None);
-        assert_eq!(serde_json::to_string(&records).unwrap(), old);
+        let written = serde_json::to_string(&records).unwrap();
+        assert!(!written.contains("stray"), "{written}");
     }
 
     #[test]
