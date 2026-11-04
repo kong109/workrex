@@ -61,7 +61,9 @@ Without this configuration, panes created via keybindings may connect to a diffe
 
 ## Cross-workspace navigation
 
-The dashboard shows agents from every workspace unless you turn on its session filter (`F`, or `workrex dashboard --session`). However, WezTerm's CLI cannot directly switch workspaces. To enable jumping to tabs in other workspaces, add this to your `wezterm.lua`. The user variable keeps its workmux name, `workmux-switch-pane`, so a `wezterm.lua` made for workmux keeps working. See [Configuration](/guide/configuration/).
+The dashboard shows agents from every workspace unless you turn on its session filter (`F`, or `workrex dashboard --session`). However, WezTerm's CLI cannot directly switch workspaces. The user variable keeps its workmux name, `workmux-switch-pane`, so a `wezterm.lua` made for workmux keeps working. See [Configuration](/guide/configuration/).
+
+To enable jumping to tabs in other workspaces, add this to your `wezterm.lua`:
 
 ```lua
 local wezterm = require("wezterm")
