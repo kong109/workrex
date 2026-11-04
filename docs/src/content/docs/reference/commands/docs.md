@@ -26,3 +26,6 @@ To have an agent configure workrex for you, ask it to read the docs first:
 
 The agent reads the raw Markdown from the command's output and writes the
 project's `.workmux.yaml`.
+
+The project file keeps its workmux name, so existing workmux configs work. See
+[Configuration](/guide/configuration/).

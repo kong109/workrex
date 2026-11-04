@@ -89,6 +89,22 @@ for (const file of styles) {
   }
 }
 
+// The Copy page Markdown is served raw, so its links must be absolute site URLs.
+for (const file of files.filter((f) => f.endsWith(".md"))) {
+  const markdown = fs.readFileSync(file, "utf8");
+  const refs = [
+    ...[...markdown.matchAll(/\]\(([^)\s]+)/g)].map((m) => m[1]),
+    ...[...markdown.matchAll(/^\s*\[[^\]]+\]:\s*(\S+)/gm)].map((m) => m[1]),
+  ];
+  for (const ref of refs) {
+    if (ref.startsWith("/") && !ref.startsWith("//")) {
+      failures.push(`${path.relative(dist, file)}: ${ref} is root-relative`);
+    } else if (ref.startsWith(`${origin}/`)) {
+      check(file, ref);
+    }
+  }
+}
+
 console.log(`${pages.length} pages, ${checked} internal references checked`);
 if (failures.length > 0) {
   console.error(failures.join("\n"));

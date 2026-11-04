@@ -7,6 +7,8 @@ This page lists the commands in `workrex --help`, in the same groups. For a
 command's full options, run `workrex <command> --help`. "Window" means a tmux
 window, a WezTerm, kitty, or Zellij tab, or a Rex window. In session mode, which
 is the default under Rex, each worktree gets a session instead.
+Configuration files keep their workmux names, such as `.workmux.yaml`, so
+existing workmux configs work. See [Configuration](/guide/configuration/).
 
 ## Worktree lifecycle
 
@@ -33,25 +35,25 @@ is the default under Rex, each worktree gets a session instead.
 
 ## Setup and configuration
 
-| Command                                           | Description                                            |
-| ------------------------------------------------- | ------------------------------------------------------ |
-| [`init`](/reference/commands/init/)               | Write an example `.workmux.yaml`                       |
-| [`setup`](/reference/commands/setup/)             | Set up agent status tracking hooks and install skills  |
-| [`config`](/reference/commands/config/)           | Edit, locate, or print the global configuration        |
-| [`sandbox`](/reference/commands/sandbox/)         | Manage sandbox settings                                |
-| [`remote`](/reference/commands/remote/)           | Manage SSH remotes that run agents                     |
-| [`sync-files`](/reference/commands/sync-files/)   | Copy and symlink configured files into worktrees again |
-| [`claude`](/reference/commands/claude/)           | Claude Code commands, such as `claude prune`           |
-| [`reap-agents`](/reference/commands/reap-agents/) | Exit tracked agent processes older than a set age      |
+| Command                                         | Description                                            |
+| ----------------------------------------------- | ------------------------------------------------------ |
+| [`init`](/reference/commands/init/)             | Write an example `.workmux.yaml`                       |
+| [`setup`](/reference/commands/setup/)           | Set up agent status tracking hooks and install skills  |
+| [`config`](/reference/commands/config/)         | Edit, locate, or print the global configuration        |
+| [`sandbox`](/reference/commands/sandbox/)       | Manage sandbox settings                                |
+| [`remote`](/reference/commands/remote/)         | Manage SSH remotes that run agents                     |
+| [`sync-files`](/reference/commands/sync-files/) | Copy and symlink configured files into worktrees again |
+| [`claude`](/reference/commands/claude/)         | Claude Code commands, such as `claude prune`           |
 
 ## Agent interaction
 
-| Command                                   | Description                                     |
-| ----------------------------------------- | ----------------------------------------------- |
-| [`send`](/reference/commands/send/)       | Send a prompt or instruction to a running agent |
-| [`capture`](/reference/commands/capture/) | Capture terminal output from a running agent    |
-| [`wait`](/reference/commands/wait/)       | Wait for agents to reach a target status        |
-| [`run`](/reference/commands/run/)         | Run a command in a worktree's window            |
+| Command                                           | Description                                       |
+| ------------------------------------------------- | ------------------------------------------------- |
+| [`send`](/reference/commands/send/)               | Send a prompt or instruction to a running agent   |
+| [`capture`](/reference/commands/capture/)         | Capture terminal output from a running agent      |
+| [`wait`](/reference/commands/wait/)               | Wait for agents to reach a target status          |
+| [`run`](/reference/commands/run/)                 | Run a command in a worktree's window              |
+| [`reap-agents`](/reference/commands/reap-agents/) | Exit tracked agent processes older than a set age |
 
 ## Help and updates
 
