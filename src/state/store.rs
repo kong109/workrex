@@ -1510,11 +1510,16 @@ impl StateStore {
                         }
                     }
                 }
+                // Rex sends no event when a program renames its binary or
+                // retitles itself, so a snapshot built from events can hold
+                // a stale command. Read the pane again before dropping it.
                 Some(live)
                     if live
                         .current_command
                         .as_ref()
-                        .is_some_and(|cmd| *cmd != state.command) =>
+                        .is_some_and(|cmd| !state.runs_command(cmd))
+                        && !(backend == "rex"
+                            && matches!(mux.validate_agent_alive(&state), Ok(true))) =>
                 {
                     if previous_server {
                         // Command changed after server restart - preserve for resurrect

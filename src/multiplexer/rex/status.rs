@@ -52,11 +52,18 @@ impl ProgramStatusReport {
     /// Rex keeps `done`, `error` and `idle` records after their program
     /// exits. Only the program in the foreground speaks for the agent now.
     /// The name matters too: a shell that `exec`s keeps the agent's pid.
-    fn owned_by_foreground(mut self, foreground: Option<(u32, &str)>) -> Self {
+    /// `foreground` is the pid, Rex's name and the command. A record keeps
+    /// the name its owner had when it reported, and an agent that renamed
+    /// its running binary has a new name now.
+    fn owned_by_foreground(mut self, foreground: Option<(u32, &str, &str)>) -> Self {
         self.records.retain(|record| {
             record.owner.as_ref().is_none_or(|owner| {
-                foreground.is_some_and(|(pid, name)| {
-                    owner.pid == pid && owner.name.as_deref().is_none_or(|owner| owner == name)
+                foreground.is_some_and(|(pid, name, command)| {
+                    owner.pid == pid
+                        && owner
+                            .name
+                            .as_deref()
+                            .is_none_or(|owner| owner == name || owner == command)
                 })
             })
         });
@@ -162,7 +169,11 @@ impl ProgramStatusCall {
             Ok(report) => {
                 let report = report.unwrap_or_default();
                 let recorded = !report.records.is_empty();
-                let foreground = foreground.map(|fg| (fg.pid, fg.name.as_str()));
+                let command =
+                    foreground.map(|fg| super::process_command(&fg.name, fg.argv0.as_deref()));
+                let foreground = foreground
+                    .zip(command.as_deref())
+                    .map(|(fg, command)| (fg.pid, fg.name.as_str(), command));
                 let reported = report.owned_by_foreground(foreground).reported();
                 Some(Entry { reported, recorded })
             }
@@ -559,12 +570,15 @@ mod tests {
     fn records_of_a_program_that_left_the_foreground_are_ignored() {
         let left = fixture("records_left_after_exit");
         assert!(
-            left.owned_by_foreground(Some((4242, "zsh")))
+            left.owned_by_foreground(Some((4242, "zsh", "zsh")))
                 .reported()
                 .is_none()
         );
-        let running =
-            fixture("claude_code_blocked").owned_by_foreground(Some((85917, "claude.exe")));
+        let running = fixture("claude_code_blocked").owned_by_foreground(Some((
+            85917,
+            "claude.exe",
+            "claude",
+        )));
         assert!(matches!(
             running.reported(),
             Some(ReportedStatus::Agent {
@@ -581,17 +595,36 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_that_renamed_its_running_binary_keeps_its_records() {
+        let foreground: ProcessEntry = serde_json::from_value(serde_json::json!({
+            "pid": 85917, "name": "claude.exe.1793778097211245000.old", "argv0": "claude.exe"
+        }))
+        .unwrap();
+        let call = ProgramStatusCall(Ok(Some(fixture("claude_code_blocked"))));
+        let entry = call
+            .reported(&BlockId::parse("block:1").unwrap(), Some(&foreground))
+            .unwrap();
+        assert!(matches!(
+            entry.reported,
+            Some(ReportedStatus::Agent {
+                status: AgentStatus::Waiting,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn a_shell_that_took_over_the_agents_pid_does_not_inherit_its_records() {
         let records = || fixture("records_left_after_exit");
         assert!(
             records()
-                .owned_by_foreground(Some((58052, "zsh")))
+                .owned_by_foreground(Some((58052, "zsh", "zsh")))
                 .reported()
                 .is_none()
         );
         assert!(
             records()
-                .owned_by_foreground(Some((58052, "Python")))
+                .owned_by_foreground(Some((58052, "Python", "python3")))
                 .reported()
                 .is_some()
         );

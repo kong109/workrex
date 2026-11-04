@@ -160,6 +160,18 @@ impl AgentState {
             .or_else(|| self.status.is_none().then_some(self.updated_ts))
     }
 
+    /// Whether a pane whose foreground runs `live_command` still runs this
+    /// agent. Builds before Rex processes were named by argv0 stored Rex's
+    /// executable file name (`claude.exe` for `claude`), so a Rex entry also
+    /// matches a live command that classifies as its agent.
+    pub fn runs_command(&self, live_command: &str) -> bool {
+        live_command == self.command
+            || (self.pane_key.backend == "rex"
+                && self.agent_kind.is_some()
+                && crate::agent_identity::classify_agent_kind(Some(live_command), None)
+                    == self.agent_kind)
+    }
+
     /// Convert to AgentPane for dashboard display.
     ///
     /// The caller is responsible for providing the best available session/window names

@@ -2320,6 +2320,10 @@ mod tests {
             command(json!({ "pid": 7, "name": "claude" })).as_deref(),
             Some("claude")
         );
+        assert_eq!(
+            command(json!({ "pid": 6, "name": "agy", "argv0": "-" })).as_deref(),
+            Some("agy")
+        );
     }
 
     #[test]

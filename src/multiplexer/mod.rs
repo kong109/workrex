@@ -1104,7 +1104,7 @@ pub(crate) fn pane_runs_agent(
             if live
                 .current_command
                 .as_ref()
-                .is_some_and(|cmd| *cmd != state.command) =>
+                .is_some_and(|cmd| !state.runs_command(cmd)) =>
         {
             false // Command changed
         }

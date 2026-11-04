@@ -54,6 +54,7 @@ fn reporting(pane_id: &str, reported: Option<ReportedStatus>) -> FakeMux {
             .into_iter()
             .map(|reported| (pane_id.to_string(), reported))
             .collect(),
+        fresh: HashMap::new(),
         during_query: Mutex::new(None),
     }
 }
@@ -194,6 +195,7 @@ fn a_reporting_pane_outside_the_current_repository_is_not_adopted() {
     let mux = FakeMux {
         live: HashMap::from([("block:b".to_string(), live("/elsewhere"))]),
         reported: HashMap::from([("block:b".to_string(), working(200))]),
+        fresh: HashMap::new(),
         during_query: Mutex::new(None),
     };
 
@@ -507,6 +509,7 @@ fn an_adopted_record_from_before_worktrees_were_stored_is_read_once_rewritten() 
                 since: 200,
             },
         )]),
+        fresh: HashMap::new(),
         during_query: Mutex::new(None),
     };
     let mut reports = Reports::new(&mux, INSTANCE);
@@ -735,6 +738,7 @@ fn a_reader_in_the_repository_adopts_only_panes_in_its_linked_worktrees() {
             .iter()
             .map(|(pane, _)| (pane.to_string(), done))
             .collect(),
+        fresh: HashMap::new(),
         during_query: Mutex::new(None),
     };
 
@@ -762,7 +766,71 @@ fn prune_while_reporting_in(store: &StateStore, adopted: &ReportedRecord, pane_d
                 since: adopted.since,
             },
         )]),
+        fresh: HashMap::new(),
         during_query: Mutex::new(None),
     };
     store.load_all_reconciled_agents(&mux).unwrap();
+}
+
+fn running(command: &str) -> LivePaneInfo {
+    LivePaneInfo {
+        current_command: Some(command.to_string()),
+        ..live("/repo/wt")
+    }
+}
+
+fn listed(store: &StateStore, mux: &FakeMux, pane_id: &str) -> bool {
+    store
+        .load_all_reconciled_agents(mux)
+        .unwrap()
+        .iter()
+        .any(|agent| agent.pane_id == pane_id)
+}
+
+#[test]
+fn an_agent_stored_by_an_older_build_under_its_executable_name_stays_listed() {
+    let (_dir, store) = temp_store();
+    let mut old = hooked("block:a", AgentStatus::Waiting, 100);
+    old.command = "claude.exe".to_string();
+    store.upsert_agent(&old).unwrap();
+    let mux = FakeMux {
+        live: HashMap::from([("block:a".to_string(), running("claude"))]),
+        ..FakeMux::default()
+    };
+
+    assert!(listed(&store, &mux, "block:a"));
+    assert!(store.get_agent(&old.pane_key).unwrap().is_some());
+}
+
+#[test]
+fn an_agent_stored_by_an_older_build_drops_when_its_shell_returns() {
+    let (_dir, store) = temp_store();
+    let mut old = hooked("block:a", AgentStatus::Waiting, 100);
+    old.command = "claude.exe".to_string();
+    store.upsert_agent(&old).unwrap();
+    let mux = FakeMux {
+        live: HashMap::from([("block:a".to_string(), running("zsh"))]),
+        fresh: HashMap::from([("block:a".to_string(), running("zsh"))]),
+        ..FakeMux::default()
+    };
+
+    assert!(!listed(&store, &mux, "block:a"));
+    assert!(store.get_agent(&old.pane_key).unwrap().is_none());
+}
+
+#[test]
+fn an_agent_that_retitled_itself_after_the_snapshot_stays_listed() {
+    let (_dir, store) = temp_store();
+    let mut agent = hooked("block:a", AgentStatus::Working, 100);
+    agent.command = "agy".to_string();
+    agent.agent_kind = Some("agy".to_string());
+    store.upsert_agent(&agent).unwrap();
+    let mux = FakeMux {
+        live: HashMap::from([("block:a".to_string(), running("node"))]),
+        fresh: HashMap::from([("block:a".to_string(), running("agy"))]),
+        ..FakeMux::default()
+    };
+
+    assert!(listed(&store, &mux, "block:a"));
+    assert!(store.get_agent(&agent.pane_key).unwrap().is_some());
 }
