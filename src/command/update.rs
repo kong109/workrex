@@ -484,6 +484,7 @@ mod tests {
             "node/bin",
             "node/state",
             "node/share",
+            "other/bin",
             "node/run/bin",
             "home/bin",
             "home/.local/bin",
@@ -495,6 +496,7 @@ mod tests {
         for marked in ["node/bin", "node/share"] {
             std::fs::write(path(marked).join(crate::bin_name::NODE_ROOT_MARKER), "").unwrap();
         }
+        std::fs::create_dir(path("other/bin").join(crate::bin_name::NODE_ROOT_MARKER)).unwrap();
         for pin in [
             "node/bin/workrex-0.1.278-rex.2",
             "node/bin/workrex-dev-ba7816bf8f01",
@@ -511,6 +513,8 @@ mod tests {
             "node/bin/workmux-0.1.278",
             // A marker outside a `bin/` directory marks nothing.
             "node/share/workrex-0.1.278",
+            // Only a file marks a root.
+            "other/bin/workrex-0.1.278",
             "home/workrex-0.1.278",
         ] {
             assert!(!is_node_pin(&path(install)), "{install}");

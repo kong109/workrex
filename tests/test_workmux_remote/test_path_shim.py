@@ -116,6 +116,28 @@ def test_setup_puts_the_pin_on_the_login_path_and_repoints_it_after_an_upgrade(
     ), broken.stdout
 
 
+def test_a_marker_that_cannot_be_written_warns_and_setup_goes_on(
+    loopback_cli: RemoteCli, workmux_exe_path: Path
+):
+    shim = configure(loopback_cli, workmux_exe_path)
+    marker = loopback_cli.home / "node" / "bin" / MARKER
+    marker.mkdir(parents=True)  # not a file, so it can't be written
+    warning = (
+        f"! lo: could not write ~/node/bin/{MARKER}, so `{BIN} update` on the server "
+        "may replace the pinned binaries"
+    )
+
+    fresh = loopback_cli.run("remote", "setup", "lo")
+    rerun = loopback_cli.run("remote", "setup", "lo")
+
+    for result in (fresh, rerun):
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert warning in result.stdout, result.stdout
+        assert f"✓ lo: {shim} " in result.stdout, result.stdout
+    assert "installed" in fresh.stdout and "already installed" in rerun.stdout
+    assert (loopback_cli.home / "node" / "bin" / dev_pin(workmux_exe_path)).is_file()
+
+
 def test_setup_takes_over_a_marked_shim_and_leaves_any_other_alone(
     loopback_cli: RemoteCli, workmux_exe_path: Path
 ):
