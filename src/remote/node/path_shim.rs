@@ -38,6 +38,8 @@ pub struct PathShimResponse {
     pub state: ShimState,
     /// The pin our shim runs, after any write.
     pub target: Option<String>,
+    /// `target` is an executable file, so the shim can run it.
+    pub target_runs: bool,
     /// This call wrote the shim.
     pub changed: bool,
 }
@@ -131,6 +133,7 @@ pub fn ensure(shim: &Path, pin: &Path, install: bool) -> Result<PathShimResponse
         path: shim.to_string_lossy().into_owned(),
         state,
         target: current.as_deref().and_then(target),
+        target_runs: false,
         changed: false,
     };
     if install && state != ShimState::Foreign && current.as_deref() != Some(want.as_str()) {
@@ -139,7 +142,13 @@ pub fn ensure(shim: &Path, pin: &Path, install: bool) -> Result<PathShimResponse
         response.target = target(&want);
         response.changed = true;
     }
+    response.target_runs = response.target.as_deref().is_some_and(is_executable);
     Ok(response)
+}
+
+fn is_executable(path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 /// Replace `path` with an executable file holding `text` in one rename.
@@ -309,11 +318,9 @@ mod tests {
     #[test]
     fn the_shim_runs_the_pin_outside_executions_and_the_wrapper_inside() {
         let tmp = tempfile::tempdir().unwrap();
-        let pin = tmp
-            .path()
-            .join("bin")
-            .join(crate::bin_name::pin_name("0.1.2"));
-        let wrapper = tmp.path().join("run/bin").join(BIN);
+        let root = tmp.path().join("o'neil's node");
+        let pin = root.join("bin").join(crate::bin_name::pin_name("0.1.2"));
+        let wrapper = root.join("run/bin").join(BIN);
         for (path, name) in [(&pin, "pin"), (&wrapper, "wrapper")] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             crate::test_support::write_script(
@@ -334,8 +341,26 @@ mod tests {
         };
 
         assert_eq!(run(None), "pin  a b c\n");
-        assert_eq!(run(Some(tmp.path())), "wrapper  a b c\n");
+        assert_eq!(run(Some(&root)), "wrapper  a b c\n");
         // A root without a wrapper, such as one whose executions run in containers.
         assert_eq!(run(Some(&tmp.path().join("other"))), "pin  a b c\n");
+    }
+
+    #[test]
+    fn a_shim_whose_pin_is_gone_is_reported_as_not_running() {
+        let (_tmp, shim, pin) = setup();
+        fs::create_dir_all(pin.parent().unwrap()).unwrap();
+        crate::test_support::write_script(&pin, "#!/bin/sh\n");
+        ensure(&shim, &pin, true).unwrap();
+        assert!(ensure(&shim, &pin, false).unwrap().target_runs);
+
+        fs::set_permissions(&pin, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!ensure(&shim, &pin, false).unwrap().target_runs);
+        fs::remove_file(&pin).unwrap();
+        let response = ensure(&shim, &pin, false).unwrap();
+
+        assert_eq!(response.state, ShimState::Ours);
+        assert_eq!(response.target.as_deref(), Some(pin.to_str().unwrap()));
+        assert!(!response.target_runs);
     }
 }

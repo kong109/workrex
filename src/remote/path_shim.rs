@@ -3,7 +3,9 @@
 //!
 //! Docker mode installs none. Its shell panes are node sessions on the host
 //! without the `run/bin` wrapper, so a shim there would turn `workmux` in
-//! those panes into an install that does not know the workspace.
+//! those panes into an install that does not know the workspace. A shim an
+//! earlier server-mode setup left is reported, never removed: another remote
+//! on the same host may use it.
 
 use std::path::Path;
 
@@ -27,6 +29,9 @@ fn query(node: &Node, install: bool) -> Result<PathShimResponse> {
 /// warning: the node works without it.
 pub fn setup(node: &Node) {
     if node.spec.isolation == RemoteIsolation::Container {
+        if let Some(note) = leftover_note(node) {
+            println!("- {}: {note}", node.spec.name);
+        }
         return;
     }
     if let Err(err) = install(node) {
@@ -62,6 +67,20 @@ fn install(node: &Node) -> Result<()> {
     Ok(())
 }
 
+/// In Docker mode, a note about a shim that a server-mode setup wrote.
+fn leftover_note(node: &Node) -> Option<String> {
+    let shim = query(node, false)
+        .inspect_err(|err| tracing::debug!(?err, "path shim query failed"))
+        .ok()?;
+    (shim.state == ShimState::Ours).then(|| {
+        format!(
+            "{} was written by an earlier server-mode setup; remove it if no server-mode \
+             remote on this host uses it",
+            shim.path
+        )
+    })
+}
+
 /// What to change when login shells do not run the shim at `path`.
 fn path_hint(path: &str, resolution: &Resolution) -> Option<String> {
     let dir = Path::new(path)
@@ -82,10 +101,14 @@ fn path_hint(path: &str, resolution: &Resolution) -> Option<String> {
 /// `remote doctor` row; `ready` is whether the pinned node binary answers.
 pub fn doctor_rows(spec: &RemoteSpec, ready: bool) -> Vec<Row> {
     if spec.isolation == RemoteIsolation::Container {
+        let leftover = ready
+            .then(|| Node::connect_reader(spec, protocol::PATH_SHIM).ok())
+            .flatten()
+            .and_then(|node| leftover_note(&node));
         return vec![Row::new(
             "path",
             Level::Skip,
-            format!("Docker mode puts no {BIN} on the login PATH"),
+            leftover.unwrap_or_else(|| format!("Docker mode puts no {BIN} on the login PATH")),
         )];
     }
     if !ready {
@@ -116,6 +139,16 @@ pub fn doctor_rows(spec: &RemoteSpec, ready: bool) -> Vec<Row> {
                 Level::Skip,
                 format!("{} is not the setup shim; setup leaves it alone", shim.path),
             ),
+            ShimState::Ours if !shim.target_runs => Row::new(
+                "path",
+                Level::Warn,
+                format!(
+                    "{} runs {}, which is missing or not executable",
+                    shim.path,
+                    shim.target.as_deref().unwrap_or("nothing")
+                ),
+            )
+            .fix(setup.clone()),
             ShimState::Ours if target.and_then(Path::file_name) != Some(pin.as_ref()) => Row::new(
                 "path",
                 Level::Warn,

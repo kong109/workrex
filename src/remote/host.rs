@@ -49,7 +49,7 @@ pub enum Resolution {
 /// returned, never the login environment.
 pub fn resolve(transport: &Transport, program: &str, expected: &str) -> Result<Resolution> {
     let body = format!(
-        "p=$(command -v -- {})\nif [ \"$p\" = {} ]; then echo workmux-cli=expected; \
+        "p=$(command -v -- {})\nif [ -n \"$p\" ] && [ \"$p\" -ef {} ]; then echo workmux-cli=expected; \
          elif [ -n \"$p\" ]; then printf 'workmux-cli=other:%s\\n' \"$p\"; \
          else echo workmux-cli=missing; fi\n",
         shell_quote(program),

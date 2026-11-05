@@ -56,7 +56,7 @@ Prints one row per check, with a fix for each failing row:
 | `agents`    | Resolved mode and deciding setting; in host mode, default CLI required and other configured CLIs optional |
 | `container` | Docker works for the SSH user (Docker mode only)                                                          |
 | `hooks`     | workrex's status hooks are installed for each agent                                                       |
-| `path`      | `~/.local/bin/workrex` runs this version's node binary in login shells (server mode only)                 |
+| `path`      | `~/.local/bin/workrex` runs this version's node binary, which exists, in login shells (server mode only)  |
 | logins      | One row per configured agent, with the credential files found on the remote                               |
 | `image`     | The sandbox image of the default agent can be pulled (it is pulled as part of the check)                  |
 
