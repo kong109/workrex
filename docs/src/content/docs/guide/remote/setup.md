@@ -164,13 +164,13 @@ Each workspace keeps the mode it was created with, even if your settings change 
 workrex remote setup devbox
 ```
 
-Installs the workrex that matches your local version on the server, under the node root (`~/.workrex-node` by default, set with [`path`](/guide/configuration/#remotes)). Each version lives at `bin/workrex-<version>` in the node root, so running agents keep the version they started with. `setup` also installs workrex's [status hooks](/guide/status-tracking/) for the supported agents. It is safe to run again. `add --remote` and `remote login` install workrex on first use too, but running `setup` first shows problems early.
+Installs the workrex that matches your local version on the server, under the node root (`~/.workrex-node` by default, set with [`path`](/guide/configuration/#remotes)). Each version lives at `bin/workrex-<version>` in the node root, so running agents keep the version they started with. `setup` also installs workrex's [status hooks](/guide/status-tracking/) for the supported agents and, in server mode, writes `~/.local/bin/workrex`, which runs the pinned version from your own shells on the server (see [shells on the server](/guide/remote/usage/#commands-on-remote-workspaces)). It is safe to run again. `add --remote` and `remote login` install workrex on first use too, but running `setup` first shows problems early.
 
 ```bash
 workrex remote doctor devbox
 ```
 
-Checks SSH, the server's architecture, workrex, Git, tmux, linger, agent CLIs or Docker, status hooks and logins, and prints a fix for each failing check. In Docker mode it also pulls the sandbox image, so the first run can take a while. See [`remote doctor`](/reference/commands/remote/#remote-doctor) for every check.
+Checks SSH, the server's architecture, workrex, Git, tmux, linger, agent CLIs or Docker, status hooks, the `workrex` on the login `PATH` and logins, and prints a fix for each failing check. In Docker mode it also pulls the sandbox image, so the first run can take a while. See [`remote doctor`](/reference/commands/remote/#remote-doctor) for every check.
 
 ```bash
 workrex remote

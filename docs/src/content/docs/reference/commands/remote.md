@@ -27,7 +27,7 @@ workrex remote setup <name>
 
 - `<name>` - Remote name from `remotes:` in the global config
 
-Uploads the workrex binary for this workrex version into the remote's node root (the release, downloaded and checksum-verified on the local machine, or the configured `binary`), and installs workrex's status hooks for the supported agents in the remote user's agent directories. OpenCode's hooks are installed once the OpenCode sandbox image is on the remote. Running it again only installs what is missing. An interrupted install is recovered by the next run.
+Uploads the workrex binary for this workrex version into the remote's node root (the release, downloaded and checksum-verified on the local machine, or the configured `binary`), and installs workrex's status hooks for the supported agents in the remote user's agent directories. OpenCode's hooks are installed once the OpenCode sandbox image is on the remote. With `isolation: none`, it also points `~/.local/bin/workrex` on the remote at the installed binary, so shells and scripts on the remote find `workrex`. It creates that file when the path is free and replaces it only when `setup` wrote it, and prints a hint when the remote's login shell doesn't run it. Running it again only installs what is missing. An interrupted install is recovered by the next run.
 
 Commands that need the node, such as `add --remote` and `remote login`, install it automatically, so `setup` is mostly useful as a first check, and after you make OpenCode's sandbox image available on the remote (its hooks depend on the OpenCode version in that image).
 
@@ -56,6 +56,7 @@ Prints one row per check, with a fix for each failing row:
 | `agents`    | Resolved mode and deciding setting; in host mode, default CLI required and other configured CLIs optional |
 | `container` | Docker works for the SSH user (Docker mode only)                                                          |
 | `hooks`     | workrex's status hooks are installed for each agent                                                       |
+| `path`      | `~/.local/bin/workrex` runs this version's node binary, which exists, in login shells (server mode only)  |
 | logins      | One row per configured agent, with the credential files found on the remote                               |
 | `image`     | The sandbox image of the default agent can be pulled (it is pulled as part of the check)                  |
 

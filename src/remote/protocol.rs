@@ -38,6 +38,7 @@ pub const CAPABILITIES: &[&str] = &[
     GC,
     SHELL,
     TERMINAL_REX,
+    PATH_SHIM,
 ];
 
 pub const PROVISION_WORKSPACE: &str = "provision-workspace";
@@ -63,6 +64,8 @@ pub const GC: &str = "gc";
 pub const SHELL: &str = "shell";
 /// `start-execution` honors [`StartRequest::terminal`] `rex`.
 pub const TERMINAL_REX: &str = "terminal-rex";
+/// Wire types in `remote::node::path_shim`.
+pub const PATH_SHIM: &str = "path-shim";
 
 /// Error codes a node verb reports in its [`ErrorEnvelope`].
 pub mod code {

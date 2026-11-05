@@ -14,6 +14,10 @@ pub mod skills;
 
 pub const BIN: &str = env!("CARGO_BIN_NAME");
 
+/// The file `remote setup` keeps in a node root's `bin/`, next to the pinned
+/// binaries, so `update` can tell a pin from a versioned install.
+pub const NODE_ROOT_MARKER: &str = concat!(".", env!("CARGO_BIN_NAME"), "-node");
+
 /// The GitHub repository this binary is released from.
 pub const REPO: &str = "kong109/workrex";
 

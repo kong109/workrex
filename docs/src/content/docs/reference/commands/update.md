@@ -34,6 +34,15 @@ workrex has no Homebrew formula. `workrex update` refuses to run when the
 binary's path contains `/Cellar/` or `/homebrew/`, so keep the binary out of a
 Homebrew prefix such as `/opt/homebrew/bin`.
 
+On a remote server, the `workrex` that [`remote setup`](/reference/commands/remote/#remote-setup)
+puts on the `PATH` runs a version-pinned binary under the node root.
+`workrex update` refuses to replace it, because the node runs the version that
+matches your local workrex. Update workrex on your local machine, then run
+`workrex remote setup <remote>` there. A pinned binary prints no update notices.
+workrex counts a binary as pinned only when `setup` has marked its directory
+with a `.workrex-node` file, so your own versioned install, such as
+`~/.local/bin/workrex-<version>`, updates as usual.
+
 ## Update notices
 
 Once every 24 hours at most, workrex checks for a new release in a background

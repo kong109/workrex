@@ -34,6 +34,24 @@ fn is_homebrew_install(exe_path: &std::path::Path) -> bool {
     path_str.contains("/Cellar/") || path_str.contains("/homebrew/")
 }
 
+/// Whether `exe` is a node binary that `remote setup` pinned under a
+/// node root's `bin/`, whose name promises the bytes of one version.
+///
+/// Setup marks that `bin/` with [`NODE_ROOT_MARKER`](crate::bin_name::NODE_ROOT_MARKER),
+/// so a user's own `~/.local/bin/workrex-<version>` is never taken for a pin.
+fn is_node_pin(exe: &std::path::Path) -> bool {
+    let Some(bin) = exe.parent() else {
+        return false;
+    };
+    bin.file_name() == Some("bin".as_ref())
+        && bin.join(crate::bin_name::NODE_ROOT_MARKER).is_file()
+        && exe
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(crate::bin_name::pin_version)
+            .is_some()
+}
+
 /// Fetch the latest release tag from GitHub API using curl.
 fn fetch_latest_version() -> Result<String> {
     fetch_latest_version_with_options(None, "Failed to run curl. Is curl installed?")
@@ -233,6 +251,13 @@ pub fn run() -> Result<()> {
     if is_homebrew_install(&canonical_exe) {
         bail!("workmux is managed by Homebrew. Run `brew upgrade workmux` instead.");
     }
+    if is_node_pin(&canonical_exe) {
+        bail!(
+            "{} is a remote node's pinned binary, which only `{BIN} remote setup` changes. \
+             Update {BIN} on your local machine, then run `{BIN} remote setup <remote>` there.",
+            canonical_exe.display()
+        );
+    }
 
     let platform = platform_suffix()?;
     let artifact_name = crate::bin_name::release_artifact(platform)?;
@@ -314,6 +339,11 @@ pub fn check_and_notify(config: &crate::config::Config) {
 
     // Opt-out via environment variable
     if std::env::var("WORKMUX_NO_UPDATE_CHECK").is_ok() {
+        return;
+    }
+
+    // A node's pin follows the local machine's version, not `update`.
+    if std::env::current_exe().is_ok_and(|exe| is_node_pin(&crate::util::canon_or_self(&exe))) {
         return;
     }
 
@@ -444,6 +474,59 @@ mod tests {
         assert!(is_homebrew_install(std::path::Path::new(
             "/usr/local/Cellar/workmux/0.1.124/bin/workmux"
         )));
+    }
+
+    #[test]
+    fn node_pins_are_told_apart_from_installs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = |rel: &str| tmp.path().join(rel);
+        for dir in [
+            "node/bin",
+            "node/state",
+            "node/share",
+            "other/bin",
+            "node/run/bin",
+            "home/bin",
+            "home/.local/bin",
+            "home/.local/state/workmux",
+            "usr/local/bin",
+        ] {
+            std::fs::create_dir_all(path(dir)).unwrap();
+        }
+        for marked in ["node/bin", "node/share"] {
+            std::fs::write(path(marked).join(crate::bin_name::NODE_ROOT_MARKER), "").unwrap();
+        }
+        std::fs::create_dir(path("other/bin").join(crate::bin_name::NODE_ROOT_MARKER)).unwrap();
+        for pin in [
+            "node/bin/workrex-0.1.278-rex.2",
+            "node/bin/workrex-dev-ba7816bf8f01",
+        ] {
+            assert!(is_node_pin(&path(pin)), "{pin}");
+        }
+        for install in [
+            "home/bin/workrex-1.2",
+            // workrex creates ~/.local/state/workmux on its first run.
+            "home/.local/bin/workrex-0.1.278",
+            "usr/local/bin/workrex-0.1.278",
+            "usr/local/bin/workrex",
+            "node/run/bin/workrex",
+            "node/bin/workmux-0.1.278",
+            // A marker outside a `bin/` directory marks nothing.
+            "node/share/workrex-0.1.278",
+            // Only a file marks a root.
+            "other/bin/workrex-0.1.278",
+            "home/workrex-0.1.278",
+        ] {
+            assert!(!is_node_pin(&path(install)), "{install}");
+        }
+        // Versioned installs behind a symlink, as `update` sees them once canonicalized.
+        for dir in ["usr/local/bin", "home/.local/bin"] {
+            std::fs::write(path(dir).join("workrex-0.1.278"), "").unwrap();
+            std::os::unix::fs::symlink("workrex-0.1.278", path(dir).join("workrex")).unwrap();
+            let canonical = crate::util::canon_or_self(&path(dir).join("workrex"));
+            assert!(canonical.ends_with("bin/workrex-0.1.278"), "{dir}");
+            assert!(!is_node_pin(&canonical), "{dir}");
+        }
     }
 
     #[test]

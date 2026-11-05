@@ -378,6 +378,10 @@ pub fn run(spec: &RemoteSpec, config: &Config) -> Result<bool> {
         config,
         matches!(node, NodeStatus::Ready(_)),
     ));
+    rows.extend(super::path_shim::doctor_rows(
+        spec,
+        matches!(node, NodeStatus::Ready(_)),
+    ));
     for row in &rows {
         print_row(row);
     }

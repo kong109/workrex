@@ -6,7 +6,7 @@
 //! and run before an atomic rename gives them the pinned name; an
 //! interrupted install leaves no file under the pinned name.
 
-use crate::bin_name::BIN;
+use crate::bin_name::{BIN, NODE_ROOT_MARKER};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -117,6 +117,43 @@ fn classify_hello(output: &Output) -> NodeStatus {
     }
 }
 
+/// Moves the verified stage file to the pinned name; fails when it can't.
+fn rename_script(spec: &RemoteSpec, stage_name: &str, pin: &str) -> String {
+    spec.script(
+        &[("stage_name", stage_name), ("pin", pin)],
+        "mv -f \"$root/bin/$stage_name\" \"$root/bin/$pin\"\n",
+    )
+}
+
+/// Writes [`NODE_ROOT_MARKER`] into the root's `bin/` unless it is there.
+fn mark_script(spec: &RemoteSpec) -> String {
+    spec.script(
+        &[("marker", NODE_ROOT_MARKER)],
+        concat!(
+            "[ -f \"$root/bin/$marker\" ] || printf '%s\\n' '# Written by ",
+            env!("CARGO_BIN_NAME"),
+            " remote setup. This directory holds the pinned binaries of a node root.' \
+             >\"$root/bin/$marker\"\n"
+        ),
+    )
+}
+
+/// Mark the node root so `update` there leaves its pins alone. The node runs
+/// without the marker, so a failure is a warning.
+fn mark_root(transport: &Transport, spec: &RemoteSpec) {
+    let marker = format!("{}/bin/{NODE_ROOT_MARKER}", spec.path.trim_end_matches('/'));
+    let failure = match transport.run(&mark_script(spec), Input::Null, Some(PROBE_TIMEOUT)) {
+        Ok(output) if output.success() => return,
+        Ok(output) => output.stderr_line(),
+        Err(err) => format!("{err:#}"),
+    };
+    println!(
+        "! {}: could not write {marker}, so `{BIN} update` on the server may replace the \
+         pinned binaries: {failure}",
+        spec.name
+    );
+}
+
 /// Ask the pinned binary for `node hello`.
 pub fn node_status(transport: &Transport, spec: &RemoteSpec, pin: &Pin) -> Result<NodeStatus> {
     let missing = MISSING_STATUS.to_string();
@@ -131,15 +168,28 @@ pub fn node_status(transport: &Transport, spec: &RemoteSpec, pin: &Pin) -> Resul
     Ok(classify_hello(&output))
 }
 
-/// `workmux remote setup <name>`.
+/// `workmux remote setup <name>`: install the pinned binary, then point the
+/// login PATH shim at it.
 pub fn setup(spec: &RemoteSpec) -> Result<()> {
     let transport = Transport::open(spec)?;
     transport.connect()?;
     let pin = Pin::for_spec(spec)?;
+    install(&transport, spec, &pin)?;
+    super::path_shim::setup(&super::client::Node {
+        spec: spec.clone(),
+        transport,
+        pin,
+    });
+    Ok(())
+}
+
+fn install(transport: &Transport, spec: &RemoteSpec, pin: &Pin) -> Result<()> {
     let node_path = pin.path(spec);
 
-    match node_status(&transport, spec, &pin)? {
+    match node_status(transport, spec, pin)? {
         NodeStatus::Ready(hello) => {
+            // Roots set up before the marker existed gain it here.
+            mark_root(transport, spec);
             println!(
                 "✓ {}: {BIN} {} (protocol {}) is already installed at {node_path}",
                 spec.name, hello.version, hello.protocol
@@ -153,7 +203,7 @@ pub fn setup(spec: &RemoteSpec) -> Result<()> {
         }
     }
 
-    let platform = probe_platform(&transport)?;
+    let platform = probe_platform(transport)?;
     let temp_dir = tempfile::tempdir().context("Failed to create temp directory")?;
     let local = match &pin.source {
         // Upload a private copy so the bytes match the hash in the pin name
@@ -197,7 +247,8 @@ pub fn setup(spec: &RemoteSpec) -> Result<()> {
         size as f64 / 1_000_000.0,
         spec.name
     );
-    let hello = stage_and_install(&transport, spec, &pin, &node_path, &local, size, platform)?;
+    let hello = stage_and_install(transport, spec, pin, &node_path, &local, size, platform)?;
+    mark_root(transport, spec);
     println!(
         "✓ {}: installed {BIN} {} (protocol {}) at {node_path}",
         spec.name, hello.version, hello.protocol
@@ -313,10 +364,7 @@ chmod 755 "$stage" || { rm -f "$stage"; exit "$stage_failed"; }
             return Err(err);
         }
     };
-    let script = spec.script(
-        &[("stage_name", &stage_name), ("pin", &pin.name)],
-        "mv -f \"$root/bin/$stage_name\" \"$root/bin/$pin\"\n",
-    );
+    let script = rename_script(spec, &stage_name, &pin.name);
     let output = transport.run(&script, Input::Null, Some(PROBE_TIMEOUT))?;
     if !output.success() {
         bail!("Failed to install {node_path}: {}", output.stderr_line());
@@ -359,6 +407,63 @@ mod tests {
         assert_eq!(release_platform("Darwin", "arm64").unwrap(), "darwin-arm64");
         assert!(release_platform("Linux", "riscv64").is_err());
         assert!(release_platform("FreeBSD", "amd64").is_err());
+    }
+
+    fn local_spec(root: &Path) -> RemoteSpec {
+        RemoteSpec {
+            name: "r".into(),
+            host: "h".into(),
+            path: root.to_string_lossy().into_owned(),
+            isolation: Default::default(),
+            isolation_explicit: false,
+            binary: None,
+            terminal: Default::default(),
+        }
+    }
+
+    fn sh(script: &str) -> std::process::Output {
+        std::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_failed_rename_fails_the_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("bin")).unwrap();
+        let spec = local_spec(tmp.path());
+
+        let missing_stage = sh(&rename_script(&spec, ".workmux.gone", "workrex-1"));
+        assert!(!missing_stage.status.success());
+
+        fs::write(tmp.path().join("bin/.workmux.ok"), "x").unwrap();
+        let renamed = sh(&rename_script(&spec, ".workmux.ok", "workrex-1"));
+        assert!(renamed.status.success());
+        assert!(tmp.path().join("bin/workrex-1").is_file());
+    }
+
+    #[test]
+    fn the_marker_is_written_once_and_its_failures_are_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let spec = local_spec(tmp.path());
+        let marker = bin.join(NODE_ROOT_MARKER);
+
+        assert!(sh(&mark_script(&spec)).status.success());
+        assert!(
+            fs::read_to_string(&marker)
+                .unwrap()
+                .starts_with("# Written by ")
+        );
+        fs::write(&marker, "kept").unwrap();
+        assert!(sh(&mark_script(&spec)).status.success());
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "kept");
+
+        fs::remove_file(&marker).unwrap();
+        fs::create_dir(&marker).unwrap();
+        assert!(!sh(&mark_script(&spec)).status.success());
     }
 
     #[test]
