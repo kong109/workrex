@@ -13,6 +13,7 @@ from typing import List
 from ..support.bin_name import BIN
 from .conftest import RemoteCli, dev_pin, write_script
 
+MARKER = f".{BIN}-node"
 PROFILE = 'PATH="$HOME/.local/bin:$PATH"\nexport PATH\n'
 
 
@@ -69,8 +70,14 @@ def test_setup_puts_the_pin_on_the_login_path_and_repoints_it_after_an_upgrade(
     assert (found, reported) == (str(shim), version)
     assert str(loopback_cli.home / "node" / "bin" / first) in shim.read_text()
 
+    marker = loopback_cli.home / "node" / "bin" / MARKER
+    assert marker.is_file()
+    marker.unlink()  # as in a root set up before the marker existed
+
     rerun = loopback_cli.run("remote", "setup", "lo")
     assert f"✓ lo: {shim} already runs {first}" in rerun.stdout, rerun.stdout
+    assert "is already installed" in rerun.stdout, rerun.stdout
+    assert marker.is_file()
     doctor = loopback_cli.run("remote", "doctor", "lo")
     assert f"✓ path       {shim} runs {first} in login shells" in doctor.stdout, (
         doctor.stdout
@@ -223,7 +230,7 @@ def test_update_refuses_to_replace_a_node_pin(
     """`update` run through the shim sees the pin as its own executable."""
     pin = loopback_cli.home / "node" / "bin" / f"{BIN}-0.1.0"
     pin.parent.mkdir(parents=True)
-    (loopback_cli.home / "node" / "state").mkdir()
+    (pin.parent / MARKER).write_text("")
     pin.write_bytes(workmux_exe_path.read_bytes())
     pin.chmod(0o755)
     before = pin.read_bytes()
@@ -290,13 +297,15 @@ def notice(cli: RemoteCli, exe: Path) -> str:
 def test_node_pins_show_no_update_notice_and_versioned_installs_do(
     loopback_cli: RemoteCli, workmux_exe_path: Path
 ):
-    installs = loopback_cli.home / "bin"
+    # workrex has run here before, as on any machine with a versioned install.
+    (loopback_cli.home / ".local" / "state" / "workmux").mkdir(parents=True)
+    installs = loopback_cli.home / ".local" / "bin"
     pins = loopback_cli.home / "node" / "bin"
-    (loopback_cli.home / "node" / "state").mkdir(parents=True)
     for exe in (installs / f"{BIN}-1.2", pins / f"{BIN}-0.1.0"):
         exe.parent.mkdir(parents=True, exist_ok=True)
         exe.write_bytes(workmux_exe_path.read_bytes())
         exe.chmod(0o755)
+    (pins / MARKER).write_text("")
 
     assert "Update available" in notice(loopback_cli, installs / f"{BIN}-1.2")
     assert "Update available" not in notice(loopback_cli, pins / f"{BIN}-0.1.0")

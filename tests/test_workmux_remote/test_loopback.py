@@ -13,6 +13,9 @@ import pytest
 from ..support.bin_name import BIN, hook_bin, rebrand
 from .conftest import RemoteCli, dev_pin, write_script
 
+# `remote setup` marks a node root's bin/ with this file.
+MARKER = f".{BIN}-node"
+
 FAKE_PROTOCOL_999 = (
     'printf \'%s\\n\' \'{"protocol":999,"version":"9.9.9","os":"linux",'
     '"arch":"aarch64","capabilities":["hello"]}\'\n'
@@ -112,7 +115,7 @@ def test_setup_installs_pinned_binary(loopback_cli: RemoteCli, workmux_exe_path:
     pinned = bin_dir / dev_pin(workmux_exe_path)
     assert pinned.read_bytes() == workmux_exe_path.read_bytes()
     assert pinned.stat().st_mode & 0o777 == 0o755
-    assert sorted(p.name for p in bin_dir.iterdir()) == [pinned.name]
+    assert sorted(p.name for p in bin_dir.iterdir()) == sorted([pinned.name, MARKER])
 
 
 def test_setup_rerun_is_noop(loopback_cli: RemoteCli, workmux_exe_path: Path):
@@ -120,6 +123,7 @@ def test_setup_rerun_is_noop(loopback_cli: RemoteCli, workmux_exe_path: Path):
     assert loopback_cli.run("remote", "setup", "lo").returncode == 0
     pinned = bin_dir / dev_pin(workmux_exe_path)
     before = pinned.stat()
+    marked = (bin_dir / MARKER).stat()
 
     result = loopback_cli.run("remote", "setup", "lo")
 
@@ -127,7 +131,12 @@ def test_setup_rerun_is_noop(loopback_cli: RemoteCli, workmux_exe_path: Path):
     assert "already installed" in result.stdout
     after = pinned.stat()
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
-    assert sorted(p.name for p in bin_dir.iterdir()) == [pinned.name]
+    remarked = (bin_dir / MARKER).stat()
+    assert (remarked.st_ino, remarked.st_mtime_ns) == (
+        marked.st_ino,
+        marked.st_mtime_ns,
+    )
+    assert sorted(p.name for p in bin_dir.iterdir()) == sorted([pinned.name, MARKER])
 
 
 def test_setup_recovers_from_interrupted_installs(

@@ -39,6 +39,9 @@ puts on the `PATH` runs a version-pinned binary under the node root.
 `workrex update` refuses to replace it, because the node runs the version that
 matches your local workrex. Update workrex on your local machine, then run
 `workrex remote setup <remote>` there. A pinned binary prints no update notices.
+workrex counts a binary as pinned only when `setup` has marked its directory
+with a `.workrex-node` file, so your own versioned install, such as
+`~/.local/bin/workrex-<version>`, updates as usual.
 
 ## Update notices
 

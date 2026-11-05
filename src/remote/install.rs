@@ -6,7 +6,7 @@
 //! and run before an atomic rename gives them the pinned name; an
 //! interrupted install leaves no file under the pinned name.
 
-use crate::bin_name::BIN;
+use crate::bin_name::{BIN, NODE_ROOT_MARKER};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -117,6 +117,14 @@ fn classify_hello(output: &Output) -> NodeStatus {
     }
 }
 
+/// Writes [`NODE_ROOT_MARKER`] into the root's `bin/` unless it is there;
+/// the script needs `marker` set to it.
+const MARK_ROOT: &str = concat!(
+    "[ -f \"$root/bin/$marker\" ] || printf '%s\\n' '# Written by ",
+    env!("CARGO_BIN_NAME"),
+    " remote setup. This directory holds the pinned binaries of a node root.' >\"$root/bin/$marker\""
+);
+
 /// Ask the pinned binary for `node hello`.
 pub fn node_status(transport: &Transport, spec: &RemoteSpec, pin: &Pin) -> Result<NodeStatus> {
     let missing = MISSING_STATUS.to_string();
@@ -151,6 +159,15 @@ fn install(transport: &Transport, spec: &RemoteSpec, pin: &Pin) -> Result<()> {
 
     match node_status(transport, spec, pin)? {
         NodeStatus::Ready(hello) => {
+            // Roots set up before the marker existed gain it here.
+            let mark = spec.script(&[("marker", NODE_ROOT_MARKER)], &format!("{MARK_ROOT}\n"));
+            let output = transport.run(&mark, Input::Null, Some(PROBE_TIMEOUT))?;
+            if !output.success() {
+                bail!(
+                    "Failed to mark {node_path}'s root: {}",
+                    output.stderr_line()
+                );
+            }
             println!(
                 "✓ {}: {BIN} {} (protocol {}) is already installed at {node_path}",
                 spec.name, hello.version, hello.protocol
@@ -325,8 +342,12 @@ chmod 755 "$stage" || { rm -f "$stage"; exit "$stage_failed"; }
         }
     };
     let script = spec.script(
-        &[("stage_name", &stage_name), ("pin", &pin.name)],
-        "mv -f \"$root/bin/$stage_name\" \"$root/bin/$pin\"\n",
+        &[
+            ("stage_name", &stage_name),
+            ("pin", &pin.name),
+            ("marker", NODE_ROOT_MARKER),
+        ],
+        &format!("mv -f \"$root/bin/$stage_name\" \"$root/bin/$pin\" && {{ {MARK_ROOT}; }}\n"),
     );
     let output = transport.run(&script, Input::Null, Some(PROBE_TIMEOUT))?;
     if !output.success() {

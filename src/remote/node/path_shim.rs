@@ -38,8 +38,9 @@ pub struct PathShimResponse {
     pub state: ShimState,
     /// The pin our shim runs, after any write.
     pub target: Option<String>,
-    /// `target` is an executable file, so the shim can run it.
-    pub target_runs: bool,
+    /// `target` is an executable file, so the shim can run it. `None` from a
+    /// node that predates the field.
+    pub target_runs: Option<bool>,
     /// This call wrote the shim.
     pub changed: bool,
 }
@@ -133,7 +134,7 @@ pub fn ensure(shim: &Path, pin: &Path, install: bool) -> Result<PathShimResponse
         path: shim.to_string_lossy().into_owned(),
         state,
         target: current.as_deref().and_then(target),
-        target_runs: false,
+        target_runs: None,
         changed: false,
     };
     if install && state != ShimState::Foreign && current.as_deref() != Some(want.as_str()) {
@@ -142,7 +143,7 @@ pub fn ensure(shim: &Path, pin: &Path, install: bool) -> Result<PathShimResponse
         response.target = target(&want);
         response.changed = true;
     }
-    response.target_runs = response.target.as_deref().is_some_and(is_executable);
+    response.target_runs = Some(response.target.as_deref().is_some_and(is_executable));
     Ok(response)
 }
 
@@ -347,20 +348,27 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_from_a_node_without_target_runs_still_parses() {
+        let reply = r#"{"path":"/h/.local/bin/workrex","state":"ours","target":"/n/bin/workrex-1","changed":false}"#;
+        let response: PathShimResponse = serde_json::from_str(reply).unwrap();
+        assert_eq!(response.target_runs, None);
+    }
+
+    #[test]
     fn a_shim_whose_pin_is_gone_is_reported_as_not_running() {
         let (_tmp, shim, pin) = setup();
         fs::create_dir_all(pin.parent().unwrap()).unwrap();
         crate::test_support::write_script(&pin, "#!/bin/sh\n");
         ensure(&shim, &pin, true).unwrap();
-        assert!(ensure(&shim, &pin, false).unwrap().target_runs);
+        assert_eq!(ensure(&shim, &pin, false).unwrap().target_runs, Some(true));
 
         fs::set_permissions(&pin, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(!ensure(&shim, &pin, false).unwrap().target_runs);
+        assert_eq!(ensure(&shim, &pin, false).unwrap().target_runs, Some(false));
         fs::remove_file(&pin).unwrap();
         let response = ensure(&shim, &pin, false).unwrap();
 
         assert_eq!(response.state, ShimState::Ours);
         assert_eq!(response.target.as_deref(), Some(pin.to_str().unwrap()));
-        assert!(!response.target_runs);
+        assert_eq!(response.target_runs, Some(false));
     }
 }

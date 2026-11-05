@@ -139,7 +139,7 @@ pub fn doctor_rows(spec: &RemoteSpec, ready: bool) -> Vec<Row> {
                 Level::Skip,
                 format!("{} is not the setup shim; setup leaves it alone", shim.path),
             ),
-            ShimState::Ours if !shim.target_runs => Row::new(
+            ShimState::Ours if shim.target_runs == Some(false) => Row::new(
                 "path",
                 Level::Warn,
                 format!(
