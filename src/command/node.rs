@@ -143,6 +143,12 @@ pub enum NodeVerb {
         #[arg(long, required = true)]
         json: bool,
     },
+    /// Check or install the node user's `~/.local/bin` PATH shim
+    PathShim {
+        /// Read JSON from stdin and write JSON to stdout (required)
+        #[arg(long, required = true)]
+        json: bool,
+    },
 }
 
 pub fn run(args: NodeArgs) -> Result<()> {
@@ -235,6 +241,9 @@ pub fn run(args: NodeArgs) -> Result<()> {
             NodeVerb::Shell { .. } => {
                 serve(request, |root, request| node::shell::shell(&root, request))
             }
+            NodeVerb::PathShim { .. } => serve(request, |root, request| {
+                node::path_shim::path_shim(&root, request)
+            }),
             NodeVerb::Attach { .. } | NodeVerb::Login { .. } => unreachable!("handled above"),
         })
     };

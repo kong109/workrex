@@ -7,7 +7,9 @@ description: Day-to-day commands, remote panes, disconnects and reboots for agen
 
 Remote workspaces use the usual commands. Run them from the project on the local machine and name the workspace by its handle.
 
-A shell you open on the server yourself, such as an SSH login or a Rex window on the server's Rex server, has no `workrex` on its `PATH`. `remote setup` installs only a version-pinned binary, `~/.workrex-node/bin/workrex-<version>`. Remote workspaces run it with the node root's own state, and the workspace's panes get a `workrex` wrapper on their `PATH`. Run commands such as `status`, `send`, `merge` and `remove` on your own machine, and name the workspace by its handle. A separate workrex installed on the server would be an unrelated install with its own workspaces.
+`remote setup` installs a version-pinned binary, `~/.workrex-node/bin/workrex-<version>`. Remote workspaces run it with the node root's own state, and the workspace's panes get a `workrex` wrapper on their `PATH`. In server mode, `setup` also writes `~/.local/bin/workrex`, which runs the same pinned binary, so a shell you open on the server yourself, such as an SSH login or a Rex window on the server's Rex server, has `workrex` on its `PATH`. Scripts that call `workrex` then work the same on your machine and on the server. That `workrex` keeps its own state, like an install on the server: it doesn't see your remote workspaces. Run commands for them, such as `status`, `send`, `merge` and `remove`, on your own machine, and name the workspace by its handle. Each `setup` points `~/.local/bin/workrex` at the version it installs, and `workrex update` on the server refuses to replace a pinned binary: update workrex on your machine, then run `workrex remote setup <remote>` there.
+
+`setup` creates `~/.local/bin/workrex` only when nothing is there, and later replaces only a file it wrote itself. If you installed your own `workrex` at that path, `setup` leaves it alone and says so. When a login shell on the server doesn't run `~/.local/bin/workrex`, `setup` prints a hint: add `~/.local/bin` to `PATH` in your shell profile, ahead of any other `workrex`. Docker mode writes no `~/.local/bin/workrex`.
 
 | Command                                                                        | On a remote workspace                                                                                       |
 | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
@@ -32,7 +34,7 @@ A shell you open on the server yourself, such as an SSH login or a Rex window on
 Every pane in the window is a session on the server. Non-agent panes are shells on the server, or in the container with `sandbox.target: all`.
 
 - **On the server directly:** `workrex` works in every pane, including the shell left after the agent exits. It is the server's copy, which knows the pane's workspace.
-- **In Docker:** shell panes on the server have no `workrex`. Run workrex commands for the workspace on the local machine. The agent's container has `workrex`, for [`merge` and `rm`](#remove-or-merge-from-a-remote-pane) and [starting agents](#agents-that-start-agents).
+- **In Docker:** shell panes on the server have no `workrex`, unless you installed one there yourself. Run workrex commands for the workspace on the local machine. The agent's container has `workrex`, for [`merge` and `rm`](#remove-or-merge-from-a-remote-pane) and [starting agents](#agents-that-start-agents).
 
 ### Opening a shell on the server
 

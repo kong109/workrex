@@ -27,6 +27,7 @@ pub mod hooks;
 pub mod host;
 pub mod observe;
 pub mod operation;
+pub mod path_shim;
 pub mod provision;
 pub mod remove;
 pub mod secrets;

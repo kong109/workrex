@@ -22,6 +22,7 @@ pub mod node;
 pub mod notice;
 pub mod observe;
 pub mod operation;
+pub mod path_shim;
 pub mod portable;
 pub mod protocol;
 pub mod rex_jump;

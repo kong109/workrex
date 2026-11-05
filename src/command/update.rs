@@ -34,6 +34,17 @@ fn is_homebrew_install(exe_path: &std::path::Path) -> bool {
     path_str.contains("/Cellar/") || path_str.contains("/homebrew/")
 }
 
+/// Whether `exe` is a node binary that `remote setup` pinned under a
+/// node root's `bin/`, whose name promises the bytes of one version.
+fn is_node_pin(exe: &std::path::Path) -> bool {
+    exe.parent().and_then(|dir| dir.file_name()) == Some("bin".as_ref())
+        && exe
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(crate::bin_name::pin_version)
+            .is_some()
+}
+
 /// Fetch the latest release tag from GitHub API using curl.
 fn fetch_latest_version() -> Result<String> {
     fetch_latest_version_with_options(None, "Failed to run curl. Is curl installed?")
@@ -233,6 +244,13 @@ pub fn run() -> Result<()> {
     if is_homebrew_install(&canonical_exe) {
         bail!("workmux is managed by Homebrew. Run `brew upgrade workmux` instead.");
     }
+    if is_node_pin(&canonical_exe) {
+        bail!(
+            "{} is a remote node's pinned binary, which only `{BIN} remote setup` changes. \
+             Update {BIN} on your local machine, then run `{BIN} remote setup <remote>` there.",
+            canonical_exe.display()
+        );
+    }
 
     let platform = platform_suffix()?;
     let artifact_name = crate::bin_name::release_artifact(platform)?;
@@ -314,6 +332,11 @@ pub fn check_and_notify(config: &crate::config::Config) {
 
     // Opt-out via environment variable
     if std::env::var("WORKMUX_NO_UPDATE_CHECK").is_ok() {
+        return;
+    }
+
+    // A node's pin follows the local machine's version, not `update`.
+    if std::env::current_exe().is_ok_and(|exe| is_node_pin(&crate::util::canon_or_self(&exe))) {
         return;
     }
 
@@ -444,6 +467,26 @@ mod tests {
         assert!(is_homebrew_install(std::path::Path::new(
             "/usr/local/Cellar/workmux/0.1.124/bin/workmux"
         )));
+    }
+
+    #[test]
+    fn node_pins_are_told_apart_from_installs() {
+        use std::path::Path;
+        for pin in [
+            "/home/u/.workrex-node/bin/workrex-0.1.278-rex.2",
+            "/srv/node/bin/workrex-dev-ba7816bf8f01",
+        ] {
+            assert!(is_node_pin(Path::new(pin)), "{pin}");
+        }
+        for install in [
+            "/home/u/.local/bin/workrex",
+            "/usr/local/bin/workrex",
+            "/home/u/.workrex-node/run/bin/workrex",
+            "/home/u/.workrex-node/bin/workmux-0.1.278",
+            "/home/u/downloads/workrex-0.1.278",
+        ] {
+            assert!(!is_node_pin(Path::new(install)), "{install}");
+        }
     }
 
     #[test]

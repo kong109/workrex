@@ -50,7 +50,7 @@ If the server is already gone, `workrex remove --force <handle>` forgets its wor
 
 **Codex asks to review hooks on the server.** Codex outside a sandbox asks once to trust workrex's status hooks. Attach to the agent and trust them; Codex asks again only when the hooks change.
 
-**`workrex: command not found` in a remote pane.** Expected in a Docker-mode shell pane: run the command on the local machine. The agent's container has `workrex`. On the server directly, `workrex` is on every pane's `PATH`. In a shell you opened on the server yourself, such as an SSH login or a Rex window, `workrex` is not on the `PATH`, by design: run the command on your own machine with the workspace's handle. See [running commands](/guide/remote/usage/).
+**`workrex: command not found` in a remote pane.** Expected in a Docker-mode shell pane: run the command on the local machine. The agent's container has `workrex`. On the server directly, `workrex` is on every pane's `PATH`. In a shell you opened on the server yourself, such as an SSH login or a Rex window, server mode puts `workrex` on the `PATH` through `~/.local/bin/workrex`. If it's missing there, run `workrex remote setup <remote>` on your machine and check doctor's `path` row, which also says when `~/.local/bin` isn't on the login `PATH`. That `workrex` doesn't know your remote workspaces: run commands for them on your own machine with the workspace's handle. See [running commands](/guide/remote/usage/).
 
 **`rm` or `merge` in a remote pane says the request was withdrawn.** The local machine isn't connected, or runs an older workrex. Run the command on the local machine instead.
 

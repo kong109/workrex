@@ -131,14 +131,25 @@ pub fn node_status(transport: &Transport, spec: &RemoteSpec, pin: &Pin) -> Resul
     Ok(classify_hello(&output))
 }
 
-/// `workmux remote setup <name>`.
+/// `workmux remote setup <name>`: install the pinned binary, then point the
+/// login PATH shim at it.
 pub fn setup(spec: &RemoteSpec) -> Result<()> {
     let transport = Transport::open(spec)?;
     transport.connect()?;
     let pin = Pin::for_spec(spec)?;
+    install(&transport, spec, &pin)?;
+    super::path_shim::setup(&super::client::Node {
+        spec: spec.clone(),
+        transport,
+        pin,
+    });
+    Ok(())
+}
+
+fn install(transport: &Transport, spec: &RemoteSpec, pin: &Pin) -> Result<()> {
     let node_path = pin.path(spec);
 
-    match node_status(&transport, spec, &pin)? {
+    match node_status(transport, spec, pin)? {
         NodeStatus::Ready(hello) => {
             println!(
                 "✓ {}: {BIN} {} (protocol {}) is already installed at {node_path}",
@@ -153,7 +164,7 @@ pub fn setup(spec: &RemoteSpec) -> Result<()> {
         }
     }
 
-    let platform = probe_platform(&transport)?;
+    let platform = probe_platform(transport)?;
     let temp_dir = tempfile::tempdir().context("Failed to create temp directory")?;
     let local = match &pin.source {
         // Upload a private copy so the bytes match the hash in the pin name
@@ -197,7 +208,7 @@ pub fn setup(spec: &RemoteSpec) -> Result<()> {
         size as f64 / 1_000_000.0,
         spec.name
     );
-    let hello = stage_and_install(&transport, spec, &pin, &node_path, &local, size, platform)?;
+    let hello = stage_and_install(transport, spec, pin, &node_path, &local, size, platform)?;
     println!(
         "✓ {}: installed {BIN} {} (protocol {}) at {node_path}",
         spec.name, hello.version, hello.protocol

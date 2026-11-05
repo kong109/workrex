@@ -1,4 +1,4 @@
-//! Read-only checks for agent executables on the remote user's login PATH.
+//! Read-only checks for executables on the remote user's login PATH.
 
 use std::time::Duration;
 
@@ -21,20 +21,7 @@ pub fn available(transport: &Transport, programs: &[String]) -> Result<Vec<bool>
             shell_quote(program)
         ));
     }
-    // The login shell supplies exported PATH; a POSIX child parses the probe
-    // even when the user's shell is fish or another non-POSIX shell.
-    let command = format!("exec sh -c {}", shell_quote(&body));
-    let script = format!(
-        "exec \"${{SHELL:-/bin/sh}}\" -l -c {}\n",
-        shell_quote(&command)
-    );
-    let output = transport.run(&script, Input::Null, Some(Duration::from_secs(60)))?;
-    ensure!(
-        output.success(),
-        "could not check the remote login PATH: {}",
-        output.stderr_line()
-    );
-    let text = output.stdout_text();
+    let text = login_probe(transport, &body)?;
     programs
         .iter()
         .enumerate()
@@ -47,6 +34,60 @@ pub fn available(transport: &Transport, programs: &[String]) -> Result<Vec<bool>
             }
         })
         .collect()
+}
+
+/// What a login shell runs for `program`, compared with `expected`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    Expected,
+    /// Another file comes first on the login PATH.
+    Other(String),
+    Missing,
+}
+
+/// Where `program` resolves on the login PATH. Only that one path is
+/// returned, never the login environment.
+pub fn resolve(transport: &Transport, program: &str, expected: &str) -> Result<Resolution> {
+    let body = format!(
+        "p=$(command -v -- {})\nif [ \"$p\" = {} ]; then echo workmux-cli=expected; \
+         elif [ -n \"$p\" ]; then printf 'workmux-cli=other:%s\\n' \"$p\"; \
+         else echo workmux-cli=missing; fi\n",
+        shell_quote(program),
+        shell_quote(expected)
+    );
+    let text = login_probe(transport, &body)?;
+    Ok(
+        match text
+            .lines()
+            .find_map(|line| line.strip_prefix("workmux-cli="))
+        {
+            Some("expected") => Resolution::Expected,
+            Some("missing") => Resolution::Missing,
+            Some(other) if other.starts_with("other:") => {
+                Resolution::Other(other["other:".len()..].to_string())
+            }
+            _ => bail!("could not check the remote login PATH: missing probe result"),
+        },
+    )
+}
+
+/// Run the POSIX `body` with the PATH of the remote user's login shell and
+/// return its stdout.
+fn login_probe(transport: &Transport, body: &str) -> Result<String> {
+    // The login shell supplies exported PATH; a POSIX child parses the probe
+    // even when the user's shell is fish or another non-POSIX shell.
+    let command = format!("exec sh -c {}", shell_quote(body));
+    let script = format!(
+        "exec \"${{SHELL:-/bin/sh}}\" -l -c {}\n",
+        shell_quote(&command)
+    );
+    let output = transport.run(&script, Input::Null, Some(Duration::from_secs(60)))?;
+    ensure!(
+        output.success(),
+        "could not check the remote login PATH: {}",
+        output.stderr_line()
+    );
+    Ok(output.stdout_text())
 }
 
 pub fn missing_message(spec: &RemoteSpec, program: &str) -> String {

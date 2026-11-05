@@ -294,7 +294,8 @@ fn survey(
         });
     }
 
-    match unused_pins(root, request, &workspaces) {
+    let shim = super::path_shim::shim_path().ok();
+    match unused_pins(root, request, &workspaces, shim.as_deref()) {
         Ok(pins) => findings.extend(pins.into_iter().map(|pin| Finding {
             id: format!("pin:{pin}"),
             detail: format!("node binary bin/{pin}, used by no execution"),
@@ -680,11 +681,13 @@ fn stale_files(root: &NodeRoot, ids: &HashSet<&str>) -> Vec<PathBuf> {
 
 /// Binaries under `bin/` nothing uses: not this one, not one the laptop
 /// keeps, not an execution's, not the one agents without a sandbox report
-/// through, and not one a process runs. Errs when that cannot be told.
+/// through, not the one the `~/.local/bin` shim runs, and not one a process
+/// runs. Errs when that cannot be told.
 fn unused_pins(
     root: &NodeRoot,
     request: &GcRequest,
     workspaces: &[Workspace],
+    shim: Option<&Path>,
 ) -> std::result::Result<Vec<String>, String> {
     let mut used: HashSet<String> = request.keep_pins.iter().cloned().collect();
     if let Some(current) = std::env::current_exe().ok().and_then(|exe| {
@@ -707,6 +710,14 @@ fn unused_pins(
     }
     let wrapper = fs::read_to_string(root.path.join("run").join("bin").join(crate::bin_name::BIN))
         .unwrap_or_default();
+    // Another laptop's setup may have pointed the shim at a pin this laptop
+    // does not keep; keep it by name, whichever root it lives in.
+    if let Some(name) = shim
+        .and_then(super::path_shim::installed_target)
+        .and_then(|target| Some(Path::new(&target).file_name()?.to_str()?.to_string()))
+    {
+        used.insert(name);
+    }
     let bin = root.path.join("bin");
     for entry in read_dir(Path::new("/proc")) {
         if let Ok(exe) = fs::read_link(entry.join("exe"))
