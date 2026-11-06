@@ -1,7 +1,7 @@
 use crate::bin_name::BIN;
 use crate::config::MuxMode;
 use crate::multiplexer::handle::mode_label;
-use crate::multiplexer::{BackendType, MuxHandle, create_backend, detect_backend};
+use crate::multiplexer::{MuxHandle, create_backend, detect_backend};
 use crate::prompt::{Prompt, PromptDocument, foreach_from_frontmatter};
 use crate::remote::{Placement, RemoteSpec};
 use crate::spinner;
@@ -389,9 +389,6 @@ fn check_remote_options(spec: &RemoteSpec, options: &[(bool, &str)]) -> Result<(
             spec.name
         );
     }
-    if !matches!(detect_backend(), BackendType::Tmux | BackendType::Rex) {
-        bail!("remote agents need tmux or Rex; pass --local to create a local agent");
-    }
     Ok(())
 }
 
@@ -432,7 +429,6 @@ pub fn run(
                 (setup.open_if_exists, "--open-if-exists"),
                 (setup.sandbox, "--sandbox"),
                 (target_name.is_some(), "--target-name"),
-                (mode_override == Some(MuxMode::Session), "Session mode"),
                 (dry_run, "--dry-run"),
             ],
         )?;
@@ -560,9 +556,6 @@ pub fn run(
     } else {
         initial_config.mode()
     });
-    if let Some(spec) = &remote {
-        check_remote_options(spec, &[(mode == MuxMode::Session, "Session mode")])?;
-    }
 
     // Validate layout early to fail fast before any LLM calls
     if let Some(layout_name) = &layout {
@@ -709,11 +702,6 @@ pub fn run(
     } else {
         options.target_window_name = target_name;
         options.window_session_name = parent_session;
-    }
-    // Under Rex sessions are the default, so a remote agent's relay window
-    // gets a session of its own.
-    if remote.is_some() && mode_override.is_none() && initial_config.mode() == MuxMode::Session {
-        options.mode = MuxMode::Session;
     }
 
     // Validate multi-worktree arguments
@@ -1054,6 +1042,7 @@ impl<'a> CreationPlan<'a> {
         // Track targets for --wait (all created windows/sessions)
         let mut created_targets = Vec::new();
         let mut remote_wait_targets = Vec::new();
+        let mut active_remote_targets = Vec::new();
         // Track currently active targets for --max-concurrent
         let mut active_targets: Vec<String> = Vec::new();
         let mode = self.options.mode;
@@ -1064,16 +1053,17 @@ impl<'a> CreationPlan<'a> {
             if let Some(limit) = self.max_concurrent {
                 let limit = limit as usize;
                 // Only enter polling loop if we're at capacity
-                if active_targets.len() >= limit {
+                if active_targets.len() + active_remote_targets.len() >= limit {
                     loop {
                         // Filter to only targets that still exist
-                        if mode == MuxMode::Session {
+                        if !active_targets.is_empty() && mode == MuxMode::Session {
                             let live_sessions = mux.get_all_session_names()?;
                             active_targets.retain(|t| live_sessions.contains(t));
-                        } else {
+                        } else if !active_targets.is_empty() {
                             active_targets = mux.filter_active_windows(&active_targets)?;
                         }
-                        if active_targets.len() < limit {
+                        crate::remote::rex_jump::retain_open(&mut active_remote_targets)?;
+                        if active_targets.len() + active_remote_targets.len() < limit {
                             break;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(WORKER_POOL_POLL_MS));
@@ -1212,24 +1202,30 @@ impl<'a> CreationPlan<'a> {
                         final_branch_name, remote.name
                     )
                 })?;
-                if self.wait
-                    && let Some(target) =
-                        crate::remote::lifecycle::window_target(mux.as_ref(), &record)?
-                {
-                    remote_wait_targets.push(target);
+                if self.wait {
+                    remote_wait_targets.push(record.clone());
                 }
                 if self.max_concurrent.is_some() {
-                    active_targets.push(record.window_name.clone());
+                    active_remote_targets.push(record.clone());
                 }
                 // A hosted workspace's terminals are sessions on the node's
                 // Rex server; no local window holds them.
-                let holder = match record.execution.as_ref().and_then(|e| e.rex.as_ref()) {
-                    Some(rex) if rex.sessions.len() == 1 => "Rex session".to_string(),
-                    Some(_) => "Rex sessions".to_string(),
-                    None => format!("{} window", mux.name()),
+                let terminals = match record.execution.as_ref().and_then(|e| e.rex.as_ref()) {
+                    Some(rex)
+                        if rex
+                            .sessions
+                            .values()
+                            .collect::<std::collections::HashSet<_>>()
+                            .len()
+                            == 1 =>
+                    {
+                        " and Rex session"
+                    }
+                    Some(_) => " and Rex sessions",
+                    None => "",
                 };
                 println!(
-                    "✓ Successfully created remote workspace and {holder} for '{}' on '{}'",
+                    "✓ Successfully created remote workspace{terminals} for '{}' on '{}'",
                     record.branch, record.remote
                 );
                 if let Some(base) = &record.base_label {
@@ -1239,6 +1235,12 @@ impl<'a> CreationPlan<'a> {
                     println!("  Worktree: {}:{path}", record.remote);
                 }
                 println!("  Runs: {}", remote.runs_description());
+                if self.options.focus_window {
+                    let label = crate::remote::agents::label(&record.handle, &record.remote);
+                    println!(
+                        "  Rex.app stays put: to see {label}, press Enter on its row in {BIN} dashboard."
+                    );
+                }
                 continue;
             }
             if let Some(record) = crate::remote::cache::claimed(
@@ -1301,7 +1303,7 @@ impl<'a> CreationPlan<'a> {
             }
 
             println!(
-                "✓ Successfully created worktree and tmux {} for '{}'",
+                "✓ Successfully created worktree and Rex {} for '{}'",
                 mode_label(mode),
                 result.branch_name
             );
@@ -1314,11 +1316,12 @@ impl<'a> CreationPlan<'a> {
             }
         }
 
-        for target in remote_wait_targets {
-            println!("Waiting for window '{}' to close...", target.full_name);
-            while mux.is_running()? && mux.window_target_exists(&target)? {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
+        for record in remote_wait_targets {
+            println!(
+                "Waiting for remote Rex target '{}' on '{}' to close...",
+                record.handle, record.remote
+            );
+            crate::remote::rex_jump::wait_until_closed(&record)?;
         }
 
         if self.wait && !created_targets.is_empty() {
@@ -1445,7 +1448,7 @@ fn print_dry_run(
     Ok(())
 }
 
-/// Route `workmux add` through SpawnAgent RPC when running inside a sandbox.
+/// Route `workrex add` through SpawnAgent RPC when running inside a sandbox.
 ///
 /// Only a subset of `add` flags are supported over RPC. Unsupported flags
 /// are explicitly rejected with a clear error rather than silently ignored.
@@ -1541,7 +1544,7 @@ fn run_add_via_rpc(
     }
 
     let mut client = RpcClient::from_env().context(
-        "Failed to connect to host RPC server. Is this running inside a workmux sandbox?",
+        "Failed to connect to host RPC server. Is this running inside a workrex sandbox?",
     )?;
 
     let resp = client.call(&RpcRequest::SpawnAgent {
@@ -1577,14 +1580,14 @@ mod agent_validation_tests {
     #[test]
     fn rejects_missing_agent() {
         let error =
-            validate_agent_executable(&config("workmux-nonexistent-agent-938472")).unwrap_err();
+            validate_agent_executable(&config("workrex-nonexistent-agent-938472")).unwrap_err();
         assert!(error.to_string().contains("Agent executable"));
     }
 
     #[test]
     fn checks_absolute_executable_paths() {
         assert!(validate_agent_executable(&config("/bin/sh")).is_ok());
-        assert!(validate_agent_executable(&config("/nonexistent/workmux-agent")).is_err());
+        assert!(validate_agent_executable(&config("/nonexistent/workrex-agent")).is_err());
     }
 
     #[test]
@@ -1601,7 +1604,7 @@ mod agent_validation_tests {
 
     #[test]
     fn skips_sandbox_agents() {
-        let mut config = config("workmux-nonexistent-agent-938472");
+        let mut config = config("workrex-nonexistent-agent-938472");
         config.sandbox.enabled = Some(true);
         assert!(validate_agent_executable(&config).is_ok());
     }

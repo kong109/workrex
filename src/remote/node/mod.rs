@@ -11,11 +11,11 @@
 //! state/workspaces/<ws-id>.config.json       portable config snapshot (0600)
 //! state/workspaces/<ws-id>.files.gz          file recipe siblings replay (0600)
 //! state/workspaces/<ws-id>.lock              held for the duration of a verb
-//! run/tmux.sock, tmux.conf                   node tmux server
+//! run/rex-hosted                            server observation marker
 //! secrets/                                   environment values (see `secrets`)
 //! ```
 //!
-//! Verbs never read the remote user's workmux config: a workspace runs the
+//! Verbs never read the remote user's workrex config: a workspace runs the
 //! snapshot the laptop sent when it was provisioned.
 
 pub mod attach;
@@ -47,7 +47,7 @@ use crate::cmd::Cmd;
 use crate::config::{Config, RemoteIsolation};
 
 /// Environment variable naming the node root for node verbs.
-pub const NODE_ROOT_ENV: &str = "WORKMUX_NODE_ROOT";
+pub const NODE_ROOT_ENV: &str = "WORKREX_NODE_ROOT";
 
 const RECORD_VERSION: u32 = 1;
 const LOGIN_ENV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -324,8 +324,7 @@ pub struct Execution {
     /// The tombstones live only as long as this execution.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub closed_shells: std::collections::BTreeSet<String>,
-    /// Set when its terminals are on the node's Rex server instead of the
-    /// node tmux server.
+    /// Native server, session and block identities for this execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rex: Option<crate::remote::protocol::RexPlacement>,
 }
@@ -429,31 +428,34 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
 /// Latest uploaded base, retained for the lifetime of the project repository.
 /// Advertising its history lets subsequent pushes negotiate incremental packs,
 /// even when no workspace refs or branches remain. It is not a workspace base.
-pub const PROJECT_TRANSFER_REF: &str = "refs/workmux/project/transfer";
+pub const PROJECT_TRANSFER_REF: &str = "refs/workrex/project/transfer";
 
 /// Ref the laptop pushes a workspace's base commit to.
 pub fn base_ref(ws_id: &str) -> String {
-    format!("refs/workmux/base/{ws_id}")
+    format!("refs/workrex/base/{ws_id}")
 }
 
 /// Environment for a workspace's lifecycle hooks: the login environment
-/// plus the variables local hooks get. `WM_CONFIG_DIR` is only set for
+/// plus the variables local hooks get. `WORKREX_CONFIG_DIR` is only set for
 /// hooks that run in the config directory.
 pub fn hook_env(workspace: &Workspace, config_dir: Option<&Path>) -> Vec<(String, String)> {
     let mut env = login_env();
     let handle = workspace.identity.handle.clone();
-    env.push(("WORKMUX_HANDLE".into(), handle.clone()));
-    env.push(("WM_HANDLE".into(), handle));
+    env.push(("WORKREX_HANDLE".into(), handle.clone()));
+    env.push(("WORKREX_HANDLE".into(), handle));
     env.push((
-        "WM_WORKTREE_PATH".into(),
+        "WORKREX_WORKTREE_PATH".into(),
         workspace.worktree_path.to_string_lossy().into_owned(),
     ));
     env.push((
-        "WM_PROJECT_ROOT".into(),
+        "WORKREX_PROJECT_ROOT".into(),
         workspace.repo_path.to_string_lossy().into_owned(),
     ));
     if let Some(dir) = config_dir {
-        env.push(("WM_CONFIG_DIR".into(), dir.to_string_lossy().into_owned()));
+        env.push((
+            "WORKREX_CONFIG_DIR".into(),
+            dir.to_string_lossy().into_owned(),
+        ));
     }
     env
 }

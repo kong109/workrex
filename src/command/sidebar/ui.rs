@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::git::GitStatus;
 use crate::multiplexer::{AgentPane, AgentStatus};
-use crate::tmux_style;
+use crate::terminal_style;
 use crate::ui::theme::ThemePalette;
 
 use super::app::{SidebarApp, SidebarFilterMode, SidebarLayoutMode, SidebarRow};
@@ -1719,7 +1719,7 @@ fn render_tile_list(f: &mut Frame, app: &mut SidebarApp, area: Rect) {
 
 /// Get the status icon as parsed styled spans and the base style for an agent.
 ///
-/// Returns `(spans, base_style)` where `spans` contains tmux style codes parsed into
+/// Returns `(spans, base_style)` where `spans` contains rex style codes parsed into
 /// individual `(text, style)` pairs, and `base_style` is the fallback style (used for
 /// stripe color, etc.).
 pub(crate) fn status_icon_and_style(
@@ -1742,7 +1742,7 @@ pub(crate) fn status_icon_and_style(
         Some(AgentStatus::Working) => {
             let base_style = Style::default().fg(app.palette.info);
             let spans = match &app.status_icons.working {
-                Some(custom) => tmux_style::parse_tmux_styles(custom, base_style),
+                Some(custom) => terminal_style::parse_terminal_styles(custom, base_style),
                 None => {
                     let frames: &[&str] =
                         &["⠋⠙", "⠙⠹", "⠹⠸", "⠸⠼", "⠼⠴", "⠴⠦", "⠦⠧", "⠧⠇", "⠇⠏", "⠏⠋"];
@@ -1759,7 +1759,7 @@ pub(crate) fn status_icon_and_style(
             let spans = if use_nf && app.status_icons.waiting.is_none() {
                 vec![("\u{f075}".to_string(), base_style)] //  nf-fa-comment
             } else {
-                tmux_style::parse_tmux_styles(app.status_icons.waiting(), base_style)
+                terminal_style::parse_terminal_styles(app.status_icons.waiting(), base_style)
             };
             (spans, base_style)
         }
@@ -1768,7 +1768,7 @@ pub(crate) fn status_icon_and_style(
             let spans = if use_nf && app.status_icons.done.is_none() {
                 vec![("\u{f0134}".to_string(), base_style)] // 󰄴 nf-md-check_circle
             } else {
-                tmux_style::parse_tmux_styles(app.status_icons.done(), base_style)
+                terminal_style::parse_terminal_styles(app.status_icons.done(), base_style)
             };
             (spans, base_style)
         }
@@ -1859,7 +1859,7 @@ mod tests {
             ("api", "rate-limit", AgentStatus::Done),
             ("mobile", "ios-refactor-tests", AgentStatus::Working),
             ("mobile", "ios-refactor-ui", AgentStatus::Waiting),
-            ("workmux", "sidebar-groups", AgentStatus::Working),
+            ("workrex", "sidebar-groups", AgentStatus::Working),
         ]
         .into_iter()
         .enumerate()
@@ -1867,7 +1867,7 @@ mod tests {
             let path = PathBuf::from(format!("/example/{project}/{name}"));
             app.agents.push(AgentPane {
                 session: project.to_string(),
-                window_name: format!("wm-{name}"),
+                window_name: format!("wr-{name}"),
                 pane_id: format!("%{idx}"),
                 window_id: format!("@{idx}"),
                 window_index: Some(idx as u32),
@@ -1977,7 +1977,7 @@ mod tests {
         assert_eq!(lines[0].trim(), "api                      3");
         assert!(lines[1].contains("auth-refresh"));
         assert_eq!(lines[4].trim(), "mobile                   2");
-        assert_eq!(lines[7].trim(), "workmux                  1");
+        assert_eq!(lines[7].trim(), "workrex                  1");
 
         // Headers hold no agent; the agents around them still resolve.
         assert_eq!(app.hit_test(1, 0), None);
@@ -2084,11 +2084,11 @@ mod tests {
         assert_eq!(lines[4].trim(), "mobile                   2");
         assert!(lines[7].contains(" STALE "));
         // One row for the whole group, header and toggle at once.
-        assert_eq!(lines[8].trim(), "▸ workmux                  1");
+        assert_eq!(lines[8].trim(), "▸ workrex                  1");
 
         // It holds no agent, and toggling it names its own group.
         assert_eq!(app.hit_test(1, 8), None);
-        assert_eq!(app.hit_test_toggle(1, 8).as_deref(), Some("workmux"));
+        assert_eq!(app.hit_test_toggle(1, 8).as_deref(), Some("workrex"));
     }
 
     #[test]
@@ -2394,7 +2394,7 @@ mod tests {
         app.agents = (0..64)
             .map(|idx| AgentPane {
                 session: format!("session-{}", idx % 4),
-                window_name: format!("wm-feature-{idx}"),
+                window_name: format!("wr-feature-{idx}"),
                 pane_id: format!("%{idx}"),
                 window_id: format!("@{}", idx / 2),
                 window_index: Some(idx),

@@ -7,8 +7,8 @@ configuration.
 import json
 import subprocess
 import time
+from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Callable, Generator
 
 import pytest
 
@@ -28,9 +28,9 @@ def rex_cli() -> str:
 
 class LayerRex(RexEnvironment):
     """A Rex test server whose config is the dashboard's Lua file, with
-    `workmux` as the binary the action runs."""
+    `workrex` as the binary the action runs."""
 
-    def __init__(self, workmux: Path, tmp_path: Path):
+    def __init__(self, workrex: Path, tmp_path: Path):
         super().__init__(tmp_path)
         # RexEnvironment starts its server with `--config /dev/null`; this
         # shim swaps in the Lua file for that one command.
@@ -49,10 +49,10 @@ class LayerRex(RexEnvironment):
         self.env.pop("REX_CLIENT", None)
         # The isolated HOME has no config, so the dashboard would first ask
         # about Nerd Fonts.
-        config = self.home_path / ".config" / "workmux"
+        config = self.home_path / ".config" / "workrex"
         config.mkdir(parents=True, exist_ok=True)
         (config / "config.yaml").write_text("nerdfont: false\n")
-        self.env["WORKREX_BIN"] = str(workmux)
+        self.env["WORKREX_BIN"] = str(workrex)
         self.start_server()
 
     def cli(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -127,8 +127,8 @@ def floating_layers(window: dict) -> list[dict]:
 
 
 @pytest.fixture
-def rex(workmux_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None, None]:
-    server = LayerRex(workmux_exe_path, tmp_path)
+def rex(workrex_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None, None]:
+    server = LayerRex(workrex_exe_path, tmp_path)
     try:
         yield server
     finally:
@@ -137,7 +137,10 @@ def rex(workmux_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None, Non
 
 def test_lua_file_passes_config_check():
     result = subprocess.run(
-        [rex_cli(), "config", "check", str(LUA)], capture_output=True, text=True
+        [rex_cli(), "config", "check", str(LUA)],
+        check=False,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "actions: 1" in result.stdout
@@ -205,8 +208,8 @@ REFUSE = (
 )
 
 
-def refusing_rex(workmux: Path, tmp_path: Path, select: str = REFUSE) -> Path:
-    """A workmux whose rex reports an app that owns every block and is
+def refusing_rex(workrex: Path, tmp_path: Path, select: str = REFUSE) -> Path:
+    """A workrex whose rex reports an app that owns every block and is
     attached to the sessions `attach_app` names, and answers each
     client.perform with `select`: by default it fails, as Rex.app does with
     Remote Control off. Each one is logged to `selects.log`. Rex sets
@@ -224,12 +227,12 @@ esac
 exec '{rex_binary()}' "$@"
 """
     )
-    (bin_dir / "workmux").write_text(
-        f"#!/bin/sh\nREX_BIN_DIR='{bin_dir}' exec '{workmux}' \"$@\"\n"
+    (bin_dir / "workrex").write_text(
+        f"#!/bin/sh\nREX_BIN_DIR='{bin_dir}' exec '{workrex}' \"$@\"\n"
     )
-    for program in ("rex", "workmux"):
+    for program in ("rex", "workrex"):
         (bin_dir / program).chmod(0o755)
-    return bin_dir / "workmux"
+    return bin_dir / "workrex"
 
 
 def attach_app(rex: LayerRex, session: str) -> None:
@@ -247,8 +250,8 @@ def attach_app(rex: LayerRex, session: str) -> None:
 
 
 @pytest.fixture
-def refusing(workmux_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None, None]:
-    server = LayerRex(refusing_rex(workmux_exe_path, tmp_path), tmp_path)
+def refusing(workrex_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None, None]:
+    server = LayerRex(refusing_rex(workrex_exe_path, tmp_path), tmp_path)
     try:
         yield server
     finally:
@@ -256,10 +259,10 @@ def refusing(workmux_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None
 
 
 @pytest.fixture
-def silent(workmux_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None, None]:
+def silent(workrex_exe_path: Path, tmp_path: Path) -> Generator[LayerRex, None, None]:
     """An app that never answers session.select."""
-    workmux = refusing_rex(workmux_exe_path, tmp_path, select="exec sleep 30")
-    server = LayerRex(workmux, tmp_path)
+    workrex = refusing_rex(workrex_exe_path, tmp_path, select="exec sleep 30")
+    server = LayerRex(workrex, tmp_path)
     try:
         yield server
     finally:
@@ -404,5 +407,5 @@ def test_a_jump_from_the_layer_remembers_the_block_beneath_it(rex: LayerRex):
     wait_until(lambda: not floating_layers(rex.window(session)))
 
     assert rex.focused(session) == agent
-    settings = Path(rex.env["XDG_STATE_HOME"]) / "workmux/settings.json"
+    settings = Path(rex.env["XDG_STATE_HOME"]) / "workrex/settings.json"
     assert json.loads(settings.read_text())["last_pane_id"] == shell

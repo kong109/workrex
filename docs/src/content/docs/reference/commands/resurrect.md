@@ -1,9 +1,9 @@
 ---
 title: "resurrect"
-description: Restore worktree windows after a tmux or computer crash
+description: Restore worktree windows after a Rex server or computer crash
 ---
 
-Restores worktree windows after a tmux or computer crash. Uses persisted agent state files to detect which worktrees had active agents before the crash, then reopens them with each agent's resume arguments.
+Restores worktree windows after a Rex server or computer crash. Uses persisted agent state files to detect which worktrees had active agents before the crash, then reopens them with each agent's resume arguments.
 
 ```bash
 workrex resurrect [--dry-run]
@@ -15,7 +15,7 @@ workrex resurrect [--dry-run]
 
 ## How it works
 
-1. Reads agent state files from `~/.local/state/workmux/agents/`
+1. Reads agent state files from `~/.local/state/workrex/agents/`
 2. Filters to the current multiplexer backend and instance
 3. Matches each state file's working directory to a git worktree in the current repo
 4. Skips worktrees that are already open, no longer exist, or are the main worktree
@@ -31,11 +31,11 @@ and state owned by another multiplexer instance or backend are preserved. Each
 instance compacts its own history when workrex observes that instance with a
 reliable boot identity.
 
-Config and state paths keep their workmux names so existing workmux configs work. See [Configuration](/guide/configuration/).
+Configuration and state live under Workrex-owned paths. See [Configuration](/guide/configuration/).
 
 ## Remote workspaces
 
-Agents on [remote servers](/guide/remote/) kept running while the local tmux was down, so `resurrect` reopens their windows and reattaches them without restarting anything. A remote agent whose session ended, for example because the remote host rebooted, is skipped: run `workrex open <handle>` to start it again.
+Agents on [remote servers](/guide/remote/) kept running while the local Rex server was down, so their native Rex sessions remain on the server. Use `workrex open <handle>` to show one again in Rex.app. A remote agent whose session ended, for example because the remote host rebooted, is skipped: run `workrex open <handle>` to start it again.
 
 ## Examples
 

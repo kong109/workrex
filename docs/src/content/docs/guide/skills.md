@@ -3,11 +3,11 @@ title: "Skills"
 description: Use skills to streamline workrex workflows
 ---
 
-[Claude Code skills](https://code.claude.com/docs/en/skills) extend what Claude can do. Create a `SKILL.md` file with instructions, and Claude adds it to its toolkit. Claude uses skills when relevant, or you can invoke one directly with `/skill-name`.
-
-:::tip
-This documentation uses Claude Code's skill support as example, but other agents implement similar features. For example, [OpenCode skills](https://opencode.ai/docs/skills/). Adapt to your favorite agent as needed.
-:::
+Workrex installs six native skills for supported agent CLIs. A skill contains
+instructions in `SKILL.md`; it can be selected by the agent or invoked directly.
+Codex uses `$workrex`, `$coordinator`, and other `$skill-name` invocations.
+Claude Code uses `/workrex`, `/coordinator`, and `/skill-name`. The sections below
+use slash names as labels; choose the invocation syntax of your agent.
 
 ## Using with workrex
 
@@ -20,11 +20,11 @@ You can run workrex commands yourself, but skills let agents handle the complete
 - [**`/coordinator`**](#coordinator) - Orchestrate multiple agents with full lifecycle control
 - [**`/open-pr`**](#open-pr) - Write a PR description using conversation context
 
-You can trigger `/merge` from the [dashboard](/guide/dashboard/configuration/) using the `m` keybinding:
+For a Codex agent, you can trigger `$merge` from the [dashboard](/guide/dashboard/configuration/) using the `m` keybinding:
 
 ```yaml
 dashboard:
-  merge: "/merge"
+  merge: "$merge"
 ```
 
 ## Installation
@@ -35,11 +35,16 @@ Run `workrex setup` to install all skills automatically:
 workrex setup --skills
 ```
 
-This detects installed Claude Code, OpenCode, Pi, and Oh My Pi agents and copies skills to the right location. The setup wizard also offers skill installation on first run.
+This detects installed Claude Code, Codex, OpenCode, Grok, Pi, and Oh My Pi agents and copies skills to the right location. The setup wizard also offers skill installation on first run.
 
-You can also copy skills by hand from [`skills/`](https://github.com/kong109/workrex/tree/main/skills) to your skills directory. The files in the repo name the upstream `workmux` command and the `workmux` skill. `workrex setup --skills` rewrites both to `workrex`, so if you copy by hand, make the same change and put the `workmux` skill in a `workrex` directory.
+Skill sources in [`skills/`](https://github.com/kong109/workrex/tree/main/skills)
+are already native Workrex instructions. Setup copies those source bytes into
+each detected agent's skill directory. Manual installation uses the same
+folder names and `SKILL.md` files, with no command-name translation.
 
 **Claude Code**: `~/.claude/skills/` (or project `.claude/skills/`). If `CLAUDE_CONFIG_DIR` is set, `workrex setup --skills` installs to `$CLAUDE_CONFIG_DIR/skills/` instead.
+
+**Codex**: `~/.agents/skills/`. Invoke skills with `$workrex`, `$merge`, and so on. Codex detects new skills automatically; restart Codex if they do not appear. This shared skills directory is independent of `CODEX_HOME`.
 
 **OpenCode**: `~/.config/opencode/skills/`.
 
@@ -51,7 +56,7 @@ You can also copy skills by hand from [`skills/`](https://github.com/kong109/wor
 
 Teaches the agent how to use the workrex CLI. Invoke `/workrex` to give the agent knowledge of workrex commands, configuration, and concepts. The agent can then use workrex to manage worktrees, check status, and interact with other agents.
 
-[**View skill ->**](https://github.com/kong109/workrex/tree/main/skills/workmux/SKILL.md)
+[**View skill ->**](https://github.com/kong109/workrex/tree/main/skills/workrex/SKILL.md)
 
 This is a reference skill, not an action skill. It loads workrex documentation into the agent's context so it can use workrex commands as needed. For specific workflows, the agent is directed to the dedicated skills below.
 

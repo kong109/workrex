@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 mock.module('@opencode/plugin/tui', () => ({ Plugin: { define: (definition: unknown) => definition } }));
 
-const { default: plugin } = await import('../resources/opencode/v2/workmux-status/tui');
+const { default: plugin } = await import('../resources/opencode/v2/workrex-status/tui');
 // SDK snapshots default to the fixture data; tests can supply an independent
 // client to model server state that has not reached the TUI cache.
 function setup(ctx: any) {
@@ -53,25 +53,25 @@ function snapshotClient(options: {
 }
 
 const originalPath = process.env.PATH;
-const originalLog = process.env.WORKMUX_TEST_LOG;
-const muxVariables = ['TMUX', 'TMUX_PANE', 'WEZTERM_PANE', 'ZELLIJ', 'ZELLIJ_PANE_ID', 'ZELLIJ_SESSION_NAME', 'KITTY_WINDOW_ID', 'WORKMUX_BACKEND'] as const;
+const originalLog = process.env.WORKREX_TEST_LOG;
+const muxVariables = ['REX_SERVER', 'REX_SESSION', 'REX_BLOCK', 'WORKREX_BACKEND'] as const;
 const originalMux = Object.fromEntries(muxVariables.map((name) => [name, process.env[name]]));
 let testDir: string;
 
 beforeEach(async () => {
   for (const name of muxVariables) delete process.env[name];
-  testDir = await mkdtemp(join(tmpdir(), 'workmux-status-test-'));
-  const binary = join(testDir, 'workmux');
-  // The real workmux reads stdin to check for hook input. This stub does too:
+  testDir = await mkdtemp(join(tmpdir(), 'workrex-status-test-'));
+  const binary = join(testDir, 'workrex');
+  // The real workrex reads stdin to check for hook input. This stub does too:
   // leaving execFile's stdin pipe open prevents it from registering at all.
-  await writeFile(binary, '#!/bin/sh\n/bin/cat >> "$WORKMUX_TEST_LOG.stdin"\ncase "$WORKMUX_BACKEND" in\n  wezterm) pane="$WEZTERM_PANE";;\n  zellij) pane="$ZELLIJ_PANE_ID";;\n  kitty) pane="$KITTY_WINDOW_ID";;\n  *) pane="${TMUX_PANE:-${WEZTERM_PANE:-${ZELLIJ_PANE_ID:-${KITTY_WINDOW_ID:-}}}}";;\nesac\nprintf "%s|%s\\n" "$pane" "$*" >> "$WORKMUX_TEST_LOG"\n');
+  await writeFile(binary, '#!/bin/sh\n/bin/cat >> "$WORKREX_TEST_LOG.stdin"\nprintf "%s|%s\\n" "$REX_BLOCK" "$*" >> "$WORKREX_TEST_LOG"\n');
   await chmod(binary, 0o755);
   process.env.PATH = `${testDir}:${originalPath}`;
-  process.env.WORKMUX_TEST_LOG = join(testDir, 'calls');
+  process.env.WORKREX_TEST_LOG = join(testDir, 'calls');
 });
 
 async function calls() {
-  const log = await readFile(process.env.WORKMUX_TEST_LOG!, 'utf8').catch(() => '');
+  const log = await readFile(process.env.WORKREX_TEST_LOG!, 'utf8').catch(() => '');
   return log.trim() ? log.trim().split('\n') : [];
 }
 
@@ -100,8 +100,8 @@ async function hydrationHarness(options: {
   forms?: string[];
   client?: ReturnType<typeof snapshotClient>;
 } = {}) {
-  process.env.TMUX = 'test-tmux';
-  process.env.TMUX_PANE = '%123';
+  process.env.REX_SERVER = 'unix:///test/rex.sock';
+  process.env.REX_BLOCK = 'block:test-a';
   let handler: (input: any) => void = () => {};
   let open = true;
   const cleanup = await setup({
@@ -138,8 +138,8 @@ afterEach(async () => {
     else process.env[name] = original;
   }
   process.env.PATH = originalPath;
-  if (originalLog === undefined) delete process.env.WORKMUX_TEST_LOG;
-  else process.env.WORKMUX_TEST_LOG = originalLog;
+  if (originalLog === undefined) delete process.env.WORKREX_TEST_LOG;
+  else process.env.WORKREX_TEST_LOG = originalLog;
   await rm(testDir, { recursive: true });
 });
 
@@ -156,9 +156,9 @@ test('hydration reconciles pending requests after a busy event', async () => {
     permissions.resolve();
     await waitForCalls(3);
     expect(await calls()).toEqual([
-      '%123|register-agent',
-      '%123|set-window-status working',
-      '%123|set-window-status waiting',
+      'block:test-a|register-agent',
+      'block:test-a|set-window-status working',
+      'block:test-a|set-window-status waiting',
     ]);
   } finally {
     permissions.resolve();
@@ -180,7 +180,7 @@ test.each(['permission.replied', 'form.replied', 'form.cancelled'])('hydration d
     harness.emit(type, { sessionID: 'ours', requestID: 'request', id: 'request' });
     permissions.resolve();
     await Bun.sleep(50);
-    expect(await calls()).toEqual(['%123|register-agent', '%123|set-window-status working']);
+    expect(await calls()).toEqual(['block:test-a|register-agent', 'block:test-a|set-window-status working']);
   } finally {
     permissions.resolve();
     await harness.cleanup();
@@ -202,13 +202,13 @@ test('hydration never reports done while a running child is still loading', asyn
     harness.close();
     harness.emit('session.execution.succeeded', { sessionID: 'ours' });
     await Bun.sleep(50);
-    expect(await calls()).toEqual(['%123|register-agent', '%123|set-window-status working']);
+    expect(await calls()).toEqual(['block:test-a|register-agent', 'block:test-a|set-window-status working']);
     child.resolve();
     await Bun.sleep(50);
     expect(await calls()).toHaveLength(2);
     harness.emit('session.execution.succeeded', { sessionID: 'child' });
     await waitForCalls(3);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status done');
     harness.emit('session.execution.started', { sessionID: 'child' });
     await Bun.sleep(50);
     expect(await calls()).toHaveLength(3);
@@ -236,11 +236,11 @@ test.each(['permission.replied', 'session.execution.succeeded', 'session.deleted
     child.resolve();
     await Bun.sleep(50);
     if (type === 'permission.replied') {
-      expect(await calls()).toEqual(['%123|register-agent', '%123|set-window-status working']);
+      expect(await calls()).toEqual(['block:test-a|register-agent', 'block:test-a|set-window-status working']);
       harness.emit('session.execution.succeeded', { sessionID: 'child' });
     }
     await waitForCalls(3);
-    expect(await calls()).toEqual(['%123|register-agent', '%123|set-window-status working', '%123|set-window-status done']);
+    expect(await calls()).toEqual(['block:test-a|register-agent', 'block:test-a|set-window-status working', 'block:test-a|set-window-status done']);
   } finally {
     child.resolve();
     await harness.cleanup();
@@ -273,14 +273,14 @@ test('hydration retries a failed child snapshot after the tab closes without pre
     harness.emit('session.execution.succeeded', { sessionID: 'ours' });
     firstAttempt.resolve();
     await Bun.sleep(50);
-    expect(await calls()).toEqual(['%123|register-agent', '%123|set-window-status working']);
+    expect(await calls()).toEqual(['block:test-a|register-agent', 'block:test-a|set-window-status working']);
     await Promise.race([retry.promise, Bun.sleep(2200)]);
     expect(attempts).toBe(2);
     await Bun.sleep(50);
     expect(await calls()).toHaveLength(2);
     harness.emit('session.execution.succeeded', { sessionID: 'child' });
     await waitForCalls(3);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status done');
   } finally {
     firstAttempt.resolve();
     await harness.cleanup();
@@ -298,7 +298,7 @@ test.each(['session.execution.succeeded', 'session.execution.failed', 'session.e
     permissions.resolve();
     await waitForCalls(3);
     await Bun.sleep(50);
-    expect(await calls()).toEqual(['%123|register-agent', '%123|set-window-status working', '%123|set-window-status done']);
+    expect(await calls()).toEqual(['block:test-a|register-agent', 'block:test-a|set-window-status working', 'block:test-a|set-window-status done']);
   } finally {
     permissions.resolve();
     await harness.cleanup();
@@ -306,8 +306,8 @@ test.each(['session.execution.succeeded', 'session.execution.failed', 'session.e
 });
 
 test('releases closed tabs after background work finishes', async () => {
-  process.env.TMUX = 'test-tmux';
-  process.env.TMUX_PANE = '%123';
+  process.env.REX_SERVER = 'unix:///test/rex.sock';
+  process.env.REX_BLOCK = 'block:test-a';
   let handler: (input: any) => void = () => {};
   let tabOpen = true;
   let stopped = false;
@@ -336,7 +336,7 @@ test('releases closed tabs after background work finishes', async () => {
 
   const cleanup = await setup(ctx as any);
   await waitForCalls(1);
-  expect(await calls()).toEqual(['%123|register-agent']);
+  expect(await calls()).toEqual(['block:test-a|register-agent']);
   const emit = (type: string, data: object) => handler({ details: { type, data } });
 
   emit('session.execution.started', { sessionID: 'other' });
@@ -356,11 +356,11 @@ test('releases closed tabs after background work finishes', async () => {
   emit('session.status', { sessionID: 'child', status: { type: 'busy' } });
 
   expect(await calls()).toEqual([
-    '%123|register-agent',
-    '%123|set-window-status working',
-    '%123|set-window-status waiting',
-    '%123|set-window-status working',
-    '%123|set-window-status done',
+    'block:test-a|register-agent',
+    'block:test-a|set-window-status working',
+    'block:test-a|set-window-status waiting',
+    'block:test-a|set-window-status working',
+    'block:test-a|set-window-status done',
   ]);
 
   // Closing the tab must not make a later, unrelated turn belong to this pane.
@@ -376,13 +376,13 @@ test('releases closed tabs after background work finishes', async () => {
   tabOpen = true;
   emit('session.execution.started', { sessionID: 'ours' });
   await waitForCalls(6);
-  expect((await calls()).at(-1)).toBe('%123|set-window-status working');
+  expect((await calls()).at(-1)).toBe('block:test-a|set-window-status working');
   if (typeof cleanup === 'function') await cleanup();
   expect(stopped).toBe(true);
 });
 
 test('shared tabs do not claim another pane', async () => {
-  process.env.TMUX = 'test-tmux';
+  process.env.REX_SERVER = 'unix:///test/rex.sock';
   const handlers: Array<(input: any) => void> = [];
   // The tabs and server events are shared, but each TUI has its own route.
   const tabs = [{ sessionID: 'ours' }, { sessionID: 'other' }];
@@ -404,26 +404,26 @@ test('shared tabs do not claim another pane', async () => {
     };
   }
 
-  process.env.TMUX_PANE = '%123';
+  process.env.REX_BLOCK = 'block:test-a';
   const cleanupA = await setup(client('ours') as any);
-  process.env.TMUX_PANE = '%456';
+  process.env.REX_BLOCK = 'block:test-b';
   const cleanupB = await setup(client('other') as any);
   await waitForCalls(2);
-  process.env.TMUX_PANE = '%123';
+  process.env.REX_BLOCK = 'block:test-a';
   handlers[0]({ details: { type: 'session.execution.started', data: { sessionID: 'ours' } } });
   await waitForCalls(3);
-  process.env.TMUX_PANE = '%456';
+  process.env.REX_BLOCK = 'block:test-b';
   handlers[1]({ details: { type: 'session.execution.started', data: { sessionID: 'ours' } } });
   await Bun.sleep(50);
-  process.env.TMUX_PANE = '%123';
+  process.env.REX_BLOCK = 'block:test-a';
   handlers[0]({ details: { type: 'session.execution.succeeded', data: { sessionID: 'ours' } } });
   await waitForCalls(4);
-  process.env.TMUX_PANE = '%456';
+  process.env.REX_BLOCK = 'block:test-b';
   handlers[1]({ details: { type: 'session.execution.succeeded', data: { sessionID: 'ours' } } });
   await Bun.sleep(50); // allow any wrongly claimed pane to flush its queued status write
   expect((await calls()).filter((call) => call.includes('set-window-status'))).toEqual([
-    '%123|set-window-status working',
-    '%123|set-window-status done',
+    'block:test-a|set-window-status working',
+    'block:test-a|set-window-status done',
   ]);
   // Switch the test process's pane marker before dispatching to each client;
   // separate TUI processes have separate environments in production.
@@ -432,8 +432,8 @@ test('shared tabs do not claim another pane', async () => {
 });
 
 test('discovers a running child independently of the TUI family and status caches', async () => {
-  process.env.TMUX = 'test-tmux';
-  process.env.TMUX_PANE = '%123';
+  process.env.REX_SERVER = 'unix:///test/rex.sock';
+  process.env.REX_BLOCK = 'block:test-a';
   let rootSynced = false;
   const ctx = {
     client: snapshotClient({
@@ -457,13 +457,13 @@ test('discovers a running child independently of the TUI family and status cache
   const cleanup = await setup(ctx as any);
   await waitForCalls(2);
   expect(rootSynced).toBe(true);
-  expect(await calls()).toEqual(['%123|register-agent', '%123|set-window-status working']);
+  expect(await calls()).toEqual(['block:test-a|register-agent', 'block:test-a|set-window-status working']);
   if (typeof cleanup === 'function') await cleanup();
 });
 
 test('late hydration does not reclaim a deleted root', async () => {
-  process.env.TMUX = 'test-tmux';
-  process.env.TMUX_PANE = '%123';
+  process.env.REX_SERVER = 'unix:///test/rex.sock';
+  process.env.REX_BLOCK = 'block:test-a';
   let resume!: () => void;
   const sync = new Promise<void>((resolve) => { resume = resolve; });
   let handler: (input: any) => void = () => {};
@@ -490,13 +490,13 @@ test('late hydration does not reclaim a deleted root', async () => {
   await Bun.sleep(50);
   handler({ details: { type: 'session.execution.started', data: { sessionID: 'ours' } } });
   await Bun.sleep(50);
-  expect(await calls()).toEqual(['%123|register-agent']);
+  expect(await calls()).toEqual(['block:test-a|register-agent']);
   if (typeof cleanup === 'function') await cleanup();
 });
 
 test('closing a tab during hydration keeps discovered background work until completion', async () => {
-  process.env.TMUX = 'test-tmux';
-  process.env.TMUX_PANE = '%123';
+  process.env.REX_SERVER = 'unix:///test/rex.sock';
+  process.env.REX_BLOCK = 'block:test-a';
   let resume!: () => void;
   const rootSync = new Promise<void>((resolve) => { resume = resolve; });
   let loaded = false;
@@ -529,7 +529,7 @@ test('closing a tab during hydration keeps discovered background work until comp
   handler({ details: { type: 'session.created', data: { sessionID: 'unrelated' } } });
   resume();
   await waitForCalls(2);
-  expect((await calls()).at(-1)).toBe('%123|set-window-status working');
+  expect((await calls()).at(-1)).toBe('block:test-a|set-window-status working');
   handler({ details: { type: 'session.execution.succeeded', data: { sessionID: 'child' } } });
   await waitForCalls(3);
   handler({ details: { type: 'session.execution.started', data: { sessionID: 'child' } } });
@@ -539,10 +539,8 @@ test('closing a tab during hydration keeps discovered background work until comp
 });
 
 test.each([
-  { name: 'WezTerm', vars: { WEZTERM_PANE: '81' }, pane: '81' },
-  { name: 'Zellij', vars: { ZELLIJ: '1', ZELLIJ_PANE_ID: '23' }, pane: '23' },
-  { name: 'Kitty', vars: { KITTY_WINDOW_ID: '42' }, pane: '42' },
-  { name: 'explicit WezTerm backend', vars: { TMUX: 'nested', TMUX_PANE: '%3', WEZTERM_PANE: '81', WORKMUX_BACKEND: 'wezterm' }, pane: '81' },
+  { name: 'Rex block', vars: { REX_BLOCK: 'block:test-a' }, pane: 'block:test-a' },
+  { name: 'explicit Rex backend', vars: { REX_BLOCK: 'block:test-b', WORKREX_BACKEND: 'rex' }, pane: 'block:test-b' },
 ])('reports status for $name', async ({ vars, pane }) => {
   Object.assign(process.env, vars);
   let handler: (input: any) => void = () => {};
@@ -574,10 +572,8 @@ test.each([
 
 test.each([
   { name: 'plain terminal', vars: {} },
-  { name: 'tmux without pane ID', vars: { TMUX: 'session' } },
-  { name: 'empty tmux marker takes precedence over WezTerm', vars: { TMUX: '', WEZTERM_PANE: '81' } },
-  { name: 'Zellij without pane ID', vars: { ZELLIJ: '1' } },
-  { name: 'explicit backend without its pane ID', vars: { WEZTERM_PANE: '81', WORKMUX_BACKEND: 'tmux' } },
+  { name: 'server without a block', vars: { REX_SERVER: 'unix:///test/rex.sock' } },
+  { name: 'empty block identity', vars: { REX_BLOCK: '' } },
 ])('does nothing in $name', async ({ vars }) => {
   Object.assign(process.env, vars);
   await setup({} as any);
@@ -596,7 +592,7 @@ test('reads running status without waiting for the TUI active cache', async () =
     await waitForCalls(1);
     active.resolve();
     await waitForCalls(2);
-    expect(await calls()).toEqual(['%123|register-agent', '%123|set-window-status working']);
+    expect(await calls()).toEqual(['block:test-a|register-agent', 'block:test-a|set-window-status working']);
   } finally {
     active.resolve();
     await harness.cleanup();
@@ -622,7 +618,7 @@ test('discovers paginated descendants without claiming unrelated active sessions
     expect(visited).toEqual(['ours:', 'ours:page2', 'child:', 'sibling:', 'grandchild:']);
     harness.emit('session.execution.succeeded', { sessionID: 'grandchild' });
     await waitForCalls(3);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status done');
   } finally {
     await harness.cleanup();
   }
@@ -639,7 +635,7 @@ test('reconnect reconciles missed completion and releases closed-tab ownership',
     running = false;
     harness.emit('server.connected', {});
     await waitForCalls(3);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status done');
     harness.emit('session.execution.started', { sessionID: 'ours' });
     await Bun.sleep(50);
     expect(await calls()).toHaveLength(3);
@@ -659,11 +655,11 @@ test('reconnect removes requests answered while disconnected', async () => {
   });
   try {
     await waitForCalls(2);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status waiting');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status waiting');
     pending = false;
     harness.emit('server.connected', {});
     await waitForCalls(3);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status working');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status working');
   } finally {
     await harness.cleanup();
   }
@@ -693,7 +689,7 @@ test('reconnect discards an unfinished snapshot from the previous connection', a
     oldSnapshot.resolve();
     await Bun.sleep(50);
     expect(await calls()).toEqual([
-      '%123|register-agent', '%123|set-window-status working', '%123|set-window-status done',
+      'block:test-a|register-agent', 'block:test-a|set-window-status working', 'block:test-a|set-window-status done',
     ]);
   } finally {
     oldSnapshot.resolve();
@@ -723,7 +719,7 @@ test('completion before descendant discovery overrides an earlier active snapsho
     harness.emit('session.execution.succeeded', { sessionID: 'child' });
     discovery.resolve();
     await waitForCalls(3);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status done');
   } finally {
     discovery.resolve();
     await harness.cleanup();
@@ -745,7 +741,7 @@ test('reconnect does not claim a later execution after retained work finished', 
     idle = 20;
     harness.emit('server.connected', {});
     await waitForCalls(3);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status done');
     harness.emit('permission.asked', { sessionID: 'ours', id: 'new-execution' });
     await Bun.sleep(50);
     expect(await calls()).toHaveLength(3);
@@ -767,7 +763,7 @@ test('a root deleted while disconnected releases its ownership instead of retryi
     removed = true;
     harness.emit('server.connected', {});
     await waitForCalls(3);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status done');
     harness.emit('session.execution.started', { sessionID: 'ours' });
     await Bun.sleep(50);
     expect(await calls()).toHaveLength(3);
@@ -796,7 +792,7 @@ test('a child deleted during discovery does not hold the completion barrier', as
     await waitForCalls(2);
     removed.resolve();
     await waitForCalls(3);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status done');
   } finally {
     removed.resolve();
     await harness.cleanup();
@@ -819,21 +815,21 @@ test('resolves a viewed session ancestry without creating duplicate ownership', 
     expect(synced).toEqual(['ours', 'ancestor']);
     harness.emit('session.execution.succeeded', { sessionID: 'ours' });
     await waitForCalls(3);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status done');
   } finally {
     await harness.cleanup();
   }
 });
 
 async function promptInput() {
-  return readFile(`${process.env.WORKMUX_TEST_LOG}.stdin`, 'utf8').catch(() => '');
+  return readFile(`${process.env.WORKREX_TEST_LOG}.stdin`, 'utf8').catch(() => '');
 }
 
 function userPrompt(sessionID: string, text: string) {
   return { sessionID, item: { type: 'user', payload: { text }, delivery: 'steer' } };
 }
 
-test('top-level prompts reach workmux stdin, including another prompt while working', async () => {
+test('top-level prompts reach workrex stdin, including another prompt while working', async () => {
   const harness = await hydrationHarness({ get: () => ({ id: 'ours' }) });
   try {
     await waitForCalls(2);
@@ -845,7 +841,7 @@ test('top-level prompts reach workmux stdin, including another prompt while work
     expect(await promptInput()).toBe(JSON.stringify({ prompt: 'fix the bug\nwith details' })
       + JSON.stringify({ prompt: 'also add tests' }));
     expect((await calls()).slice(2)).toEqual([
-      '%123|set-window-status working', '%123|set-window-status working',
+      'block:test-a|set-window-status working', 'block:test-a|set-window-status working',
     ]);
   } finally {
     await harness.cleanup();
@@ -880,7 +876,7 @@ test('a prompt received before execution waits for the working report', async ()
   });
   try {
     await waitForCalls(2);
-    expect((await calls()).at(-1)).toBe('%123|set-window-status done');
+    expect((await calls()).at(-1)).toBe('block:test-a|set-window-status done');
     harness.emit('session.inbox.enqueued', userPrompt('ours', 'new turn'));
     harness.emit('session.execution.started', { sessionID: 'ours' });
     await waitForCalls(3);

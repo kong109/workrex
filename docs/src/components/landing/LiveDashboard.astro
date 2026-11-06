@@ -1,5 +1,5 @@
 ---
-// The workmux dashboard popup rendered live as a character grid: the agents
+// The workrex dashboard popup rendered live as a character grid: the agents
 // table across projects, the preview of the selected agent, input mode and
 // sorting.
 import './grid.css';
@@ -9,7 +9,7 @@ import './grid.css';
   <div
     class="gl-grid"
     role="img"
-    aria-label="The workmux dashboard: a table of agents across projects with status, diff size and time, a live preview of the selected agent, an agent's question answered from input mode, and the list sorted by project"
+    aria-label="The workrex dashboard: a table of agents across projects with status, diff size and time, a live preview of the selected agent, an agent's question answered from input mode, and the list sorted by project"
   >
   </div>
   <span class="gl-key" aria-hidden="true"></span>
@@ -330,7 +330,7 @@ import './grid.css';
       });
       this.agents = [
         ag({
-          proj: 'workmux',
+          proj: 'workrex',
           name: 'sidebar-views',
           st: 'work',
           since: t - 27 * s,
@@ -534,12 +534,12 @@ import './grid.css';
           ],
         }),
         ag({
-          proj: 'workmux',
+          proj: 'workrex',
           name: 'main',
           st: 'done',
           since: t - (22 * h + 53 * m + 37 * s),
           main: true,
-          title: 'π - workmux',
+          title: 'π - workrex',
           log: [...msg('Released v0.1.277 and pushed the tag.'), gap],
         }),
         ag({

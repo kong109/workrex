@@ -41,13 +41,20 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     // Render either dashboard or diff view based on view mode
     match &mut app.view_mode {
         ViewMode::Dashboard => render_dashboard(f, app),
-        ViewMode::Diff(diff_view) => render_diff_view(f, diff_view, &app.palette),
+        ViewMode::Diff(diff_view) => render_diff_view(
+            f,
+            diff_view,
+            &app.palette,
+            app.status_message
+                .as_ref()
+                .map(|(message, _)| message.as_str()),
+        ),
     }
 
     // Render overlays on top
     let has_modal = app.sweep_progress.is_some()
         || app.show_help
-        || app.pending_kill_pane_id.is_some()
+        || app.pending_kill_target.is_some()
         || app.pending_remove.is_some()
         || app.pending_base_picker.is_some()
         || app.pending_project_picker.is_some()
@@ -64,7 +71,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         render_sweep_progress(f, app);
     } else if app.show_help {
         render_help(f, app);
-    } else if app.pending_kill_pane_id.is_some() {
+    } else if app.pending_kill_target.is_some() {
         render_confirm_kill(f, app);
     } else if app.pending_remove.is_some() {
         render_confirm_remove(f, app);

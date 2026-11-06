@@ -22,7 +22,7 @@ use super::RemoteSpec;
 use super::protocol::first_line;
 
 /// Environment variable that selects the loopback transport.
-pub const LOOPBACK_ENV: &str = "WORKMUX_REMOTE_LOOPBACK";
+pub const LOOPBACK_ENV: &str = "WORKREX_REMOTE_LOOPBACK";
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -467,7 +467,7 @@ fn terminal_ssh_args(host: &str, remote_command: &str, ports: &[u16]) -> Vec<Str
 /// quoting rules of whatever login shell receives it.
 pub fn remote_command(script: &str) -> String {
     let encoded = base64::engine::general_purpose::STANDARD.encode(script);
-    format!("sh -c 'eval \"$(printf %s \"$1\" | base64 -d)\"' workmux {encoded}")
+    format!("sh -c 'eval \"$(printf %s \"$1\" | base64 -d)\"' workrex {encoded}")
 }
 
 fn classify_ssh_failure(name: &str, host: &str, output: &Output) -> SshFailure {
@@ -476,7 +476,7 @@ fn classify_ssh_failure(name: &str, host: &str, output: &Output) -> SshFailure {
         (
             SshFailureKind::Auth,
             format!(
-                "authentication failed. workmux runs ssh in batch mode and never prompts; \
+                "authentication failed. workrex runs ssh in batch mode and never prompts; \
                  make sure `ssh {host}` logs in without a password prompt (ssh-agent or an \
                  unencrypted key)"
             ),
@@ -500,7 +500,7 @@ fn classify_ssh_failure(name: &str, host: &str, output: &Output) -> SshFailure {
         (SshFailureKind::Other, "connection timed out".to_string())
     } else {
         // ssh reports a keepalive timeout only at a log level below the
-        // relay's LogLevel=ERROR, so a dropped connection exits silently.
+        // connection's LogLevel=ERROR, so a dropped connection exits silently.
         let reason = match output.stderr_line() {
             line if line.is_empty() => "connection lost".to_string(),
             line => line,
@@ -638,7 +638,7 @@ fn socket_path(preferred_dir: &Path, name: &str, host: &str, uid: u32) -> PathBu
     if is_literal_control_path(&preferred) {
         preferred
     } else {
-        PathBuf::from(format!("/tmp/workmux-ssh-{uid}")).join(key)
+        PathBuf::from(format!("/tmp/workrex-ssh-{uid}")).join(key)
     }
 }
 
@@ -737,7 +737,7 @@ mod tests {
     fn long_state_dir_falls_back_to_tmp() {
         let dir = PathBuf::from(format!("/{}/ssh", "x".repeat(80)));
         let path = socket_path(&dir, "hetzner", "host", 501);
-        assert!(path.starts_with("/tmp/workmux-ssh-501"), "{path:?}");
+        assert!(path.starts_with("/tmp/workrex-ssh-501"), "{path:?}");
         assert!(path.as_os_str().len() <= MAX_CONTROL_PATH_LEN);
     }
 
@@ -750,11 +750,11 @@ mod tests {
             "/tmp/a\"b/ssh",
         ] {
             let path = socket_path(Path::new(dir), "hetzner", "host", 501);
-            assert!(path.starts_with("/tmp/workmux-ssh-501"), "{dir}: {path:?}");
+            assert!(path.starts_with("/tmp/workrex-ssh-501"), "{dir}: {path:?}");
         }
-        let path = socket_path(Path::new("/Users/me/.local/state/workmux/ssh"), "h", "x", 1);
+        let path = socket_path(Path::new("/Users/me/.local/state/workrex/ssh"), "h", "x", 1);
         assert!(
-            path.starts_with("/Users/me/.local/state/workmux/ssh"),
+            path.starts_with("/Users/me/.local/state/workrex/ssh"),
             "{path:?}"
         );
     }

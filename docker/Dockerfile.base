@@ -18,10 +18,10 @@ RUN cat <<'SCRIPT' > /usr/local/bin/network-init.sh
 #!/bin/bash
 set -euo pipefail
 
-if [ -n "${WM_PROXY_HOST:-}" ] && [ -n "${WM_PROXY_PORT:-}" ]; then
+if [ -n "${WORKREX_PROXY_HOST:-}" ] && [ -n "${WORKREX_PROXY_PORT:-}" ]; then
     # Resolve hostnames to ALL IPs (multi-A records, round-robin DNS)
-    PROXY_IPS=$(getent ahostsv4 "$WM_PROXY_HOST" | awk '{print $1}' | sort -u)
-    RPC_HOST="${WM_RPC_HOST:-$WM_PROXY_HOST}"
+    PROXY_IPS=$(getent ahostsv4 "$WORKREX_PROXY_HOST" | awk '{print $1}' | sort -u)
+    RPC_HOST="${WORKREX_RPC_HOST:-$WORKREX_PROXY_HOST}"
     RPC_IPS=$(getent ahostsv4 "$RPC_HOST" | awk '{print $1}' | sort -u)
 
     if [ -z "$PROXY_IPS" ] || [ -z "$RPC_IPS" ]; then
@@ -46,13 +46,13 @@ if [ -n "${WM_PROXY_HOST:-}" ] && [ -n "${WM_PROXY_PORT:-}" ]; then
 
     # Allow ALL resolved proxy IPs (handles multi-A DNS)
     for ip in $PROXY_IPS; do
-        iptables -A OUTPUT -d "$ip" -p tcp --dport "$WM_PROXY_PORT" -j ACCEPT
+        iptables -A OUTPUT -d "$ip" -p tcp --dport "$WORKREX_PROXY_PORT" -j ACCEPT
     done
 
     # Allow ALL resolved RPC IPs
-    if [ -n "${WM_RPC_PORT:-}" ]; then
+    if [ -n "${WORKREX_RPC_PORT:-}" ]; then
         for ip in $RPC_IPS; do
-            iptables -A OUTPUT -d "$ip" -p tcp --dport "$WM_RPC_PORT" -j ACCEPT
+            iptables -A OUTPUT -d "$ip" -p tcp --dport "$WORKREX_RPC_PORT" -j ACCEPT
         done
     fi
 
@@ -78,7 +78,7 @@ fi
 # Docker allocates the PTY as root; after the privilege drop, the user has no
 # access to /dev/pts/0 unless we transfer ownership.
 if [ -t 0 ]; then
-    chown "${WM_TARGET_UID}:${WM_TARGET_GID}" "$(tty)"
+    chown "${WORKREX_TARGET_UID}:${WORKREX_TARGET_GID}" "$(tty)"
 fi
 
 # Drop privileges via setpriv. Unlike gosu, setpriv lets us explicitly set
@@ -86,7 +86,7 @@ fi
 # --group-add behaviour works in deny mode (where the container starts as
 # root and must drop privileges after iptables setup).
 #
-# WM_EXTRA_GIDS is a comma-separated list of group names or numeric GIDs
+# WORKREX_EXTRA_GIDS is a comma-separated list of group names or numeric GIDs
 # configured via sandbox.container.group_add. We always prepend the primary
 # GID so the supplementary group list matches Docker's default `--user`
 # behaviour (primary GID present even with no extras), and so root's
@@ -98,14 +98,14 @@ fi
 # HOME=/tmp is preserved because downstream login shells may otherwise reset
 # it to "/" (for UIDs not in /etc/passwd), breaking agents that look up their
 # config dirs relative to HOME.
-GROUPS_ARG="${WM_TARGET_GID}"
-if [ -n "${WM_EXTRA_GIDS:-}" ]; then
-    GROUPS_ARG="${GROUPS_ARG},${WM_EXTRA_GIDS}"
+GROUPS_ARG="${WORKREX_TARGET_GID}"
+if [ -n "${WORKREX_EXTRA_GIDS:-}" ]; then
+    GROUPS_ARG="${GROUPS_ARG},${WORKREX_EXTRA_GIDS}"
 fi
 
 exec setpriv \
-    --reuid "${WM_TARGET_UID}" \
-    --regid "${WM_TARGET_GID}" \
+    --reuid "${WORKREX_TARGET_UID}" \
+    --regid "${WORKREX_TARGET_GID}" \
     --groups "${GROUPS_ARG}" \
     --inh-caps=-all \
     env HOME=/tmp "$@"
@@ -115,15 +115,15 @@ RUN chmod +x /usr/local/bin/network-init.sh
 # Ensure host-exec shim directory is on PATH for login shells.
 # Agents like Codex run commands via login shell (bash -lc) which sources
 # /etc/profile, resetting PATH to system defaults and losing the shim
-# directory that workmux prepends. This profile.d script re-adds it.
-RUN cat <<'SCRIPT' > /etc/profile.d/workmux-shims.sh
-if [ -d /tmp/.workmux-shims/bin ]; then
-    PATH="/tmp/.workmux-shims/bin:$PATH"
+# directory that workrex prepends. This profile.d script re-adds it.
+RUN cat <<'SCRIPT' > /etc/profile.d/workrex-shims.sh
+if [ -d /tmp/.workrex-shims/bin ]; then
+    PATH="/tmp/.workrex-shims/bin:$PATH"
     export PATH
 fi
 SCRIPT
 
 ARG CACHE_BUST=1
 
-# Install workmux (needed for sandbox RPC)
-RUN curl -fsSL https://raw.githubusercontent.com/raine/workmux/main/scripts/install.sh | bash
+# Install workrex (needed for sandbox RPC)
+RUN curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/install-workrex.sh | bash

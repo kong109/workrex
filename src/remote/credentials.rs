@@ -1,4 +1,4 @@
-//! Agent logins on remotes: `workmux remote login` runs an agent's own
+//! Agent logins on remotes: `workrex remote login` runs an agent's own
 //! login flow on the node, with the credential directories remote
 //! executions mount; `--import` copies the laptop's credential files once.
 
@@ -122,7 +122,7 @@ fn port_is_free(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-/// `workmux remote login <name> <agent>`: the agent's login flow on the
+/// `workrex remote login <name> <agent>`: the agent's login flow on the
 /// node, attached to this terminal. Returns the exit status to use.
 pub fn login(
     spec: &RemoteSpec,
@@ -184,7 +184,7 @@ pub fn login(
     if setup_token {
         println!(
             "Running `claude setup-token` on '{}'. When it prints the token, copy it; \
-             workmux asks for it next.",
+             workrex asks for it next.",
             spec.name
         );
     } else {
@@ -234,7 +234,7 @@ fn collect_import(auth: &AgentAuth, dir: &Path, macos: bool, remote: &str) -> Re
     if auth.files.is_empty() {
         bail!(
             "{agent} keeps its logins in {}, a database that also holds its \
-             settings and caches, so workmux does not copy it; {login_hint}",
+             settings and caches, so workrex does not copy it; {login_hint}",
             dir.join("agent.db").display()
         );
     }
@@ -253,7 +253,7 @@ fn collect_import(auth: &AgentAuth, dir: &Path, macos: bool, remote: &str) -> Re
     if files.is_empty() {
         if keychain {
             bail!(
-                "on macOS Claude Code keeps its login in the Keychain, which workmux does \
+                "on macOS Claude Code keeps its login in the Keychain, which workrex does \
                  not read, and {} has no credentials file from a sandboxed Claude; \
                  {login_hint}, or use `--setup-token` for a long-lived token",
                 dir.display()
@@ -267,7 +267,7 @@ fn collect_import(auth: &AgentAuth, dir: &Path, macos: bool, remote: &str) -> Re
     }
     let note = keychain.then(|| {
         format!(
-            "Claude Code on macOS keeps its own login in the Keychain, which workmux \
+            "Claude Code on macOS keeps its own login in the Keychain, which workrex \
              does not read; this imports the file a sandboxed Claude wrote in {}.",
             dir.display()
         )
@@ -275,7 +275,7 @@ fn collect_import(auth: &AgentAuth, dir: &Path, macos: bool, remote: &str) -> Re
     Ok(Import { files, note })
 }
 
-/// `workmux remote login <name> <agent> --import`.
+/// `workrex remote login <name> <agent> --import`.
 pub fn import(spec: &RemoteSpec, config: &Config, agent: &str) -> Result<()> {
     let auth = agent_auth(agent)?;
     let dir = config
@@ -366,10 +366,7 @@ mod tests {
             .err()
             .unwrap()
             .to_string();
-        assert!(
-            err.contains(crate::rebrand!("workmux remote login r codex")),
-            "{err}"
-        );
+        assert!(err.contains("workrex remote login r codex"), "{err}");
     }
 
     #[test]
@@ -402,9 +399,6 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(err.contains("agent.db"), "{err}");
-        assert!(
-            err.contains(crate::rebrand!("workmux remote login r omp")),
-            "{err}"
-        );
+        assert!(err.contains("workrex remote login r omp"), "{err}");
     }
 }

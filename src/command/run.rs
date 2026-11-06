@@ -1,4 +1,4 @@
-//! Run a command in a worktree's tmux/wezterm window.
+//! Run a command in a worktree's Rex window.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
@@ -59,7 +59,7 @@ pub fn run(
     // Get path to current executable for _exec
     let exe_path = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "workmux".to_string());
+        .unwrap_or_else(|_| "workrex".to_string());
 
     // Split pane with _exec command (pass absolute run_dir path)
     let exec_cmd = format!(

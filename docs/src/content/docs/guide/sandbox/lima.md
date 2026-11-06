@@ -16,13 +16,13 @@ brew install lima
 ### 2. Enable in config
 
 ```yaml
-# ~/.config/workmux/config.yaml or .workmux.yaml
+# ~/.config/workrex/config.yaml or .workrex.yaml
 sandbox:
   enabled: true
   backend: lima
 ```
 
-These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
+These are the Workrex configuration paths. See [configuration](/guide/configuration/).
 
 Lima uses broad writable host mounts. On first use, workrex explains that Lima
 cannot isolate Git control files from writable Git data and asks for explicit
@@ -92,7 +92,7 @@ operations.
 
 Workrex requires explicit acceptance once per Lima VM. The acknowledgement lives
 in the host-only
-`~/.local/state/workmux/lima-acknowledgements/git-metadata-isolation-v1/`
+`~/.local/state/workrex/lima-acknowledgements/git-metadata-isolation-v1/`
 directory, outside paths mounted into the guest. Non-interactive startup fails unless
 `lima.accept_reduced_git_metadata_isolation` is true. Use Docker, Podman, or
 Apple Container when host Git metadata must be protected from the guest.
@@ -104,7 +104,7 @@ When using the Lima backend, each sandboxed pane runs a supervisor process (`wor
 1. Ensures the Lima VM is running (creates it on first use)
 2. Starts a TCP RPC server on a random port
 3. Runs the agent command inside the VM via `limactl shell`
-4. Handles RPC requests from the `workmux` binary in the guest
+4. Handles RPC requests from the `workrex` binary in the guest
 
 The guest VM connects back to the host via `host.lima.internal` (Lima's built-in hostname) to send RPC requests like status updates and agent spawning.
 
@@ -112,8 +112,8 @@ The guest VM connects back to the host via `host.lima.internal` (Lima's built-in
 
 VMs are named deterministically based on the isolation level:
 
-- **Project isolation** (default): `wm-<project>-<hash>` (e.g., `wm-myproject-a1b2c3d4`). The project name (up to 18 characters) is included for readability in `limactl list`.
-- **Shared isolation**: `wm-<hash>` (e.g., `wm-5f6g7h8i`). A single global VM is used for all projects.
+- **Project isolation** (default): `wr-<project>-<hash>` (e.g., `wr-myproject-a1b2c3d4`). The project name (up to 18 characters) is included for readability in `limactl list`.
+- **Shared isolation**: `wr-<hash>` (e.g., `wr-5f6g7h8i`). A single global VM is used for all projects.
 
 ### Auto-start behavior
 
@@ -132,7 +132,7 @@ When a VM is first created, workrex runs two built-in provisioning steps:
 **User provision:**
 
 - Installs the configured agent CLI (based on the `agent` setting)
-- Installs upstream [workmux](https://github.com/raine/workmux) with upstream's install script, not workrex. Run [`workrex sandbox install-dev`](/guide/sandbox/features/#installing-local-builds) to install this build in a running VM.
+- Installs [Workrex](https://github.com/kong109/workrex) from its release installer. Run [`workrex sandbox install-dev`](/guide/sandbox/features/#installing-local-builds) to install this build in a running VM.
 - Installs [Nix](https://nixos.org/) and [Devbox](https://www.jetify.com/devbox) (only when the project has `devbox.json` or `flake.nix`, or `toolchain` is explicitly set to `devbox` or `flake`)
 
 The agent CLI installed depends on your `agent` configuration:
@@ -146,7 +146,7 @@ The agent CLI installed depends on your `agent` configuration:
 | `pi`               | Pi CLI via npm                             |
 | `omp`              | Oh My Pi CLI via Bun + Python              |
 
-Codex needs the whole Codex package, which VMs created by older workmux versions don't have. Codex also needs to be 0.156 or newer (see [Agent flags](/guide/sandbox/features/#agent-flags)). Recreate such a VM with `workrex sandbox prune`.
+Codex needs the whole Codex package, which VMs created by older workrex versions don't have. Codex also needs to be 0.156 or newer (see [Agent flags](/guide/sandbox/features/#agent-flags)). Recreate such a VM with `workrex sandbox prune`.
 
 Changing the `agent` setting after VM creation has no effect on existing VMs. Recreate the VM with `workrex sandbox prune` to provision with a different agent.
 
@@ -158,7 +158,7 @@ Agent credentials are shared between the host and VM. See [Credentials](/guide/s
 
 - Claude stores auth in macOS Keychain, which is not accessible from the Linux VM. You need to authenticate Claude separately inside the VM.
 - Gemini, Codex, and OpenCode use file-based credentials that work automatically if you've authenticated on the host.
-- workrex seeds a minimal `~/.claude.json` inside the VM with onboarding marked as complete. This is stored per-VM in `~/.local/state/workmux/lima/<vm-name>/` and prevents the onboarding flow from triggering on each VM creation.
+- workrex seeds a minimal `~/.claude.json` inside the VM with onboarding marked as complete. This is stored per-VM in `~/.local/state/workrex/lima/<vm-name>/` and prevents the onboarding flow from triggering on each VM creation.
 - The credential mount is determined by the `agent` setting at VM creation time. If you switch agents, recreate the VM with `workrex sandbox prune` to get the correct mount.
 
 ### Custom provisioning
@@ -195,7 +195,7 @@ You can use a pre-built qcow2 image to skip provisioning entirely, reducing VM c
 ```yaml
 sandbox:
   backend: lima
-  image: file:///Users/me/.lima/images/workmux-golden.qcow2
+  image: file:///Users/me/.lima/images/workrex-golden.qcow2
   lima:
     skip_default_provision: true
 ```
@@ -205,7 +205,7 @@ When `image` is set, it replaces the default Debian 13 genericcloud image. The v
 When `skip_default_provision` is true, the built-in provisioning steps are skipped:
 
 - System provision (apt-get install of curl, ca-certificates, git)
-- User provision (agent CLI, upstream workmux, Nix/Devbox)
+- User provision (agent CLI, Workrex, Nix/Devbox)
 
 Custom `provision` scripts still run even when `skip_default_provision` is true, so you can layer additional setup on top of a pre-built image.
 
@@ -224,7 +224,7 @@ Custom `provision` scripts still run even when `skip_default_provision` is true,
 2. After the VM is running, stop it:
 
    ```bash
-   limactl stop wm-yourproject-abc12345
+   limactl stop wr-yourproject-abc12345
    ```
 
 3. Export the disk image (flattens base + changes into a single file):
@@ -232,8 +232,8 @@ Custom `provision` scripts still run even when `skip_default_provision` is true,
    ```bash
    mkdir -p ~/.lima/images
    qemu-img convert -O qcow2 \
-     ~/.lima/wm-yourproject-abc12345/diffdisk \
-     ~/.lima/images/workmux-golden.qcow2
+     ~/.lima/wr-yourproject-abc12345/diffdisk \
+     ~/.lima/images/workrex-golden.qcow2
    ```
 
 4. Update your config to use the pre-built image:
@@ -241,7 +241,7 @@ Custom `provision` scripts still run even when `skip_default_provision` is true,
    ```yaml
    sandbox:
      backend: lima
-     image: file:///Users/me/.lima/images/workmux-golden.qcow2
+     image: file:///Users/me/.lima/images/workrex-golden.qcow2
      lima:
        skip_default_provision: true
    ```
@@ -326,7 +326,7 @@ workrex sandbox prune
 
 This command:
 
-- Lists all Lima VMs with the `wm-` prefix (workrex VMs)
+- Lists all Lima VMs with the `wr-` prefix (workrex VMs)
 - Shows details for each VM: name, status, size, age, and last accessed time
 - Displays total disk space used
 - Prompts for confirmation before deletion
@@ -340,13 +340,13 @@ workrex sandbox prune --force
 **Example output:**
 
 ```
-Found 2 workmux Lima VM(s):
+Found 2 workrex Lima VM(s):
 
-1. wm-myproject-bbeb2cbf (Running)
+1. wr-myproject-bbeb2cbf (Running)
    Age: 2 hours ago
    Last accessed: 5 minutes ago
 
-2. wm-another-proj-d1370a2a (Stopped)
+2. wr-another-proj-d1370a2a (Stopped)
    Age: 1 day ago
    Last accessed: 1 day ago
 
@@ -364,7 +364,7 @@ When using the Lima backend, you can stop running VMs to free up system resource
 workrex sandbox stop
 
 # Stop a specific VM
-workrex sandbox stop wm-myproject-abc12345
+workrex sandbox stop wr-myproject-abc12345
 
 # Stop all workrex VMs
 workrex sandbox stop --all

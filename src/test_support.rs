@@ -5,8 +5,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const ISOLATED_TEST_ENV: &str = "WM_ISOLATED_TEST";
-pub const ISOLATED_TEST_CANARY: &str = "WM_ISOLATED_TEST_EXECUTED";
+pub const ISOLATED_TEST_ENV: &str = "WORKREX_ISOLATED_TEST";
+pub const ISOLATED_TEST_CANARY: &str = "WORKREX_ISOLATED_TEST_EXECUTED";
 
 pub fn is_isolated_child(test_name: &str) -> bool {
     std::env::var_os(ISOLATED_TEST_ENV).as_deref() == Some(std::ffi::OsStr::new(test_name))

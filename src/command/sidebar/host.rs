@@ -1,5 +1,4 @@
-//! Sidebar requests for backends that host the sidebar themselves. tmux has
-//! no host and keeps the code in this module's parent.
+//! Rex sidebar requests and event-driven daemon access.
 
 mod rex;
 
@@ -7,15 +6,11 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::cli::{SidebarAction, SidebarAppearanceArgs};
 use crate::multiplexer::{
-    Appearance, Change, DaemonIo, HostPane, Multiplexer, Nav, Reach, SidebarRequest, TmuxBackend,
+    Appearance, Change, DaemonIo, HostPane, Multiplexer, Nav, Reach, SidebarRequest,
     create_backend, detect_backend,
 };
 
 use super::app::HostIdentity;
-
-pub(crate) fn hosted() -> bool {
-    create_backend(detect_backend()).sidebar().is_some()
-}
 
 pub(crate) fn handle_cli(
     session: bool,
@@ -64,8 +59,7 @@ pub(crate) fn handle_cli(
     host.handle(request)
 }
 
-/// Send `request` to the backend's own sidebar, logging a failure. False
-/// when the backend has none, so the caller takes the tmux path.
+/// Send a request to the Rex sidebar host and log a failure.
 pub(super) fn forward(mux: &dyn Multiplexer, request: impl FnOnce() -> SidebarRequest) -> bool {
     let Some(host) = mux.sidebar() else {
         return false;
@@ -83,12 +77,11 @@ pub(super) fn identity(mux: &dyn Multiplexer) -> Option<Option<HostIdentity>> {
         .map(|host| host.pane_identity().map(HostIdentity::from))
 }
 
-/// The daemon's server reads and writes: the host's, or tmux's.
-pub(super) fn daemon_io(mux: &dyn Multiplexer, tmux: TmuxBackend) -> Result<Box<dyn DaemonIo>> {
-    match mux.sidebar() {
-        Some(host) => host.attach_daemon(),
-        None => Ok(Box::new(tmux)),
-    }
+/// Attach the daemon to the Rex host's observed server state.
+pub(super) fn daemon_io(mux: &dyn Multiplexer) -> Result<Box<dyn DaemonIo>> {
+    mux.sidebar()
+        .ok_or_else(|| anyhow!("Rex sidebar host unavailable"))?
+        .attach_daemon()
 }
 
 impl From<HostPane> for HostIdentity {
@@ -111,4 +104,20 @@ impl From<HostIdentity> for HostPane {
             pane_id: identity.pane_id,
         }
     }
+}
+
+pub(super) fn sleeping_pane_ids(
+    mux: &dyn Multiplexer,
+) -> Result<std::collections::HashSet<String>> {
+    rex::sleeping_pane_ids(&mux.instance_id())
+}
+
+pub(super) fn select_sidebar(mux: &dyn Multiplexer, window: &str, pane: &str) -> Result<bool> {
+    rex::select_sidebar(mux, window, pane)
+}
+
+pub(super) fn take_pending_selection(mux: &dyn Multiplexer, window: &str) -> Option<String> {
+    rex::take_pending_selection(&mux.instance_id(), window)
+        .ok()
+        .flatten()
 }

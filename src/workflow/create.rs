@@ -458,7 +458,7 @@ fn create_impl(
     );
 
     // Acquire an exclusive lock to serialize .git/config writes across parallel
-    // workmux processes. Without this, concurrent `workmux add` commands race on
+    // workrex processes. Without this, concurrent `workrex add` commands race on
     // git's config.lock file and fail with "could not lock config file".
     let _config_lock = git::GitConfigLock::acquire(&context.git_common_dir)
         .context("Failed to acquire git config lock")?;
@@ -531,7 +531,7 @@ fn create_impl(
         )
         .with_context(|| {
             format!(
-                "Failed to store tmux mode for worktree '{}'",
+                "Failed to store Rex target mode for worktree '{}'",
                 current_handle
             )
         })?;
@@ -575,7 +575,7 @@ fn create_impl(
     }
 
     // Release the config lock before proceeding to non-git operations
-    // (prompt files, tmux setup, hooks, etc.)
+    // (prompt files, Rex setup, hooks, etc.)
     drop(_config_lock);
 
     // Fork conversation into the new worktree if requested.
@@ -861,11 +861,15 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    struct TestMux;
+    struct TestTerminal;
 
-    impl Multiplexer for TestMux {
+    impl Multiplexer for TestTerminal {
         fn name(&self) -> &'static str {
-            "tmux"
+            "rex"
+        }
+
+        fn supports_session_mode(&self) -> bool {
+            true
         }
 
         fn is_running(&self) -> Result<bool> {
@@ -1059,6 +1063,7 @@ mod tests {
             _task_agent: Option<&str>,
         ) -> Result<PaneSetupResult> {
             Ok(PaneSetupResult {
+                pane_ids: vec![initial_pane_id.to_string()],
                 focus_pane_id: initial_pane_id.to_string(),
                 zoom_pane_id: None,
             })
@@ -1070,7 +1075,7 @@ mod tests {
 
         fn get_live_pane_info(&self, pane_id: &str) -> Result<Option<LivePaneInfo>> {
             if pane_id == FAILING_PANE {
-                return Err(anyhow!("tmux call failed"));
+                return Err(anyhow!("Rex call failed"));
             }
             Ok(None)
         }
@@ -1088,14 +1093,14 @@ mod tests {
     #[test]
     fn a_failed_second_look_is_an_error_not_a_dead_pane() {
         let agent: crate::state::AgentState = serde_json::from_value(serde_json::json!({
-            "pane_key": { "backend": "tmux", "instance": "test", "pane_id": FAILING_PANE },
+            "pane_key": { "backend": "rex", "instance": "test", "pane_id": FAILING_PANE },
             "workdir": "/private/tmp",
             "pane_pid": 7,
             "command": "node",
             "updated_ts": 0,
         }))
         .unwrap();
-        assert!(TestMux.validate_agent_alive(&agent).is_err());
+        assert!(TestTerminal.validate_agent_alive(&agent).is_err());
     }
 
     #[test]
@@ -1125,8 +1130,8 @@ mod tests {
             ],
         );
 
-        let ctx =
-            WorkflowContext::new_in(&repo, Config::default(), Arc::new(TestMux), None).unwrap();
+        let ctx = WorkflowContext::new_in(&repo, Config::default(), Arc::new(TestTerminal), None)
+            .unwrap();
         let mut options = SetupOptions::new(false, false, false);
         options.focus_window = false;
         let result = create(
@@ -1184,8 +1189,8 @@ mod tests {
         test_support::run_git(&source, &["checkout", "main"]);
         test_support::run_git(&source, &["branch", "-D", "review-source"]);
 
-        let ctx =
-            WorkflowContext::new_in(&repo, Config::default(), Arc::new(TestMux), None).unwrap();
+        let ctx = WorkflowContext::new_in(&repo, Config::default(), Arc::new(TestTerminal), None)
+            .unwrap();
         let mut options = SetupOptions::new(false, false, false);
         options.focus_window = false;
         let error = match create(
@@ -1249,8 +1254,8 @@ mod tests {
         );
         assert!(!git::branch_exists_in("origin/main", Some(&repo)).unwrap());
 
-        let ctx =
-            WorkflowContext::new_in(&repo, Config::default(), Arc::new(TestMux), None).unwrap();
+        let ctx = WorkflowContext::new_in(&repo, Config::default(), Arc::new(TestTerminal), None)
+            .unwrap();
         let mut options = SetupOptions::new(false, false, false);
         options.focus_window = false;
         let result = create(
@@ -1322,8 +1327,8 @@ mod tests {
             &["remote", "add", "origin", source.to_str().unwrap()],
         );
 
-        let ctx =
-            WorkflowContext::new_in(&repo, Config::default(), Arc::new(TestMux), None).unwrap();
+        let ctx = WorkflowContext::new_in(&repo, Config::default(), Arc::new(TestTerminal), None)
+            .unwrap();
         let mut options = SetupOptions::new(false, false, false);
         options.focus_window = false;
         let error = match create(
@@ -1358,42 +1363,6 @@ mod tests {
     }
 
     #[test]
-    fn session_mode_on_a_backend_without_it_names_the_backend() {
-        let temp = tempfile::tempdir().unwrap();
-        test_support::init_repo(temp.path());
-        let ctx = WorkflowContext::new_in(temp.path(), Config::default(), Arc::new(TestMux), None)
-            .unwrap();
-        let mut options = SetupOptions::new(false, false, false);
-        options.focus_window = false;
-        options.mode = MuxMode::Session;
-        let error = match create(
-            &ctx,
-            CreateArgs {
-                branch_name: "feature",
-                handle: "feature",
-                base_branch: None,
-                remote_branch: None,
-                checkout_ref: None,
-                prompt: None,
-                options,
-                mode_override: None,
-                agent: None,
-                is_explicit_name: false,
-                prompt_file_only: false,
-                fork_source: None,
-            },
-        ) {
-            Ok(_) => panic!("session mode should be refused"),
-            Err(error) => error,
-        };
-        assert_eq!(
-            error.to_string(),
-            "Session mode (--mode session / --session) is not supported by the tmux backend.\n\
-             Use window mode instead."
-        );
-    }
-
-    #[test]
     fn workflow_create_uses_explicit_repo_not_process_cwd() {
         const TEST_NAME: &str =
             "workflow::create::tests::workflow_create_uses_explicit_repo_not_process_cwd";
@@ -1408,12 +1377,18 @@ mod tests {
             test_support::init_repo(&repo_a);
             test_support::init_repo(&repo_b);
 
-            test_support::run_isolated_test(TEST_NAME, &non_repo, &[("WM_TEST_TEMP", temp.path())]);
+            test_support::run_isolated_test(
+                TEST_NAME,
+                &non_repo,
+                &[("WORKREX_TEST_TEMP", temp.path())],
+            );
             return;
         }
 
         println!("{}", test_support::ISOLATED_TEST_CANARY);
-        let temp = std::env::var_os("WM_TEST_TEMP").map(PathBuf::from).unwrap();
+        let temp = std::env::var_os("WORKREX_TEST_TEMP")
+            .map(PathBuf::from)
+            .unwrap();
         let repo_a = temp.join("repo-a");
         let repo_b = temp.join("repo-b");
         let non_repo = temp.join("not-a-repo");
@@ -1424,7 +1399,7 @@ mod tests {
 
         let config = Config::default();
         let ctx =
-            WorkflowContext::new_in(&repo_b, config.clone(), Arc::new(TestMux), None).unwrap();
+            WorkflowContext::new_in(&repo_b, config.clone(), Arc::new(TestTerminal), None).unwrap();
         let mut options = SetupOptions::new(false, false, false);
         options.focus_window = false;
         let result = create(
@@ -1449,7 +1424,7 @@ mod tests {
         assert!(result.worktree_path.exists());
         assert_eq!(
             git::get_worktree_meta_in("feature", "mode", Some(&repo_b)).as_deref(),
-            Some("window")
+            Some("session")
         );
         assert!(!git::branch_exists_in("feature", Some(&repo_a)).unwrap());
     }

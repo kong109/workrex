@@ -732,25 +732,25 @@ mod tests {
         Command::new("git")
             .args([
                 "config",
-                "filter.workmux-test.smudge",
+                "filter.workrex-test.smudge",
                 filter.to_string_lossy().as_ref(),
             ])
             .current_dir(&worktree)
             .status()
             .unwrap();
         Command::new("git")
-            .args(["config", "filter.workmux-test.clean", "cat"])
+            .args(["config", "filter.workrex-test.clean", "cat"])
             .current_dir(&worktree)
             .status()
             .unwrap();
         Command::new("git")
-            .args(["config", "filter.workmux-test.required", "true"])
+            .args(["config", "filter.workrex-test.required", "true"])
             .current_dir(&worktree)
             .status()
             .unwrap();
         std::fs::write(
             worktree.join(".gitattributes"),
-            "filtered filter=workmux-test\n",
+            "filtered filter=workrex-test\n",
         )
         .unwrap();
         std::fs::write(worktree.join("filtered"), "filtered content\n").unwrap();
@@ -930,14 +930,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("config");
         let values = [
-            ("workmux.hash", "# not a comment"),
-            ("workmux.semicolon", "; also not a comment"),
-            ("workmux.quote", "say \"hi\""),
-            ("workmux.backslash", "C:\\path\\to"),
-            ("workmux.newline", "first\nsecond"),
-            ("workmux.tab", "left\tright"),
-            ("workmux.spaces", "  padded  "),
-            ("workmux.empty", ""),
+            ("workrex.hash", "# not a comment"),
+            ("workrex.semicolon", "; also not a comment"),
+            ("workrex.quote", "say \"hi\""),
+            ("workrex.backslash", "C:\\path\\to"),
+            ("workrex.newline", "first\nsecond"),
+            ("workrex.tab", "left\tright"),
+            ("workrex.spaces", "  padded  "),
+            ("workrex.empty", ""),
             ("submodule.deps/vendor \"x\".path", "deps/vendor"),
             ("branch.topic\tname.remote", "origin"),
         ];

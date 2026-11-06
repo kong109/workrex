@@ -117,7 +117,7 @@ fn login_in_container(
     crate::sandbox::ensure_sandbox_config_dirs()?;
     crate::sandbox::ensure_image_ready(&sandbox, image)?;
 
-    let name = format!("workmux-login-{}", crate::remote::cache::new_id('l'));
+    let name = format!("workrex-login-{}", crate::remote::cache::new_id('l'));
     let uid = unsafe { libc::getuid() };
     let gid = unsafe { libc::getgid() };
     // `--init` keeps the login off PID 1, which ignores the Ctrl-C of a

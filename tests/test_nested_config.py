@@ -1,34 +1,25 @@
-"""Integration tests for nested .workmux.yaml config support."""
+"""Integration tests for nested .workrex.yaml config support."""
 
 import subprocess
 from pathlib import Path
 
-import pytest
+from .conftest import run_workrex_command, run_workrex_open
+from .rex_env import RexEnvironment
 
-from .conftest import (
-    MuxEnvironment,
-    TmuxEnvironment,
-    run_workmux_command,
-    run_workmux_open,
-)
-
-# These tests use tmux-specific features (get pane cwd, kill-window)
-pytestmark = pytest.mark.tmux_only
+# These tests inspect Rex process directories and close real windows
 
 
 def run_cmd(
-    cmd: list[str], cwd: Path, env: MuxEnvironment
+    cmd: list[str], cwd: Path, env: RexEnvironment
 ) -> subprocess.CompletedProcess:
     """Run a command in the test environment."""
     return env.run_command(cmd, cwd=cwd, check=True)
 
 
-def get_pane_cwd(env: MuxEnvironment, window_name: str) -> Path:
-    """Get the current working directory of a tmux pane by window name."""
-    assert isinstance(env, TmuxEnvironment), "get_pane_cwd requires tmux backend"
-    result = env.tmux(
-        ["display-message", "-p", "-t", window_name, "#{pane_current_path}"]
-    )
+def get_pane_cwd(env: RexEnvironment, window_name: str) -> Path:
+    """Get the current working directory of a Rex block by window name."""
+    assert isinstance(env, RexEnvironment), "get_pane_cwd requires Rex backend"
+    result = env.read_current("cwd", target=window_name)
     return Path(result.stdout.strip())
 
 
@@ -51,29 +42,29 @@ class TestNestedConfigDiscovery:
 
     def test_find_config_in_current_directory(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
     ):
         """Config in current directory is found."""
         env = mux_server
         backend = repo_path / "backend"
         backend.mkdir()
-        (backend / ".workmux.yaml").write_text("agent: claude\n")
+        (backend / ".workrex.yaml").write_text("agent: claude\n")
 
         # Commit the new files
         run_cmd(["git", "add", "."], cwd=repo_path, env=env)
         run_cmd(["git", "commit", "-m", "add backend config"], cwd=repo_path, env=env)
 
-        result = run_workmux_command(
-            env, workmux_exe_path, repo_path, "add test-branch", working_dir=backend
+        result = run_workrex_command(
+            env, workrex_exe_path, repo_path, "add test-branch", working_dir=backend
         )
         assert result.exit_code == 0
 
     def test_find_config_in_parent_directory(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
     ):
         """Config in parent directory is found when running from subdirectory."""
@@ -81,21 +72,21 @@ class TestNestedConfigDiscovery:
         backend = repo_path / "backend"
         src = backend / "src"
         src.mkdir(parents=True)
-        (backend / ".workmux.yaml").write_text("agent: claude\n")
+        (backend / ".workrex.yaml").write_text("agent: claude\n")
 
         run_cmd(["git", "add", "."], cwd=repo_path, env=env)
         run_cmd(["git", "commit", "-m", "add backend config"], cwd=repo_path, env=env)
 
-        # Run from src/, should find backend/.workmux.yaml
-        result = run_workmux_command(
-            env, workmux_exe_path, repo_path, "add test-branch", working_dir=src
+        # Run from src/, should find backend/.workrex.yaml
+        result = run_workrex_command(
+            env, workrex_exe_path, repo_path, "add test-branch", working_dir=src
         )
         assert result.exit_code == 0
 
     def test_nested_config_takes_precedence_over_root(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
         tmp_path: Path,
     ):
@@ -104,14 +95,14 @@ class TestNestedConfigDiscovery:
         output_file = tmp_path / "which_config.txt"
 
         # Create root config that writes "root" to file
-        (repo_path / ".workmux.yaml").write_text(
+        (repo_path / ".workrex.yaml").write_text(
             f"agent: claude\npost_create:\n  - 'echo root > {output_file}'\n"
         )
 
         # Create nested config that writes "nested" to file
         backend = repo_path / "backend"
         backend.mkdir()
-        (backend / ".workmux.yaml").write_text(
+        (backend / ".workrex.yaml").write_text(
             f"agent: claude\npost_create:\n  - 'echo nested > {output_file}'\n"
         )
 
@@ -119,8 +110,8 @@ class TestNestedConfigDiscovery:
         run_cmd(["git", "commit", "-m", "add configs"], cwd=repo_path, env=env)
 
         # Run from backend/ - should use nested config
-        run_workmux_command(
-            env, workmux_exe_path, repo_path, "add test-branch", working_dir=backend
+        run_workrex_command(
+            env, workrex_exe_path, repo_path, "add test-branch", working_dir=backend
         )
 
         wait_for_file_with_content(output_file)
@@ -132,62 +123,62 @@ class TestWorkingDirectory:
 
     def test_add_from_nested_config_sets_working_dir(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
     ):
-        """wm add from nested config opens tmux in nested directory."""
+        """wm add from nested config opens Rex in nested directory."""
         env = mux_server
         backend = repo_path / "backend"
         backend.mkdir()
-        (backend / ".workmux.yaml").write_text("agent: claude\n")
+        (backend / ".workrex.yaml").write_text("agent: claude\n")
 
         run_cmd(["git", "add", "."], cwd=repo_path, env=env)
         run_cmd(["git", "commit", "-m", "add backend"], cwd=repo_path, env=env)
 
-        result = run_workmux_command(
-            env, workmux_exe_path, repo_path, "add feature-nested", working_dir=backend
+        result = run_workrex_command(
+            env, workrex_exe_path, repo_path, "add feature-nested", working_dir=backend
         )
         assert result.exit_code == 0
 
-        # Verify tmux pane is in the nested directory
-        pane_cwd = get_pane_cwd(env, "wm-feature-nested")
+        # Verify Rex block is in the nested directory
+        pane_cwd = get_pane_cwd(env, "wr-feature-nested")
         worktrees_dir = repo_path.parent / f"{repo_path.name}__worktrees"
         expected = worktrees_dir / "feature-nested" / "backend"
         assert pane_cwd.resolve() == expected.resolve()
 
     def test_open_from_nested_config_sets_working_dir(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
     ):
-        """wm open from nested config opens tmux in nested directory."""
+        """wm open from nested config opens Rex in nested directory."""
         env = mux_server
         backend = repo_path / "backend"
         backend.mkdir()
-        (backend / ".workmux.yaml").write_text("agent: claude\n")
+        (backend / ".workrex.yaml").write_text("agent: claude\n")
 
         run_cmd(["git", "add", "."], cwd=repo_path, env=env)
         run_cmd(["git", "commit", "-m", "add backend"], cwd=repo_path, env=env)
 
         # Create worktree
-        run_workmux_command(
-            env, workmux_exe_path, repo_path, "add test-branch", working_dir=backend
+        run_workrex_command(
+            env, workrex_exe_path, repo_path, "add test-branch", working_dir=backend
         )
 
-        # Close the tmux window (but keep worktree on disk)
-        assert isinstance(env, TmuxEnvironment)
-        env.tmux(["kill-window", "-t", "wm-test-branch"])
+        # Close the Rex window (but keep worktree on disk)
+        assert isinstance(env, RexEnvironment)
+        env.kill_window("wr-test-branch")
 
         # Reopen from backend/
-        result = run_workmux_open(
-            env, workmux_exe_path, repo_path, "test-branch", working_dir=backend
+        result = run_workrex_open(
+            env, workrex_exe_path, repo_path, "test-branch", working_dir=backend
         )
         assert result.exit_code == 0
 
         # Verify opened in nested directory
-        pane_cwd = get_pane_cwd(env, "wm-test-branch")
+        pane_cwd = get_pane_cwd(env, "wr-test-branch")
         worktrees_dir = repo_path.parent / f"{repo_path.name}__worktrees"
         expected = worktrees_dir / "test-branch" / "backend"
         assert pane_cwd.resolve() == expected.resolve()
@@ -198,15 +189,15 @@ class TestFileOperations:
 
     def test_file_copy_from_nested_config_dir(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
     ):
         """Files are copied from config directory, not repo root."""
         env = mux_server
         backend = repo_path / "backend"
         backend.mkdir()
-        (backend / ".workmux.yaml").write_text(
+        (backend / ".workrex.yaml").write_text(
             "agent: claude\nfiles:\n  copy:\n    - .env\n"
         )
         (backend / ".env").write_text("SOURCE=backend")
@@ -218,8 +209,8 @@ class TestFileOperations:
         run_cmd(["git", "commit", "-m", "add backend with env"], cwd=repo_path, env=env)
 
         # Create worktree from backend
-        result = run_workmux_command(
-            env, workmux_exe_path, repo_path, "add test-branch", working_dir=backend
+        result = run_workrex_command(
+            env, workrex_exe_path, repo_path, "add test-branch", working_dir=backend
         )
         assert result.exit_code == 0
 
@@ -233,21 +224,21 @@ class TestFileOperations:
 class TestHooksEnvironment:
     """Tests for hook environment variables."""
 
-    def test_wm_config_dir_env_var(
+    def test_wr_config_dir_env_var(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
         tmp_path: Path,
     ):
-        """WM_CONFIG_DIR points to nested directory in new worktree."""
+        """WORKREX_CONFIG_DIR points to nested directory in new worktree."""
         env = mux_server
-        output_file = tmp_path / "wm_config_dir.txt"
+        output_file = tmp_path / "wr_config_dir.txt"
 
         backend = repo_path / "backend"
         backend.mkdir()
-        (backend / ".workmux.yaml").write_text(
-            f"agent: claude\npost_create:\n  - 'echo $WM_CONFIG_DIR > {output_file}'\n"
+        (backend / ".workrex.yaml").write_text(
+            f"agent: claude\npost_create:\n  - 'echo $WORKREX_CONFIG_DIR > {output_file}'\n"
         )
 
         run_cmd(["git", "add", "."], cwd=repo_path, env=env)
@@ -255,8 +246,8 @@ class TestHooksEnvironment:
             ["git", "commit", "-m", "add backend with hook"], cwd=repo_path, env=env
         )
 
-        run_workmux_command(
-            env, workmux_exe_path, repo_path, "add test-branch", working_dir=backend
+        run_workrex_command(
+            env, workrex_exe_path, repo_path, "add test-branch", working_dir=backend
         )
 
         # Wait for hook to complete and verify
@@ -266,21 +257,21 @@ class TestHooksEnvironment:
         expected = worktrees_dir / "test-branch" / "backend"
         assert config_dir.resolve() == expected.resolve()
 
-    def test_wm_project_root_env_var(
+    def test_wr_project_root_env_var(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
         tmp_path: Path,
     ):
-        """WM_PROJECT_ROOT points to the main worktree for nested configs."""
+        """WORKREX_PROJECT_ROOT points to the main worktree for nested configs."""
         env = mux_server
-        output_file = tmp_path / "wm_project_root.txt"
+        output_file = tmp_path / "wr_project_root.txt"
 
         backend = repo_path / "backend"
         backend.mkdir()
-        (backend / ".workmux.yaml").write_text(
-            f"agent: claude\npost_create:\n  - 'echo $WM_PROJECT_ROOT > {output_file}'\n"
+        (backend / ".workrex.yaml").write_text(
+            f"agent: claude\npost_create:\n  - 'echo $WORKREX_PROJECT_ROOT > {output_file}'\n"
         )
 
         run_cmd(["git", "add", "."], cwd=repo_path, env=env)
@@ -288,8 +279,8 @@ class TestHooksEnvironment:
             ["git", "commit", "-m", "add backend with hook"], cwd=repo_path, env=env
         )
 
-        run_workmux_command(
-            env, workmux_exe_path, repo_path, "add test-branch", working_dir=backend
+        run_workrex_command(
+            env, workrex_exe_path, repo_path, "add test-branch", working_dir=backend
         )
 
         wait_for_file_with_content(output_file)
@@ -298,8 +289,8 @@ class TestHooksEnvironment:
 
     def test_hook_cwd_is_nested_directory(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
         tmp_path: Path,
     ):
@@ -309,7 +300,7 @@ class TestHooksEnvironment:
 
         backend = repo_path / "backend"
         backend.mkdir()
-        (backend / ".workmux.yaml").write_text(
+        (backend / ".workrex.yaml").write_text(
             f"agent: claude\npost_create:\n  - 'pwd > {output_file}'\n"
         )
 
@@ -318,8 +309,8 @@ class TestHooksEnvironment:
             ["git", "commit", "-m", "add backend with hook"], cwd=repo_path, env=env
         )
 
-        run_workmux_command(
-            env, workmux_exe_path, repo_path, "add test-branch", working_dir=backend
+        run_workrex_command(
+            env, workrex_exe_path, repo_path, "add test-branch", working_dir=backend
         )
 
         wait_for_file_with_content(output_file)
@@ -334,8 +325,8 @@ class TestEdgeCases:
 
     def test_fallback_when_subdir_missing_in_target(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
     ):
         """Falls back to worktree root if subdirectory doesn't exist in target branch."""
@@ -344,7 +335,7 @@ class TestEdgeCases:
         # Create backend config on main
         backend = repo_path / "backend"
         backend.mkdir()
-        (backend / ".workmux.yaml").write_text("agent: claude\n")
+        (backend / ".workrex.yaml").write_text("agent: claude\n")
         run_cmd(["git", "add", "."], cwd=repo_path, env=env)
         run_cmd(["git", "commit", "-m", "add backend"], cwd=repo_path, env=env)
 
@@ -360,9 +351,9 @@ class TestEdgeCases:
 
         # Run add for branch based on old-base (which lacks backend/)
         # Run FROM backend/ to trigger nested config discovery
-        result = run_workmux_command(
+        result = run_workrex_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             repo_path,
             "add feature-old --base old-base",
             working_dir=backend,
@@ -370,7 +361,7 @@ class TestEdgeCases:
         assert result.exit_code == 0
 
         # Working dir should fall back to worktree root since backend/ doesn't exist
-        pane_cwd = get_pane_cwd(env, "wm-feature-old")
+        pane_cwd = get_pane_cwd(env, "wr-feature-old")
         worktrees_dir = repo_path.parent / f"{repo_path.name}__worktrees"
         expected_root = worktrees_dir / "feature-old"
         assert pane_cwd.resolve() == expected_root.resolve()
@@ -381,13 +372,13 @@ class TestBackwardsCompatibility:
 
     def test_root_config_still_works(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
     ):
         """Config at repo root works as before."""
         env = mux_server
-        (repo_path / ".workmux.yaml").write_text(
+        (repo_path / ".workrex.yaml").write_text(
             "agent: claude\nfiles:\n  copy:\n    - .env\n"
         )
         (repo_path / ".env").write_text("ROOT=true")
@@ -395,8 +386,8 @@ class TestBackwardsCompatibility:
         run_cmd(["git", "add", "."], cwd=repo_path, env=env)
         run_cmd(["git", "commit", "-m", "add root config"], cwd=repo_path, env=env)
 
-        result = run_workmux_command(
-            env, workmux_exe_path, repo_path, "add test-branch"
+        result = run_workrex_command(
+            env, workrex_exe_path, repo_path, "add test-branch"
         )
         assert result.exit_code == 0
 
@@ -406,14 +397,14 @@ class TestBackwardsCompatibility:
 
     def test_no_config_uses_defaults(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path: Path,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
         repo_path: Path,
     ):
         """No config file uses default behavior."""
         env = mux_server
 
-        result = run_workmux_command(
-            env, workmux_exe_path, repo_path, "add test-branch"
+        result = run_workrex_command(
+            env, workrex_exe_path, repo_path, "add test-branch"
         )
         assert result.exit_code == 0

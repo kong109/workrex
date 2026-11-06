@@ -1,7 +1,7 @@
-//! Dashboard TUI for monitoring and managing workmux agents.
+//! Dashboard TUI for monitoring and managing workrex agents.
 //!
 //! This module provides an interactive terminal UI that displays:
-//! - All running agent panes across tmux sessions
+//! - All running agent panes across Rex sessions
 //! - Git status for each worktree
 //! - Agent status (working/waiting/done) with elapsed time
 //! - Live preview of selected agent's terminal output
@@ -14,8 +14,8 @@
 //! - `ansi`: ANSI escape sequence parsing and stripping
 //! - `diff`: Diff domain types and helper functions
 //! - `keymap`: Key-to-action mapping per context with help text
-//! - `settings`: Tmux-persisted dashboard settings
-//! - `sort`: Sort mode enum and tmux persistence
+//! - `settings`: File-persisted dashboard settings
+//! - `sort`: Sort mode enum and persistent settings
 //! - `spinner`: Spinner animation constants
 //! - `ui/`: TUI rendering modules
 //!   - `dashboard`: Table, preview, and footer
@@ -370,11 +370,11 @@ fn handle_terminal_event(
     }
 
     // Kill confirmation popup - y confirms, anything else cancels
-    if app.pending_kill_pane_id.is_some() {
+    if app.pending_kill_target.is_some() {
         if key.code == crossterm::event::KeyCode::Char('y') {
             app.confirm_kill();
         } else {
-            app.pending_kill_pane_id = None;
+            app.pending_kill_target = None;
         }
         return;
     }

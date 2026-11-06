@@ -89,8 +89,6 @@ fn run_specified(
 
     let mut local_names = Vec::new();
     let mut remote_failures = 0;
-    let mux = create_backend(detect_backend());
-    let current_window = mux.current_window_name()?;
     let mut removed = Vec::new();
     // Reaching a node can finish other pending cleanups. Resolve all targets
     // first so those records are not subsequently mistaken for local worktrees.
@@ -139,18 +137,8 @@ fn run_specified(
             Ok(())
         }
     });
-    // Closing the invoking window can terminate this process. Finish every
-    // target and report failures before closing it, after all other windows.
-    if removed
-        .iter()
-        .any(|record| current_window.as_deref() == Some(&record.window_name))
-        && let Err(err) = &result
-    {
-        eprintln!("✗ {err:#}");
-    }
-    removed.sort_by_key(|record| current_window.as_deref() == Some(&record.window_name));
     for record in removed {
-        crate::remote::lifecycle::close_relay(mux.as_ref(), &record);
+        crate::remote::lifecycle::forget_agent_state(&record);
     }
     result
 }
@@ -270,7 +258,7 @@ fn remove_local(
         for (_, branch, base) in &unmerged {
             println!("  - {} (base: {})", branch, base);
         }
-        println!("\nThis will delete the worktree, tmux window, and local branch.");
+        println!("\nThis will delete the worktree, Rex window, and local branch.");
         print!("Are you sure you want to continue? [y/N] ");
         io::stdout().flush().context("Failed to flush stdout")?;
 

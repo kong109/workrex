@@ -2,12 +2,11 @@
 //! logs. Every file lives under `secrets/` (0700) and is 0600:
 //!
 //! ```text
-//! secrets/node.json      node-wide values `workmux remote login` manages
+//! secrets/node.json      node-wide values `workrex remote login` manages
 //! secrets/<ws-id>.json   a workspace's environment, read on the laptop when
 //!                        the workspace was created
 //! secrets/<name>.env     named pipe docker reads a container's env from,
 //!                        removed once read
-//! secrets/<name>.tmux    tmux commands, removed once sourced
 //! ```
 
 use std::fs;
@@ -46,7 +45,7 @@ impl NodeRoot {
     }
 }
 
-/// Whether docker's `--env-file` and tmux can carry `value` unchanged.
+/// Whether a private environment file can carry `value` unchanged.
 pub fn representable(value: &str) -> bool {
     !value.contains(['\n', '\r', '\0'])
 }
@@ -136,6 +135,28 @@ pub fn export_file(root: &NodeRoot, name: &str, vars: &Secrets) -> Result<TempPa
     read_once(root, name, contents)
 }
 
+/// Wait until a block has opened and consumed its private environment pipe.
+/// A control request acknowledgement alone does not mean the block process started.
+pub fn wait_consumed(path: &Path) -> Result<()> {
+    wait_consumed_within(path, std::time::Duration::from_secs(5))
+}
+
+fn wait_consumed_within(path: &Path, timeout: std::time::Duration) -> Result<()> {
+    let start = std::time::Instant::now();
+    loop {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("Failed to inspect {}", path.display()));
+            }
+            Ok(_) if start.elapsed() >= timeout => {
+                bail!("Rex did not consume its block environment before the startup deadline")
+            }
+            Ok(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+        }
+    }
+}
+
 fn read_once(root: &NodeRoot, name: &str, contents: String) -> Result<TempPath> {
     let path = root.private_secrets_dir()?.join(format!("{name}.env"));
     let _ = fs::remove_file(&path);
@@ -149,40 +170,6 @@ fn read_once(root: &NodeRoot, name: &str, contents: String) -> Result<TempPath> 
         let _ = fs::remove_file(&pipe);
     });
     Ok(TempPath::try_from_path(path)?)
-}
-
-/// Write tmux commands that set `secrets` in `session`'s environment; the
-/// file is removed when dropped.
-pub fn tmux_file(root: &NodeRoot, session: &str, secrets: &Secrets) -> Result<TempPath> {
-    let contents: String = checked(secrets)?
-        .map(|(name, value)| {
-            format!(
-                "set-environment -t {} {name} \"{}\"\n",
-                tmux_quote(&format!("={session}")),
-                tmux_escape(value)
-            )
-        })
-        .collect();
-    let path = root.private_secrets_dir()?.join(format!("{session}.tmux"));
-    crate::util::write_atomic(&path, contents.as_bytes())?;
-    Ok(TempPath::try_from_path(path)?)
-}
-
-/// `value` as a tmux double-quoted string body: `\`, `"`, `$` and `~` are
-/// the characters tmux would interpret there.
-fn tmux_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for c in value.chars() {
-        if matches!(c, '\\' | '"' | '$' | '~') {
-            escaped.push('\\');
-        }
-        escaped.push(c);
-    }
-    escaped
-}
-
-fn tmux_quote(value: &str) -> String {
-    format!("\"{}\"", tmux_escape(value))
 }
 
 #[cfg(test)]
@@ -207,6 +194,31 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_delayed_block_reads_its_environment_before_the_guard_drops() {
+        let (_dir, root) = root();
+        let file = export_file(&root, "delayed", &secrets(&[("READY_VALUE", "loaded")])).unwrap();
+        let path = file.to_path_buf();
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            fs::read_to_string(path)
+        });
+        wait_consumed(&file).unwrap();
+        drop(file);
+        assert_eq!(
+            reader.join().unwrap().unwrap(),
+            "export READY_VALUE=loaded\n"
+        );
+    }
+
+    #[test]
+    fn an_environment_pipe_without_a_reader_times_out() {
+        let (_dir, root) = root();
+        let file = export_file(&root, "unread", &Secrets::default()).unwrap();
+        let error = wait_consumed_within(&file, std::time::Duration::from_millis(5)).unwrap_err();
+        assert!(error.to_string().contains("startup deadline"));
     }
 
     #[test]
@@ -275,64 +287,5 @@ mod tests {
 
         assert!(env_file(&root, "c2", &secrets(&[("A", "x\nB=y")])).is_err());
         assert!(env_file(&root, "c3", &secrets(&[("A B", "x")])).is_err());
-    }
-
-    #[test]
-    fn tmux_file_sets_values_tmux_reads_back_unchanged() {
-        if which::which("tmux").is_err() {
-            return;
-        }
-        let (dir, root) = root();
-        let socket = dir.path().join("s");
-        let tmux = |args: &[&str]| {
-            std::process::Command::new("tmux")
-                .arg("-S")
-                .arg(&socket)
-                .args(["-f", "/dev/null"])
-                .args(args)
-                .env_remove("TMUX")
-                .output()
-                .unwrap()
-        };
-        assert!(tmux(&["new-session", "-d", "-s", "x-0"]).status.success());
-        let values = [
-            ("TOKEN", r#"~a"b\c$HOME ${X} 'q' #{pane_id} ;"#),
-            ("EMPTY", ""),
-            ("DOLLARS", r"$ $_NAME $1 $$ ${HOME} \$HOME \\$HOME $"),
-            ("QUOTES", r#"'"''"\ \n\t\001\u0041\"#),
-            (
-                "SYNTAX",
-                "  \t~ #comment ; } %if #{HOME} #(id) `id` $(id)  ",
-            ),
-            ("UNICODE", "päivä 🔑"),
-        ];
-        let file = tmux_file(&root, "x-0", &secrets(&values)).unwrap();
-        assert_eq!(mode(&file), 0o600);
-        let sourced = tmux(&["source-file", &file.to_string_lossy()]);
-
-        // Read inherited bytes, not show-environment's display-escaped output.
-        // A pane signals completion after writing, so no polling is needed.
-        let output = dir.path().join("environment");
-        let variables = values
-            .iter()
-            .map(|(name, _)| format!("\"${name}\""))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let command = format!(
-            "umask 077; printf '%s\\0' {variables} > {}; tmux -S {} wait-for -S read-env",
-            crate::shell::shell_quote(&output.to_string_lossy()),
-            crate::shell::shell_quote(&socket.to_string_lossy())
-        );
-        let read = tmux(&["new-window", "-d", "-t", "=x-0", "/bin/sh", "-c", &command]);
-        let completed = tmux(&["wait-for", "read-env"]);
-        tmux(&["kill-server"]);
-        assert!(sourced.status.success(), "{sourced:?}");
-        assert!(read.status.success(), "{read:?}");
-        assert!(completed.status.success(), "{completed:?}");
-        let expected: Vec<u8> = values
-            .iter()
-            .flat_map(|(_, value)| value.bytes().chain(std::iter::once(0)))
-            .collect();
-        assert_eq!(fs::read(output).unwrap(), expected);
     }
 }

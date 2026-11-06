@@ -13,6 +13,7 @@ use super::RemoteSpec;
 use super::install::{self, NodeStatus, Pin};
 use super::protocol::{self, ErrorEnvelope, NodeError, first_line};
 use super::transport::{Input, Output, Transport};
+#[cfg(test)]
 use crate::config::RemoteTerminal;
 use crate::shell::shell_quote;
 
@@ -23,7 +24,7 @@ const QUICK_VERB_TIMEOUT: Duration = Duration::from_secs(120);
 const MISSING_STATUS: i32 = 100;
 
 /// Host name in the push URL; the git-ssh helper ignores it.
-const PUSH_HOST: &str = "workmux-node";
+const PUSH_HOST: &str = "workrex-node";
 
 /// A connected node running the pinned binary.
 pub struct Node {
@@ -110,7 +111,7 @@ impl Node {
         )
     }
 
-    /// Script that runs `workmux node <verb> --json` with the pinned binary.
+    /// Script that runs `workrex node <verb> --json` with the pinned binary.
     pub fn verb_script(&self, verb: &str) -> String {
         let missing = MISSING_STATUS.to_string();
         self.spec.script(
@@ -121,13 +122,13 @@ impl Node {
             ],
             "bin=\"$root/bin/$pin\"\n\
              [ -x \"$bin\" ] || exit \"$missing\"\n\
-             WORKMUX_NODE_ROOT=$root XDG_STATE_HOME=$root/state\n\
-             export WORKMUX_NODE_ROOT XDG_STATE_HOME\n\
+             WORKREX_NODE_ROOT=$root XDG_STATE_HOME=$root/state\n\
+             export WORKREX_NODE_ROOT XDG_STATE_HOME\n\
              exec \"$bin\" node \"$verb\" --json\n",
         )
     }
 
-    /// Run `workmux node <verb> --json` with `request` on stdin. With
+    /// Run `workrex node <verb> --json` with `request` on stdin. With
     /// `streaming`, the verb's stderr (hook output) is shown as it arrives
     /// and there is no time limit.
     pub fn call<Req: Serialize, Resp: DeserializeOwned>(
@@ -234,7 +235,7 @@ impl Node {
     }
 
     /// Fetch the commits `export` stored for `ws_id` into the local
-    /// repository as `refs/workmux/remote/<ws_id>/{index,worktree}`, and
+    /// repository as `refs/workrex/remote/<ws_id>/{index,worktree}`, and
     /// check they hold `snapshot`.
     pub fn fetch_export(
         &self,
@@ -243,7 +244,7 @@ impl Node {
         ws_id: &str,
         snapshot: &super::git::Snapshot,
     ) -> Result<()> {
-        let local = |part: &str| format!("refs/workmux/remote/{ws_id}/{part}");
+        let local = |part: &str| format!("refs/workrex/remote/{ws_id}/{part}");
         let refspecs = ["index", "worktree"].map(|part| {
             format!(
                 "+{}:{}",
@@ -292,7 +293,7 @@ impl Node {
 
     /// Hardened git in `project_root` whose ssh is the git-ssh helper.
     fn git_over_ssh(&self, project_root: &Path) -> Result<std::process::Command> {
-        let exe = std::env::current_exe().context("Failed to locate the workmux binary")?;
+        let exe = std::env::current_exe().context("Failed to locate the workrex binary")?;
         let ssh_command = format!(
             "{} remote git-ssh {}",
             shell_quote(&exe.to_string_lossy()),
@@ -305,18 +306,6 @@ impl Node {
         Ok(command)
     }
 
-    /// Command that attaches the calling terminal to session `slot` (a pane
-    /// index or a shell) of execution `ex_id`; exits with the `node attach`
-    /// status.
-    pub fn attach_command(&self, ex_id: &str, slot: &str) -> std::process::Command {
-        let script = self.spec.script(
-            &[("pin", &self.pin.name), ("ex", ex_id), ("slot", slot)],
-            "WORKMUX_NODE_ROOT=$root\nexport WORKMUX_NODE_ROOT\n\
-             exec \"$root/bin/$pin\" node attach \"$ex\" \"$slot\"\n",
-        );
-        self.transport.terminal_command(&script, &[])
-    }
-
     /// Command that runs `node login <args>` on the calling terminal,
     /// forwarding `ports` for the login's browser callbacks.
     pub fn login_command(&self, args: &[String], ports: &[u16]) -> std::process::Command {
@@ -324,8 +313,8 @@ impl Node {
         let script = self.spec.script(
             &[("pin", &self.pin.name)],
             &format!(
-                "WORKMUX_NODE_ROOT=$root XDG_STATE_HOME=$root/state\n\
-                 export WORKMUX_NODE_ROOT XDG_STATE_HOME\n\
+                "WORKREX_NODE_ROOT=$root XDG_STATE_HOME=$root/state\n\
+                 export WORKREX_NODE_ROOT XDG_STATE_HOME\n\
                  exec \"$root/bin/$pin\" node login {}\n",
                 args.join(" ")
             ),
@@ -375,9 +364,9 @@ root=${root%/}
 rest=${path#\"$root/projects/\"}
 id=${rest%/repo}
 if [ \"$rest\" = \"$path\" ] || [ \"$id/repo\" != \"$rest\" ]; then
-\techo \"workmux: refusing to serve $path\" >&2; exit 1
+\techo \"workrex: refusing to serve $path\" >&2; exit 1
 fi
-case $id in \"\"|*/*|.*) echo \"workmux: refusing to serve $path\" >&2; exit 1 ;; esac
+case $id in \"\"|*/*|.*) echo \"workrex: refusing to serve $path\" >&2; exit 1 ;; esac
 case $service in
 receive-pack) exec git-receive-pack \"$path\" ;;
 upload-pack) exec git -c core.fsmonitor=false -c core.hooksPath=/dev/null upload-pack \"$path\" ;;
@@ -385,7 +374,7 @@ esac
 exit 1
 ";
 
-/// `workmux remote git-ssh <name> <host> <command>`: the `GIT_SSH_COMMAND`
+/// `workrex remote git-ssh <name> <host> <command>`: the `GIT_SSH_COMMAND`
 /// of [`Node::push_ref`] and [`Node::fetch_export`]. Serves only
 /// `git-receive-pack` and `git-upload-pack` for a project repository under
 /// the node root.
@@ -417,15 +406,15 @@ fn served_command(command: &str) -> Result<(&'static str, String)> {
 }
 
 /// What a node serving `capabilities` lacks to run `spec`'s agents.
-fn missing_capabilities(spec: &RemoteSpec, capabilities: &[String]) -> Vec<&'static str> {
-    let rex = spec.terminal == RemoteTerminal::Rex;
+fn missing_capabilities(_spec: &RemoteSpec, capabilities: &[String]) -> Vec<&'static str> {
     [
         protocol::PROVISION_WORKSPACE,
         protocol::START_EXECUTION,
         protocol::REMOVE_WORKSPACE,
+        protocol::TERMINAL_REX,
+        protocol::SHELL_REX,
     ]
     .into_iter()
-    .chain(rex.then_some(protocol::TERMINAL_REX))
     .filter(|verb| !capabilities.iter().any(|c| c == verb))
     .collect()
 }
@@ -461,17 +450,25 @@ mod tests {
         };
         assert_eq!(
             missing_capabilities(&spec(RemoteTerminal::Rex), &verbs),
-            [protocol::TERMINAL_REX]
+            [protocol::TERMINAL_REX, protocol::SHELL_REX]
         );
-        assert!(missing_capabilities(&spec(RemoteTerminal::Tmux), &verbs).is_empty());
-        let with_rex = [&verbs[..], &[protocol::TERMINAL_REX.to_string()]].concat();
+        let with_rex = [
+            &verbs[..],
+            &[
+                protocol::TERMINAL_REX.to_string(),
+                protocol::SHELL_REX.to_string(),
+            ],
+        ]
+        .concat();
         assert!(missing_capabilities(&spec(RemoteTerminal::Rex), &with_rex).is_empty());
         assert_eq!(
-            missing_capabilities(&spec(RemoteTerminal::Tmux), &[]),
+            missing_capabilities(&spec(RemoteTerminal::Rex), &[]),
             [
                 protocol::PROVISION_WORKSPACE,
                 protocol::START_EXECUTION,
-                protocol::REMOVE_WORKSPACE
+                protocol::REMOVE_WORKSPACE,
+                protocol::TERMINAL_REX,
+                protocol::SHELL_REX
             ]
         );
     }

@@ -264,7 +264,7 @@ mod tests {
     fn agent_at(path: &Path, pane_id: &str) -> AgentPane {
         serde_json::from_value(serde_json::json!({
             "session": "test",
-            "window_name": "wm-feature",
+            "window_name": "wr-feature",
             "pane_id": pane_id,
             "path": path,
         }))

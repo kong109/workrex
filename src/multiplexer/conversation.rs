@@ -288,14 +288,14 @@ const CODEX_INTERACTIVE_SOURCES: &[&str] = &["cli", "vscode"];
 /// Codex conversation forker.
 ///
 /// Codex forks natively via `codex fork <session-id>` and keeps rollouts in its
-/// own store, so workmux only resolves which session to fork.
+/// own store, so workrex only resolves which session to fork.
 pub struct CodexForker {
     codex_home: PathBuf,
     /// Session the current process was launched from, if any.
     thread_id: Option<String>,
 }
 
-/// Fields workmux reads from the `session_meta` line of a Codex rollout.
+/// Fields workrex reads from the `session_meta` line of a Codex rollout.
 struct CodexSessionMeta {
     id: String,
     cwd: Option<PathBuf>,
@@ -914,7 +914,7 @@ mod tests {
         let session = codex_forker(&codex_home, Some("dddddddd-dddd-dddd-dddd-dddddddddddd"))
             .find_latest_conversation(&worktree)
             .unwrap()
-            .expect("expected the session workmux was launched from");
+            .expect("expected the session workrex was launched from");
         assert_eq!(session.id, "dddddddd-dddd-dddd-dddd-dddddddddddd");
     }
 

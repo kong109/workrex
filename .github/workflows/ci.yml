@@ -51,11 +51,12 @@ jobs:
       - uses: hustcer/setup-nu@v3
         with:
           version: '0.114.1'
-      - name: Install shells, tmux, just, and Python dependencies
+      - name: Install shells, Rex, just, and Python dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes fish tmux zsh
+          sudo apt-get install --yes fish zsh
           zsh -f -c 'autoload -Uz compaudit; compaudit' | xargs -r sudo chmod go-w
+          curl -fsSL https://pkgs.superlogical.com/rex/install.sh | sudo sh -s -- --tarball
           cargo install just --locked
           python -m venv tests/venv
           tests/venv/bin/pip install -r tests/requirements.txt

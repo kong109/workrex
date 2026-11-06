@@ -6,7 +6,9 @@ use anyhow::{Context, Result, anyhow};
 
 pub fn run(name: Option<&str>) -> Result<()> {
     if crate::remote::node::operation::in_session() {
-        anyhow::bail!("the window is on the local machine: run `{BIN} close <handle>` there");
+        anyhow::bail!(
+            "Rex has no session detach operation; select another session to leave this agent running, or run `{BIN} remove <handle>` on the local machine to end it"
+        );
     }
     if crate::sandbox::guest::is_sandbox_guest() {
         let name_to_close = super::resolve_name(name)?;
@@ -53,7 +55,7 @@ pub fn run(name: Option<&str>) -> Result<()> {
 
     if !git::get_worktree_attachment(&resolved_handle).manages_mux() {
         return Err(anyhow!(
-            "Worktree '{}' has no workmux-managed multiplexer target",
+            "Worktree '{}' has no workrex-managed multiplexer target",
             resolved_handle
         ));
     }
@@ -73,7 +75,7 @@ pub fn run(name: Option<&str>) -> Result<()> {
     };
 
     // When no name is provided, prefer the current window/session name
-    // This handles duplicate windows/sessions (e.g., wm:feature-2) correctly
+    // This handles duplicate windows/sessions (e.g., wr-feature-2) correctly
     let (mut full_target_name, mut is_current_target) = match name {
         Some(_) => {
             // Explicit name provided - worktree already validated above
@@ -91,15 +93,15 @@ pub fn run(name: Option<&str>) -> Result<()> {
             (full, is_current)
         }
         None => {
-            // No name provided - check if we're in a workmux window/session
+            // No name provided - check if we're in a workrex window/session
             let target = MuxHandle::new(mux.as_ref(), mode, prefix, &target_name);
             let current_name = target.current_name()?;
             if let Some(current) = current_name {
                 if current.starts_with(prefix) {
-                    // We're in a workmux target, use it directly
+                    // We're in a workrex target, use it directly
                     (current.clone(), true)
                 } else {
-                    // Not in a workmux target, fall back to resolved handle
+                    // Not in a workrex target, fall back to resolved handle
                     (target.full_name(), false)
                 }
             } else {
@@ -257,10 +259,8 @@ fn run_via_rpc_impl(name: &str, client: &mut crate::sandbox::rpc::RpcClient) -> 
     }
 }
 
-/// The remote workspace whose window the command runs in. Its panes run
-/// in the laptop's checkout, so the directory does not name it, and a
-/// local worktree of another project can have the same window name. Each
-/// relay pane is registered with the workspace it relays.
+/// Resolve recorded remote metadata for the caller's block, independently
+/// of similarly named local worktrees or Rex session labels.
 fn current_remote_window() -> Option<crate::remote::cache::WorkspaceRecord> {
     let records = crate::remote::cache::all();
     if records.is_empty() {

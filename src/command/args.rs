@@ -20,7 +20,7 @@ pub struct PromptArgs {
     pub prompt_editor: bool,
 
     /// Write the prompt file without injecting it into agent commands.
-    /// The prompt is written to .workmux/PROMPT-<branch>.md in the worktree,
+    /// The prompt is written to .workrex/PROMPT-<branch>.md in the worktree,
     /// but no agent pane is required. Useful when your editor has an embedded
     /// agent that reads the prompt file directly.
     #[arg(long)]
@@ -47,11 +47,11 @@ pub struct SetupFlags {
     #[arg(short = 'C', long)]
     pub no_pane_cmds: bool,
 
-    /// Create tmux window in the background (do not switch to it)
+    /// Create Rex window in the background (do not switch to it)
     #[arg(short = 'b', long = "background")]
     pub background: bool,
 
-    /// Open existing worktree if it exists instead of failing (like tmux new -A)
+    /// Open existing worktree if it exists instead of failing (reuse its existing Rex target)
     #[arg(short = 'o', long, conflicts_with = "with_changes")]
     pub open_if_exists: bool,
 

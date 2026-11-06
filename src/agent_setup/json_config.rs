@@ -95,7 +95,7 @@ fn write_pretty(path: &Path, config: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Remove workmux hooks from a JSON config file.
+/// Remove workrex hooks from a JSON config file.
 pub fn json_hook_uninstall(path: &Path, spec: &JsonHookUninstallSpec<'_>) -> Result<String> {
     if !path.exists() {
         return Ok(spec.messages.file_missing.to_string());
@@ -138,9 +138,9 @@ fn finalize_uninstall(
     settings: &mut Value,
     spec: &JsonHookUninstallSpec<'_>,
 ) -> Result<String> {
-    let removed = hooks::remove_workmux_hooks(settings);
+    let removed = hooks::remove_workrex_hooks(settings);
     let plugins_removed = if spec.remove_plugins {
-        hooks::remove_workmux_plugins(settings)
+        hooks::remove_workrex_plugins(settings)
     } else {
         false
     };

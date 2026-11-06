@@ -1,4 +1,4 @@
-//! ANSI and tmux escape sequence handling utilities.
+//! ANSI and styled-icon escape sequence handling utilities.
 
 use ansi_to_tui::IntoText;
 use ratatui::text::Line;
@@ -40,4 +40,4 @@ pub fn parse_ansi_to_lines(content: &str) -> Vec<Line<'static>> {
 }
 
 // Re-export from shared module for convenience within the dashboard.
-pub use crate::tmux_style::parse_tmux_styles;
+pub use crate::terminal_style::parse_terminal_styles;

@@ -1,13 +1,18 @@
 {
-  "name": "workmux-status",
-  "description": "Display Claude agent status in tmux window names via workmux",
+  "name": "workrex-status",
+  "description": "Display Claude agent status in Rex session status via workrex",
   "version": "1.1.0",
   "author": {
-    "name": "raine"
+    "name": "Workrex contributors"
   },
-  "repository": "https://github.com/raine/workmux",
+  "repository": "https://github.com/kong109/workrex",
   "license": "MIT",
-  "keywords": ["tmux", "workmux", "status", "agent"],
+  "keywords": [
+    "rex",
+    "workrex",
+    "status",
+    "agent"
+  ],
   "hooks": {
     "SessionStart": [
       {
@@ -15,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux register-agent"
+            "command": "workrex register-agent"
           }
         ]
       }
@@ -25,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux set-window-status working"
+            "command": "workrex set-window-status working"
           }
         ]
       }
@@ -36,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux set-window-status waiting"
+            "command": "workrex set-window-status waiting"
           }
         ]
       }
@@ -46,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux set-window-status working"
+            "command": "workrex set-window-status working"
           }
         ]
       }
@@ -56,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux set-window-status done"
+            "command": "workrex set-window-status done"
           }
         ]
       }

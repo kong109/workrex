@@ -2,7 +2,7 @@
 //!
 //! Detects which agent CLIs the user has, checks if status tracking
 //! hooks are installed, and offers to install them. Used by both the
-//! `workmux setup` command and the first-run wizard.
+//! `workrex setup` command and the first-run wizard.
 
 pub mod antigravity;
 pub mod claude;
@@ -515,10 +515,10 @@ fn mark_skills_declined(agents: &[Agent]) -> Result<()> {
 
 // --- Shared prompt UI ---
 
-/// Print the status tracking description with a mock tmux status bar.
+/// Print the status tracking description with a Rex window list example.
 /// `prefix` is printed before each line (e.g. "│ " for the wizard, "" for the command).
 pub(crate) fn print_description(prefix: &str) {
-    println!("{prefix}  Status tracking shows agent activity in your tmux window list:");
+    println!("{prefix}  Status tracking shows agent activity in your Rex session list:");
     println!("{prefix}");
     println!(
         "{prefix}    {}  2:user-auth 🤖  3:refactor 💬  {}",
@@ -558,7 +558,7 @@ pub fn prompt_wizard() -> Result<()> {
         return Ok(());
     }
 
-    if std::env::var("CI").is_ok() || std::env::var("WORKMUX_TEST").is_ok() {
+    if std::env::var("CI").is_ok() || std::env::var("WORKREX_TEST").is_ok() {
         return Ok(());
     }
 
@@ -648,7 +648,7 @@ pub fn prompt_wizard() -> Result<()> {
                 .map(|s| s.name)
                 .collect();
             println!(
-                "{}  workmux includes skills: {}",
+                "{}  workrex includes skills: {}",
                 dim,
                 skill_names.join(", ")
             );
@@ -682,12 +682,12 @@ mod tests {
 
     #[test]
     fn test_shared_install_target_is_detected() {
-        let path = Path::new("/home/test/.pi/agent/extensions/workmux-status.ts");
+        let path = Path::new("/home/test/.pi/agent/extensions/workrex-status.ts");
         assert!(same_install_target(Some(path), Some(path)));
         assert!(!same_install_target(
             Some(path),
             Some(Path::new(
-                "/home/test/.omp/agent/extensions/workmux-status.ts",
+                "/home/test/.omp/agent/extensions/workrex-status.ts",
             )),
         ));
     }
@@ -704,8 +704,8 @@ mod tests {
         symlink(&extensions, &alias).unwrap();
 
         assert!(same_install_target(
-            Some(&extensions.join("workmux-status.ts")),
-            Some(&alias.join("workmux-status.ts")),
+            Some(&extensions.join("workrex-status.ts")),
+            Some(&alias.join("workrex-status.ts")),
         ));
     }
 

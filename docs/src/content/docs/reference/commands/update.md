@@ -49,7 +49,7 @@ Once every 24 hours at most, workrex checks for a new release in a background
 process. When one exists, it prints a notice to standard error:
 
 ```
-Update available: workrex v0.1.278-rex.1 -> v0.1.279 (run `workrex update`)
+Update available: workrex v0.1.278-rex.1 -> v0.1.278-rex.3 (run `workrex update`)
 ```
 
 workrex prints the notice only when standard output and standard error are
@@ -58,11 +58,10 @@ notice again.
 
 To turn the check off, do one of these:
 
-- Set `auto_update_check: false` in `~/.config/workmux/config.yaml`.
-- Set the environment variable `WORKMUX_NO_UPDATE_CHECK=1`.
+- Set `auto_update_check: false` in `~/.config/workrex/config.yaml`.
+- Set the environment variable `WORKREX_NO_UPDATE_CHECK=1`.
 
-The configuration path and the variable keep their workmux names, so existing
-workmux [configuration](/guide/configuration/) works with workrex.
+Both settings belong to Workrex. See [Configuration](/guide/configuration/).
 
 ## Requirements
 

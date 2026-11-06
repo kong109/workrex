@@ -1,25 +1,20 @@
 """Regression tests for command execution and identity in the test harness."""
 
-from pathlib import Path
 import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
-from .conftest import (
-    TmuxEnvironment,
-    WezTermEnvironment,
-    make_env_script,
-    poll_until,
-    run_workmux_command,
-)
+from .conftest import make_env_script, poll_until, run_workrex_command
+from .rex_env import RexEnvironment
 
 
 def test_env_script_runs_through_interpreter(tmp_path: Path):
     """Generated commands read scripts, without requiring shebang execution."""
-    env = TmuxEnvironment(tmp_path)
+    env = RexEnvironment(tmp_path)
     scripts = tmp_path / "scripts with 'quotes'"
     scripts.mkdir()
     env._scripts_dir = scripts
@@ -38,50 +33,8 @@ def test_env_script_runs_through_interpreter(tmp_path: Path):
     assert "HARNESS_VALUE" not in env.env
 
 
-@pytest.mark.tmux_only
-def test_window_identity_survives_automatic_rename(mux_server: TmuxEnvironment):
-    """A foreground process can change a name without replacing the window."""
-    env = mux_server
-    before = env.list_window_ids()
-    runner = before[0]
-    assert (
-        env.tmux(
-            ["show-options", "-Avw", "-t", runner, "automatic-rename"]
-        ).stdout.strip()
-        == "on"
-    )
-
-    env.send_keys(runner, "exec sleep 30")
-    assert poll_until(lambda: env.list_windows() == ["sleep"])
-    assert env.list_window_ids() == before
-
-    env.new_window("other")
-    assert env.list_window_ids() != before
-    env.select_window(runner)
-    assert env.tmux(["display-message", "-p", "#{window_id}"]).stdout.strip() == runner
-
-    env.kill_window(runner)
-    assert runner not in env.list_window_ids()
-
-
-def test_wezterm_window_ids_distinguish_tabs_not_titles(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    env = WezTermEnvironment(tmp_path)
-    monkeypatch.setattr(
-        env,
-        "_list_panes",
-        lambda: [
-            {"tab_id": 7, "tab_title": "sh"},
-            {"tab_id": 7, "tab_title": "sh"},
-            {"tab_id": 8, "tab_title": "sh"},
-        ],
-    )
-    assert env.list_window_ids() == ["7", "8"]
-
-
 @pytest.mark.parametrize("exit_code", [0, 17])
-def test_workmux_command_reads_script_through_interpreter(
+def test_workrex_command_reads_script_through_interpreter(
     mux_server, repo_path: Path, monkeypatch: pytest.MonkeyPatch, exit_code: int
 ):
     """The terminal runner reads its script and preserves command IO and status."""
@@ -92,11 +45,11 @@ def test_workmux_command_reads_script_through_interpreter(
     send_keys = env.send_keys
 
     def send_without_execute_permission(target, text, enter=True):
-        (scripts / "workmux_run.sh").chmod(0o644)
+        (scripts / "workrex_run.sh").chmod(0o644)
         send_keys(target, text, enter=enter)
 
     monkeypatch.setattr(env, "send_keys", send_without_execute_permission)
-    result = run_workmux_command(
+    result = run_workrex_command(
         env,
         Path("/bin/sh"),
         repo_path,
@@ -182,38 +135,37 @@ def test_shared_script_reinstallation_and_signals(tmp_path: Path, script_runner:
     from .support.executable import install_script
 
     command = install_script(tmp_path / "agent", "#!/bin/sh\nexit 17\n")
-    assert subprocess.run([str(command)]).returncode == 17
+    assert subprocess.run([str(command)], check=False).returncode == 17
     original_binary = script_runner.read_bytes()
     install_script(command, '#!/bin/sh\nkill -TERM "$$"\n')
-    assert subprocess.run([str(command)]).returncode == -signal.SIGTERM
+    assert subprocess.run([str(command)], check=False).returncode == -signal.SIGTERM
     assert script_runner.read_bytes() == original_binary
 
 
-def test_tmux_environment_does_not_inherit_host_identity(
+def test_rex_environment_does_not_inherit_host_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setenv("TMUX", "/host/socket,12345,9")
-    monkeypatch.setenv("TMUX_PANE", "%987654")
-    env = TmuxEnvironment(tmp_path)
-    assert "TMUX" not in env.env
-    assert "TMUX_PANE" not in env.env
+    monkeypatch.setenv("REX_SESSION", "/host/socket,12345,9")
+    monkeypatch.setenv("REX_BLOCK", "%987654")
+    env = RexEnvironment(tmp_path)
+    assert "REX_SESSION" not in env.env
+    assert "REX_BLOCK" not in env.env
 
 
-@pytest.mark.tmux_only
 def test_background_command_origin_does_not_follow_active_window(
-    mux_server: TmuxEnvironment, tmp_path: Path
+    mux_server: RexEnvironment, tmp_path: Path
 ):
     import shlex
 
     env = mux_server
-    runner = env.runner_pane_id
+    runner = env.runner_block_id
     env.new_window("active-worktree")
     env.select_window("active-worktree")
-    active = env.tmux(["display-message", "-p", "#{pane_id}"]).stdout.strip()
+    active = env.read_current("block_id").stdout.strip()
     assert active != runner
     output = tmp_path / "background-origin"
     env.run_shell_background(
-        f"printf '%s' \"${{TMUX_PANE-unset}}\" > {shlex.quote(str(output))}"
+        f"printf '%s' \"${{REX_BLOCK-unset}}\" > {shlex.quote(str(output))}"
     )
     assert poll_until(lambda: output.exists() and output.read_text() == runner)
-    assert env.tmux(["display-message", "-p", "#{pane_id}"]).stdout.strip() == active
+    assert env.read_current("block_id").stdout.strip() == active

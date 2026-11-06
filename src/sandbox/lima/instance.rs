@@ -110,7 +110,7 @@ impl LimaInstance {
 ///
 /// Checks the VM state and boots it if necessary, showing a spinner with
 /// streaming limactl output in the user's terminal. Should be called from
-/// the main process BEFORE creating tmux panes.
+/// the main process BEFORE creating Rex panes.
 ///
 /// Returns the VM name for use by `wrap_for_lima()`.
 fn acknowledge_reduced_git_isolation(config: &Config, vm_name: &str) -> Result<()> {
@@ -263,7 +263,7 @@ pub fn ensure_vm_running(config: &Config, worktree_path: &Path) -> Result<String
             let lima_config =
                 super::generate_lima_config(&vm_name, &mounts, &config.sandbox, agent, needs_nix)?;
 
-            let config_path = std::env::temp_dir().join(format!("workmux-lima-{}.yaml", vm_name));
+            let config_path = std::env::temp_dir().join(format!("workrex-lima-{}.yaml", vm_name));
             std::fs::write(&config_path, &lima_config).with_context(|| {
                 format!("Failed to write Lima config to {}", config_path.display())
             })?;

@@ -1,6 +1,6 @@
 //! `node shell`: open or close an interactive shell session of a workspace.
 //!
-//! A shell is a session `<ex-id>-shell<n>` of the node tmux server, beside
+//! A shell is a session `<ex-id>-shell<n>` of the node Rex server, beside
 //! the configured panes of the workspace's execution. It is not one of the
 //! execution's panes: the agent never depends on it, and it ends with the
 //! execution's sessions when the execution stops or is replaced. It runs where
@@ -12,10 +12,11 @@ use crate::bin_name::BIN;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::execution::{self, tmux, tmux_socket};
+use super::execution;
+use super::host::{NewSession, SessionHost};
 use super::{NodeRoot, refuse, secrets, validate_id};
 use crate::config::RemoteIsolation;
-use crate::multiplexer::{Multiplexer, tmux::TmuxBackend};
+use crate::config::RemoteTerminal;
 use crate::remote::protocol::code;
 use crate::shell::shell_quote;
 
@@ -52,12 +53,15 @@ pub enum ShellRequest {
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ShellResponse {
     Opened {
-        /// Attach with `node attach <ex_id> <slot>`.
+        /// Identity of the workspace execution.
         ex_id: String,
         slot: String,
         /// Whether the shell runs in a container.
         container: bool,
         working_dir: String,
+        /// Rex server and session selected by the local application.
+        server: String,
+        session_id: String,
     },
     Closed {
         /// The session was still running.
@@ -99,7 +103,7 @@ fn open(
 ) -> Result<ShellResponse> {
     validate_request(ws_id, ex_id, slot)?;
     let _lock = root.lock_workspace(ws_id)?;
-    let workspace = root.load(ws_id)?.ok_or_else(|| {
+    let mut workspace = root.load(ws_id)?.ok_or_else(|| {
         refuse(
             code::NOT_FOUND,
             format!("workspace {ws_id} does not exist on the node"),
@@ -124,8 +128,15 @@ fn open(
     if execution.closed_shells.contains(slot) {
         return Err(refuse(code::BAD_REQUEST, "this shell request was canceled"));
     }
-    let socket = tmux_socket(root)?;
-    let conf = execution::tmux_conf(root)?;
+    let terminal = SessionHost::open_for_start(root, RemoteTerminal::Rex)?;
+    let SessionHost::Rex(rex) = &terminal;
+    anyhow::ensure!(
+        execution
+            .rex
+            .as_ref()
+            .is_some_and(|placement| placement.instance_id == rex.instance_id),
+        "the execution server changed; run `{BIN} open {handle}` before opening a shell"
+    );
     let name = format!("{ex_id}-{slot}");
     let config_path = root.config_path(ws_id);
     let working_dir = workspace.working_dir().to_path_buf();
@@ -140,7 +151,7 @@ fn open(
     ));
 
     // Sessions get the environment configured panes get under the same
-    // isolation: without a container, the node's workmux, the workspace's
+    // isolation: without a container, the node's workrex, the workspace's
     // secrets and its spawn target.
     let host_env = workspace.isolation == RemoteIsolation::None;
     let spawn_env = host_env.then_some((root.path.as_path(), ws_id));
@@ -160,64 +171,79 @@ fn open(
     } else {
         None
     };
-    let pane_id = execution::new_session(
-        &socket,
-        &conf,
-        &name,
-        &working_dir,
-        &config_path,
-        spawn_env,
-        command.as_deref(),
-    )?;
-    let started = (|| -> Result<()> {
-        if host_env {
-            let config = crate::frozen_config::load(&config_path)?.0;
-            let agent_kind = workspace.agent_kind(&config);
-            let session_secrets = secrets::for_execution(root, ws_id, agent_kind)?;
-            if !session_secrets.0.is_empty() {
-                execution::set_session_env(root, &socket, &name, &session_secrets)?;
-                // tmux environment updates apply only to newly spawned processes.
-                let output = tmux(&socket)
-                    .args(["respawn-pane", "-k", "-t", &pane_id])
-                    .output()
-                    .context("Failed to restart the shell with its environment")?;
-                anyhow::ensure!(
-                    output.status.success(),
-                    "Failed to restart the shell: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-            }
+    let shell_path = if !container && host_env {
+        let pin = std::env::current_exe()?;
+        let dir = execution::write_status_wrapper(root, &pin)?;
+        format!(
+            "export PATH={}:\"$PATH\"; ",
+            shell_quote(&dir.to_string_lossy())
+        )
+    } else {
+        String::new()
+    };
+    let session_secrets = if host_env {
+        let config = crate::frozen_config::load(&config_path)?.0;
+        secrets::for_execution(root, ws_id, workspace.agent_kind(&config))?
+    } else {
+        Default::default()
+    };
+    let existing = workspace
+        .execution
+        .as_ref()
+        .and_then(|execution| execution.rex.as_ref())
+        .filter(|placement| placement.instance_id == rex.instance_id)
+        .and_then(|placement| placement.shells.get(slot))
+        .filter(|id| rex.mux.has_session(id).unwrap_or(false))
+        .cloned();
+    let session_id = if let Some(session) = existing {
+        session
+    } else {
+        let created = terminal.create(
+            root,
+            &NewSession {
+                name: &name,
+                window_label: &format!("{handle} shell"),
+                cwd: &working_dir,
+                config_path: &config_path,
+                spawn_env,
+                secrets: &session_secrets,
+            },
+        )?;
+        let session = created
+            .rex_session
+            .clone()
+            .expect("Rex creation returns a session");
+        let execution = workspace.execution.as_mut().expect("execution checked");
+        let placement = execution
+            .rex
+            .get_or_insert_with(|| terminal.placement().expect("Rex placement"));
+        placement.shells.insert(slot.to_string(), session.clone());
+        if let Err(error) = root.save(&workspace) {
+            let _ = rex.mux.destroy_hosted_session(&session);
+            return Err(error);
         }
-        if !container {
-            let path = if host_env {
-                let pin = std::env::current_exe()?;
-                let dir = execution::write_status_wrapper(root, &pin)?;
-                format!(
-                    "export PATH={}:\"$PATH\"; ",
-                    shell_quote(&dir.to_string_lossy())
-                )
-            } else {
-                String::new()
-            };
-            // The keys reach the shell once it starts reading input.
-            TmuxBackend::for_socket(&socket.to_string_lossy()).send_keys(
-                &pane_id,
-                &format!(" {path}printf '\\033[H\\033[2J\\033[3J'; printf '%s\\n' {banner}"),
-            )?;
+        if let Err(error) = created.wait_ready() {
+            let _ = rex.mux.destroy_hosted_session(&session);
+            return Err(error);
         }
-        Ok(())
-    })();
-    if let Err(err) = started {
-        let _ = tmux(&socket)
-            .args(["kill-session", "-t", &format!("={name}")])
-            .output();
-        return Err(err);
-    }
+        let start = if let Some(command) = command {
+            command
+        } else {
+            format!(" {shell_path}printf '\\033[H\\033[2J\\033[3J'; printf '%s\\n' {banner}")
+        };
+        if let Err(error) = terminal.mux().send_keys(&created.pane_id, &start) {
+            let _ = rex.mux.destroy_hosted_session(&session);
+            return Err(error);
+        }
+        session
+    };
     Ok(ShellResponse::Opened {
         ex_id: ex_id.to_string(),
         slot: slot.to_string(),
         container,
         working_dir: working_dir.to_string_lossy().into_owned(),
+        server: rex.host_label.clone(),
+        session_id,
     })
 }
 
@@ -246,11 +272,31 @@ fn close(root: &NodeRoot, ws_id: &str, ex_id: &str, slot: &str) -> Result<ShellR
     // Persist cancellation under the same lock before removing any session.
     execution.closed_shells.insert(slot.to_string());
     root.save(&workspace)?;
-    let socket = tmux_socket(root)?;
-    let closed = tmux(&socket)
-        .args(["kill-session", "-t", &format!("={ex_id}-{slot}")])
-        .output()
-        .is_ok_and(|output| output.status.success());
+    let session = workspace
+        .execution
+        .as_ref()
+        .and_then(|execution| execution.rex.as_ref())
+        .and_then(|placement| {
+            placement
+                .shells
+                .get(slot)
+                .map(|id| (placement.instance_id.clone(), id.clone()))
+        });
+    let closed = if let Some((instance, session)) = session {
+        let terminal = SessionHost::for_execution(
+            root,
+            workspace.execution.as_ref().expect("execution checked"),
+        )?;
+        let SessionHost::Rex(rex) = terminal;
+        if rex.instance_id == instance && rex.mux.has_session(&session)? {
+            rex.mux.destroy_hosted_session(&session)?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     Ok(ShellResponse::Closed { closed })
 }
 

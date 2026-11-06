@@ -27,7 +27,7 @@ use crate::remote::transfer;
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Branch the node repository's own (never used) checkout is on.
-const UNBORN_BRANCH: &str = "workmux-node-unborn";
+const UNBORN_BRANCH: &str = "workrex-node-unborn";
 
 pub fn provision(root: &NodeRoot, request: ProvisionRequest) -> Result<ProvisionResponse> {
     validate_identity(&request.identity)?;
@@ -309,7 +309,7 @@ fn refuse_symlinks(
     payload: &ProvisionPayload,
 ) -> Result<()> {
     let worktree = &workspace.worktree_path;
-    let prompt = Path::new(".workmux").join(crate::workflow::prompt_file_name(
+    let prompt = Path::new(".workrex").join(crate::workflow::prompt_file_name(
         &workspace.identity.branch,
     ));
     let mut paths = vec![rel_dir.to_path_buf(), prompt];
@@ -544,7 +544,7 @@ fn seed_entries(root: &Path, entries: &[FileEntry]) -> Result<()> {
         return Ok(());
     }
     let stage = tempfile::Builder::new()
-        .prefix(".workmux-seed-")
+        .prefix(".workrex-seed-")
         .tempdir_in(root)
         .context("Failed to create a staging directory")?;
     write_entries(stage.path(), missing.iter().copied())?;
@@ -638,7 +638,7 @@ fn run_hooks(root: &NodeRoot, workspace: &mut Workspace, config: &Config) -> Res
     for (index, command) in hooks.iter().enumerate().skip(workspace.progress.hooks_done) {
         if workspace.progress.hook_started == Some(index) {
             eprintln!(
-                "workmux: running post_create hook again, it did not finish last time: {command}"
+                "workrex: running post_create hook again, it did not finish last time: {command}"
             );
         }
         workspace.progress.hook_started = Some(index);
@@ -703,7 +703,7 @@ mod tests {
         let left: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with(".workmux-seed-"))
+            .filter(|name| name.starts_with(".workrex-seed-"))
             .collect();
         assert!(left.is_empty(), "{left:?}");
         assert_eq!(fs::read_to_string(dir.path().join(".env")).unwrap(), "A=1");

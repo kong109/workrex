@@ -1,7 +1,7 @@
 /// Return the pane to remember as the previous location after a successful switch.
 ///
 /// We track any distinct source pane, not just agent panes, so pane-level hotkeys
-/// can round-trip cleanly between ordinary tmux panes and agent panes.
+/// can round-trip cleanly between ordinary Rex panes and agent panes.
 pub fn pane_to_remember<'a>(
     current_pane: Option<&'a str>,
     target_pane_id: &str,

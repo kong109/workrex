@@ -3,21 +3,21 @@
 from pathlib import Path
 
 from .conftest import (
-    MuxEnvironment,
     get_window_name,
-    run_workmux_add,
+    run_workrex_add,
     wait_for_pane_output,
-    write_workmux_config,
+    write_workrex_config,
 )
+from .rex_env import RexEnvironment
 
 
 def test_terminal_echo_is_enabled_after_handshake(
-    mux_server: MuxEnvironment,
-    workmux_exe_path: Path,
+    mux_server: RexEnvironment,
+    workrex_exe_path: Path,
     repo_path: Path,
 ):
     """
-    Ensures that when workmux sets up a pane with a command (using the handshake),
+    Ensures that when workrex sets up a pane with a command (using the handshake),
     it restores terminal echo before exec-ing the shell.
 
     The bug: PaneHandshake runs `stty -echo` before signaling readiness, then
@@ -34,12 +34,12 @@ def test_terminal_echo_is_enabled_after_handshake(
     env.configure_default_shell("/bin/bash")
 
     # Pane with a command triggers PaneHandshake code path
-    write_workmux_config(
+    write_workrex_config(
         repo_path,
         panes=[{"command": "echo 'Ready'", "focus": True}],
     )
 
-    run_workmux_add(env, workmux_exe_path, repo_path, branch_name)
+    run_workrex_add(env, workrex_exe_path, repo_path, branch_name)
 
     # Wait for the command to complete - shell is now interactive
     wait_for_pane_output(env, window_name, "Ready")

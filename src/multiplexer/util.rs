@@ -1,9 +1,8 @@
-//! Backend-agnostic utility functions for multiplexer operations.
-//!
-//! These helpers are shared between tmux, WezTerm, and any future backends.
+//! Shared Rex terminal and agent launch helpers.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
@@ -13,6 +12,7 @@ use crate::config::Config;
 
 use super::PaneHandshake;
 use super::handshake::UnixPipeHandshake;
+#[cfg(test)]
 use super::types::LivePaneInfo;
 
 /// Helper function to add prefix to window name.
@@ -67,6 +67,7 @@ pub fn tail_lines(output: &str, lines: u16) -> String {
 }
 
 /// Build a `LivePaneInfo` from shared pane fields.
+#[cfg(test)]
 pub fn build_live_pane_info(
     pid: Option<u32>,
     current_command: Option<String>,
@@ -90,43 +91,6 @@ pub fn build_live_pane_info(
         window_id: None,
         window_index: None,
     }
-}
-
-/// Snapshot of live pane fields before conversion to `LivePaneInfo`.
-pub struct LivePaneSnapshot {
-    pub pane_id: String,
-    pub pid: Option<u32>,
-    pub current_command: Option<String>,
-    pub working_dir: PathBuf,
-    pub title: String,
-    pub session: String,
-    pub window: String,
-}
-
-impl LivePaneSnapshot {
-    pub fn into_pair(self) -> (String, LivePaneInfo) {
-        let pane_id = self.pane_id;
-        let info = build_live_pane_info(
-            self.pid,
-            self.current_command,
-            self.working_dir,
-            &self.title,
-            self.session,
-            self.window,
-        );
-        (pane_id, info)
-    }
-}
-
-/// Build a pane ID map from live pane snapshots.
-pub fn live_pane_map<I>(snapshots: I) -> HashMap<String, LivePaneInfo>
-where
-    I: IntoIterator<Item = LivePaneSnapshot>,
-{
-    snapshots
-        .into_iter()
-        .map(LivePaneSnapshot::into_pair)
-        .collect()
 }
 
 /// Resolve the default shell from `$SHELL`, falling back when unset.
@@ -407,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_prefixed() {
-        assert_eq!(prefixed("wm-", "feature"), "wm-feature");
+        assert_eq!(prefixed("wr-", "feature"), "wr-feature");
         assert_eq!(prefixed("", "feature"), "feature");
         assert_eq!(prefixed("prefix-", ""), "prefix-");
     }

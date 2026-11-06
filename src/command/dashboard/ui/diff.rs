@@ -13,7 +13,12 @@ use super::theme::ThemePalette;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Render the diff view (replaces the entire dashboard).
-pub fn render_diff_view(f: &mut Frame, diff: &mut DiffView, palette: &ThemePalette) {
+pub fn render_diff_view(
+    f: &mut Frame,
+    diff: &mut DiffView,
+    palette: &ThemePalette,
+    status: Option<&str>,
+) {
     let area = f.area();
 
     // Layout: content area + footer
@@ -59,6 +64,9 @@ pub fn render_diff_view(f: &mut Frame, diff: &mut DiffView, palette: &ThemePalet
         if let Some(file_area) = file_list_area {
             render_file_list(f, diff, file_area, palette);
         }
+    }
+    if let Some(message) = status {
+        super::dashboard::render_status(f, message, palette, chunks[1]);
     }
 }
 

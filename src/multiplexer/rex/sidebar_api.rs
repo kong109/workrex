@@ -9,6 +9,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::{BlockId, RexBackend, SessionId, WindowId, found, parallel_map, shell_block};
+use crate::config::SidebarPosition;
 use crate::multiplexer::LivePaneInfo;
 
 /// The label sidebar blocks carry, for people reading `rex` output. Labels
@@ -73,13 +74,23 @@ pub(crate) struct Split {
 }
 
 impl Node {
-    /// The first block in reading order and its rect width.
-    pub(crate) fn first_block(&self) -> Option<(&str, f64)> {
+    /// The first tiled block and its share of the requested terminal axis.
+    pub(crate) fn first_block_extent(&self, position: SidebarPosition) -> Option<(&str, f64)> {
         match (&self.block_id, &self.split) {
-            (Some(block), _) => Some((block, self.rect[2])),
-            (None, Some(split)) => split.before.first_block(),
+            (Some(block), _) => Some((
+                block,
+                self.rect[match position {
+                    SidebarPosition::Left => 2,
+                    SidebarPosition::Top => 3,
+                }],
+            )),
+            (None, Some(split)) => split.before.first_block_extent(position),
             (None, None) => None,
         }
+    }
+
+    pub(crate) fn first_block(&self) -> Option<(&str, f64)> {
+        self.first_block_extent(SidebarPosition::Left)
     }
 }
 
@@ -116,6 +127,8 @@ impl Window {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct BlockSize {
     pub columns: u32,
+    #[serde(default)]
+    pub rows: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,6 +214,7 @@ impl RexBackend {
         session_id: &str,
         anchor: &str,
         ratio: f64,
+        position: SidebarPosition,
         cwd: &Path,
         command: &[String],
     ) -> Result<CreatedSidebar> {
@@ -213,7 +227,7 @@ impl RexBackend {
                 json!({
                     "session_id": session_id,
                     "anchor_id": anchor,
-                    "direction": "horizontal",
+                    "direction": match position { SidebarPosition::Left => "horizontal", SidebarPosition::Top => "vertical" },
                     "side": "before",
                     "ratio": ratio,
                     "focus": false,
@@ -239,12 +253,13 @@ impl RexBackend {
         sidebar: &str,
         neighbor: &str,
         ratio: f64,
+        position: SidebarPosition,
     ) -> Result<()> {
         self.api::<Value>(
             "session.resize_pane",
             json!({
                 "session_id": session_id,
-                "direction": "horizontal",
+                "direction": match position { SidebarPosition::Left => "horizontal", SidebarPosition::Top => "vertical" },
                 "before_block_id": sidebar,
                 "after_block_id": neighbor,
                 "ratio": ratio,

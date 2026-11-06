@@ -18,6 +18,7 @@ pub enum ResurrectAction {
     Restore,
     SkipAlreadyOpen,
     SkipMain,
+    SkipUnavailable(String),
 }
 
 #[derive(Debug)]
@@ -29,7 +30,7 @@ pub struct ResurrectCandidate {
     pub agent: Option<String>,
 }
 
-/// A remote workspace whose local window the previous server had.
+/// A cached remote workspace whose native Rex target can be checked.
 #[derive(Debug)]
 pub struct RemoteResurrectCandidate {
     pub record: crate::remote::cache::WorkspaceRecord,
@@ -40,7 +41,7 @@ pub struct RemoteResurrectCandidate {
 pub struct ResurrectPlan {
     pub candidates: Vec<ResurrectCandidate>,
     pub remote: Vec<RemoteResurrectCandidate>,
-    /// Sources of panes that relayed remote workspaces which no longer
+    /// Stale local sources of remote workspaces which no longer
     /// exist; nothing restores them.
     pub forgotten_remote_sources: Vec<AgentStateSource>,
     pub unmatched_states: usize,
@@ -114,8 +115,7 @@ pub fn plan(store: &StateStore, mux: &dyn Multiplexer) -> Result<ResurrectPlan> 
             source,
             represented_count,
         } = stored;
-        // Panes relaying a remote workspace come back as attach windows, not
-        // through local worktrees.
+        // Remote state belongs to the cached native execution, not a local worktree.
         if let Some(at) = &agent.remote {
             by_workspace
                 .entry((at.remote.clone(), at.ws_id.clone()))
@@ -227,7 +227,7 @@ pub fn plan(store: &StateStore, mux: &dyn Multiplexer) -> Result<ResurrectPlan> 
     // Sort by handle for deterministic output
     candidates.sort_by(|a, b| a.handle.cmp(&b.handle));
 
-    let (remote, forgotten_remote_sources) = plan_remote(by_workspace, &canon_main, mux)?;
+    let (remote, forgotten_remote_sources) = plan_remote(by_workspace, &canon_main)?;
 
     Ok(ResurrectPlan {
         candidates,
@@ -237,45 +237,55 @@ pub fn plan(store: &StateStore, mux: &dyn Multiplexer) -> Result<ResurrectPlan> 
     })
 }
 
-/// Attach windows to recreate for this repository's remote workspaces,
-/// from the cache alone: the node is not asked, so nothing restarts.
+/// Native executions in this repository, joined to any stale local state.
+/// Native sessions need no local agent-state file to remain eligible.
 fn plan_remote(
-    by_workspace: HashMap<(String, String), Vec<AgentStateSource>>,
+    mut by_workspace: HashMap<(String, String), Vec<AgentStateSource>>,
     canon_main: &std::path::Path,
-    mux: &dyn Multiplexer,
 ) -> Result<(Vec<RemoteResurrectCandidate>, Vec<AgentStateSource>)> {
-    if by_workspace.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    let records = crate::remote::cache::all();
     let mut candidates = Vec::new();
     let mut forgotten = Vec::new();
-    for ((remote, ws_id), sources) in by_workspace {
-        let record = records
-            .iter()
-            .find(|record| record.remote == remote && record.ws_id == ws_id);
-        let Some(record) = record else {
-            forgotten.extend(sources);
-            continue;
-        };
+    let mut unavailable = HashMap::<(String, String), String>::new();
+    for record in crate::remote::cache::all() {
+        let key = (record.remote.clone(), record.ws_id.clone());
+        let sources = by_workspace.remove(&key).unwrap_or_default();
         if canon_or_self(&record.project_root) != canon_main {
             continue;
         }
-        if record.execution.is_none() {
+        if record.execution.is_none() || record.cleanup_pending() {
             forgotten.extend(sources);
             continue;
         }
-        let action = if crate::remote::lifecycle::window_target(mux, record)?.is_some() {
-            ResurrectAction::SkipAlreadyOpen
-        } else {
-            ResurrectAction::Restore
+        let server = record.execution.as_ref().and_then(|execution| {
+            execution
+                .rex
+                .as_ref()
+                .map(|placement| (placement.host_label.clone(), placement.instance_id.clone()))
+        });
+        let known_error = server.as_ref().and_then(|server| unavailable.get(server));
+        let action = match known_error {
+            Some(error) => ResurrectAction::SkipUnavailable(error.clone()),
+            None => match crate::remote::rex_jump::is_open(&record) {
+                Ok(true) => ResurrectAction::SkipAlreadyOpen,
+                Ok(false) => ResurrectAction::Restore,
+                Err(error) => {
+                    let server_unavailable =
+                        error.is::<crate::remote::rex_jump::ServerUnavailable>();
+                    let message = format!("{error:#}");
+                    if server_unavailable && let Some(server) = server {
+                        unavailable.insert(server, message.clone());
+                    }
+                    ResurrectAction::SkipUnavailable(message)
+                }
+            },
         };
         candidates.push(RemoteResurrectCandidate {
-            record: record.clone(),
+            record,
             action,
             stale_sources: sources,
         });
     }
+    forgotten.extend(by_workspace.into_values().flatten());
     candidates.sort_by(|a, b| a.record.handle.cmp(&b.record.handle));
     Ok((candidates, forgotten))
 }
@@ -283,11 +293,113 @@ fn plan_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    use crate::remote::cache::{ExecutionRecord, WorkspaceRecord};
+    use crate::remote::protocol::RexPlacement;
+    use crate::test_support::{ISOLATED_TEST_CANARY, is_isolated_child, run_isolated_test};
+
+    #[test]
+    fn native_remote_plan_needs_no_local_state_and_preserves_unavailable_targets() {
+        const NAME: &str = "workflow::resurrect::tests::native_remote_plan_needs_no_local_state_and_preserves_unavailable_targets";
+        if !is_isolated_child(NAME) {
+            let temp = tempfile::tempdir().unwrap();
+            let bin = temp.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            run_isolated_test(
+                NAME,
+                temp.path(),
+                &[("XDG_STATE_HOME", temp.path()), ("REX_BIN_DIR", &bin)],
+            );
+            return;
+        }
+        let root = std::env::current_dir().unwrap();
+        let program = PathBuf::from(std::env::var_os("REX_BIN_DIR").unwrap()).join("rex");
+        let mut record = WorkspaceRecord::new(
+            "w-native".into(),
+            "node",
+            "project".into(),
+            root.clone(),
+            "feat",
+            "feat",
+            "base".into(),
+            None,
+            "feat".into(),
+            root.join("feat"),
+        );
+        record.execution = Some(ExecutionRecord {
+            ex_id: "e-native".into(),
+            panes: vec![0],
+            node_bin: "node".into(),
+            rex: Some(RexPlacement {
+                host_label: "native-server".into(),
+                instance_id: "native-instance".into(),
+                sessions: [(0, "session:owned".into())].into(),
+                blocks: [(0, "block:owned".into())].into(),
+                shells: Default::default(),
+            }),
+        });
+        record.save().unwrap();
+        let version: serde_json::Value = serde_json::from_str(include_str!(
+            "../multiplexer/testdata/rex_server_version_mac.json"
+        ))
+        .unwrap();
+        let process: serde_json::Value =
+            serde_json::from_str(include_str!("../multiplexer/testdata/rex_process.json")).unwrap();
+        let mut answer = serde_json::json!({
+            "version": version,
+            "status": {"instance_id": "native-instance"},
+            "reads": {"session:owned": {
+                "session": {"session_id": "session:owned", "label": "renamed"},
+                "blocks": {"block:owned": {
+                    "window": {"window_id": "window:owned", "label": "renamed"},
+                    "process": process
+                }}
+            }}
+        });
+        let respond = |answer: &serde_json::Value| {
+            std::fs::write(
+                &program,
+                format!("#!/bin/sh\ncat <<'JSON'\n{answer}\nJSON\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        respond(&answer);
+        let (live, forgotten) = plan_remote(HashMap::new(), &root).unwrap();
+        assert!(forgotten.is_empty());
+        assert_eq!(live.len(), 1);
+        assert!(live[0].stale_sources.is_empty());
+        assert!(matches!(live[0].action, ResurrectAction::SkipAlreadyOpen));
+
+        answer["reads"]["session:owned"]["blocks"] = serde_json::json!({});
+        respond(&answer);
+        let (closed, _) = plan_remote(HashMap::new(), &root).unwrap();
+        assert!(matches!(closed[0].action, ResurrectAction::Restore));
+
+        std::fs::write(&program, "#!/bin/sh\necho offline >&2\nexit 1\n").unwrap();
+        let sources = HashMap::from([(
+            ("node".into(), "w-native".into()),
+            vec![AgentStateSource::Recovery {
+                backend: "rex".into(),
+                instance: "local".into(),
+                workdir: root.join("feat"),
+                revision: 1,
+            }],
+        )]);
+        let (unavailable, forgotten) = plan_remote(sources, &root).unwrap();
+        assert!(forgotten.is_empty());
+        assert_eq!(unavailable[0].stale_sources.len(), 1);
+        assert!(matches!(&unavailable[0].action,
+            ResurrectAction::SkipUnavailable(error) if error.contains("offline")));
+        assert!(crate::remote::cache::all()[0].execution.is_some());
+        println!("{ISOLATED_TEST_CANARY}");
+    }
 
     fn test_agent_state(command: &str, agent_kind: Option<&str>, updated_ts: u64) -> AgentState {
         AgentState {
             pane_key: PaneKey {
-                backend: "tmux".to_string(),
+                backend: "rex".to_string(),
                 instance: "default".to_string(),
                 pane_id: format!("%{updated_ts}"),
             },

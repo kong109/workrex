@@ -20,12 +20,12 @@ agent's context.
 To have an agent configure workrex for you, ask it to read the docs first:
 
 ```text
-> run `workrex docs` and write a .workmux.yaml with the agent in the left pane,
+> run `workrex docs` and write a .workrex.yaml with the agent in the left pane,
   and neovim above an empty shell on the right
 ```
 
 The agent reads the raw Markdown from the command's output and writes the
-project's `.workmux.yaml`.
+project's `.workrex.yaml`.
 
-The project file keeps its workmux name, so existing workmux configs work. See
+The project file keeps its workrex name, so existing workrex configs work. See
 [Configuration](/guide/configuration/).

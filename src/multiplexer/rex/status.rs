@@ -12,7 +12,7 @@ use super::events::Event;
 use super::{BlockId, ProcessEntry, ProcessReport, RexBackend, found};
 use crate::multiplexer::{AgentStatus, ReportedStatus};
 
-/// The one table from Rex program states to the status workmux shows (`None`
+/// The one table from Rex program states to the status workrex shows (`None`
 /// shows none), with each state's urgency when a block holds several records.
 /// Unknown states count as idle, as the `program_status` schema says.
 fn shown_status(state: &str) -> (Option<AgentStatus>, u8) {
@@ -137,7 +137,7 @@ fn unix_seconds(timestamp: &str) -> Option<u64> {
 /// ambiguous, because window prefixes like the nerdfont one end in a space.
 const ICON_SEPARATOR: char = '\u{2002}';
 
-/// A window label without the status icon workmux put in front of it.
+/// A window label without the status icon workrex put in front of it.
 pub(super) fn base_label(label: &str) -> &str {
     label
         .split_once(ICON_SEPARATOR)
@@ -338,6 +338,7 @@ impl RexBackend {
     /// Show `icon` in front of the label of the window holding `pane_id`, or
     /// no icon when `None`. A pane that no longer exists is left alone.
     pub(super) fn set_window_icon(&self, pane_id: &str, icon: Option<&str>) -> Result<()> {
+        let visible_icon = icon.map(crate::terminal_style::strip_terminal_styles);
         let block = BlockId::parse(pane_id)?;
         let Some(target) = self.resolve("block", block.as_str())? else {
             return Ok(());
@@ -356,7 +357,7 @@ impl RexBackend {
             json!({
                 "session_id": target.session_id.as_str(),
                 "window_id": window_id.as_str(),
-                "label": label_with_icon(&window.label, icon),
+                "label": label_with_icon(&window.label, visible_icon.as_deref()),
             }),
         )?;
         Ok(())
@@ -651,18 +652,18 @@ mod tests {
 
     #[test]
     fn window_labels_drop_the_status_icon() {
-        assert_eq!(base_label("💬\u{2002}wm-feat-a"), "wm-feat-a");
-        assert_eq!(base_label("wm-feat-a"), "wm-feat-a");
+        assert_eq!(base_label("💬\u{2002}wr-feat-a"), "wr-feat-a");
+        assert_eq!(base_label("wr-feat-a"), "wr-feat-a");
         assert_eq!(base_label("\u{f418} feat-a"), "\u{f418} feat-a");
         assert_eq!(
             base_label(&label_with_icon("\u{f418} feat-a", Some("✅"))),
             "\u{f418} feat-a"
         );
         assert_eq!(
-            label_with_icon("wm-feat-a", Some("💬")),
-            "💬\u{2002}wm-feat-a"
+            label_with_icon("wr-feat-a", Some("💬")),
+            "💬\u{2002}wr-feat-a"
         );
-        assert_eq!(label_with_icon("wm-feat-a", Some("")), "wm-feat-a");
-        assert_eq!(label_with_icon("wm-feat-a", None), "wm-feat-a");
+        assert_eq!(label_with_icon("wr-feat-a", Some("")), "wr-feat-a");
+        assert_eq!(label_with_icon("wr-feat-a", None), "wr-feat-a");
     }
 }

@@ -108,11 +108,11 @@ fn write_deferred_cleanup_record(
 
 fn determine_log_path() -> Result<PathBuf> {
     if let Ok(state_dir) = crate::xdg::state_dir() {
-        return Ok(state_dir.join("workmux.log"));
+        return Ok(state_dir.join("workrex.log"));
     }
 
     // Fallback to current directory if home cannot be determined
-    Ok(std::env::current_dir()?.join("workmux.log"))
+    Ok(std::env::current_dir()?.join("workrex.log"))
 }
 
 fn split_path(path: &Path) -> Result<(PathBuf, &str)> {

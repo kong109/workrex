@@ -58,11 +58,11 @@ install-release:
     #!/usr/bin/env bash
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
-    WORKMUX_INSTALL_DIR="$install_root/bin" bash scripts/install.sh
+    WORKREX_INSTALL_DIR="$install_root/bin" bash scripts/install.sh
 
 # Install debug binary globally via symlink
 install-dev:
-    cargo build && ln -sf $(pwd)/target/debug/workmux ~/.cargo/bin/workmux
+    cargo build && ln -sf $(pwd)/target/debug/workrex ~/.cargo/bin/workrex
 
 # Build this tree on a Linux remote for `remotes.<name>.binary` (HANDLE: ~/src/HANDLE)
 remote-dev-binary host handle="dev":
@@ -88,9 +88,9 @@ docs-check:
 run *ARGS:
     cargo run -- "$@"
 
-# Build and open the dashboard in a running CuaBot session
-cua-dashboard session:
-    scripts/cua-dashboard '{{session}}'
+# Build and open a disposable dashboard fixture in Rex
+rex-dashboard session="workrex-demo":
+    scripts/rex-dashboard '{{session}}'
 
 # Run integration tests in parallel
 itest *ARGS:
@@ -98,7 +98,7 @@ itest *ARGS:
     set -euo pipefail
     cargo build --all
     source tests/venv/bin/activate
-    export WORKMUX_TEST=1
+    export WORKREX_TEST=1
     quiet_flag=""
     [[ -n "${CLAUDECODE:-}" ]] && quiet_flag="-q"
     args=("$@")

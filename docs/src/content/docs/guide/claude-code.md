@@ -17,9 +17,9 @@ files:
     - .claude/settings.local.json
 ```
 
-workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
+Workrex uses `.workrex.yaml`, `~/.config/workrex/config.yaml`, and `WORKREX_*` environment variables. See [Configuration](/guide/configuration/).
 
-Add this to your global config (`~/.config/workmux/config.yaml`) or project's `.workmux.yaml`. Since this file contains user-specific permissions, also add it to `.gitignore`:
+Add this to your global config (`~/.config/workrex/config.yaml`) or project's `.workrex.yaml`. Since this file contains user-specific permissions, also add it to `.gitignore`:
 
 ```
 .claude/settings.local.json
@@ -30,7 +30,7 @@ Add this to your global config (`~/.config/workmux/config.yaml`) or project's `.
 To skip prompts entirely, define a named agent with the flag:
 
 ```yaml
-# ~/.config/workmux/config.yaml
+# ~/.config/workrex/config.yaml
 agents:
   claude: "claude --dangerously-skip-permissions"
 ```
@@ -40,11 +40,11 @@ This shadows the built-in `claude` name so all worktrees that workrex creates us
 You can also use a separate name and reference it per-project:
 
 ```yaml
-# ~/.config/workmux/config.yaml
+# ~/.config/workrex/config.yaml
 agents:
   cc-yolo: "claude --dangerously-skip-permissions"
 
-# .workmux.yaml (in projects that need it)
+# .workrex.yaml (in projects that need it)
 agent: cc-yolo
 ```
 
@@ -65,7 +65,7 @@ Select a conversation and press `Ctrl+F` to fork it. When the conversation belon
 If you use separate Claude configurations for work and personal projects, define [named agents](/guide/agents/#named-agents) in your global config:
 
 ```yaml
-# ~/.config/workmux/config.yaml
+# ~/.config/workrex/config.yaml
 agents:
   cc-work: "env CLAUDE_CONFIG_DIR=~/.claude-work claude"
   cc-personal: "env CLAUDE_CONFIG_DIR=~/.claude-personal claude"
@@ -74,7 +74,7 @@ agents:
 Then set the agent per project:
 
 ```yaml
-# work project .workmux.yaml
+# work project .workrex.yaml
 agent: cc-work
 ```
 

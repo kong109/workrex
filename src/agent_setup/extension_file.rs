@@ -49,10 +49,7 @@ pub(super) fn normalize_documentation_link(source: &str) -> String {
 const DOCS_URL: &str = "https://kong109.github.io/workrex/guide/status-tracking/";
 
 /// Guide links that earlier installs wrote into the same header.
-const LEGACY_DOCS_URLS: &[&str] = &[
-    "https://workmux.raine.dev/guide/status-tracking",
-    "https://workmux.dev/guide/status-tracking",
-];
+const LEGACY_DOCS_URLS: &[&str] = &["https://kong109.github.io/workrex/guide/status-tracking"];
 
 /// Create parent directories and write an extension source file.
 pub fn install_extension_file(
@@ -92,7 +89,7 @@ mod tests {
     #[test]
     fn check_installed_requires_bundled_source() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("workmux-status.ts");
+        let path = tmp.path().join("workrex-status.ts");
         fs::write(&path, "old extension").unwrap();
 
         assert!(matches!(
@@ -111,14 +108,14 @@ mod tests {
     #[test]
     fn documentation_domain_does_not_require_an_update() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("workmux-status.ts");
+        let path = tmp.path().join("workrex-status.ts");
         for source in [
-            include_str!("../../resources/pi/extensions/workmux-status.ts"),
-            include_str!("../../resources/omp/extensions/workmux-status.ts"),
+            include_str!("../../resources/pi/extensions/workrex-status.ts"),
+            include_str!("../../resources/omp/extensions/workrex-status.ts"),
         ] {
             for legacy in [
-                "https://workmux.raine.dev/guide/status-tracking",
-                "https://workmux.dev/guide/status-tracking",
+                "https://kong109.github.io/workrex/guide/status-tracking",
+                "https://kong109.github.io/workrex/guide/status-tracking",
             ] {
                 let installed = source.replace(DOCS_URL, legacy);
                 assert_ne!(installed, source);
@@ -147,14 +144,15 @@ mod tests {
 
     #[test]
     fn documentation_normalization_preserves_other_changes() {
-        let source = include_str!("../../resources/pi/extensions/workmux-status.ts");
+        let source = include_str!("../../resources/pi/extensions/workrex-status.ts");
         let other_page = source.replace("/guide/status-tracking", "/guide/skills");
         assert_eq!(normalize_documentation_link(&other_page), other_page);
 
-        let code =
-            format!("{source}\nconst url = \"https://workmux.raine.dev/guide/status-tracking\";\n");
+        let code = format!(
+            "{source}\nconst url = \"https://kong109.github.io/workrex/guide/status-tracking\";\n"
+        );
         assert_eq!(normalize_documentation_link(&code), code);
-        let comment = "// See: https://workmux.raine.dev/guide/status-tracking\n";
+        let comment = "// See: https://kong109.github.io/workrex/guide/status-tracking\n";
         assert_eq!(normalize_documentation_link(comment), comment);
     }
 

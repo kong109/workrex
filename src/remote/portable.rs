@@ -1,7 +1,7 @@
 //! The configuration a remote workspace runs with.
 //!
 //! The node never reads the remote user's config or the worktree's
-//! `.workmux.yaml`; it runs the laptop's effective config, rebuilt here from
+//! `.workrex.yaml`; it runs the laptop's effective config, rebuilt here from
 //! an allowlist. Fields that name laptop resources (paths, devices, VM
 //! settings, host commands) are dropped and reported, so a new config field
 //! stays on the laptop until it is deliberately made portable.
@@ -40,7 +40,7 @@ pub fn rebase_location(location: &ConfigLocation, worktree: &Path) -> ConfigLoca
         .config_path
         .file_name()
         .map(|name| name.to_os_string())
-        .unwrap_or_else(|| ".workmux.yaml".into());
+        .unwrap_or_else(|| ".workrex.yaml".into());
     ConfigLocation {
         config_path: config_dir.join(file_name),
         config_dir,
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn location_is_rebased_onto_the_remote_worktree() {
         let location = ConfigLocation {
-            config_path: PathBuf::from("/Users/me/repo/backend/.workmux.yaml"),
+            config_path: PathBuf::from("/Users/me/repo/backend/.workrex.yaml"),
             config_dir: PathBuf::from("/Users/me/repo/backend"),
             rel_dir: PathBuf::from("backend"),
         };
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(location.config_dir, PathBuf::from("/n/wt/backend"));
         assert_eq!(
             location.config_path,
-            PathBuf::from("/n/wt/backend/.workmux.yaml")
+            PathBuf::from("/n/wt/backend/.workrex.yaml")
         );
         assert_eq!(location.rel_dir, PathBuf::from("backend"));
     }

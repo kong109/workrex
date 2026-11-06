@@ -1,34 +1,38 @@
-//! Sidebar width under Rex. Rex stores a split as a fraction of the window,
-//! so a fixed column width needs a new fraction whenever the window resizes.
+//! Sidebar extents under Rex. A left sidebar measures columns; a top bar
+//! measures rows. Fixed cell sizes need a new split fraction when the window resizes.
 
 use super::store::WindowSidebar;
+use crate::config::SidebarPosition;
 use crate::multiplexer::rex::sidebar_api::Window;
 
-/// Columns the content side always keeps.
+/// Columns a left sidebar always leaves for content.
 const MIN_CONTENT_COLS: f64 = 10.0;
 
-/// The window's width in columns, from one block's columns and the share of
-/// the window its rect covers.
-pub(super) fn window_cols(block_cols: u32, rect_w: f64) -> Option<u32> {
-    if block_cols == 0 || rect_w.is_nan() || rect_w <= 0.0 {
+/// The window extent in cells, reconstructed from a block's extent and
+/// its fraction of the matching terminal axis.
+pub(super) fn window_extent(block_extent: u32, rect_extent: f64) -> Option<u32> {
+    if block_extent == 0 || rect_extent.is_nan() || rect_extent <= 0.0 {
         return None;
     }
-    let cols = (f64::from(block_cols) / rect_w).round();
-    (cols >= 1.0 && cols <= f64::from(u16::MAX)).then_some(cols as u32)
+    let cells = (f64::from(block_extent) / rect_extent).round();
+    (cells >= 1.0 && cells <= f64::from(u16::MAX)).then_some(cells as u32)
 }
 
-/// The fraction of a `window_cols` wide window that leaves the sidebar `cols`
-/// wide, kept inside (0, 1) with room for the content.
-pub(super) fn sidebar_ratio(cols: u16, window_cols: u32) -> f64 {
-    let window = f64::from(window_cols.max(1));
-    let max = ((window - MIN_CONTENT_COLS) / window).max(0.05);
-    (f64::from(cols.max(1)) / window).clamp(0.01, max.min(0.95))
+/// The split fraction that gives the sidebar its requested cells while
+/// leaving room for the content on the chosen axis.
+pub(super) fn sidebar_ratio(cells: u16, window_extent: u32, position: SidebarPosition) -> f64 {
+    let window = f64::from(window_extent.max(1));
+    let min_content = match position {
+        SidebarPosition::Left => MIN_CONTENT_COLS,
+        SidebarPosition::Top => 3.0,
+    };
+    let max = ((window - min_content) / window).max(0.05);
+    (f64::from(cells.max(1)) / window).clamp(0.01, max.min(0.95))
 }
 
-/// The window width estimate a size policy works from, in `u16` for
-/// `resolve_width_for`.
-pub(super) fn extent(window_cols: u32) -> u16 {
-    u16::try_from(window_cols).unwrap_or(u16::MAX)
+/// Saturate a window extent to the cell count accepted by size policies.
+pub(super) fn extent(window_extent: u32) -> u16 {
+    u16::try_from(window_extent).unwrap_or(u16::MAX)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -39,12 +43,12 @@ pub(super) enum SizeAction {
     Enforce {
         ratio: f64,
     },
-    /// The user dragged the border and no width is configured: the dragged
-    /// width becomes every sidebar's width.
+    /// The user dragged the border and no extent is configured: the dragged
+    /// extent becomes every sidebar's extent.
     PersistDrag {
-        cols: u16,
+        cells: u16,
     },
-    /// The user dragged the border but a width is configured.
+    /// The user dragged the border but a extent is configured.
     SnapBack {
         ratio: f64,
     },
@@ -101,33 +105,33 @@ pub(super) fn panes(window: &Window, added: Option<&str>) -> String {
 pub(super) fn decide(
     record: &WindowSidebar,
     view_ratio: f64,
-    cols: u32,
-    window_cols: u32,
+    cells: u32,
+    window_extent: u32,
     target: u16,
-    width_configured: bool,
+    extent_configured: bool,
     panes_changed: bool,
 ) -> SizeAction {
-    let window = f64::from(window_cols.max(1));
+    let window = f64::from(window_extent.max(1));
     let moved = (view_ratio - record.applied_ratio).abs() > 0.5 / window;
     if moved && panes_changed && is_even_share(view_ratio) {
         return SizeAction::Enforce {
-            ratio: sidebar_ratio(target, window_cols),
+            ratio: sidebar_ratio(target, window_extent, record.position),
         };
     }
     if moved {
-        return if width_configured {
+        return if extent_configured {
             SizeAction::SnapBack {
-                ratio: sidebar_ratio(target, window_cols),
+                ratio: sidebar_ratio(target, window_extent, record.position),
             }
         } else {
             SizeAction::PersistDrag {
-                cols: extent((view_ratio * window).round() as u32).max(1),
+                cells: extent((view_ratio * window).round() as u32).max(1),
             }
         };
     }
-    if cols.abs_diff(u32::from(target)) > 1 {
+    if cells.abs_diff(u32::from(target)) > 1 {
         return SizeAction::Enforce {
-            ratio: sidebar_ratio(target, window_cols),
+            ratio: sidebar_ratio(target, window_extent, record.position),
         };
     }
     SizeAction::Keep
@@ -143,10 +147,11 @@ mod tests {
             window_id: "window:1".into(),
             block_id: "block:1".into(),
             split_id: "split:1".into(),
+            position: SidebarPosition::Left,
             stray: None,
             applied_ratio,
-            last_cols: 30,
-            window_cols: 218,
+            last_extent: 30,
+            window_extent: 218,
             panes: String::new(),
             panes_changed_ms: 0,
         }
@@ -167,7 +172,7 @@ mod tests {
     #[test]
     fn the_ratio_renders_the_target_within_a_column() {
         for window in [80u32, 120, 218, 300] {
-            let ratio = sidebar_ratio(30, window);
+            let ratio = sidebar_ratio(30, window, SidebarPosition::Left);
             let rendered = (ratio * f64::from(window)).round() as u32;
             assert!(rendered.abs_diff(30) <= 1, "{window}: {rendered}");
         }
@@ -175,36 +180,36 @@ mod tests {
 
     #[test]
     fn tiny_windows_keep_room_for_content() {
-        let ratio = sidebar_ratio(30, 20);
+        let ratio = sidebar_ratio(30, 20, SidebarPosition::Left);
         assert!(ratio > 0.0 && ratio < 1.0);
         assert!(ratio * 20.0 <= 10.0 + 1e-9);
-        assert!(sidebar_ratio(0, 0) > 0.0);
+        assert!(sidebar_ratio(0, 0, SidebarPosition::Left) > 0.0);
     }
 
     #[test]
-    fn window_cols_follow_from_a_block_and_its_rect() {
-        assert_eq!(window_cols(30, 0.18), Some(167));
-        assert_eq!(window_cols(98, 0.492), Some(199));
-        assert_eq!(window_cols(80, 0.0), None);
-        assert_eq!(window_cols(0, 0.5), None);
+    fn window_extent_follow_from_a_block_and_its_rect() {
+        assert_eq!(window_extent(30, 0.18), Some(167));
+        assert_eq!(window_extent(98, 0.492), Some(199));
+        assert_eq!(window_extent(80, 0.0), None);
+        assert_eq!(window_extent(0, 0.5), None);
     }
 
     #[test]
     fn a_window_resize_enforces_the_target() {
-        let applied = sidebar_ratio(30, 218);
+        let applied = sidebar_ratio(30, 218, SidebarPosition::Left);
         // Same ratio at 160 columns renders 22: recompute for 30.
-        let cols = (applied * 160.0).round() as u32;
+        let cells = (applied * 160.0).round() as u32;
         assert_eq!(
-            decide(&record(applied), applied, cols, 160, 30, false, true),
+            decide(&record(applied), applied, cells, 160, 30, false, true),
             SizeAction::Enforce {
-                ratio: sidebar_ratio(30, 160)
+                ratio: sidebar_ratio(30, 160, SidebarPosition::Left)
             }
         );
     }
 
     #[test]
     fn a_sidebar_within_a_column_of_its_target_is_kept() {
-        let applied = sidebar_ratio(30, 218);
+        let applied = sidebar_ratio(30, 218, SidebarPosition::Left);
         assert_eq!(
             decide(&record(applied), applied, 31, 218, 30, false, true),
             SizeAction::Keep
@@ -217,25 +222,25 @@ mod tests {
 
     #[test]
     fn a_drag_persists_without_a_configured_width_and_snaps_back_with_one() {
-        let applied = sidebar_ratio(30, 200);
+        let applied = sidebar_ratio(30, 200, SidebarPosition::Left);
         let dragged = 0.26;
         assert_eq!(
             decide(&record(applied), dragged, 52, 200, 30, false, true),
-            SizeAction::PersistDrag { cols: 52 }
+            SizeAction::PersistDrag { cells: 52 }
         );
         assert_eq!(
             decide(&record(applied), dragged, 52, 200, 30, true, true),
             SizeAction::SnapBack {
-                ratio: sidebar_ratio(30, 200)
+                ratio: sidebar_ratio(30, 200, SidebarPosition::Left)
             }
         );
     }
 
     #[test]
     fn rex_balancing_the_row_restores_the_width_instead_of_saving_it() {
-        let applied = sidebar_ratio(30, 200);
+        let applied = sidebar_ratio(30, 200, SidebarPosition::Left);
         let target = SizeAction::Enforce {
-            ratio: sidebar_ratio(30, 200),
+            ratio: sidebar_ratio(30, 200, SidebarPosition::Left),
         };
         // A pane opened beside the only pane: Rex gives each of the three a third.
         let third = 1.0 / 3.0;
@@ -253,18 +258,18 @@ mod tests {
         // A drag in the same window still persists.
         assert_eq!(
             decide(&record(applied), 0.3, 60, 200, 30, false, true),
-            SizeAction::PersistDrag { cols: 60 }
+            SizeAction::PersistDrag { cells: 60 }
         );
     }
 
     #[test]
     fn rex_balancing_a_wide_row_restores_the_width() {
-        let applied = sidebar_ratio(30, 200);
+        let applied = sidebar_ratio(30, 200, SidebarPosition::Left);
         for n in [5.0, 8.0] {
             assert_eq!(
                 decide(&record(applied), 1.0 / n, 40, 200, 30, false, true),
                 SizeAction::Enforce {
-                    ratio: sidebar_ratio(30, 200)
+                    ratio: sidebar_ratio(30, 200, SidebarPosition::Left)
                 }
             );
         }
@@ -273,19 +278,19 @@ mod tests {
     #[test]
     fn a_keyboard_step_onto_an_even_share_persists_when_no_pane_changed() {
         // Rex's pane.resize moves the ratio by 0.05: 0.15 to 1/5, 0.1 to 1/20.
-        let applied = sidebar_ratio(30, 200);
+        let applied = sidebar_ratio(30, 200, SidebarPosition::Left);
         assert_eq!(
             decide(&record(applied), 0.2, 40, 200, 30, false, false),
-            SizeAction::PersistDrag { cols: 40 }
+            SizeAction::PersistDrag { cells: 40 }
         );
         assert_eq!(
             decide(&record(applied), 0.05, 10, 200, 30, false, false),
-            SizeAction::PersistDrag { cols: 10 }
+            SizeAction::PersistDrag { cells: 10 }
         );
         assert_eq!(
             decide(&record(applied), 0.2, 40, 200, 30, true, false),
             SizeAction::SnapBack {
-                ratio: sidebar_ratio(30, 200)
+                ratio: sidebar_ratio(30, 200, SidebarPosition::Left)
             }
         );
     }
@@ -359,7 +364,7 @@ mod tests {
 
     #[test]
     fn a_sidebar_already_at_the_even_share_is_kept() {
-        let applied = sidebar_ratio(40, 80);
+        let applied = sidebar_ratio(40, 80, SidebarPosition::Left);
         assert_eq!(applied, 0.5);
         assert_eq!(
             decide(&record(applied), applied, 40, 80, 40, false, true),
@@ -369,18 +374,18 @@ mod tests {
 
     #[test]
     fn a_drag_a_pixel_off_the_even_share_persists() {
-        let applied = sidebar_ratio(30, 200);
+        let applied = sidebar_ratio(30, 200, SidebarPosition::Left);
         let dragged = 1.0 / 3.0 + 1.0 / 1400.0;
         assert_eq!(
             decide(&record(applied), dragged, 67, 200, 30, false, true),
-            SizeAction::PersistDrag { cols: 67 }
+            SizeAction::PersistDrag { cells: 67 }
         );
     }
 
     #[test]
     fn drift_without_recompute_exceeds_two_columns_quickly() {
         // The lane bound is 2 columns; a fixed ratio breaks it by 200 columns.
-        let ratio = sidebar_ratio(30, 218);
+        let ratio = sidebar_ratio(30, 218, SidebarPosition::Left);
         let drift = |window: f64| ((ratio * window).round() - 30.0).abs();
         assert!(drift(200.0) <= 2.0);
         assert!(drift(160.0) > 2.0);

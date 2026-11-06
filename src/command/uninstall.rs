@@ -66,7 +66,7 @@ pub fn run(dry_run: bool) -> Result<()> {
     }
     println!();
 
-    // Phase 3: this binary's state dir and update cache; the dirs it shares with workmux stay
+    // Phase 3: this binary's state dir and update cache; the dirs it shares with workrex stay
     println!("  {} Data directories", style("●").dim());
     let dirs = [
         ("State directory", crate::bin_name::state_dir()),

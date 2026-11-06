@@ -1,4 +1,4 @@
-//! `workmux remote`: manage SSH remotes that run agents.
+//! `workrex remote`: manage SSH remotes that run agents.
 
 use crate::bin_name::BIN;
 use std::thread;
@@ -29,7 +29,7 @@ pub enum RemoteCommand {
         /// Request ID printed in the remote pane; omit to list log paths
         request: Option<String>,
     },
-    /// Install this workmux's node binary and the agents' status hooks on a
+    /// Install this workrex's node binary and the agents' status hooks on a
     /// remote
     Setup {
         /// Remote name from `remotes:` in the global config
@@ -78,7 +78,7 @@ pub enum RemoteCommand {
         #[arg(long, conflicts_with = "dry_run")]
         force: bool,
     },
-    /// Relay one pane of a remote execution into this terminal
+    /// Show a recorded remote Rex block in Rex.app
     #[command(hide = true)]
     Attach {
         name: String,
@@ -147,7 +147,7 @@ pub fn run(args: RemoteArgs) -> Result<()> {
             force,
         }) => crate::remote::gc::run(&config, &name, dry_run, force),
         Some(RemoteCommand::Attach { name, ex_id, pane }) => {
-            crate::remote::attach::run(&config, &name, &ex_id, pane)
+            crate::remote::attach::run(&name, &ex_id, pane)
         }
         Some(RemoteCommand::GitSsh { name, args }) => {
             let status = client::git_ssh(&RemoteSpec::resolve(&config, &name)?, &args)?;
@@ -178,7 +178,7 @@ fn list(config: &Config) -> Result<()> {
     if config.remotes.is_empty() {
         println!(
             "No remotes configured. Add one under `remotes:` in your global config \
-             (~/.config/workmux/config.yaml)."
+             (~/.config/workrex/config.yaml)."
         );
         return Ok(());
     }

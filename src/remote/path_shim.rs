@@ -1,8 +1,8 @@
-//! The node user's `~/.local/bin` PATH shim: installed by `workmux remote
-//! setup`, reported by `workmux remote doctor`.
+//! The node user's `~/.local/bin` PATH shim: installed by `workrex remote
+//! setup`, reported by `workrex remote doctor`.
 //!
 //! Docker mode installs none. Its shell panes are node sessions on the host
-//! without the `run/bin` wrapper, so a shim there would turn `workmux` in
+//! without the `run/bin` wrapper, so a shim there would turn `workrex` in
 //! those panes into an install that does not know the workspace. A shim an
 //! earlier server-mode setup left is reported, never removed: another remote
 //! on the same host may use it.

@@ -1,7 +1,6 @@
-//! Agent terminals a remote node hosts on its own Rex server, one session
-//! per pane, and the jump that shows one in Rex.app. The node tracks each
-//! session by the id it was created with: Rex's Claude Code hook renames a
-//! session at the agent's first request.
+//! Native terminals hosted on the node's Rex server. Configured panes share a
+//! workspace session; interactive shells use additional sessions. The node
+//! records created session IDs because Rex's agent hooks can rename labels.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,7 +45,8 @@ for _, id in ipairs(rex.args.sessions) do
     for _, window in ipairs(view.windows or {}) do
       for _, layer in ipairs(window.layers or {}) do
         for _, block in ipairs(layer.kind == "tiled" and layer.blocks or {}) do
-          if block.creator_name == "com.superlogical.terminal" then
+          if block.creator_name == "com.superlogical.terminal"
+            and (not rex.args.blocks or rex.args.blocks[block.block_id]) then
             local call = {session_id = id, block_id = block.block_id, method = "process"}
             local entry = {window = {window_id = window.window_id, label = window.label}}
             entry.process, entry.error = rex.call("block.method", call)
@@ -70,13 +70,13 @@ return out
 "#;
 
 /// What a node reads of its Rex server before using it, in one `rex do`:
-/// its version and status and, when `rex.args.sessions` is set, its sessions
+/// its version and status and, when `rex.args.sessions` is true, its sessions
 /// by id. Each part carries the error Rex gave for it instead.
 const OPEN: &str = r#"
 local out = {}
 out.version, out.version_error = rex.call("server.version", {})
 out.status, out.status_error = rex.call("server.status", {})
-if rex.args.sessions then
+if rex.args.sessions == true then
   local list, err = rex.call("session.list", {})
   out.sessions_error = err
   if list then
@@ -401,6 +401,44 @@ impl RexBackend {
         Ok(reads)
     }
 
+    /// Read the server instance and the requested sessions within one process budget.
+    /// This is used by laptop controls that must distinguish unavailable from closed.
+    pub fn read_hosted_with_instance(
+        &self,
+        ids: &[&str],
+        blocks: &[&str],
+        timeout: Duration,
+    ) -> Result<(String, HashMap<String, HostedRead>)> {
+        let script = format!(
+            "local opened = (function()\n{OPEN}\nend)()\n\
+             opened.reads = (function()\n{READ_SESSIONS}\nend)()\nreturn opened"
+        );
+        let blocks: HashMap<&str, bool> = blocks.iter().map(|block| (*block, true)).collect();
+        let args = json!({ "sessions": ids, "blocks": blocks });
+        let output = self.exec_within(
+            &["do", "-e", &script, "--args", "-", "--json"],
+            Some(&args.to_string()),
+            Some(timeout),
+            &["do", "remote target state"],
+        )?;
+        let mut read: Map<String, Value> = Self::parse("remote target state", &output)?;
+        let version: ServerVersion = required_part(&mut read, "version", "server.version")?;
+        self.record_verdict(&version)?;
+        let status: ServerStatus = required_part(&mut read, "status", "server.status")?;
+        let mut reads: HashMap<String, SessionRead> =
+            required_part(&mut read, "reads", "session read")?;
+        let reads = ids
+            .iter()
+            .map(|id| {
+                let answer = reads.remove(*id).map(HostedRead::of).unwrap_or_else(|| {
+                    HostedRead::Unreadable(anyhow!("Rex did not read session {id}"))
+                });
+                ((*id).to_string(), answer)
+            })
+            .collect();
+        Ok((status.instance_id, reads))
+    }
+
     /// Whether the server has session `id`.
     pub fn has_session(&self, id: &str) -> Result<bool> {
         Ok(found(self.view(&SessionId(id.to_string())))?.is_some())
@@ -409,13 +447,31 @@ impl RexBackend {
     /// Have the next `respawn_pane` source `env_file` before its command, so
     /// the variables in it reach that one program and nothing else.
     pub fn source_on_respawn(&self, env_file: PathBuf) {
-        *self.respawn_env.lock().unwrap() = Some(env_file);
+        self.respawn_env.lock().unwrap().push_back(env_file);
     }
 
     pub(super) fn respawn_layout(&self, cwd: &Path, script: &str) -> Result<Value> {
-        match self.respawn_env.lock().unwrap().take() {
+        match self.respawn_env.lock().unwrap().pop_front() {
             Some(file) => Ok(sourcing(cwd, &file, script)),
             None => self.block_layout(cwd, Some(script)),
+        }
+    }
+
+    /// Split blocks consume the same per-program environment queue as respawns.
+    pub(super) fn queued_env_layout(&self, cwd: &Path, script: Option<&str>) -> Result<Value> {
+        let env_file = self.respawn_env.lock().unwrap().pop_front();
+        match env_file {
+            Some(file) => {
+                let script = match script {
+                    Some(script) => script.to_string(),
+                    None => format!(
+                        "exec {} -l",
+                        crate::shell::shell_quote(&self.get_default_shell()?)
+                    ),
+                };
+                Ok(sourcing(cwd, &file, &script))
+            }
+            None => self.block_layout(cwd, script),
         }
     }
 
@@ -485,6 +541,25 @@ mod tests {
             })
             .collect();
         serde_json::from_value(json!({ "clients": clients })).unwrap()
+    }
+
+    #[test]
+    fn native_control_reads_finish_at_their_process_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let rex = RexBackend::scripted(dir.path(), "exec sleep 5\n".into());
+        let started = std::time::Instant::now();
+        let error = rex
+            .read_hosted_with_instance(
+                &["session:owned"],
+                &["block:owned"],
+                Duration::from_millis(100),
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("gave no answer within"),
+            "{error:#}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
@@ -650,6 +725,32 @@ mod tests {
         assert_eq!(
             second["block"]["options"]["command"],
             json!(["sh", "-c", "agent"])
+        );
+    }
+
+    #[test]
+    fn respawns_and_splits_consume_distinct_environment_files_in_order() {
+        let rex = RexBackend::for_server("unix:///nonexistent/rex.sock");
+        rex.source_on_respawn(PathBuf::from("/node/secrets/first.env"));
+        rex.source_on_respawn(PathBuf::from("/node/secrets/second.env"));
+        let first = rex.respawn_layout(Path::new("/work"), "agent").unwrap();
+        let second = rex
+            .queued_env_layout(Path::new("/work"), Some("logs"))
+            .unwrap();
+        assert_eq!(
+            first["block"]["options"]["command"][4],
+            "/node/secrets/first.env"
+        );
+        assert_eq!(
+            second["block"]["options"]["command"][4],
+            "/node/secrets/second.env"
+        );
+        let third = rex
+            .queued_env_layout(Path::new("/work"), Some("shell"))
+            .unwrap();
+        assert_eq!(
+            third["block"]["options"]["command"],
+            json!(["sh", "-c", "shell"])
         );
     }
 }

@@ -1,4 +1,4 @@
-//! `node spawn`: a remote agent's `workmux add`, served on its node.
+//! `node spawn`: a remote agent's `workrex add`, served on its node.
 //!
 //! The new workspace is a sibling of the agent's own: same project,
 //! isolation, agent, config and environment snapshot, with a branch that
@@ -19,9 +19,9 @@ use crate::remote::protocol::{
 };
 
 /// Set in the sessions of executions without a sandbox, where the agent's
-/// `workmux add` reaches the node directly instead of through a supervisor.
-pub const SESSION_ROOT_ENV: &str = "WM_NODE_ROOT";
-pub const SESSION_WORKSPACE_ENV: &str = "WM_NODE_WORKSPACE";
+/// `workrex add` reaches the node directly instead of through a supervisor.
+pub const SESSION_ROOT_ENV: &str = "WORKREX_NODE_ROOT";
+pub const SESSION_WORKSPACE_ENV: &str = "WORKREX_NODE_WORKSPACE";
 
 /// Node root and workspace of the node session this process runs in.
 pub fn session_parent() -> Option<(std::path::PathBuf, String)> {
@@ -69,9 +69,7 @@ pub fn spawn(root: &NodeRoot, request: SpawnRequest) -> Result<SpawnResponse> {
         .ok_or_else(|| {
             refuse(
                 code::BAD_REQUEST,
-                crate::rebrand!(
-                    "remote agents must name the branch: `workmux add <branch> -b -P <prompt-file>`"
-                ),
+                "remote agents must name the branch: `workrex add <branch> -b -P <prompt-file>`",
             )
         })?
         .to_string();
@@ -153,7 +151,7 @@ pub fn spawn(root: &NodeRoot, request: SpawnRequest) -> Result<SpawnResponse> {
                 // A sibling's terminals live where its parent's do.
                 terminal: match parent.execution.as_ref().and_then(|ex| ex.rex.as_ref()) {
                     Some(_) => crate::config::RemoteTerminal::Rex,
-                    None => crate::config::RemoteTerminal::Tmux,
+                    None => crate::config::RemoteTerminal::Rex,
                 },
             },
         )

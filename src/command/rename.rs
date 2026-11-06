@@ -37,13 +37,13 @@ pub fn run(names: Vec<String>, rename_branch: bool) -> Result<()> {
         );
     }
 
-    if result.tmux_renamed > 0 {
-        let noun = if result.tmux_renamed == 1 {
+    if result.terminal_targets_renamed > 0 {
+        let noun = if result.terminal_targets_renamed == 1 {
             "target"
         } else {
             "targets"
         };
-        println!("✓ Renamed {} tmux {}", result.tmux_renamed, noun);
+        println!("✓ Renamed {} Rex {}", result.terminal_targets_renamed, noun);
     }
 
     if result.agents_migrated > 0 {

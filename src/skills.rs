@@ -1,6 +1,6 @@
 //! Bundled skill installation.
 //!
-//! Embeds all workmux SKILL.md files at compile time and writes them
+//! Embeds all workrex SKILL.md files at compile time and writes them
 //! to the appropriate platform-specific skills directories.
 
 use anyhow::{Context, Result};
@@ -21,27 +21,27 @@ pub struct BundledSkill {
 pub const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
         name: "merge",
-        content: crate::rebrand_include!("../skills/merge/SKILL.md"),
+        content: include_str!("../skills/merge/SKILL.md"),
     },
     BundledSkill {
         name: "rebase",
-        content: crate::rebrand_include!("../skills/rebase/SKILL.md"),
+        content: include_str!("../skills/rebase/SKILL.md"),
     },
     BundledSkill {
         name: "worktree",
-        content: crate::rebrand_include!("../skills/worktree/SKILL.md"),
+        content: include_str!("../skills/worktree/SKILL.md"),
     },
     BundledSkill {
         name: "coordinator",
-        content: crate::rebrand_include!("../skills/coordinator/SKILL.md"),
+        content: include_str!("../skills/coordinator/SKILL.md"),
     },
     BundledSkill {
         name: "open-pr",
-        content: crate::rebrand_include!("../skills/open-pr/SKILL.md"),
+        content: include_str!("../skills/open-pr/SKILL.md"),
     },
     BundledSkill {
         name: crate::bin_name::BIN,
-        content: crate::rebrand_include!("../skills/workmux/SKILL.md"),
+        content: include_str!("../skills/workrex/SKILL.md"),
     },
 ];
 
@@ -64,6 +64,7 @@ fn skills_dir_with_env(
                 .unwrap_or_else(|| home.join(".claude"));
             Some(base.join("skills"))
         }
+        Agent::Codex => Some(home.join(".agents/skills")),
         Agent::OpenCode => Some(home.join(".config/opencode/skills")),
         Agent::Grok => {
             let base = get_env("GROK_HOME")
@@ -80,7 +81,7 @@ fn skills_dir_with_env(
         Agent::Omp => {
             Some(crate::agent_setup::omp::omp_agent_dir_with_env(home, get_env).join("skills"))
         }
-        Agent::Antigravity | Agent::Codex | Agent::Copilot | Agent::Gemini | Agent::Muse => None,
+        Agent::Antigravity | Agent::Copilot | Agent::Gemini | Agent::Muse => None,
     }
 }
 
@@ -110,7 +111,7 @@ pub fn install_skills(agent: Agent) -> Result<String> {
     install_skills_at(base_dir, agent.name(), confirm_overwrite)
 }
 
-/// Setup keeps upstream's behaviour. It writes a bundled skill only where the
+/// Setup writes a bundled skill only where the
 /// path is missing, or where the user answers y at the diff prompt, which
 /// defaults to N. A path that already holds the bundled text is neither written
 /// nor recorded.
@@ -340,10 +341,10 @@ mod tests {
         // intentionally isolated; cargo test runs may interleave, but no
         // other test in this crate mutates this var.
         unsafe {
-            std::env::set_var("CLAUDE_CONFIG_DIR", "/tmp/workmux-test-claude-cfg");
+            std::env::set_var("CLAUDE_CONFIG_DIR", "/tmp/workrex-test-claude-cfg");
         }
         let dir = skills_dir(Agent::Claude).unwrap();
-        assert_eq!(dir, PathBuf::from("/tmp/workmux-test-claude-cfg/skills"));
+        assert_eq!(dir, PathBuf::from("/tmp/workrex-test-claude-cfg/skills"));
         match prev {
             Some(v) => unsafe {
                 std::env::set_var("CLAUDE_CONFIG_DIR", v);
@@ -395,8 +396,10 @@ mod tests {
     }
 
     #[test]
-    fn test_skills_dir_codex_none() {
-        assert!(skills_dir(Agent::Codex).is_none());
+    fn test_skills_dir_codex() {
+        let dir = skills_dir_with_env(Agent::Codex, Path::new("/home/test"), |_| None);
+
+        assert_eq!(dir, Some(PathBuf::from("/home/test/.agents/skills")));
     }
 
     #[test]
@@ -507,7 +510,7 @@ mod tests {
 
     #[test]
     fn test_remove_skills_unsupported_agent() {
-        let result = remove_skills(Agent::Codex).unwrap();
+        let result = remove_skills(Agent::Copilot).unwrap();
         assert!(result.contains("does not support skills"));
     }
 }

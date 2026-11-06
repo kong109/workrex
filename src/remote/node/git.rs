@@ -17,17 +17,17 @@ use crate::remote::protocol::{
 /// Ref `export` stores the commit of a snapshot tree under; `part` is
 /// `index` or `worktree`.
 pub fn export_ref(ws_id: &str, part: &str) -> String {
-    format!("refs/workmux/export/{ws_id}/{part}")
+    format!("refs/workrex/export/{ws_id}/{part}")
 }
 
 /// Ref the laptop pushes the head of a `checkout` to.
 pub fn kept_ref(ws_id: &str) -> String {
-    format!("refs/workmux/kept/{ws_id}")
+    format!("refs/workrex/kept/{ws_id}")
 }
 
 /// Ref the laptop pushes the target of a `rebase` to.
 pub fn onto_ref(ws_id: &str) -> String {
-    format!("refs/workmux/onto/{ws_id}")
+    format!("refs/workrex/onto/{ws_id}")
 }
 
 /// Every ref the node keeps for workspace `ws_id`.

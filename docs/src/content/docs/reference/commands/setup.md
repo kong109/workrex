@@ -25,9 +25,10 @@ Without a flag, `setup` does both.
 3. Asks `Install or update status tracking hooks?` and installs the hooks for each agent that needs them.
 4. Lists the bundled skills (`merge`, `rebase`, `worktree`, `coordinator`, `open-pr` and `workrex`) and the directory each agent reads skills from, then asks before it copies them.
 
-The hooks that `setup` writes call `workrex`. The hook files and the OpenCode plugin are named `workrex-status`, so they don't overwrite an upstream workmux install. For Claude Code, `setup` merges the hooks into `~/.claude/settings.json`. It counts an enabled Claude Code plugin whose id starts with `workrex-status@` as configured, and an upstream `workmux-status@…` plugin as not configured. If upstream workmux hooks are also installed, `setup` says so and leaves them in place. Remove those with upstream's `workmux uninstall`.
-
-`setup` needs an interactive terminal. It fails when stdin is not a terminal.
+Setup installs native `workrex-status` resources that call `workrex`. Claude
+Code hooks are merged into `~/.claude/settings.json`, or its configured override,
+without removing unrelated integrations. An enabled Claude Code plugin whose
+ID starts with `workrex-status@` is recognized as a Workrex integration.
 
 ## Examples
 

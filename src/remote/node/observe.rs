@@ -1,27 +1,22 @@
 //! `node watch`, `node send` and `node capture`: what the laptop needs to
 //! show and drive the agents of running executions.
 //!
-//! Agent state comes from the node's own store (`$root/state`, where the
-//! node-mode supervisor and the `isolation: none` wrapper write it),
-//! reconciled against the node tmux server. Node tmux status options are not
-//! used: the attach client keeps each session focused, which clears them.
+//! Agent state comes from the node's own store, reconciled with the recorded
+//! blocks of its Rex sessions. Rex server identity scopes every observation.
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::execution::{tmux, tmux_socket};
 use super::host::RexHost;
 use super::{ExecutionState, NodeRoot, Origin, Workspace, refuse, validate_id};
 use crate::config::RemoteIsolation;
 use crate::git::{GitStatus, GitStatusCache};
 use crate::multiplexer::{
     AgentPane, AgentStatus, EndReason, LivePaneInfo, Multiplexer, rex::RexBackend,
-    tmux::TmuxBackend,
 };
 use crate::remote::protocol::{WorkspaceIdentity, code, session_name};
 use crate::state::{AgentStateCache, StateStore};
@@ -166,7 +161,7 @@ pub struct CaptureResponse {
 }
 
 /// Display text from the guest: control characters removed, length capped,
-/// and terminal queries that tmux mistook for a title dropped.
+/// and terminal queries that Rex mistook for a title dropped.
 pub fn clean_text(text: &str) -> Option<String> {
     let cleaned: String = text
         .chars()
@@ -178,7 +173,7 @@ pub fn clean_text(text: &str) -> Option<String> {
 }
 
 /// Whether `title` is a kitty graphics protocol command (`G<key>=<value>,…;
-/// <payload>`), which tmux takes from an APC sequence as a pane title.
+/// <payload>`), which Rex takes from an APC sequence as a pane title.
 fn is_graphics_query(title: &str) -> bool {
     let Some(rest) = title.strip_prefix('G') else {
         return false;
@@ -206,12 +201,9 @@ fn now() -> u64 {
 /// Reads the node across polls, keeping state files cached.
 struct Observer {
     root: NodeRoot,
-    socket: std::path::PathBuf,
-    mux: TmuxBackend,
     /// The node's Rex server, for executions hosted there.
     rex: RexBackend,
     cache: AgentStateCache,
-    rex_cache: AgentStateCache,
     store: StateStore,
     host: Option<String>,
     git_cache: GitStatusCache,
@@ -223,14 +215,10 @@ struct Observer {
 
 impl Observer {
     fn new(root: &NodeRoot) -> Result<Self> {
-        let socket = tmux_socket(root)?;
         Ok(Self {
             root: root.clone(),
-            mux: TmuxBackend::for_socket(&socket.to_string_lossy()),
-            socket,
             rex: RexBackend::new(),
             cache: AgentStateCache::default(),
-            rex_cache: AgentStateCache::default(),
             store: StateStore::new()?,
             host: hostname(),
             git_cache: GitStatusCache::default(),
@@ -239,18 +227,9 @@ impl Observer {
         })
     }
 
-    /// Live panes of the node tmux server; none when no server runs (tmux
-    /// exits with its last session). Then the live blocks of Rex-hosted
-    /// executions, keyed `block:<id>`; none while the Rex server is down.
+    /// Live blocks of recorded executions, keyed by their native block IDs.
     fn live_panes(&self) -> Result<HashMap<String, LivePaneInfo>> {
-        let mut live = match self.mux.get_all_live_pane_info() {
-            Ok(panes) => panes,
-            Err(err) if !server_running(&self.socket)? => {
-                tracing::debug!("node tmux server not running: {err:#}");
-                HashMap::new()
-            }
-            Err(err) => return Err(err),
-        };
+        let mut live = HashMap::new();
         let hosted: Vec<_> = self
             .root
             .workspaces()
@@ -274,30 +253,16 @@ impl Observer {
         live: &HashMap<String, LivePaneInfo>,
         workspaces: &[Workspace],
     ) -> Result<Snapshot> {
-        let (rex_live, tmux_live): (HashMap<_, _>, HashMap<_, _>) = live
-            .iter()
-            .map(|(id, pane)| (id.clone(), pane.clone()))
-            .partition(|(id, _)| id.starts_with("block:"));
-        let mut agents = Vec::new();
-        for (mux, cache, live) in [
-            (&self.mux as &dyn Multiplexer, &mut self.cache, &tmux_live),
-            (&self.rex, &mut self.rex_cache, &rex_live),
-        ] {
-            if live.is_empty() {
-                continue;
-            }
-            let boot_id = mux.server_boot_id().unwrap_or(None);
-            agents.extend(
-                self.store
-                    .load_reconciled_agents_from_snapshot_cached(
-                        cache,
-                        mux,
-                        live,
-                        boot_id.as_deref(),
-                    )?
-                    .0,
-            );
-        }
+        let boot_id = self.rex.server_boot_id().unwrap_or(None);
+        let agents = self
+            .store
+            .load_reconciled_agents_from_snapshot_cached(
+                &mut self.cache,
+                &self.rex,
+                live,
+                boot_id.as_deref(),
+            )?
+            .0;
         Ok(build_snapshot(
             now(),
             workspaces,
@@ -364,26 +329,7 @@ fn git_status(workspace: &Workspace, cache: &mut GitStatusCache) -> Option<GitSt
     Some(status)
 }
 
-/// Whether a tmux server listens on `socket`.
-fn server_running(socket: &Path) -> Result<bool> {
-    if !socket.exists() {
-        return Ok(false);
-    }
-    let output = tmux(socket)
-        .args(["list-sessions", "-F", "#{session_name}"])
-        .output()
-        .context("Failed to run tmux")?;
-    if output.status.success() {
-        return Ok(true);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("no server running") || stderr.contains("error connecting to") {
-        return Ok(false);
-    }
-    anyhow::bail!("tmux list-sessions failed: {}", stderr.trim())
-}
-
-/// The node's hostname, which tmux gives panes nothing titled.
+/// The node's hostname, which Rex gives panes nothing titled.
 fn hostname() -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: the buffer outlives the call, which writes at most its length.
@@ -395,7 +341,7 @@ fn hostname() -> Option<String> {
     String::from_utf8(buf[..end].to_vec()).ok()
 }
 
-/// `host` is the title tmux gives untitled panes, which says nothing about
+/// `host` is the title Rex gives untitled panes, which says nothing about
 /// the agent; `boot` is the current kernel boot.
 fn build_snapshot(
     now: u64,
@@ -475,22 +421,18 @@ fn sibling(ws: &Workspace) -> Option<Sibling> {
     })
 }
 
-/// The pane of each node session. Each has one; the lowest id wins if a
-/// user split it.
+/// The configured block for each logical pane identity. Older records without
+/// explicit block mappings use stable ID ordering.
 fn session_panes(live: &HashMap<String, LivePaneInfo>) -> HashMap<&str, &str> {
     let mut panes: HashMap<&str, &str> = HashMap::new();
     let mut ids: Vec<&String> = live.keys().collect();
-    ids.sort_by_key(|id| pane_number(id));
+    ids.sort_unstable();
     for id in ids {
         if let Some(session) = live[id].session.as_deref() {
             panes.entry(session).or_insert(id.as_str());
         }
     }
     panes
-}
-
-fn pane_number(id: &str) -> u64 {
-    id.trim_start_matches('%').parse().unwrap_or(u64::MAX)
 }
 
 /// `watch` without `stream`. See [`WatchRequest::siblings`].
@@ -561,7 +503,7 @@ struct Target {
     mux: Box<dyn Multiplexer>,
     /// Index of the configured pane.
     index: usize,
-    /// Its tmux pane id.
+    /// Its Rex pane id.
     pane_id: String,
     /// The agent registered in it; none when the agent has not reported
     /// yet (see [`unregistered_agent_pane`]).
@@ -618,18 +560,12 @@ fn target(root: &NodeRoot, ws_id: &str, pane: Option<usize>) -> Result<Target> {
             let agent = chosen.agent.clone().ok_or_else(not_running)?;
             pane_id(chosen.index).map(|id| (chosen.index, id, Some(agent), None))
         }
-        None if pane.is_none() => {
-            unregistered_agent_pane(root, &workspace, &observer.socket, &live, pane_id)
-                .map(|(index, id, started)| (index, id, None, Some(started)))
-        }
+        None if pane.is_none() => unregistered_agent_pane(root, &workspace, &live, pane_id)
+            .map(|(index, id, started)| (index, id, None, Some(started))),
         None => None,
     };
     let (index, pane_id, agent, started) = target.ok_or_else(not_running)?;
-    let mux: Box<dyn Multiplexer> = if pane_id.starts_with("block:") {
-        Box::new(observer.rex)
-    } else {
-        Box::new(observer.mux)
-    };
+    let mux: Box<dyn Multiplexer> = Box::new(observer.rex);
     Ok(Target {
         mux,
         index,
@@ -652,7 +588,6 @@ fn target(root: &NodeRoot, ws_id: &str, pane: Option<usize>) -> Result<Target> {
 fn unregistered_agent_pane(
     root: &NodeRoot,
     workspace: &Workspace,
-    socket: &Path,
     live: &HashMap<String, LivePaneInfo>,
     pane_id: impl Fn(usize) -> Option<String>,
 ) -> Option<(usize, String, u64)> {
@@ -673,22 +608,12 @@ fn unregistered_agent_pane(
     if !runs_pin(command, pin) {
         return None;
     }
-    // A marker older than the session belongs to a pane of an earlier
-    // server that had the same id.
+    // Native block IDs do not recycle within the recorded server instance.
     let started = super::execution::AgentMarker::read(root, &id)?;
-    (started >= session_created(socket, &id)?).then_some((index, id, started))
+    Some((index, id, started))
 }
 
-/// When the session of `pane_id` was created (node clock).
-fn session_created(socket: &Path, pane_id: &str) -> Option<u64> {
-    let output = tmux(socket)
-        .args(["display-message", "-p", "-t", pane_id, "#{session_created}"])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
-}
-
-/// Whether tmux's name for a pane's foreground program, `command`, is the
+/// Whether Rex's name for a pane's foreground program, `command`, is the
 /// node binary `pin`. Platforms that report the kernel's process name cut it
 /// to 15 bytes.
 fn runs_pin(command: &str, pin: &str) -> bool {
@@ -823,7 +748,7 @@ mod tests {
     fn live(session: &str) -> LivePaneInfo {
         LivePaneInfo {
             pid: Some(1),
-            current_command: Some("workmux".into()),
+            current_command: Some("workrex".into()),
             working_dir: "/".into(),
             title: None,
             session: Some(session.into()),
@@ -917,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_title_is_not_relayed() {
+    fn the_default_hostname_title_is_omitted() {
         let ws = workspace("w0123456789ab", "x0123456789ab", &[0], None);
         let live = HashMap::from([("%3".to_string(), live("x0123456789ab-0"))]);
         let mut untitled = agent("%3", AgentStatus::Working);
@@ -1020,18 +945,12 @@ mod tests {
 
     #[test]
     fn a_pane_runs_the_pin_by_full_or_kernel_name() {
-        let pin = "workmux-dev-0123456789ab";
+        let pin = "workrex-dev-0123456789ab";
         assert!(runs_pin(pin, pin));
-        assert!(runs_pin("workmux-dev-012", pin));
-        assert!(!runs_pin("workmux", pin));
+        assert!(runs_pin("workrex-dev-012", pin));
+        assert!(!runs_pin("workrex", pin));
         assert!(!runs_pin("bash", pin));
-        assert!(!runs_pin("workmux-dev-999", pin));
-    }
-
-    #[test]
-    fn missing_socket_means_no_server() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!server_running(&dir.path().join("tmux.sock")).unwrap());
+        assert!(!runs_pin("workrex-dev-999", pin));
     }
 
     #[test]

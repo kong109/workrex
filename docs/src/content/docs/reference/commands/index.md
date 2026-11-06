@@ -4,11 +4,10 @@ description: Every workrex command, grouped as in workrex --help
 ---
 
 This page lists the commands in `workrex --help`, in the same groups. For a
-command's full options, run `workrex <command> --help`. "Window" means a tmux
-window, a WezTerm, kitty, or Zellij tab, or a Rex window. In session mode, which
+command's full options, run `workrex <command> --help`. "Window" means a Rex tab within a session. A terminal pane is a Rex block. In session mode, which
 is the default under Rex, each worktree gets a session instead.
-Configuration files keep their workmux names, such as `.workmux.yaml`, so
-existing workmux configs work. See [Configuration](/guide/configuration/).
+Configuration lives in `.workrex.yaml` and the Workrex global directory.
+See [Configuration](/guide/configuration/).
 
 ## Worktree lifecycle
 
@@ -25,19 +24,19 @@ existing workmux configs work. See [Configuration](/guide/configuration/).
 
 ## Monitoring
 
-| Command                                       | Description                                   |
-| --------------------------------------------- | --------------------------------------------- |
-| [`dashboard`](/reference/commands/dashboard/) | Show a TUI dashboard of every active agent    |
-| [`sidebar`](/reference/commands/sidebar/)     | Control the live agent status sidebar in tmux |
-| [`list`](/reference/commands/list/)           | List all worktrees                            |
-| [`path`](/reference/commands/path/)           | Print the filesystem path of a worktree       |
-| [`status`](/reference/commands/status/)       | Query agent status for worktrees              |
+| Command                                       | Description                                  |
+| --------------------------------------------- | -------------------------------------------- |
+| [`dashboard`](/reference/commands/dashboard/) | Show a TUI dashboard of every active agent   |
+| [`sidebar`](/reference/commands/sidebar/)     | Control the live agent status sidebar in Rex |
+| [`list`](/reference/commands/list/)           | List all worktrees                           |
+| [`path`](/reference/commands/path/)           | Print the filesystem path of a worktree      |
+| [`status`](/reference/commands/status/)       | Query agent status for worktrees             |
 
 ## Setup and configuration
 
 | Command                                         | Description                                            |
 | ----------------------------------------------- | ------------------------------------------------------ |
-| [`init`](/reference/commands/init/)             | Write an example `.workmux.yaml`                       |
+| [`init`](/reference/commands/init/)             | Write an example `.workrex.yaml`                       |
 | [`setup`](/reference/commands/setup/)           | Set up agent status tracking hooks and install skills  |
 | [`config`](/reference/commands/config/)         | Edit, locate, or print the global configuration        |
 | [`sandbox`](/reference/commands/sandbox/)       | Manage sandbox settings                                |

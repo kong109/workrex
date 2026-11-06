@@ -1,5 +1,5 @@
 {
-  description = "Parallel development in tmux with git worktrees";
+  description = "Parallel development in Rex with git worktrees";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -11,7 +11,7 @@
     in {
       packages = forAllSystems (pkgs: {
         default = pkgs.rustPlatform.buildRustPackage {
-          pname = "workmux";
+          pname = "workrex";
           version = self.shortRev or self.dirtyShortRev or "dev";
           src = ./.;
           cargoLock = {

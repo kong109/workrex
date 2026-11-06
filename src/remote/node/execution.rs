@@ -1,18 +1,11 @@
-//! `node start-execution` and the node's tmux server.
-//!
-//! Each configured pane of a workspace runs in its own session of a tmux
-//! server the node owns, so the laptop can relay every pane into a pane of
-//! its own window. The server's config makes it transparent: no prefix or
-//! status line, and mouse, clipboard, titles and focus pass through to the
-//! laptop's terminal.
+//! Start a remote workspace in one Rex session with the configured block layout.
+//! The node owns the session; Rex.app displays it directly over the tailnet.
 
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use anyhow::{Context, Result, anyhow};
-use sha2::{Digest, Sha256};
+use anyhow::{Context, Result};
 
 use super::host::{NewSession, SessionHost};
 use super::{
@@ -22,100 +15,8 @@ use super::{
 use crate::config::{Config, PaneConfig, RemoteIsolation};
 use crate::multiplexer::PaneSetupOptions;
 use crate::multiplexer::types::ResumeMode;
-use crate::remote::protocol::{Secrets, StartRequest, StartResponse, code, session_name};
+use crate::remote::protocol::{StartRequest, StartResponse, code, session_name};
 use crate::shell::shell_quote;
-
-/// Longest socket path tmux can bind on Linux and macOS, with a margin.
-const MAX_SOCKET_PATH: usize = 100;
-
-const TMUX_CONF: &str = "\
-# Written by workmux. Sessions on this server are relayed into panes of a
-# local tmux window, so this server stays out of the way.
-set -g prefix None
-set -g prefix2 None
-set -g status off
-set -g mouse on
-set -g set-clipboard on
-set -g allow-passthrough on
-set -g focus-events on
-set -g set-titles on
-# A kitty graphics query an agent sends to probe the terminal arrives as an
-# APC sequence, which tmux takes as the pane title; it is not relayed.
-set -g set-titles-string '#{?#{m/r:^G[a-zA-Z]=[^;]*;,#{pane_title}},,#{pane_title}}'
-set -g window-size latest
-set -g history-limit 50000
-set -s escape-time 0
-set -s extended-keys on
-set -sa terminal-features '*:clipboard:title:focus:RGB'
-";
-
-/// Socket of the node tmux server: `run/tmux.sock` under the root, or a
-/// private per-user directory in `/tmp` when that path is too long to bind.
-pub fn tmux_socket(root: &NodeRoot) -> Result<PathBuf> {
-    let uid = unsafe { libc::getuid() };
-    let preferred_dir = root.path.join("run");
-    let preferred = preferred_dir.join("tmux.sock");
-    if preferred.as_os_str().len() <= MAX_SOCKET_PATH {
-        crate::remote::transport::ensure_private_dir(&preferred_dir, uid)?;
-        return Ok(preferred);
-    }
-    let digest = Sha256::digest(root.path.as_os_str().as_encoded_bytes());
-    let hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
-    let dir = PathBuf::from(format!("/tmp/workmux-node-{uid}"));
-    crate::remote::transport::ensure_private_dir(&dir, uid)?;
-    Ok(dir.join(format!("{hash}.sock")))
-}
-
-/// `tmux.conf` under the root, written when it differs from [`TMUX_CONF`].
-pub fn tmux_conf(root: &NodeRoot) -> Result<PathBuf> {
-    let conf = root.path.join("tmux.conf");
-    if fs::read_to_string(&conf).ok().as_deref() != Some(TMUX_CONF) {
-        crate::util::write_atomic(&conf, TMUX_CONF.as_bytes())?;
-    }
-    Ok(conf)
-}
-
-pub fn tmux(socket: &Path) -> Command {
-    let mut cmd = Command::new("tmux");
-    cmd.arg("-S").arg(socket);
-    cmd
-}
-
-pub fn session_alive(socket: &Path, name: &str) -> bool {
-    tmux(socket)
-        .args(["has-session", "-t", &format!("={name}")])
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-/// Sessions on the node tmux server; none when no server runs.
-pub fn sessions(socket: &Path) -> HashSet<String> {
-    tmux(socket)
-        .args(["list-sessions", "-F", "#{session_name}"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Kill the sessions of execution `ex_id`, live or not.
-pub fn kill_execution(root: &NodeRoot, socket: &Path, ex_id: &str) {
-    let prefix = format!("{ex_id}-");
-    for name in sessions(socket) {
-        if name.starts_with(&prefix) {
-            let _ = tmux(socket)
-                .args(["kill-session", "-t", &format!("={name}")])
-                .output();
-        }
-    }
-    AgentMarker::sweep(root, socket);
-}
 
 /// The panes of a workspace that get a session, with their configured
 /// index: the agent is placed as `setup_panes` would, a pane without a split
@@ -135,16 +36,17 @@ pub fn pane_plan(config: &Config, agent: Option<&str>) -> Vec<(usize, PaneConfig
 
 /// `run/agents/<pane>` under a node root: present, holding the time it was
 /// written, while a supervisor's container runtime runs in that pane of the
-/// node tmux server and reads its input. Removed when the runtime exits.
+/// node Rex server and reads its input. Removed when the runtime exits.
 pub struct AgentMarker(Option<PathBuf>);
 
 impl AgentMarker {
     fn path(root: &NodeRoot, pane_id: &str) -> Option<PathBuf> {
-        let number = pane_id.strip_prefix('%')?;
-        number
-            .bytes()
-            .all(|b| b.is_ascii_digit())
-            .then(|| root.path.join("run").join("agents").join(number))
+        let number = pane_id.strip_prefix("block:")?;
+        (!number.is_empty()
+            && number
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        .then(|| root.path.join("run").join("agents").join(number))
     }
 
     /// Write the marker of `pane_id`; failures only lose the marker.
@@ -177,32 +79,31 @@ impl AgentMarker {
             .ok()
     }
 
-    /// Remove the markers of panes gone from the node tmux server: a
+    /// Remove the markers of panes gone from the node Rex server: a
     /// supervisor killed with its session leaves its marker behind.
-    pub fn sweep(root: &NodeRoot, socket: &Path) {
+    pub fn sweep(root: &NodeRoot) {
+        use crate::multiplexer::Multiplexer;
+        Self::sweep_with(root, || {
+            crate::multiplexer::rex::RexBackend::new()
+                .get_all_live_pane_info()
+                .ok()
+                .map(|live| live.into_keys().collect())
+        });
+    }
+
+    fn sweep_with(root: &NodeRoot, read: impl FnOnce() -> Option<HashSet<String>>) {
         let dir = root.path.join("run").join("agents");
-        // Listed before the panes, so a marker written meanwhile is for a
-        // pane the listing has.
         let Ok(entries) = fs::read_dir(&dir) else {
             return;
         };
-        let markers: Vec<_> = entries.flatten().map(|entry| entry.file_name()).collect();
-        let live: HashSet<String> = tmux(socket)
-            .args(["list-panes", "-a", "-F", "#{pane_id}"])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| {
-                String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .filter_map(|id| id.strip_prefix('%'))
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        for name in markers {
-            if !name.to_str().is_some_and(|number| live.contains(number)) {
-                let _ = fs::remove_file(dir.join(name));
+        let markers: Vec<_> = entries.flatten().collect();
+        let Some(live) = read() else {
+            return;
+        };
+        for entry in markers {
+            let block = format!("block:{}", entry.file_name().to_string_lossy());
+            if !live.contains(&block) {
+                let _ = fs::remove_file(entry.path());
             }
         }
     }
@@ -336,7 +237,6 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
         .expect("execution recorded")
         .agent_kind = agent_kind.map(str::to_string);
     let plan = pane_plan(&config, workspace.agent.as_deref());
-    let conf = tmux_conf(root)?;
 
     super::trust::ensure_for_execution(root, &workspace, &config);
 
@@ -347,7 +247,7 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
         request.ws_id
     );
     // Without a container, agent hooks and commands typed in any pane run
-    // the node's `workmux`, which must use the node store.
+    // the node's `workrex`, which must use the node store.
     let status_bin = match workspace.isolation {
         RemoteIsolation::None => Some(write_status_wrapper(root, &pin)?),
         RemoteIsolation::Container => None,
@@ -365,72 +265,97 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
         RemoteIsolation::Container => Default::default(),
     };
 
-    for (index, pane) in &plan {
-        let execution = workspace.execution.as_ref().expect("execution recorded");
-        let name = session_name(&execution.ex_id, *index);
-        let dispatched = execution
-            .panes
-            .iter()
-            .any(|recorded| recorded.index == *index);
-        if dispatched && host.pane_alive(execution, *index) {
-            continue;
-        }
-        host.kill_pane(root, execution, *index);
-        let spawn_env = (workspace.isolation == RemoteIsolation::None)
-            .then_some((root.path.as_path(), request.ws_id.as_str()));
-        let created = host.create(
-            root,
-            &NewSession {
-                name: &name,
-                window_label: &workspace.identity.handle,
-                conf: &conf,
-                cwd: &working_dir,
-                config_path: &config_path,
-                spawn_env,
-                secrets: &session_secrets,
-            },
-        )?;
-        if let (Some(placement), Some(session)) = (
-            workspace
-                .execution
-                .as_mut()
-                .and_then(|execution| execution.rex.as_mut()),
-            &created.rex_session,
-        ) {
-            placement.sessions.insert(*index, session.clone());
-            root.save(&workspace)?;
-        }
-        let single = PaneConfig {
-            split: None,
-            target: None,
-            size: None,
-            percentage: None,
-            ..pane.clone()
-        };
-        host.mux()
-            .setup_panes(
-                &created.pane_id,
-                &[single],
+    let execution = workspace.execution.as_ref().expect("execution recorded");
+    host.kill_execution(root, execution);
+    workspace
+        .execution
+        .as_mut()
+        .expect("execution recorded")
+        .rex = host.placement();
+    let execution = workspace.execution.as_ref().expect("execution recorded");
+    let name = session_name(&execution.ex_id, plan[0].0);
+    let spawn_env = (workspace.isolation == RemoteIsolation::None)
+        .then_some((root.path.as_path(), request.ws_id.as_str()));
+    let spec = NewSession {
+        name: &name,
+        window_label: &workspace.identity.handle,
+        cwd: &working_dir,
+        config_path: &config_path,
+        spawn_env,
+        secrets: &session_secrets,
+    };
+    let created = host.create(root, &spec)?;
+    let session = created.rex_session.clone().expect("native session created");
+    let environment = super::host::block_env(&spec, std::env::vars());
+    let shell = host.mux().get_default_shell()?;
+    let SessionHost::Rex(rex) = &host;
+    let mut environment_files = Vec::new();
+    for (ordinal, (index, pane)) in plan.iter().enumerate() {
+        let respawns = ordinal > 0
+            || crate::multiplexer::util::resolve_pane_command_with_config(
+                pane.command.as_deref(),
+                request.run_commands,
+                prompt.as_deref(),
                 &working_dir,
-                PaneSetupOptions {
-                    run_commands: request.run_commands,
-                    prompt_file_path: prompt.as_deref(),
-                    worktree_root: Some(&worktree),
-                    lima_vm_name: None,
-                    resume_mode: resume_mode.clone(),
-                    sandbox_supervisor: Some(&supervisor),
-                    path_prefix: status_bin.as_deref(),
-                },
                 &config,
                 workspace.agent.as_deref(),
+                &shell,
             )
-            .with_context(|| format!("Failed to start pane {index}"))?;
-        drop(created);
-        let execution = workspace.execution.as_mut().expect("execution recorded");
-        execution.panes.retain(|recorded| recorded.index != *index);
-        execution.panes.push(PaneProgress { index: *index });
-        root.save(&workspace)?;
+            .is_some();
+        if respawns {
+            let file = secrets::export_file(root, &format!("{name}.{index}.agent"), &environment)?;
+            rex.mux.source_on_respawn(file.to_path_buf());
+            environment_files.push(file);
+        }
     }
+    let execution = workspace.execution.as_mut().expect("execution recorded");
+    let placement = execution.rex.as_mut().expect("Rex placement recorded");
+    placement.sessions = plan
+        .iter()
+        .map(|(index, _)| (*index, session.clone()))
+        .collect();
+    root.save(&workspace)?;
+    created.wait_ready()?;
+    let panes: Vec<PaneConfig> = plan.iter().map(|(_, pane)| pane.clone()).collect();
+    let setup = host
+        .mux()
+        .setup_panes(
+            &created.pane_id,
+            &panes,
+            &working_dir,
+            PaneSetupOptions {
+                run_commands: request.run_commands,
+                prompt_file_path: prompt.as_deref(),
+                worktree_root: Some(&worktree),
+                lima_vm_name: None,
+                resume_mode: resume_mode.clone(),
+                sandbox_supervisor: Some(&supervisor),
+                path_prefix: status_bin.as_deref(),
+            },
+            &config,
+            workspace.agent.as_deref(),
+        )
+        .context("Failed to start remote Rex layout")?;
+    let execution = workspace.execution.as_mut().expect("execution recorded");
+    execution.rex.as_mut().expect("Rex placement").blocks = plan
+        .iter()
+        .zip(&setup.pane_ids)
+        .map(|((index, _), id)| (*index, id.clone()))
+        .collect();
+    execution.panes = plan
+        .iter()
+        .map(|(index, _)| PaneProgress { index: *index })
+        .collect();
+    root.save(&workspace)?;
+    host.mux().select_pane(&setup.focus_pane_id)?;
+    if let Some(zoom) = setup.zoom_pane_id {
+        host.mux().zoom_pane(&zoom)?;
+    }
+    for file in &environment_files {
+        secrets::wait_consumed(file)?;
+    }
+    drop(environment_files);
+    drop(created);
 
     let continue_flag = crate::multiplexer::agent::resolve_profile(agent_kind)
         .continue_flag()
@@ -450,14 +375,14 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
     Ok(response)
 }
 
-/// Write `run/bin/workmux`, which runs `pin` against the node store, and
+/// Write `run/bin/workrex`, which runs `pin` against the node store, and
 /// return its directory.
 pub(super) fn write_status_wrapper(root: &NodeRoot, pin: &Path) -> Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let dir = root.path.join("run").join("bin");
     fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
     let script = format!(
-        "#!/bin/sh\n# Written by workmux.\nexport XDG_STATE_HOME={}\nexec {} \"$@\"\n",
+        "#!/bin/sh\n# Written by workrex.\nexport XDG_STATE_HOME={}\nexec {} \"$@\"\n",
         shell_quote(&root.path.join("state").to_string_lossy()),
         shell_quote(&pin.to_string_lossy())
     );
@@ -471,136 +396,19 @@ pub(super) fn write_status_wrapper(root: &NodeRoot, pin: &Path) -> Result<PathBu
 }
 
 /// Node variables a session does not inherit: those that steer node verbs,
-/// and the node's own tmux client.
-pub(super) const SESSION_EXCLUDED_ENV: [&str; 6] = [
+/// and the node's own Rex client.
+pub(super) const SESSION_EXCLUDED_ENV: [&str; 5] = [
     crate::frozen_config::FROZEN_CONFIG_ENV,
     super::spawn::SESSION_ROOT_ENV,
     super::spawn::SESSION_WORKSPACE_ENV,
     NODE_ROOT_ENV,
     "XDG_STATE_HOME",
-    "TMUX",
 ];
-
-/// Create a detached session and return its pane. The variables that steer
-/// node verbs are kept out of the server's global environment; the session
-/// gets its workspace config explicitly, and with `spawn_env` the node root
-/// and workspace its agent spawns siblings from. The session runs `command`,
-/// or the default shell without one, and ends when it exits.
-pub(super) fn new_session(
-    socket: &Path,
-    conf: &Path,
-    name: &str,
-    cwd: &Path,
-    config_path: &Path,
-    spawn_env: Option<(&Path, &str)>,
-    command: Option<&str>,
-) -> Result<String> {
-    let mut cmd = tmux(socket);
-    cmd.arg("-f")
-        .arg(conf)
-        // Use tmux's default size until a viewer attaches. An oversized
-        // initial screen can push startup output into history when reflowed
-        // to the viewer's narrower terminal.
-        .args(["new-session", "-d", "-P", "-F", "#{pane_id}"])
-        .args(["-s", name, "-c"])
-        .arg(cwd)
-        // The node terminal advertises RGB. Set the application hint per
-        // session, including when the tmux server predates this session.
-        .args(["-e", "COLORTERM=truecolor"])
-        .arg("-e")
-        .arg(format!(
-            "{}={}",
-            crate::frozen_config::FROZEN_CONFIG_ENV,
-            config_path.display()
-        ));
-    for name in SESSION_EXCLUDED_ENV {
-        cmd.env_remove(name);
-    }
-    if let Some((root, ws_id)) = spawn_env {
-        cmd.arg("-e")
-            .arg(format!(
-                "{}={}",
-                super::spawn::SESSION_ROOT_ENV,
-                root.display()
-            ))
-            .arg("-e")
-            .arg(format!("{}={ws_id}", super::spawn::SESSION_WORKSPACE_ENV));
-    }
-    if let Some(command) = command {
-        cmd.arg(command);
-    }
-    let output = cmd.output().context("Failed to run tmux")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "tmux new-session failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-/// Set `secrets` in a session's environment through a private file, so no
-/// value appears in argv; panes spawned afterwards inherit them.
-pub(super) fn set_session_env(
-    root: &NodeRoot,
-    socket: &Path,
-    name: &str,
-    secrets: &Secrets,
-) -> Result<()> {
-    let file = secrets::tmux_file(root, name, secrets)?;
-    let output = tmux(socket)
-        .arg("source-file")
-        .arg(&*file)
-        .output()
-        .context("Failed to run tmux")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "Failed to set the environment of session {name}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::SplitDirection;
-
-    #[test]
-    fn fresh_server_uses_the_default_terminal_size() {
-        if which::which("tmux").is_err() {
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("tmux.sock");
-        let conf = dir.path().join("tmux.conf");
-        fs::write(&conf, TMUX_CONF).unwrap();
-        let result = new_session(
-            &socket,
-            &conf,
-            "first",
-            dir.path(),
-            &dir.path().join("config.json"),
-            None,
-            None,
-        );
-        let dimensions = tmux(&socket)
-            .args([
-                "display-message",
-                "-p",
-                "-t",
-                "=first:",
-                "#{pane_width}x#{pane_height}",
-            ])
-            .output();
-        let _ = tmux(&socket).arg("kill-server").output();
-
-        result.unwrap();
-        let dimensions = dimensions.unwrap();
-        assert!(dimensions.status.success());
-        assert_eq!(String::from_utf8_lossy(&dimensions.stdout).trim(), "80x24");
-    }
 
     #[test]
     fn plan_skips_unsplit_panes_and_defaults_to_one_shell() {
@@ -626,23 +434,48 @@ mod tests {
     }
 
     #[test]
+    fn marker_sweep_keeps_markers_created_after_its_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = NodeRoot {
+            path: dir.path().to_path_buf(),
+        };
+        let old = AgentMarker::write(&root, "block:old");
+        let mut new = None;
+        AgentMarker::sweep_with(&root, || {
+            new = Some(AgentMarker::write(&root, "block:new"));
+            Some(HashSet::new())
+        });
+        assert_eq!(AgentMarker::read(&root, "block:old"), None);
+        assert!(AgentMarker::read(&root, "block:new").is_some());
+        drop((old, new));
+    }
+
+    #[test]
+    fn marker_sweep_keeps_every_marker_when_rex_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = NodeRoot {
+            path: dir.path().to_path_buf(),
+        };
+        let marker = AgentMarker::write(&root, "block:live");
+        AgentMarker::sweep_with(&root, || None);
+        assert!(AgentMarker::read(&root, "block:live").is_some());
+        drop(marker);
+    }
+
+    #[test]
     fn an_agent_marker_lasts_while_it_is_held() {
         let dir = tempfile::tempdir().unwrap();
         let root = NodeRoot {
             path: dir.path().to_path_buf(),
         };
-        let marker = AgentMarker::write(&root, "%12");
-        assert!(AgentMarker::read(&root, "%12").is_some_and(|at| at > 0));
-        assert_eq!(AgentMarker::read(&root, "%13"), None);
+        let marker = AgentMarker::write(&root, "block:test-12");
+        assert!(AgentMarker::read(&root, "block:test-12").is_some_and(|at| at > 0));
+        assert_eq!(AgentMarker::read(&root, "block:test-13"), None);
         drop(marker);
-        assert_eq!(AgentMarker::read(&root, "%12"), None);
-        // Only tmux pane ids name a file.
+        assert_eq!(AgentMarker::read(&root, "block:test-12"), None);
+        // Only Rex pane ids name a file.
         drop(AgentMarker::write(&root, "../x"));
         assert!(!dir.path().join("run/x").exists());
-        // Without a tmux server no pane is live.
-        std::mem::forget(AgentMarker::write(&root, "%14"));
-        AgentMarker::sweep(&root, &dir.path().join("no-server.sock"));
-        assert_eq!(AgentMarker::read(&root, "%14"), None);
     }
 
     #[test]
@@ -668,16 +501,5 @@ mod tests {
             ..config
         };
         assert_eq!(agent_pane(&config, None, &dir), None);
-    }
-
-    #[test]
-    fn long_roots_fall_back_to_tmp() {
-        let dir = tempfile::tempdir().unwrap();
-        let long = dir.path().join("x".repeat(120));
-        fs::create_dir_all(&long).unwrap();
-        let socket = tmux_socket(&NodeRoot::at(long).unwrap()).unwrap();
-        let text = socket.to_string_lossy();
-        assert!(text.starts_with("/tmp/workmux-node-"), "{text}");
-        assert!(socket.as_os_str().len() <= MAX_SOCKET_PATH);
     }
 }

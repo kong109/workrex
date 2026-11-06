@@ -1,16 +1,15 @@
 //! The daemon's view of the Rex server. The control plane keeps it current
-//! from events, so a daemon tick reads memory and forks nothing: each `rex`
-//! call costs about 24 ms of CPU, against one `list-panes` per tick on tmux.
+//! from events, so a daemon tick reads memory without spawning a Rex CLI.
 
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::multiplexer::SidebarHostSnapshot;
 use crate::multiplexer::rex::events::Event;
 use crate::multiplexer::rex::sidebar_api::View;
 use crate::multiplexer::rex::{PaneReads, ProgramStatuses, RexBackend};
-use crate::multiplexer::tmux::TmuxSidebarSnapshot;
 use crate::multiplexer::{DaemonIo, LivePaneInfo};
 
 use super::store::{self, Files, Options};
@@ -159,7 +158,7 @@ impl Observed {
         }
     }
 
-    pub fn snapshot(&self, prefs: &Options, settings: &Persisted) -> TmuxSidebarSnapshot {
+    pub fn snapshot(&self, prefs: &Options, settings: &Persisted) -> SidebarHostSnapshot {
         let mut cache = self.cache.lock().unwrap();
         for (block, read) in self.pane_reads.take() {
             if let Some(pane) = cache.panes.get_mut(&block) {
@@ -195,8 +194,8 @@ fn build(
     boot_id: Option<String>,
     prefs: &Options,
     settings: &Persisted,
-) -> TmuxSidebarSnapshot {
-    let mut snapshot = TmuxSidebarSnapshot {
+) -> SidebarHostSnapshot {
+    let mut snapshot = SidebarHostSnapshot {
         live_panes: HashMap::new(),
         window_statuses: HashMap::new(),
         active_windows: HashSet::new(),
@@ -257,7 +256,7 @@ pub(super) struct RexDaemonIo {
 }
 
 impl DaemonIo for RexDaemonIo {
-    fn sidebar_snapshot(&self) -> Result<TmuxSidebarSnapshot> {
+    fn sidebar_snapshot(&self) -> Result<SidebarHostSnapshot> {
         Ok(self
             .observed
             .snapshot(&self.files.prefs(), &Persisted::load()))
@@ -310,8 +309,8 @@ mod tests {
             current_command: Some("zsh".into()),
             working_dir: PathBuf::from(cwd),
             title: None,
-            session: Some("wm-proj".into()),
-            window: Some("wm-feat-a".into()),
+            session: Some("wr-proj".into()),
+            window: Some("wr-feat-a".into()),
             session_id: None,
             window_id: None,
             window_index: None,

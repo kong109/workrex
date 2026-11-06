@@ -197,12 +197,12 @@ fn replace_binary(new_binary: &std::path::Path, current_exe: &std::path::Path) -
         .context("Could not determine binary directory")?;
 
     // Copy to destination directory to avoid EXDEV (cross-device rename)
-    let staged = exe_dir.join(".workmux.new");
+    let staged = exe_dir.join(".workrex.new");
     std::fs::copy(new_binary, &staged).context("Failed to copy new binary to install directory")?;
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
 
     // Rename current -> .old, then staged -> current
-    let backup = exe_dir.join(".workmux.old");
+    let backup = exe_dir.join(".workrex.old");
     std::fs::rename(current_exe, &backup).context("Failed to move current binary aside")?;
 
     if let Err(e) = std::fs::rename(&staged, current_exe) {
@@ -249,7 +249,7 @@ pub fn run() -> Result<()> {
     // Guard: Homebrew-managed installs (canonicalize to resolve symlinks)
     let canonical_exe = std::fs::canonicalize(&current_exe).unwrap_or(current_exe.clone());
     if is_homebrew_install(&canonical_exe) {
-        bail!("workmux is managed by Homebrew. Run `brew upgrade workmux` instead.");
+        bail!("workrex is managed by Homebrew. Run `brew upgrade workrex` instead.");
     }
     if is_node_pin(&canonical_exe) {
         bail!(
@@ -338,7 +338,7 @@ pub fn check_and_notify(config: &crate::config::Config) {
     }
 
     // Opt-out via environment variable
-    if std::env::var("WORKMUX_NO_UPDATE_CHECK").is_ok() {
+    if std::env::var("WORKREX_NO_UPDATE_CHECK").is_ok() {
         return;
     }
 
@@ -403,9 +403,9 @@ pub fn check_and_notify(config: &crate::config::Config) {
                 .is_some_and(|p| is_homebrew_install(&p));
 
             let update_cmd = if is_brew {
-                "brew upgrade workmux"
+                "brew upgrade workrex"
             } else {
-                crate::rebrand!("workmux update")
+                "workrex update"
             };
 
             eprintln!(
@@ -453,10 +453,10 @@ mod tests {
     #[test]
     fn test_verify_checksum() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("workmux.tar.gz");
+        let file = dir.path().join("workrex.tar.gz");
         std::fs::write(&file, b"abc").unwrap();
         let line =
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  workmux.tar.gz\n";
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  workrex.tar.gz\n";
         verify_checksum(&file, line).unwrap();
         let err = verify_checksum(&file, &line.replacen("ba78", "0000", 1)).unwrap_err();
         assert!(err.to_string().contains("Checksum mismatch"));
@@ -465,14 +465,14 @@ mod tests {
     #[test]
     fn test_is_homebrew_cellar() {
         assert!(is_homebrew_install(std::path::Path::new(
-            "/opt/homebrew/Cellar/workmux/0.1.124/bin/workmux"
+            "/opt/homebrew/Cellar/workrex/0.1.124/bin/workrex"
         )));
     }
 
     #[test]
     fn test_is_homebrew_prefix() {
         assert!(is_homebrew_install(std::path::Path::new(
-            "/usr/local/Cellar/workmux/0.1.124/bin/workmux"
+            "/usr/local/Cellar/workrex/0.1.124/bin/workrex"
         )));
     }
 
@@ -488,7 +488,7 @@ mod tests {
             "node/run/bin",
             "home/bin",
             "home/.local/bin",
-            "home/.local/state/workmux",
+            "home/.local/state/workrex",
             "usr/local/bin",
         ] {
             std::fs::create_dir_all(path(dir)).unwrap();
@@ -505,12 +505,12 @@ mod tests {
         }
         for install in [
             "home/bin/workrex-1.2",
-            // workrex creates ~/.local/state/workmux on its first run.
+            // workrex creates ~/.local/state/workrex on its first run.
             "home/.local/bin/workrex-0.1.278",
             "usr/local/bin/workrex-0.1.278",
             "usr/local/bin/workrex",
             "node/run/bin/workrex",
-            "node/bin/workmux-0.1.278",
+            "node/bin/other-tool-0.1.278",
             // A marker outside a `bin/` directory marks nothing.
             "node/share/workrex-0.1.278",
             // Only a file marks a root.
@@ -532,14 +532,14 @@ mod tests {
     #[test]
     fn test_is_not_homebrew_local_bin() {
         assert!(!is_homebrew_install(std::path::Path::new(
-            "/usr/local/bin/workmux"
+            "/usr/local/bin/workrex"
         )));
     }
 
     #[test]
     fn test_is_not_homebrew_home() {
         assert!(!is_homebrew_install(std::path::Path::new(
-            "/home/user/.local/bin/workmux"
+            "/home/user/.local/bin/workrex"
         )));
     }
 

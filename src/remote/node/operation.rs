@@ -177,7 +177,7 @@ pub fn request(
                     ws.operation = None;
                     root.save(&ws)?;
                     bail!(
-                        "the local machine isn't connected or runs an older workmux; request withdrawn"
+                        "the local machine isn't connected or runs an older workrex; request withdrawn"
                     );
                 }
             }

@@ -1,7 +1,7 @@
 //! Antigravity CLI (`agy`) status tracking setup.
 //!
 //! Antigravity lifecycle hooks report when an invocation begins and when the
-//! agent loop becomes fully idle. Workmux maps those signals to working and
+//! agent loop becomes fully idle. Workrex maps those signals to working and
 //! done status.
 
 use crate::bin_name::BIN;
@@ -12,13 +12,11 @@ use std::path::{Path, PathBuf};
 
 use super::{StatusCheck, UpdatePreview};
 
-const WORKMUX_GROUP: &str = concat!(env!("CARGO_BIN_NAME"), "-status");
-const REGISTER_COMMAND: &str =
-    crate::rebrand!("workmux register-agent >/dev/null 2>&1 || true; printf '{}\\n'");
+const WORKREX_GROUP: &str = concat!(env!("CARGO_BIN_NAME"), "-status");
+const REGISTER_COMMAND: &str = "workrex register-agent >/dev/null 2>&1 || true; printf '{}\\n'";
 const WORKING_COMMAND: &str =
-    crate::rebrand!("workmux set-window-status working >/dev/null 2>&1 || true; printf '{}\\n'");
-const STOP_COMMAND: &str =
-    crate::rebrand!("workmux set-window-status done >/dev/null 2>&1 || true; printf '{}\\n'");
+    "workrex set-window-status working >/dev/null 2>&1 || true; printf '{}\\n'";
+const STOP_COMMAND: &str = "workrex set-window-status done >/dev/null 2>&1 || true; printf '{}\\n'";
 
 fn gemini_dir() -> Option<PathBuf> {
     home::home_dir().map(|home| home.join(".gemini"))
@@ -48,14 +46,14 @@ fn detection_reason(
 /// Detect if Antigravity CLI is present via filesystem.
 pub fn detect() -> Option<&'static str> {
     detection_reason(
-        std::env::var_os("WORKMUX_TEST_AGY_DETECT").is_some(),
-        std::env::var_os("WORKMUX_TEST").is_some(),
+        std::env::var_os("WORKREX_TEST_AGY_DETECT").is_some(),
+        std::env::var_os("WORKREX_TEST").is_some(),
         which::which("agy").is_ok(),
         gemini_dir().is_some_and(|dir| dir.join("antigravity-cli").is_dir()),
     )
 }
 
-/// Check if workmux status tracking is installed for Antigravity.
+/// Check if workrex status tracking is installed for Antigravity.
 pub fn check() -> Result<StatusCheck> {
     let Some(path) = hooks_path() else {
         return Ok(StatusCheck::NotInstalled);
@@ -69,30 +67,30 @@ fn check_at(path: &Path) -> Result<StatusCheck> {
     }
 
     let config = read_json(path)?;
-    if has_workmux_hooks(&config) {
+    if has_workrex_hooks(&config) {
         Ok(StatusCheck::Installed)
-    } else if config.get(WORKMUX_GROUP).is_some() {
+    } else if config.get(WORKREX_GROUP).is_some() {
         Ok(StatusCheck::UpdateAvailable)
     } else {
         Ok(StatusCheck::NotInstalled)
     }
 }
 
-/// Install workmux lifecycle hooks for Antigravity.
+/// Install workrex lifecycle hooks for Antigravity.
 pub fn install() -> Result<String> {
     let path = hooks_path().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
     install_at(&path)
 }
 
 fn install_at(path: &Path) -> Result<String> {
-    merge_hooks_file(path, &workmux_hooks())?;
+    merge_hooks_file(path, &workrex_hooks())?;
     Ok(format!(
         "Installed Antigravity lifecycle hooks to {}",
         path.display()
     ))
 }
 
-/// Remove workmux status tracking from Antigravity.
+/// Remove workrex status tracking from Antigravity.
 pub fn uninstall() -> Result<String> {
     let Some(path) = hooks_path() else {
         return Ok("Antigravity config dir not found, nothing to uninstall".to_string());
@@ -101,7 +99,7 @@ pub fn uninstall() -> Result<String> {
 }
 
 fn uninstall_at(path: &Path) -> Result<String> {
-    remove_workmux_group_file(path)?
+    remove_workrex_group_file(path)?
         .map_or_else(|| Ok(format!("No Antigravity {BIN} hooks found")), Ok)
 }
 
@@ -115,8 +113,8 @@ pub(crate) fn update_preview() -> Result<Option<UpdatePreview>> {
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{} root is not an object", path.display()))?;
     bundled_object.insert(
-        WORKMUX_GROUP.to_string(),
-        workmux_hooks()[WORKMUX_GROUP].clone(),
+        WORKREX_GROUP.to_string(),
+        workrex_hooks()[WORKREX_GROUP].clone(),
     );
 
     Ok(Some(UpdatePreview {
@@ -126,9 +124,9 @@ pub(crate) fn update_preview() -> Result<Option<UpdatePreview>> {
     }))
 }
 
-fn workmux_hooks() -> Value {
+fn workrex_hooks() -> Value {
     serde_json::json!({
-        WORKMUX_GROUP: {
+        WORKREX_GROUP: {
             "PreInvocation": [{
                 "type": "command",
                 "command": REGISTER_COMMAND
@@ -144,8 +142,8 @@ fn workmux_hooks() -> Value {
     })
 }
 
-fn has_workmux_hooks(config: &Value) -> bool {
-    let Some(group) = config.get(WORKMUX_GROUP) else {
+fn has_workrex_hooks(config: &Value) -> bool {
+    let Some(group) = config.get(WORKREX_GROUP) else {
         return false;
     };
 
@@ -177,13 +175,13 @@ fn merge_hooks_file(path: &Path, hooks_to_add: &Value) -> Result<()> {
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{} root is not an object", path.display()))?;
     let group = hooks_to_add
-        .get(WORKMUX_GROUP)
+        .get(WORKREX_GROUP)
         .ok_or_else(|| anyhow::anyhow!("embedded Antigravity hooks are invalid"))?;
-    config_object.insert(WORKMUX_GROUP.to_string(), group.clone());
+    config_object.insert(WORKREX_GROUP.to_string(), group.clone());
     write_json(path, &config)
 }
 
-fn remove_workmux_group_file(path: &Path) -> Result<Option<String>> {
+fn remove_workrex_group_file(path: &Path) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -192,7 +190,7 @@ fn remove_workmux_group_file(path: &Path) -> Result<Option<String>> {
     let Some(object) = config.as_object_mut() else {
         anyhow::bail!("{} root is not an object", path.display());
     };
-    if object.remove(WORKMUX_GROUP).is_none() {
+    if object.remove(WORKREX_GROUP).is_none() {
         return Ok(None);
     }
 
@@ -243,8 +241,8 @@ mod tests {
 
     #[test]
     fn hook_schema_uses_plain_lifecycle_commands() {
-        let hooks = workmux_hooks();
-        let group = &hooks[WORKMUX_GROUP];
+        let hooks = workrex_hooks();
+        let group = &hooks[WORKREX_GROUP];
 
         assert_eq!(
             group["PreInvocation"][0],
@@ -265,13 +263,13 @@ mod tests {
         assert!(group.get("PreToolUse").is_none());
         assert!(group.get("PostToolUse").is_none());
         assert!(group.get("PostInvocation").is_none());
-        assert!(has_workmux_hooks(&hooks));
+        assert!(has_workrex_hooks(&hooks));
     }
 
     #[test]
     fn hook_schema_uses_only_lifecycle_events() {
-        let hooks = workmux_hooks();
-        let group = hooks[WORKMUX_GROUP].as_object().unwrap();
+        let hooks = workrex_hooks();
+        let group = hooks[WORKREX_GROUP].as_object().unwrap();
 
         assert_eq!(group.len(), 2);
         assert!(group.contains_key("PreInvocation"));
@@ -298,7 +296,7 @@ mod tests {
         install_at(&path).unwrap();
 
         let config = read_json(&path).unwrap();
-        assert!(has_workmux_hooks(&config));
+        assert!(has_workrex_hooks(&config));
         assert!(config.get("user-hooks").is_some());
         assert!(matches!(check_at(&path).unwrap(), StatusCheck::Installed));
     }
@@ -310,7 +308,7 @@ mod tests {
         write_json(
             &path,
             &json!({
-                WORKMUX_GROUP: {
+                WORKREX_GROUP: {
                     "PreInvocation": [{
                         "type": "command",
                         "command": WORKING_COMMAND
@@ -334,8 +332,8 @@ mod tests {
     fn legacy_pre_tool_hook_needs_update() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("hooks.json");
-        let mut legacy = workmux_hooks();
-        legacy[WORKMUX_GROUP]["PreToolUse"] = json!([{
+        let mut legacy = workrex_hooks();
+        legacy[WORKREX_GROUP]["PreToolUse"] = json!([{
             "matcher": ".*",
             "hooks": [{
                 "type": "command",
@@ -352,12 +350,12 @@ mod tests {
         install_at(&path).unwrap();
 
         let config = read_json(&path).unwrap();
-        assert!(config[WORKMUX_GROUP].get("PreToolUse").is_none());
+        assert!(config[WORKREX_GROUP].get("PreToolUse").is_none());
         assert!(matches!(check_at(&path).unwrap(), StatusCheck::Installed));
     }
 
     #[test]
-    fn uninstall_removes_only_workmux_group() {
+    fn uninstall_removes_only_workrex_group() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config/hooks.json");
         install_at(&path).unwrap();
@@ -370,7 +368,7 @@ mod tests {
         uninstall_at(&path).unwrap();
 
         let config = read_json(&path).unwrap();
-        assert!(config.get(WORKMUX_GROUP).is_none());
+        assert!(config.get(WORKREX_GROUP).is_none());
         assert!(config.get("user-hooks").is_some());
     }
 

@@ -9,7 +9,7 @@ use crate::config::{SandboxConfig, SandboxRuntime};
 use crate::state::StateStore;
 
 /// Default image registry prefix.
-pub const DEFAULT_IMAGE_REGISTRY: &str = "ghcr.io/raine/workmux-sandbox";
+pub const DEFAULT_IMAGE_REGISTRY: &str = "ghcr.io/kong109/workrex-sandbox";
 
 /// Embedded Dockerfiles for each agent.
 pub const DOCKERFILE_BASE: &str = include_str!("../../docker/Dockerfile.base");
@@ -97,7 +97,7 @@ pub fn build_image(config: &SandboxConfig, agent: &str) -> Result<()> {
     })?;
 
     // Stage 1: Build base image (use localhost/ prefix for Podman compatibility)
-    let base_tag = "localhost/workmux-sandbox-base";
+    let base_tag = "localhost/workrex-sandbox-base";
     println!("Building base image...");
 
     let tmp_dir = tempfile::tempdir().context("Failed to create temp dir")?;
@@ -248,7 +248,7 @@ pub fn validate_git_metadata_boundary(runtime: SandboxRuntime) -> Result<()> {
     );
     if !output.status.success() || !apple_container_supports_read_only_path(&help) {
         anyhow::bail!(
-            "This Apple Container build lacks --read-only-path, which Workmux requires to protect host Git control files. Upgrade Apple Container or use Docker or Podman."
+            "This Apple Container build lacks --read-only-path, which Workrex requires to protect host Git control files. Upgrade Apple Container or use Docker or Podman."
         );
     }
     Ok(())
@@ -977,15 +977,15 @@ fn build_docker_run_args_inner(
             args.extend(deny_mode_run_flags());
         }
         args.push("--env".to_string());
-        args.push(format!("WM_TARGET_UID={}", uid));
+        args.push(format!("WORKREX_TARGET_UID={}", uid));
         args.push("--env".to_string());
-        args.push(format!("WM_TARGET_GID={}", gid));
+        args.push(format!("WORKREX_TARGET_GID={}", gid));
         // Supplementary groups are applied inside the container by setpriv
         // (see docker/Dockerfile.base). The root process drops privileges after
         // firewall setup, so setpriv receives the complete supplementary list.
         if !group_add.is_empty() {
             args.push("--env".to_string());
-            args.push(format!("WM_EXTRA_GIDS={}", group_add.join(",")));
+            args.push(format!("WORKREX_EXTRA_GIDS={}", group_add.join(",")));
         }
     } else {
         // Normal mode runs as the host user directly.
@@ -1088,7 +1088,7 @@ fn build_docker_run_args_inner(
                 continue;
             }
             // Mask the path under the current worktree AND, if applicable,
-            // under the main worktree (which workmux also bind-mounts for
+            // under the main worktree (which workrex also bind-mounts for
             // symlink resolution). Without the second mount, a symlinked
             // secret would still be readable via the main-worktree alias.
             let mut candidates = vec![worktree_root.join(rel_path)];
@@ -1132,7 +1132,7 @@ fn build_docker_run_args_inner(
     if let Some(shim_dir) = shim_host_dir {
         args.push("--mount".to_string());
         args.push(format!(
-            "type=bind,source={},target=/tmp/.workmux-shims/bin,readonly",
+            "type=bind,source={},target=/tmp/.workrex-shims/bin,readonly",
             shim_dir.display()
         ));
     }
@@ -1227,7 +1227,7 @@ fn build_docker_run_args_inner(
     // Prepend shim directory when host-exec is configured.
     let sbin = if network_deny { ":/usr/sbin:/sbin" } else { "" };
     let path = if shim_host_dir.is_some() {
-        format!("/tmp/.workmux-shims/bin:/tmp/.local/bin:/usr/local/bin:/usr/bin:/bin{sbin}")
+        format!("/tmp/.workrex-shims/bin:/tmp/.local/bin:/usr/local/bin:/usr/bin:/bin{sbin}")
     } else {
         format!("/tmp/.local/bin:/usr/local/bin:/usr/bin:/bin{sbin}")
     };
@@ -1286,13 +1286,13 @@ pub fn deny_mode_run_flags() -> Vec<String> {
 use crate::shell::shell_escape;
 
 /// Shell words that start the sandbox supervisor, resolved through `PATH`.
-const DEFAULT_SUPERVISOR: &str = crate::rebrand!("workmux sandbox run");
+const DEFAULT_SUPERVISOR: &str = "workrex sandbox run";
 
 /// Wrap a command to run inside a Docker/Podman container via the sandbox supervisor.
 ///
-/// Generates a `workmux sandbox run` command that starts an RPC server, then
+/// Generates a `workrex sandbox run` command that starts an RPC server, then
 /// runs the command inside a container with RPC connection details as env vars.
-/// `supervisor` replaces the default `workmux sandbox run` words, already
+/// `supervisor` replaces the default `workrex sandbox run` words, already
 /// shell-quoted, for callers that must pin a specific binary.
 pub fn wrap_for_container(
     command: &str,
@@ -1917,7 +1917,7 @@ mod tests {
     #[test]
     fn test_excluded_files_masks_main_worktree_alias() {
         // When the current worktree has a `.git` gitlink pointing into a main
-        // repo's worktrees/<name>/ directory, workmux bind-mounts both the
+        // repo's worktrees/<name>/ directory, workrex bind-mounts both the
         // current worktree and the main worktree. A secret reachable via the
         // main-worktree mount (e.g. a symlink from current worktree -> main)
         // must be masked on both paths.
@@ -1963,7 +1963,7 @@ mod tests {
     #[test]
     fn test_excluded_files_masks_main_worktree_alias_with_relative_gitdir() {
         // `git worktree add --relative-paths` (git 2.48+) writes a `.git` file
-        // with a RELATIVE `gitdir:` pointer. Workmux must resolve it against
+        // with a RELATIVE `gitdir:` pointer. Workrex must resolve it against
         // the worktree root; otherwise the main-worktree mount and the alias
         // masking would be emitted with relative `--mount` paths.
         let tmp = tempfile::tempdir().unwrap();
@@ -2108,14 +2108,17 @@ mod tests {
             "claude",
             Path::new("/tmp/project"),
             Path::new("/tmp/project"),
-            &[("WM_SANDBOX_GUEST", "1"), ("WM_RPC_PORT", "12345")],
+            &[
+                ("WORKREX_SANDBOX_GUEST", "1"),
+                ("WORKREX_RPC_PORT", "12345"),
+            ],
             None,
             false,
         )
         .unwrap();
 
-        assert!(args.contains(&"WM_SANDBOX_GUEST=1".to_string()));
-        assert!(args.contains(&"WM_RPC_PORT=12345".to_string()));
+        assert!(args.contains(&"WORKREX_SANDBOX_GUEST=1".to_string()));
+        assert!(args.contains(&"WORKREX_RPC_PORT=12345".to_string()));
     }
 
     #[test]
@@ -2154,7 +2157,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(result.starts_with(crate::rebrand!(" workmux sandbox run")));
+        assert!(result.starts_with(" workrex sandbox run"));
         assert!(result.contains("'/tmp/project'"));
         assert!(result.contains("-- 'claude'"));
         // Should NOT contain --worktree-root when paths are equal
@@ -2205,14 +2208,14 @@ mod tests {
     fn test_wrap_with_pinned_supervisor() {
         let result = wrap_for_container(
             "claude",
-            Some("'/n/bin/workmux-x' sandbox run --node-root '/n'"),
+            Some("'/n/bin/workrex-x' sandbox run --node-root '/n'"),
             Path::new("/tmp/project"),
             Path::new("/tmp/project"),
         )
         .unwrap();
 
         assert!(
-            result.starts_with(" '/n/bin/workmux-x' sandbox run --node-root '/n' '/tmp/project'"),
+            result.starts_with(" '/n/bin/workrex-x' sandbox run --node-root '/n' '/tmp/project'"),
             "{result}"
         );
     }
@@ -2238,10 +2241,10 @@ mod tests {
 
         let args_str = args.join(" ");
         // Shim dir should be bind-mounted
-        assert!(args_str.contains(".workmux-shims/bin"));
+        assert!(args_str.contains(".workrex-shims/bin"));
         // PATH should include shim dir first
         let path_arg = args.iter().find(|a| a.starts_with("PATH=")).unwrap();
-        assert!(path_arg.starts_with("PATH=/tmp/.workmux-shims/bin:"));
+        assert!(path_arg.starts_with("PATH=/tmp/.workrex-shims/bin:"));
     }
 
     #[test]
@@ -2265,11 +2268,11 @@ mod tests {
         let config = SandboxConfig::default();
         assert_eq!(
             config.resolved_image("claude"),
-            "ghcr.io/raine/workmux-sandbox:claude"
+            "ghcr.io/kong109/workrex-sandbox:claude"
         );
         assert_eq!(
             config.resolved_image("codex"),
-            "ghcr.io/raine/workmux-sandbox:codex"
+            "ghcr.io/kong109/workrex-sandbox:codex"
         );
     }
 
@@ -2441,8 +2444,8 @@ mod tests {
         let args = test_build_deny_args();
 
         let args_str = args.join(" ");
-        assert!(args_str.contains("WM_TARGET_UID="));
-        assert!(args_str.contains("WM_TARGET_GID="));
+        assert!(args_str.contains("WORKREX_TARGET_UID="));
+        assert!(args_str.contains("WORKREX_TARGET_GID="));
     }
 
     #[test]
@@ -2533,8 +2536,8 @@ mod tests {
         assert!(!args.contains(&"--security-opt".to_string()));
         assert!(!args.contains(&"--user".to_string()));
         // UID/GID env vars supply the network-init.sh privilege-drop target.
-        assert!(args.iter().any(|a| a.starts_with("WM_TARGET_UID=")));
-        assert!(args.iter().any(|a| a.starts_with("WM_TARGET_GID=")));
+        assert!(args.iter().any(|a| a.starts_with("WORKREX_TARGET_UID=")));
+        assert!(args.iter().any(|a| a.starts_with("WORKREX_TARGET_GID=")));
     }
 
     #[test]
@@ -2604,7 +2607,7 @@ mod tests {
         let groups = find_flag_value(&args, "--group-add");
         assert!(groups.contains(&"dialout"));
         assert!(groups.contains(&"video"));
-        assert!(!args.iter().any(|a| a.starts_with("WM_EXTRA_GIDS=")));
+        assert!(!args.iter().any(|a| a.starts_with("WORKREX_EXTRA_GIDS=")));
     }
 
     #[test]
@@ -2615,7 +2618,7 @@ mod tests {
         let args = test_build_run_args(&config, true);
 
         assert!(!args.iter().any(|a| a == "--group-add"));
-        assert!(args.iter().any(|a| a == "WM_EXTRA_GIDS=dialout,20"));
+        assert!(args.iter().any(|a| a == "WORKREX_EXTRA_GIDS=dialout,20"));
     }
 
     #[test]

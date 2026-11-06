@@ -1,6 +1,6 @@
 ---
 title: "close"
-description: Close a tmux window without removing the worktree or branch
+description: Close a Rex window without removing the worktree or branch
 ---
 
 Closes the multiplexer window for a worktree, and keeps the worktree and branch. Use it to close a window you plan to return to later.
@@ -29,8 +29,7 @@ When `close` closes a Rex session that Rex.app shows, the app moves to the first
 
 To reopen the window later, use [`workrex open`](/reference/commands/open/).
 
-For a workspace on a [remote server](/guide/remote/), `close` closes only the local window: the agent keeps running on the server. Run it with no name inside the workspace's window, or name the workspace (`workrex close <handle>`). In a pane on the server, `close` is refused, because the window is on the local machine.
-
-:::tip
-You can also use tmux's native kill-window command (default: `prefix + &`) to close a worktree's window with the same effect. For worktrees created with `--session`, this closes the entire session.
-:::
+For a workspace on a [remote server](/guide/remote/), `close` is refused because
+there is no local relay window to detach. Switch to another session in Rex.app
+to leave the remote agent running. Use `workrex remove <handle>` when you intend
+to stop and remove the remote workspace.

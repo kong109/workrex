@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-readonly binary_name="workmux"
-readonly archive_name="workmux-darwin-arm64.tar.gz"
+readonly binary_name="workrex"
+readonly archive_name="workrex-darwin-arm64.tar.gz"
 readonly workflow_file="install.yml"
 
 tmp_dir=""

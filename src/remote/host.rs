@@ -17,7 +17,7 @@ pub fn available(transport: &Transport, programs: &[String]) -> Result<Vec<bool>
     let mut body = String::new();
     for (index, program) in programs.iter().enumerate() {
         body.push_str(&format!(
-            "if command -v -- {} >/dev/null 2>&1; then printf 'workmux-cli-{index}=1\\n'; else printf 'workmux-cli-{index}=0\\n'; fi\n",
+            "if command -v -- {} >/dev/null 2>&1; then printf 'workrex-cli-{index}=1\\n'; else printf 'workrex-cli-{index}=0\\n'; fi\n",
             shell_quote(program)
         ));
     }
@@ -26,7 +26,7 @@ pub fn available(transport: &Transport, programs: &[String]) -> Result<Vec<bool>
         .iter()
         .enumerate()
         .map(|(index, _)| {
-            let key = format!("workmux-cli-{index}=");
+            let key = format!("workrex-cli-{index}=");
             match text.lines().find_map(|line| line.strip_prefix(&key)) {
                 Some("1") => Ok(true),
                 Some("0") => Ok(false),
@@ -49,9 +49,9 @@ pub enum Resolution {
 /// returned, never the login environment.
 pub fn resolve(transport: &Transport, program: &str, expected: &str) -> Result<Resolution> {
     let body = format!(
-        "p=$(command -v -- {})\nif [ -n \"$p\" ] && [ \"$p\" -ef {} ]; then echo workmux-cli=expected; \
-         elif [ -n \"$p\" ]; then printf 'workmux-cli=other:%s\\n' \"$p\"; \
-         else echo workmux-cli=missing; fi\n",
+        "p=$(command -v -- {})\nif [ -n \"$p\" ] && [ \"$p\" -ef {} ]; then echo workrex-cli=expected; \
+         elif [ -n \"$p\" ]; then printf 'workrex-cli=other:%s\\n' \"$p\"; \
+         else echo workrex-cli=missing; fi\n",
         shell_quote(program),
         shell_quote(expected)
     );
@@ -59,7 +59,7 @@ pub fn resolve(transport: &Transport, program: &str, expected: &str) -> Result<R
     Ok(
         match text
             .lines()
-            .find_map(|line| line.strip_prefix("workmux-cli="))
+            .find_map(|line| line.strip_prefix("workrex-cli="))
         {
             Some("expected") => Resolution::Expected,
             Some("missing") => Resolution::Missing,

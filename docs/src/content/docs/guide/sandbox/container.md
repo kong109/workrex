@@ -25,17 +25,21 @@ On macOS 26+ with Apple Silicon, you can also use [Apple Container](https://gith
 Add to your global or project config:
 
 ```yaml
-# ~/.config/workmux/config.yaml or .workmux.yaml
+# ~/.config/workrex/config.yaml or .workrex.yaml
 sandbox:
   enabled: true
 ```
 
-These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
+These are the Workrex configuration paths. See [configuration](/guide/configuration/).
 
-The pre-built image (`ghcr.io/raine/workmux-sandbox:{agent}`) is pulled automatically on first run based on your configured agent. No manual build step is needed, but possible if required (see [custom images](#custom-images)).
+The configured image defaults to `ghcr.io/kong109/workrex-sandbox:{agent}`. When working from unreleased source, build an image from this checkout with `workrex sandbox build` before starting an agent. Pull a published image only when that version is available. See [custom images](#custom-images) to use another image.
 
-:::caution[The default image is upstream's]
-workrex publishes no sandbox image of its own. The default `image` is upstream workmux's `ghcr.io/raine/workmux-sandbox:{agent}`, which ships upstream's `workmux` binary rather than `workrex`. `workrex sandbox build` installs upstream `workmux` the same way, from the bundled Dockerfiles. To add this build to the configured image, run [`workrex sandbox install-dev`](/guide/sandbox/features/#installing-local-builds).
+:::note[Match the image to the Workrex build]
+Sandbox images must contain the matching Workrex guest binary. Build from this
+checkout for the Rex-only port; do not assume an older published image includes
+unreleased changes. [`workrex sandbox install-dev`](/guide/sandbox/features/#installing-local-builds)
+installs a local build into a configured image or running VM.
+
 :::
 
 To pull the latest image explicitly:
@@ -46,27 +50,27 @@ workrex sandbox pull
 
 ## Configuration
 
-| Option                    | Default                                 | Description                                                                                                                                                                                                                                                                                           |
-| ------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                 | `false`                                 | Enable container sandboxing                                                                                                                                                                                                                                                                           |
-| `container.runtime`       | auto-detect                             | Container runtime: `docker`, `podman`, or `apple-container`. Auto-detected from PATH when not set. On macOS, prefers Apple Container (`container`) over Docker/Podman.                                                                                                                                |
-| `container.memory`        | `16G` (Apple Container) / none (others) | Memory limit for the container. Apple Container VMs default to 1 GB which is too low, so workrex sets `16G` by default. This is a ceiling, not an upfront allocation. Works with any runtime when explicitly set.                                                                                     |
-| `container.cpus`          | none                                    | CPU count for the container. Only passed when explicitly set. Apple Container defaults to 4 CPUs which is sufficient for most workloads.                                                                                                                                                              |
-| `container.devices`       | `[]`                                    | Host device nodes exposed to the sandbox (e.g. `/dev/kvm`, `/dev/ttyUSB0`). Passed to the runtime as `--device`. Docker and Podman only; Apple Container rejects. **Global config only.**                                                                                                             |
-| `container.group_add`     | `[]`                                    | Supplementary groups added to the sandboxed process (e.g. `dialout`, `video`, or numeric GIDs). Passed to the runtime as `--group-add`. Docker and Podman only; Apple Container rejects. **Global config only.**                                                                                      |
-| `container.cap_add`       | `[]`                                    | Extra Linux capabilities granted to the container, passed verbatim as `--cap-add` (e.g. `ALL` or `SYS_ADMIN`). Docker and Podman only; Apple Container ignores it. Permissive values weaken host-kernel container isolation. **Global config only.**                                                  |
-| `container.security_opt`  | `[]`                                    | Security options passed verbatim as `--security-opt` (e.g. `seccomp=unconfined` or `no-new-privileges`). Docker and Podman only; Apple Container ignores it. Options can strengthen or weaken confinement. **Global config only.**                                                                    |
-| `container.oci_runtime`   | none (engine default)                   | OCI runtime to run the container under, passed as Docker or local Podman `--runtime`. Unset omits `--runtime`, deferring to the engine's configured default. Set to e.g. `kata` for stronger VM-based isolation. Remote Podman rejects this flag; Apple Container ignores it. **Global config only.** |
-| `target`                  | `agent`                                 | Which panes to sandbox: `agent` or `all`                                                                                                                                                                                                                                                              |
-| `image`                   | `ghcr.io/raine/workmux-sandbox:{agent}` | Container image name (auto-resolved from configured agent).                                                                                                                                                                                                                                           |
-| `rpc_host`                | auto                                    | Override hostname for guest-to-host RPC. Defaults to `host.docker.internal` (Docker), `host.containers.internal` (Podman), or `192.168.64.1` (Apple Container). **Global config only.**                                                                                                               |
-| `env_passthrough`         | `[]`                                    | Environment variables to pass through. **Global config only.**                                                                                                                                                                                                                                        |
-| `env`                     | `{}`                                    | Environment variables to set with explicit values (unlike `env_passthrough` which reads from host). **Global config only.**                                                                                                                                                                           |
-| `extra_mounts`            | `[]`                                    | Additional host paths to mount (see [shared features](/guide/sandbox/features/#extra-mounts)). **Global config only.**                                                                                                                                                                                |
-| `agent_config_dir`        | per-agent default                       | Custom host directory for agent config. Supports `{agent}` placeholder. Overrides default mounts (e.g. `~/.claude/`). Auto-created if missing. **Global config only.**                                                                                                                                |
-| `network.policy`          | `allow`                                 | Network restriction policy: `allow` (no restrictions) or `deny` (block all except allowed domains). See [network restrictions](#network-restrictions). **Global config only.**                                                                                                                        |
-| `network.allowed_domains` | `[]`                                    | Allowed outbound HTTPS domains when policy is `deny`. Supports exact matches, `*.` wildcard prefixes, and exact-host private destination opt-in. **Global config only.**                                                                                                                              |
-| `network.max_connections` | `128`                                   | Maximum concurrent HTTPS proxy connections in deny mode. Must be between 1 and 1024. **Global config only.**                                                                                                                                                                                          |
+| Option                    | Default                                   | Description                                                                                                                                                                                                                                                                                           |
+| ------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                 | `false`                                   | Enable container sandboxing                                                                                                                                                                                                                                                                           |
+| `container.runtime`       | auto-detect                               | Container runtime: `docker`, `podman`, or `apple-container`. Auto-detected from PATH when not set. On macOS, prefers Apple Container (`container`) over Docker/Podman.                                                                                                                                |
+| `container.memory`        | `16G` (Apple Container) / none (others)   | Memory limit for the container. Apple Container VMs default to 1 GB which is too low, so workrex sets `16G` by default. This is a ceiling, not an upfront allocation. Works with any runtime when explicitly set.                                                                                     |
+| `container.cpus`          | none                                      | CPU count for the container. Only passed when explicitly set. Apple Container defaults to 4 CPUs which is sufficient for most workloads.                                                                                                                                                              |
+| `container.devices`       | `[]`                                      | Host device nodes exposed to the sandbox (e.g. `/dev/kvm`, `/dev/ttyUSB0`). Passed to the runtime as `--device`. Docker and Podman only; Apple Container rejects. **Global config only.**                                                                                                             |
+| `container.group_add`     | `[]`                                      | Supplementary groups added to the sandboxed process (e.g. `dialout`, `video`, or numeric GIDs). Passed to the runtime as `--group-add`. Docker and Podman only; Apple Container rejects. **Global config only.**                                                                                      |
+| `container.cap_add`       | `[]`                                      | Extra Linux capabilities granted to the container, passed verbatim as `--cap-add` (e.g. `ALL` or `SYS_ADMIN`). Docker and Podman only; Apple Container ignores it. Permissive values weaken host-kernel container isolation. **Global config only.**                                                  |
+| `container.security_opt`  | `[]`                                      | Security options passed verbatim as `--security-opt` (e.g. `seccomp=unconfined` or `no-new-privileges`). Docker and Podman only; Apple Container ignores it. Options can strengthen or weaken confinement. **Global config only.**                                                                    |
+| `container.oci_runtime`   | none (engine default)                     | OCI runtime to run the container under, passed as Docker or local Podman `--runtime`. Unset omits `--runtime`, deferring to the engine's configured default. Set to e.g. `kata` for stronger VM-based isolation. Remote Podman rejects this flag; Apple Container ignores it. **Global config only.** |
+| `target`                  | `agent`                                   | Which panes to sandbox: `agent` or `all`                                                                                                                                                                                                                                                              |
+| `image`                   | `ghcr.io/kong109/workrex-sandbox:{agent}` | Container image name (auto-resolved from configured agent).                                                                                                                                                                                                                                           |
+| `rpc_host`                | auto                                      | Override hostname for guest-to-host RPC. Defaults to `host.docker.internal` (Docker), `host.containers.internal` (Podman), or `192.168.64.1` (Apple Container). **Global config only.**                                                                                                               |
+| `env_passthrough`         | `[]`                                      | Environment variables to pass through. **Global config only.**                                                                                                                                                                                                                                        |
+| `env`                     | `{}`                                      | Environment variables to set with explicit values (unlike `env_passthrough` which reads from host). **Global config only.**                                                                                                                                                                           |
+| `extra_mounts`            | `[]`                                      | Additional host paths to mount (see [shared features](/guide/sandbox/features/#extra-mounts)). **Global config only.**                                                                                                                                                                                |
+| `agent_config_dir`        | per-agent default                         | Custom host directory for agent config. Supports `{agent}` placeholder. Overrides default mounts (e.g. `~/.claude/`). Auto-created if missing. **Global config only.**                                                                                                                                |
+| `network.policy`          | `allow`                                   | Network restriction policy: `allow` (no restrictions) or `deny` (block all except allowed domains). See [network restrictions](#network-restrictions). **Global config only.**                                                                                                                        |
+| `network.allowed_domains` | `[]`                                      | Allowed outbound HTTPS domains when policy is `deny`. Supports exact matches, `*.` wildcard prefixes, and exact-host private destination opt-in. **Global config only.**                                                                                                                              |
+| `network.max_connections` | `128`                                     | Maximum concurrent HTTPS proxy connections in deny mode. Must be between 1 and 1024. **Global config only.**                                                                                                                                                                                          |
 
 ### Example configurations
 
@@ -130,7 +134,7 @@ sandbox:
 Notes on hardware access:
 
 - Both `devices` and `group_add` are **global config only**. A project's
-  `.workmux.yaml` cannot opt into them; this prevents a repository from
+  `.workrex.yaml` cannot opt into them; this prevents a repository from
   silently widening the sandbox.
 - Apple Container does not support `--device` or `--group-add`. Set
   `container.runtime: docker` (or `podman`) if you need hardware access.
@@ -158,7 +162,7 @@ sandbox:
 
 Listed paths are relative to the worktree root. Each one is shadowed by a read-only `/dev/null` bind mount, so agents running inside the container cannot read the host file without having to restructure the project. Files reachable via workrex's main-worktree mount (including symlinks from the current worktree into it) are masked at both paths. Absolute paths and entries containing `..` components are rejected; files that don't exist on disk are skipped with a warning.
 
-**Security: global-only.** `excluded_files` is ignored when set in a project's `.workmux.yaml`; it must be configured in your global config (`~/.config/workmux/config.yaml`). This prevents a malicious repo from deleting protections via its own config.
+**Security: global-only.** `excluded_files` is ignored when set in a project's `.workrex.yaml`; it must be configured in your global config (`~/.config/workrex/config.yaml`). This prevents a malicious repo from deleting protections via its own config.
 
 **Note:** `excluded_files` relies on file-level bind mounts, which Apple Container does not support (it only accepts directory mounts). When the runtime is Apple Container and `excluded_files` is set, workrex fails fast rather than silently leaving secrets readable. Use Docker or Podman if you need this feature.
 
@@ -187,7 +191,7 @@ up is out of scope here. See the runtime's own documentation.
 Notes:
 
 - **Global config only.** Like `devices`/`group_add`, `oci_runtime` is ignored
-  when set in a project's `.workmux.yaml`. It changes the isolation boundary, so
+  when set in a project's `.workrex.yaml`. It changes the isolation boundary, so
   a repository must not be able to select (or downgrade) it via its own config.
 - **Kata needs Docker.** Kata Containers does not officially support Podman as a
   container manager ([Kata limitations](https://github.com/kata-containers/kata-containers/blob/main/docs/Limitations.md)),
@@ -247,7 +251,7 @@ When you run `workrex add feature-x`, the agent command is wrapped:
 
 ```bash
 # Without sandbox:
-claude -- "$(cat .workmux/PROMPT-feature-x.md)"
+claude -- "$(cat .workrex/PROMPT-feature-x.md)"
 
 # With sandbox (Docker example):
 docker run --rm -it \
@@ -259,8 +263,8 @@ docker run --rm -it \
   --mount type=bind,source=~/.claude-sandbox.json,target=/tmp/.claude.json \
   --mount type=bind,source=~/.claude,target=/tmp/.claude \
   --workdir /path/to/worktree \
-  workmux-sandbox:claude \
-  sh -c 'claude -- "$(cat .workmux/PROMPT-feature-x.md)"'
+  workrex-sandbox:claude \
+  sh -c 'claude -- "$(cat .workrex/PROMPT-feature-x.md)"'
 ```
 
 The exact flags vary by runtime (e.g., Podman adds `--userns=keep-id`, Apple Container uses directory mounts instead of file mounts).
@@ -328,7 +332,7 @@ Network restrictions block outbound connections from sandboxed containers, only 
 
 ### Configuration
 
-Add to global config (`~/.config/workmux/config.yaml`):
+Add to global config (`~/.config/workrex/config.yaml`):
 
 ```yaml
 sandbox:
@@ -341,7 +345,7 @@ sandbox:
       - "platform.claude.com"
 ```
 
-`network` is a global-only setting. If set in a project's `.workmux.yaml`, it is ignored and a warning is logged. This ensures that project config cannot weaken network restrictions set by the user.
+`network` is a global-only setting. If set in a project's `.workrex.yaml`, it is ignored and a warning is logged. This ensures that project config cannot weaken network restrictions set by the user.
 
 The proxy accepts up to 128 concurrent HTTPS connections by default. Set `max_connections` under `network` to adjust the limit for workloads with different connection-pool requirements. A connection that exceeds the limit receives an HTTP 503 response.
 
@@ -406,4 +410,4 @@ A custom image for Codex needs Codex 0.156 or newer, installed from its full rel
 
 ## Security: hooks in sandbox
 
-Pre-merge and pre-remove hooks are always skipped for RPC-triggered merges (`--no-verify --no-hooks` is forced by the host). This prevents a compromised guest from injecting malicious hooks via `.workmux.yaml` and triggering them on the host. Similarly, `SpawnAgent` RPC forces `--no-hooks` to skip post-create hooks.
+Pre-merge and pre-remove hooks are always skipped for RPC-triggered merges (`--no-verify --no-hooks` is forced by the host). This prevents a compromised guest from injecting malicious hooks via `.workrex.yaml` and triggering them on the host. Similarly, `SpawnAgent` RPC forces `--no-hooks` to skip post-create hooks.

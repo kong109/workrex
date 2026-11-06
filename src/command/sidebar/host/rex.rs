@@ -22,6 +22,7 @@ use crate::multiplexer::{
     Appearance, Change, DaemonIo, HostPane, Multiplexer, Nav, Reach, SidebarHost, SidebarRequest,
 };
 
+use super::super::snapshot::NavigationTarget;
 use super::super::{NavAction, app, daemon, view};
 use control::{Plane, Scope};
 use observe::{Observed, RexDaemonIo};
@@ -127,10 +128,30 @@ impl<'a> Requests<'a> {
             SidebarRequest::Filter(mode) => self.filter(mode.as_deref()),
             SidebarRequest::Group { mode, clear } => self.group(mode.as_deref(), clear),
             SidebarRequest::Views(mode) => self.views(mode.as_deref()),
+            SidebarRequest::Layout(layout) => {
+                self.files.update_prefs(|prefs| {
+                    prefs.set_global("@workrex_sidebar_layout", Some(layout.clone()))
+                })?;
+                let store = crate::state::StateStore::new()?;
+                let mut settings = store.load_settings()?;
+                settings.sidebar_layout = Some(layout);
+                store.save_settings(&settings)?;
+                self.signal(libc::SIGUSR1);
+                Ok(())
+            }
             SidebarRequest::ExpandedGroups(mut labels) => {
                 labels.sort_unstable();
                 self.files.update_prefs(|prefs| {
                     prefs.set_global(store::EXPANDED, Some(labels.join("\t")))
+                })?;
+                self.signal(libc::SIGUSR1);
+                Ok(())
+            }
+            SidebarRequest::Wake { pane_id } => {
+                self.files.update_prefs(|prefs| {
+                    let mut panes = prefs.global_set(store::SLEEPING);
+                    panes.remove(&pane_id);
+                    prefs.set_global_set(store::SLEEPING, &panes);
                 })?;
                 self.signal(libc::SIGUSR1);
                 Ok(())
@@ -205,28 +226,31 @@ impl<'a> Requests<'a> {
             (Change::Off, Reach::Global) | (Change::Toggle, _) => Scope::Off,
         };
 
+        let position = appearance
+            .position
+            .or(config.sidebar.position)
+            .unwrap_or_default();
         if change == Change::On {
-            if appearance.height.is_some() {
-                bail!("--height sizes a top sidebar, and under Rex the sidebar opens on the left");
-            }
-            match (appearance.position, config.sidebar.position) {
-                (Some(SidebarPosition::Top), _) => {
-                    bail!("--position top needs tmux; under Rex the sidebar opens on the left")
-                }
-                (None, Some(SidebarPosition::Top)) => bail!(
-                    "your config sets sidebar.position to top, which needs tmux; under Rex \
-                     pass --position left or set sidebar.position: left"
-                ),
-                _ => {}
-            }
             let _ = std::thread::spawn(crate::tips::mark_sidebar_used);
         }
         self.files.update_prefs(|prefs| {
             next.write(prefs);
             if next != Scope::Off && change == Change::On {
-                prefs.set_global(store::POSITION, Some("left".into()));
+                prefs.set_global(
+                    store::POSITION,
+                    Some(
+                        match position {
+                            SidebarPosition::Left => "left",
+                            SidebarPosition::Top => "top",
+                        }
+                        .into(),
+                    ),
+                );
                 if let Some(width) = &appearance.width {
                     prefs.set_global(store::WIDTH, Some(width_text(width)));
+                }
+                if let Some(height) = &appearance.height {
+                    prefs.set_global(store::HEIGHT, Some(height_text(height)));
                 }
             }
         })?;
@@ -234,8 +258,12 @@ impl<'a> Requests<'a> {
         if next != Scope::Off {
             self.ensure_daemon()?;
         }
+        config.sidebar.position = Some(position);
         if appearance.width.is_some() {
             config.sidebar.width = appearance.width;
+        }
+        if appearance.height.is_some() {
+            config.sidebar.height = appearance.height;
         }
         Plane::new(self.rex.detached(), self.files.clone(), config)?
             .reconcile_all(change == Change::On)?;
@@ -261,7 +289,7 @@ impl<'a> Requests<'a> {
         Ok(if has_sidebar { Change::Off } else { Change::On })
     }
 
-    /// Leave the sidebar from inside it, the way `q` does on tmux: this
+    /// Leave the sidebar from inside it: this
     /// session's sidebars go away, or every sidebar when the scope is global.
     fn quit(&self, pane: HostPane) -> Result<()> {
         let scope = Scope::from_prefs(&self.files.prefs());
@@ -298,8 +326,13 @@ impl<'a> Requests<'a> {
     fn navigate(&self, nav: Nav) -> Result<()> {
         let daemon = self.files.daemon();
         let agents = daemon.global(store::AGENTS).unwrap_or_default();
-        let mut panes: Vec<&str> = agents.split_whitespace().collect();
-        if panes.is_empty() {
+        let mut targets: Vec<NavigationTarget> = if agents.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(agents)
+                .context("invalid sidebar agent inventory; restart the sidebar")?
+        };
+        if targets.is_empty() {
             bail!("no sidebar agents found (is the sidebar running?)");
         }
 
@@ -332,11 +365,14 @@ impl<'a> Requests<'a> {
             .window(&current_window, view::SCOPE_OPTION)
             .and_then(|value| serde_json::from_str::<view::WindowView>(value).ok())
         {
-            panes.retain(|pane| scope.pane_ids.contains(*pane));
+            targets.retain(|target| scope.pane_ids.contains(target.pane_id()));
         }
         if self.filter_mode() == app::SidebarFilterMode::Session {
-            panes.retain(|pane| pane_sessions.get(*pane) == Some(&current_session));
+            targets.retain(|target| {
+                target.is_local() && pane_sessions.get(target.pane_id()) == Some(&current_session)
+            });
         }
+        let panes: Vec<&str> = targets.iter().map(NavigationTarget::pane_id).collect();
         if panes.is_empty() {
             bail!("no matching agents found");
         }
@@ -358,9 +394,13 @@ impl<'a> Requests<'a> {
                 Nav::Jump(n) => anyhow!("agent {} out of range (1-{})", n, panes.len()),
                 _ => anyhow!("no matching agents found"),
             })?;
-        if let Err(error) = self.rex.switch_to_pane(panes[target], None) {
-            // The backend has already printed how to fix a refusal.
-            if error.is::<AppRefused>() {
+        let result = match &targets[target] {
+            NavigationTarget::Local { pane_id } => self.rex.switch_to_pane(pane_id, None),
+            NavigationTarget::Remote { agent, .. } => crate::remote::agents::open_window(agent),
+        };
+        if let Err(error) = result {
+            // Only local jumps print their refusal inside the backend.
+            if targets[target].is_local() && error.is::<AppRefused>() {
                 std::process::exit(1);
             }
             return Err(error);
@@ -461,9 +501,7 @@ impl<'a> Requests<'a> {
         }
     }
 
-    /// Start the daemon with tmux out of reach. The CLI may run in a tmux
-    /// pane next to Rex, and upstream daemon code still calls tmux in
-    /// places.
+    /// Start the daemon pinned to this Rex server and shared Workrex state.
     fn ensure_daemon(&self) -> Result<()> {
         if self.daemon_running() {
             return Ok(());
@@ -497,6 +535,44 @@ fn width_text(width: &crate::config::SidebarWidth) -> String {
         crate::config::SidebarWidth::Absolute(cols) => cols.to_string(),
         crate::config::SidebarWidth::Percent(percent) => format!("{percent}%"),
     }
+}
+
+fn height_text(height: &crate::config::SidebarHeight) -> String {
+    match height {
+        crate::config::SidebarHeight::Absolute(rows) => rows.to_string(),
+        crate::config::SidebarHeight::Percent(percent) => format!("{percent}%"),
+    }
+}
+
+pub(super) fn sleeping_pane_ids(instance: &str) -> Result<std::collections::HashSet<String>> {
+    Ok(Files::for_instance(instance)?
+        .prefs()
+        .global_set(store::SLEEPING))
+}
+
+const PENDING_SELECTION: &str = "@workrex_sidebar_pending_selection";
+
+pub(super) fn select_sidebar(mux: &dyn Multiplexer, window: &str, pane: &str) -> Result<bool> {
+    let files = Files::for_instance(&mux.instance_id())?;
+    let Some(sidebar) = files.records().get(window).cloned() else {
+        return Ok(false);
+    };
+    files.update_prefs(|prefs| {
+        prefs.set_window(window, PENDING_SELECTION, Some(pane.to_string()))
+    })?;
+    if let Err(error) = mux.switch_to_pane(&sidebar.block_id, None) {
+        files.update_prefs(|prefs| prefs.set_window(window, PENDING_SELECTION, None))?;
+        return Err(error);
+    }
+    Ok(true)
+}
+
+pub(super) fn take_pending_selection(instance: &str, window: &str) -> Result<Option<String>> {
+    Files::for_instance(instance)?.update_prefs(|prefs| {
+        let selected = prefs.window(window, PENDING_SELECTION).map(str::to_string);
+        prefs.set_window(window, PENDING_SELECTION, None);
+        selected
+    })
 }
 
 #[cfg(test)]

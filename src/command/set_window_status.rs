@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::multiplexer::{
     AgentStatus, BackendType, LivePaneInfo, Multiplexer, STATUS_TARGET_BACKEND_ENV,
     STATUS_TARGET_INSTANCE_ENV, STATUS_TARGET_PANE_ENV, create_backend,
-    create_backend_for_instance, detect_backend,
+    create_backend_for_instance,
 };
 use crate::state::{AgentState, PromptUpdate, RemoteUpdate, StateStore};
 
@@ -57,12 +57,6 @@ impl StatusTarget {
             .ok_or_else(|| anyhow::anyhow!("{} is missing", STATUS_TARGET_BACKEND_ENV))?
             .parse::<BackendType>()
             .map_err(anyhow::Error::msg)?;
-        if !matches!(backend, BackendType::Tmux | BackendType::Zellij) {
-            return Err(anyhow::anyhow!(
-                "status targets do not support the {} backend",
-                backend
-            ));
-        }
         let instance = instance
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow::anyhow!("{} is missing", STATUS_TARGET_INSTANCE_ENV))?;
@@ -152,7 +146,7 @@ pub fn register_agent() -> Result<()> {
 }
 
 fn status_tracking_disabled() -> bool {
-    std::env::var_os("WORKMUX_DISABLE_SET_WINDOW_STATUS").is_some()
+    std::env::var_os("WORKREX_DISABLE_SET_WINDOW_STATUS").is_some()
 }
 
 fn run_for_status_target(
@@ -192,7 +186,7 @@ fn run_for_status_target(
     }
 
     // A status update requires identity tied to a live pane. Hooks can lose
-    // multiplexer variables, so tmux additionally accepts an exact agent
+    // multiplexer variables, so Rex additionally accepts an exact agent
     // session binding or process ancestry with agent-specific ownership checks.
     for backend in status_backend_candidates() {
         let mux = create_backend(backend);
@@ -221,9 +215,8 @@ fn apply_status_update(
     apply_status(config, mux, pane_id, change, agent_session_id, prompt, None)
 }
 
-/// Show `status` on `pane_id` (`None` clears it): the multiplexer's status
-/// icon, the state store and the sidebar. Status hooks and panes relaying a
-/// remote agent (`remote`) both come through here.
+/// Show `status` on `pane_id` (`None` clears it): Rex's status icon, the
+/// state store and the sidebar, with remote metadata when supplied.
 pub(crate) fn apply_status(
     config: &Config,
     mux: &dyn Multiplexer,
@@ -275,51 +268,8 @@ pub(crate) fn apply_status(
     Ok(())
 }
 
-#[derive(Debug, Default)]
-struct StatusBackendSignals {
-    workmux_backend: bool,
-    tmux: bool,
-    wezterm: bool,
-    zellij: bool,
-    kitty: bool,
-    rex: bool,
-}
-
-impl StatusBackendSignals {
-    fn from_env() -> Self {
-        Self {
-            workmux_backend: std::env::var_os("WORKMUX_BACKEND").is_some(),
-            tmux: std::env::var_os("TMUX").is_some() || std::env::var_os("TMUX_PANE").is_some(),
-            wezterm: std::env::var_os("WEZTERM_PANE").is_some(),
-            zellij: std::env::var_os("ZELLIJ").is_some()
-                || std::env::var_os("ZELLIJ_PANE_ID").is_some()
-                || std::env::var_os("ZELLIJ_SESSION_NAME").is_some(),
-            kitty: std::env::var_os("KITTY_WINDOW_ID").is_some(),
-            rex: crate::multiplexer::rex::in_rex_terminal(),
-        }
-    }
-
-    fn has_any_signal(&self) -> bool {
-        self.workmux_backend || self.tmux || self.wezterm || self.zellij || self.kitty || self.rex
-    }
-}
-
 fn status_backend_candidates() -> Vec<BackendType> {
-    let signals = StatusBackendSignals::from_env();
-    status_backend_candidates_for(detect_backend(), &signals)
-}
-
-fn status_backend_candidates_for(
-    detected: BackendType,
-    signals: &StatusBackendSignals,
-) -> Vec<BackendType> {
-    let mut backends = vec![detected];
-
-    if !signals.has_any_signal() && detected != BackendType::Zellij {
-        backends.push(BackendType::Zellij);
-    }
-
-    backends
+    vec![BackendType::Rex]
 }
 
 #[derive(Deserialize)]
@@ -507,10 +457,6 @@ fn parse_hook_input(input: &str) -> Option<HookInput> {
 fn resolve_status_pane_id(mux: &dyn Multiplexer, hook: Option<&HookInput>) -> Option<String> {
     if let Some(pane_id) = mux.current_pane_id().filter(|pane_id| !pane_id.is_empty()) {
         return Some(pane_id);
-    }
-
-    if mux.name() != "tmux" {
-        return None;
     }
 
     let live_panes = mux.get_all_live_pane_info().ok()?;
@@ -775,7 +721,7 @@ mod tests {
             working_dir: std::path::PathBuf::from("/repo"),
             title: None,
             session: Some("test".to_string()),
-            window: Some("wm-test".to_string()),
+            window: Some("wr-test".to_string()),
             session_id: Some("$1".to_string()),
             window_id: Some("@1".to_string()),
             window_index: Some(1),
@@ -785,7 +731,7 @@ mod tests {
     fn agent_state(pane_id: &str, pane_pid: u32, agent_session_id: &str) -> AgentState {
         AgentState {
             pane_key: crate::state::PaneKey {
-                backend: "tmux".to_string(),
+                backend: "rex".to_string(),
                 instance: "default".to_string(),
                 pane_id: pane_id.to_string(),
             },
@@ -797,7 +743,7 @@ mod tests {
             pane_pid,
             command: "claude".to_string(),
             updated_ts: 1,
-            window_name: Some("wm-test".to_string()),
+            window_name: Some("wr-test".to_string()),
             session_name: Some("test".to_string()),
             boot_id: Some("boot-1".to_string()),
             agent_kind: Some("claude".to_string()),
@@ -807,40 +753,19 @@ mod tests {
         }
     }
 
-    fn no_backend_signals() -> StatusBackendSignals {
-        StatusBackendSignals::default()
-    }
-
     #[test]
     fn status_target_accepts_complete_identity() {
         assert_eq!(
             StatusTarget::from_values(
-                Some("zellij".to_string()),
-                Some("dev session".to_string()),
-                Some("terminal_7".to_string()),
+                Some("rex".to_string()),
+                Some("unix:///tmp/rex.sock".to_string()),
+                Some("block:7".to_string()),
             )
             .unwrap(),
             Some(StatusTarget {
-                backend: BackendType::Zellij,
-                instance: "dev session".to_string(),
-                pane_id: "terminal_7".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn status_target_accepts_tmux_identity() {
-        assert_eq!(
-            StatusTarget::from_values(
-                Some("tmux".to_string()),
-                Some("/tmp/tmux.sock".to_string()),
-                Some("%7".to_string()),
-            )
-            .unwrap(),
-            Some(StatusTarget {
-                backend: BackendType::Tmux,
-                instance: "/tmp/tmux.sock".to_string(),
-                pane_id: "%7".to_string(),
+                backend: BackendType::Rex,
+                instance: "unix:///tmp/rex.sock".to_string(),
+                pane_id: "block:7".to_string(),
             })
         );
     }
@@ -848,7 +773,7 @@ mod tests {
     #[test]
     fn status_target_rejects_partial_identity() {
         assert!(
-            StatusTarget::from_values(Some("zellij".to_string()), Some("dev".to_string()), None,)
+            StatusTarget::from_values(Some("rex".to_string()), Some("dev".to_string()), None,)
                 .is_err()
         );
     }
@@ -1171,7 +1096,7 @@ mod tests {
             select_pane_for_agent_session(
                 &agents,
                 &panes,
-                "tmux",
+                "rex",
                 "default",
                 "session-1",
                 Some("boot-1"),
@@ -1195,7 +1120,7 @@ mod tests {
             select_pane_for_agent_session(
                 &agents,
                 &panes,
-                "tmux",
+                "rex",
                 "default",
                 "session-1",
                 Some("boot-1"),
@@ -1208,7 +1133,7 @@ mod tests {
             select_pane_for_agent_session(
                 &agents[..1],
                 &changed_pid,
-                "tmux",
+                "rex",
                 "default",
                 "session-1",
                 Some("boot-1"),
@@ -1221,7 +1146,7 @@ mod tests {
             select_pane_for_agent_session(
                 &agents[..1],
                 &changed_command,
-                "tmux",
+                "rex",
                 "default",
                 "session-1",
                 Some("boot-1"),
@@ -1233,7 +1158,7 @@ mod tests {
             select_pane_for_agent_session(
                 &agents[..1],
                 &panes,
-                "tmux",
+                "rex",
                 "default",
                 "session-1",
                 None,
@@ -1274,7 +1199,7 @@ mod tests {
         assert!(continuation_owns_ancestry_pane(
             &agents,
             &panes,
-            "tmux",
+            "rex",
             "default",
             "%1",
             &hook,
@@ -1300,58 +1225,11 @@ mod tests {
         assert!(!continuation_owns_ancestry_pane(
             &agents,
             &panes,
-            "tmux",
+            "rex",
             "default",
             "%1",
             &unrelated,
             Some("boot-1"),
         ));
-    }
-
-    #[test]
-    fn status_backend_candidates_preserve_detected_backend_when_signaled() {
-        let signals = StatusBackendSignals {
-            tmux: true,
-            ..Default::default()
-        };
-
-        assert_eq!(
-            status_backend_candidates_for(BackendType::Tmux, &signals),
-            vec![BackendType::Tmux]
-        );
-    }
-
-    #[test]
-    fn status_backend_candidates_use_zellij_when_zellij_env_is_detected() {
-        let signals = StatusBackendSignals {
-            zellij: true,
-            ..Default::default()
-        };
-
-        assert_eq!(
-            status_backend_candidates_for(BackendType::Zellij, &signals),
-            vec![BackendType::Zellij]
-        );
-    }
-
-    #[test]
-    fn status_backend_candidates_skip_zellij_in_a_rex_pane() {
-        let signals = StatusBackendSignals {
-            rex: true,
-            ..Default::default()
-        };
-
-        assert_eq!(
-            status_backend_candidates_for(BackendType::Rex, &signals),
-            vec![BackendType::Rex]
-        );
-    }
-
-    #[test]
-    fn status_backend_candidates_try_zellij_after_default_tmux_without_env() {
-        assert_eq!(
-            status_backend_candidates_for(BackendType::Tmux, &no_backend_signals()),
-            vec![BackendType::Tmux, BackendType::Zellij]
-        );
     }
 }

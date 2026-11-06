@@ -4,42 +4,19 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
-use crate::cmd::Cmd;
 use crate::config::SidebarView;
 use crate::multiplexer::{AgentPane, LivePaneInfo};
 use serde::{Deserialize, Serialize};
 
-pub const OPTION: &str = "@workmux_sidebar_views_enabled";
-pub const SCOPE_OPTION: &str = "@workmux_sidebar_scope";
+pub const OPTION: &str = "@workrex_sidebar_views_enabled";
+pub const SCOPE_OPTION: &str = "@workrex_sidebar_scope";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowView {
     pub name: String,
     pub pane_ids: HashSet<String>,
-}
-
-pub fn current_window() -> Result<String> {
-    let pane = std::env::var("TMUX_PANE").ok();
-    let mut args = vec!["display-message", "-p"];
-    if let Some(pane) = pane.as_deref() {
-        args.extend(["-t", pane]);
-    }
-    args.push("#{window_id}");
-    Ok(Cmd::new("tmux")
-        .args(&args)
-        .run_and_capture_stdout()?
-        .trim()
-        .to_string())
-}
-
-pub fn read_scope(window: &str) -> Option<WindowView> {
-    let value = Cmd::new("tmux")
-        .args(&["show-option", "-wqv", "-t", window, SCOPE_OPTION])
-        .run_and_capture_stdout()
-        .ok()?;
-    serde_json::from_str(&value).ok()
 }
 
 /// Configured views are enabled unless the server has explicitly disabled them.
@@ -48,27 +25,11 @@ pub fn is_enabled(value: Option<&str>) -> bool {
 }
 
 pub fn set_enabled(mode: Option<&str>) -> Result<()> {
-    let enabled = match mode {
-        Some("on") => true,
-        Some("off") => false,
-        Some(mode) => bail!("invalid sidebar view mode {mode:?}; expected on or off"),
-        None => {
-            let current = Cmd::new("tmux")
-                .args(&["show-option", "-gqv", OPTION])
-                .run_and_capture_stdout()?;
-            !is_enabled(Some(&current))
-        }
-    };
-    Cmd::new("tmux")
-        .args(&[
-            "set-option",
-            "-g",
-            OPTION,
-            if enabled { "on" } else { "off" },
-        ])
-        .run()?;
-    super::signal_daemon();
-    Ok(())
+    use crate::multiplexer::{SidebarRequest, create_backend, detect_backend};
+    let mux = create_backend(detect_backend());
+    mux.sidebar()
+        .ok_or_else(|| anyhow::anyhow!("Rex sidebar host unavailable"))?
+        .handle(SidebarRequest::Views(mode.map(str::to_string)))
 }
 
 fn automatic_name<'a>(views: &'a [SidebarView], session: &str, project: &Path) -> &'a str {
@@ -328,7 +289,11 @@ mod tests {
                 linked.to_str().unwrap(),
             ],
         ] {
-            Cmd::new("git").args(&args).workdir(&main).run().unwrap();
+            crate::cmd::Cmd::new("git")
+                .args(&args)
+                .workdir(&main)
+                .run()
+                .unwrap();
         }
         assert_eq!(project_root(&linked), main.canonicalize().unwrap());
         let view = SidebarView {

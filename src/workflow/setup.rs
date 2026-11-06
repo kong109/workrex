@@ -67,11 +67,11 @@ pub fn provision_environment(
         let project_root_str = abs_project_root.to_string_lossy();
         let config_dir_str = abs_config_dir.to_string_lossy();
         let hook_env = [
-            ("WORKMUX_HANDLE", handle),
-            ("WM_HANDLE", handle),
-            ("WM_WORKTREE_PATH", worktree_path_str.as_ref()),
-            ("WM_PROJECT_ROOT", project_root_str.as_ref()),
-            ("WM_CONFIG_DIR", config_dir_str.as_ref()),
+            ("WORKREX_HANDLE", handle),
+            ("WORKREX_HANDLE", handle),
+            ("WORKREX_WORKTREE_PATH", worktree_path_str.as_ref()),
+            ("WORKREX_PROJECT_ROOT", project_root_str.as_ref()),
+            ("WORKREX_CONFIG_DIR", config_dir_str.as_ref()),
         ];
         for (idx, command) in post_create.iter().enumerate() {
             info!(branch = branch_name, step = idx + 1, total = hooks_run, command = %command, "provision_environment:hook start");
@@ -152,7 +152,7 @@ pub fn setup_environment(
         validate_prompt_consumption(&all_resolved_panes, agent, config, options)?;
     }
 
-    // Pre-boot Lima VM if needed BEFORE creating the tmux window.
+    // Pre-boot Lima VM if needed BEFORE creating the Rex session.
     // This ensures the user sees VM boot progress in their terminal
     // and the window only appears once the VM is ready.
     let lima_vm_name = pre_boot_lima_vm(
@@ -325,7 +325,7 @@ pub fn setup_environment(
     if options.focus_window {
         match options.mode {
             MuxMode::Window => {
-                // select_pane automatically selects the containing window in tmux.
+                // Focus the Rex block through the owning server and session.
                 mux.select_pane(&focus_pane_id)?;
                 if options.window_session_name.is_none() {
                     mux.select_window(prefix, target_window_name)?;
@@ -361,7 +361,7 @@ pub fn setup_environment(
 }
 
 /// Pre-boot a Lima VM if sandbox is enabled with the Lima backend and any
-/// pane requires sandboxing. Must be called BEFORE creating the tmux window
+/// pane requires sandboxing. Must be called BEFORE creating the Rex session
 /// so the user sees VM boot progress in their terminal.
 ///
 /// Returns the VM name if booted, None otherwise.
@@ -495,15 +495,15 @@ pub fn resolve_pane_configuration(
 }
 
 /// Name of the file `write_prompt_file` writes under a worktree's
-/// `.workmux/` for `branch_name`.
+/// `.workrex/` for `branch_name`.
 pub fn prompt_file_name(branch_name: &str) -> String {
     format!("PROMPT-{}.md", branch_name.replace(['/', '\\', ':'], "-"))
 }
 
 /// Write a prompt file for agent consumption.
 ///
-/// When `working_dir` is provided, writes to `<working_dir>/.workmux/PROMPT-<branch>.md`
-/// so the prompt is accessible inside container sandboxes. Also adds `.workmux/` to
+/// When `working_dir` is provided, writes to `<working_dir>/.workrex/PROMPT-<branch>.md`
+/// so the prompt is accessible inside container sandboxes. Also adds `.workrex/` to
 /// `.git/info/exclude` to avoid polluting git status.
 ///
 /// When `working_dir` is None, writes to a temp directory (legacy behavior for open command
@@ -524,28 +524,28 @@ pub fn write_prompt_file(
     let safe_branch_name = branch_name.replace(['/', '\\', ':'], "-");
 
     let prompt_path = if let Some(dir) = working_dir {
-        // Write to .workmux/ inside the worktree so it's accessible in container sandbox
-        let workmux_dir = dir.join(".workmux");
-        fs::create_dir_all(&workmux_dir).with_context(|| {
-            format!("Failed to create .workmux directory in '{}'", dir.display())
+        // Write to .workrex/ inside the worktree so it's accessible in container sandbox
+        let workrex_dir = dir.join(".workrex");
+        fs::create_dir_all(&workrex_dir).with_context(|| {
+            format!("Failed to create .workrex directory in '{}'", dir.display())
         })?;
 
-        // Add .workmux/ to git exclude to avoid polluting git status
+        // Add .workrex/ to git exclude to avoid polluting git status
         // In worktrees, .git is a file pointing to the real git dir, so we need to resolve it
         if let Some(exclude_path) = resolve_git_exclude_path(dir)
             && exclude_path.exists()
             && let Ok(content) = fs::read_to_string(&exclude_path)
-            && !content.lines().any(|line| line.trim() == ".workmux/")
+            && !content.lines().any(|line| line.trim() == ".workrex/")
             && let Ok(mut file) = fs::OpenOptions::new().append(true).open(&exclude_path)
         {
             use std::io::Write;
-            let _ = writeln!(file, "\n# workmux prompt files\n.workmux/");
+            let _ = writeln!(file, "\n# workrex prompt files\n.workrex/");
         }
 
-        workmux_dir.join(prompt_file_name(branch_name))
+        workrex_dir.join(prompt_file_name(branch_name))
     } else {
         // Legacy: write to temp directory for open command
-        let prompt_filename = format!("workmux-prompt-{}.md", safe_branch_name);
+        let prompt_filename = format!("workrex-prompt-{}.md", safe_branch_name);
         std::env::temp_dir().join(prompt_filename)
     };
 
@@ -1054,8 +1054,8 @@ mod tests {
         let path = super::write_prompt_file(Some(temp.path()), branch_name, &prompt)
             .expect("Should create prompt file");
 
-        // Verify it's in .workmux/ directory
-        assert!(path.starts_with(temp.path().join(".workmux")));
+        // Verify it's in .workrex/ directory
+        assert!(path.starts_with(temp.path().join(".workrex")));
         assert!(
             path.file_name()
                 .unwrap()

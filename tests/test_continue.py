@@ -9,8 +9,8 @@ import pytest
 from .conftest import (
     get_worktree_path,
     poll_until,
-    run_workmux_command,
-    write_workmux_config,
+    run_workrex_command,
+    write_workrex_config,
 )
 
 
@@ -25,7 +25,7 @@ from .conftest import (
 @pytest.mark.parametrize("prompt_flag", [None, "-p", "-P"])
 def test_continue_at_recreated_path(
     mux_server,
-    workmux_exe_path,
+    workrex_exe_path,
     mux_repo_path,
     fake_agent_installer,
     tmp_path,
@@ -42,16 +42,16 @@ def test_continue_at_recreated_path(
         f"with open({str(output)!r}, 'w') as f:\n"
         "    json.dump({'cwd': os.getcwd(), 'args': sys.argv[1:]}, f)\n",
     )
-    write_workmux_config(
+    write_workrex_config(
         mux_repo_path, panes=[{"command": "<agent>"}], agent=f"{shim} --model test"
     )
-    run_workmux_command(
-        mux_server, workmux_exe_path, mux_repo_path, "add original --name reused -b -C"
+    run_workrex_command(
+        mux_server, workrex_exe_path, mux_repo_path, "add original --name reused -b -C"
     )
     original_path = get_worktree_path(mux_repo_path, "reused")
     assert original_path.is_dir()
-    run_workmux_command(
-        mux_server, workmux_exe_path, mux_repo_path, "remove reused --force"
+    run_workrex_command(
+        mux_server, workrex_exe_path, mux_repo_path, "remove reused --force"
     )
     assert not original_path.exists()
 
@@ -64,7 +64,7 @@ def test_continue_at_recreated_path(
         prompt_file.write_text(prompt)
         command += f" -P {shlex.quote(str(prompt_file))}"
 
-    run_workmux_command(mux_server, workmux_exe_path, mux_repo_path, command)
+    run_workrex_command(mux_server, workrex_exe_path, mux_repo_path, command)
     assert poll_until(lambda: output.exists() and output.stat().st_size > 0)
     launch = json.loads(output.read_text())
     assert launch["cwd"] == str(original_path.resolve())

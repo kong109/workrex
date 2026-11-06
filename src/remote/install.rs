@@ -26,7 +26,7 @@ const TRUNCATED_STATUS: i32 = 101;
 /// Exit status of the stage script when the stage file cannot be written.
 const STAGE_FAILED_STATUS: i32 = 102;
 
-/// The binary this workmux expects on a remote.
+/// The binary this workrex expects on a remote.
 pub struct Pin {
     /// File name under `bin/`.
     pub name: String,
@@ -168,7 +168,7 @@ pub fn node_status(transport: &Transport, spec: &RemoteSpec, pin: &Pin) -> Resul
     Ok(classify_hello(&output))
 }
 
-/// `workmux remote setup <name>`: install the pinned binary, then point the
+/// `workrex remote setup <name>`: install the pinned binary, then point the
 /// login PATH shim at it.
 pub fn setup(spec: &RemoteSpec) -> Result<()> {
     let transport = Transport::open(spec)?;
@@ -209,7 +209,7 @@ fn install(transport: &Transport, spec: &RemoteSpec, pin: &Pin) -> Result<()> {
         // Upload a private copy so the bytes match the hash in the pin name
         // even if the configured file is rebuilt meanwhile.
         PinSource::File(path) => {
-            let copy = temp_dir.path().join("workmux");
+            let copy = temp_dir.path().join("workrex");
             fs::copy(path, &copy).with_context(|| format!("Failed to read {}", path.display()))?;
             if dev_pin_name(&copy)? != pin.name {
                 bail!(
@@ -301,7 +301,7 @@ fn stage_and_install(
     getrandom::fill(&mut random)
         .map_err(|err| anyhow!("Failed to generate a stage name: {err}"))?;
     let stage_name = format!(
-        ".workmux.{}",
+        ".workrex.{}",
         random
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -321,7 +321,7 @@ fn stage_and_install(
     let upload = spec.script(
         &vars,
         r#"mkdir -p "$root/bin" || exit "$stage_failed"
-find "$root/bin" -maxdepth 1 -name '.workmux.*' -mmin +60 -exec rm -f {} + 2>/dev/null
+find "$root/bin" -maxdepth 1 -name '.workrex.*' -mmin +60 -exec rm -f {} + 2>/dev/null
 stage="$root/bin/$stage_name"
 if ! (set -C; cat >"$stage"); then rm -f "$stage"; exit "$stage_failed"; fi
 got=$(wc -c <"$stage" | tr -d ' ')
@@ -434,11 +434,11 @@ mod tests {
         fs::create_dir_all(tmp.path().join("bin")).unwrap();
         let spec = local_spec(tmp.path());
 
-        let missing_stage = sh(&rename_script(&spec, ".workmux.gone", "workrex-1"));
+        let missing_stage = sh(&rename_script(&spec, ".workrex.gone", "workrex-1"));
         assert!(!missing_stage.status.success());
 
-        fs::write(tmp.path().join("bin/.workmux.ok"), "x").unwrap();
-        let renamed = sh(&rename_script(&spec, ".workmux.ok", "workrex-1"));
+        fs::write(tmp.path().join("bin/.workrex.ok"), "x").unwrap();
+        let renamed = sh(&rename_script(&spec, ".workrex.ok", "workrex-1"));
         assert!(renamed.status.success());
         assert!(tmp.path().join("bin/workrex-1").is_file());
     }
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn dev_pin_is_content_addressed() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("workmux");
+        let path = tmp.path().join("workrex");
         fs::write(&path, b"abc").unwrap();
         let spec = RemoteSpec {
             name: "r".into(),

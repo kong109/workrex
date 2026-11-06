@@ -1,9 +1,9 @@
-const repositoryApi = "https://api.github.com/repos/raine/workmux";
+const repositoryApi = "https://api.github.com/repos/kong109/workrex";
 
 export async function getGitHubStars(): Promise<string | null> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
-    "User-Agent": "workmux-docs-build",
+    "User-Agent": "workrex-docs-build",
     "X-GitHub-Api-Version": "2022-11-28",
   };
   if (process.env.GITHUB_TOKEN) {

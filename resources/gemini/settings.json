@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux register-agent"
+            "command": "workrex register-agent"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux set-window-status working"
+            "command": "workrex set-window-status working"
           }
         ]
       }
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux set-window-status waiting"
+            "command": "workrex set-window-status waiting"
           }
         ]
       }
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux set-window-status working"
+            "command": "workrex set-window-status working"
           }
         ]
       }
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux set-window-status done"
+            "command": "workrex set-window-status done"
           }
         ]
       }
@@ -56,7 +56,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "workmux set-window-status done"
+            "command": "workrex set-window-status done"
           }
         ]
       }

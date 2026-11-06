@@ -13,8 +13,8 @@ Arguments: $ARGUMENTS
 
 Behavior:
 
-- No arguments: rebase on the current branch's workmux base branch
-  (`git config branch.<current>.workmux-base`), falling back to local main when
+- No arguments: rebase on the current branch's workrex base branch
+  (`git config branch.<current>.workrex-base`), falling back to local main when
   none is configured
 - "origin": fetch origin, rebase on origin/main
 - "origin/branch": fetch origin, rebase on origin/branch
@@ -24,13 +24,13 @@ Steps:
 
 1. Check for local changes with `git status --porcelain`:
    - If the working tree has staged, unstaged, or untracked changes, stash them
-     with `git stash push --include-untracked -m "workmux rebase"`.
+     with `git stash push --include-untracked -m "workrex rebase"`.
    - Remember whether this command created a stash. Existing stash entries must
      remain untouched.
    - If stashing fails, stop before fetching or rebasing.
 2. Parse arguments:
-   - No args → target is the current branch's workmux base branch
-     (`git config --get branch.$(git branch --show-current).workmux-base`); if
+   - No args → target is the current branch's workrex base branch
+     (`git config --get branch.$(git branch --show-current).workrex-base`); if
      that is empty, target is "main". No fetch.
    - Contains "/" (e.g., "origin/develop") → split into remote and branch, fetch
      remote, target is remote/branch

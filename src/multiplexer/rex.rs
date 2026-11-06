@@ -135,7 +135,7 @@ impl WindowView {
     }
 
     /// Agent panes: terminals in the tiled layout. Floating layers hold
-    /// workmux's own dashboard and sidebar.
+    /// workrex's own dashboard and sidebar.
     fn terminal_block_ids(&self) -> impl Iterator<Item = &BlockId> {
         self.layers
             .iter()
@@ -232,8 +232,8 @@ type VerdictSlot = Arc<Mutex<Option<Verdict>>>;
 const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How long a command reuses a session list or view it already fetched. A
-/// loop that polls for a change made outside workmux sees it within this time.
-/// `WORKMUX_REX_READ_REUSE_MS` overrides it, so a test can count calls that
+/// loop that polls for a change made outside workrex sees it within this time.
+/// `WORKREX_REX_READ_REUSE_MS` overrides it, so a test can count calls that
 /// load cannot change.
 const READ_REUSE: Duration = Duration::from_millis(250);
 
@@ -543,7 +543,7 @@ struct ClientInfo {
     label: Option<String>,
 }
 
-/// Workmux's identity for a window it created. Rex windows carry only a
+/// Workrex's identity for a window it created. Rex windows carry only a
 /// label, which an agent in the window can rename, so the ids live beside
 /// the agent state, one file per window.
 #[derive(Debug, Serialize, Deserialize)]
@@ -625,7 +625,7 @@ fn found<T>(result: CallResult<T>) -> Result<Option<T>> {
 /// A terminal block that runs `command` directly. Rex's default goes through
 /// `/usr/bin/login` on macOS, which resets `HOME` and `PATH`, so the block
 /// asks for no login wrapper and the command starts the login shell itself,
-/// as tmux does with its default shell.
+/// using the configured default shell.
 fn shell_block(cwd: &Path, command: &[&str]) -> Value {
     json!({
         "block": {
@@ -640,7 +640,7 @@ fn shell_block(cwd: &Path, command: &[&str]) -> Value {
     })
 }
 
-/// Input for `send_key`: tmux key names become Rex key names, and a single
+/// Input for `send_key`: CLI key names become Rex key names, and a single
 /// character is typed as text so it is not reinterpreted by a keyboard layout.
 #[derive(Debug, PartialEq, Eq)]
 enum KeyInput {
@@ -763,7 +763,7 @@ pub fn in_rex_terminal() -> bool {
     std::env::var("REX_BLOCK").is_ok_and(|value| !value.is_empty())
 }
 
-/// The Rex pane workmux runs in, from `REX_SESSION` and `REX_BLOCK`.
+/// The Rex pane workrex runs in, from `REX_SESSION` and `REX_BLOCK`.
 #[derive(Debug, Default)]
 struct Caller {
     session: Option<SessionId>,
@@ -848,10 +848,10 @@ pub struct RexBackend {
     caller: Caller,
     endpoint: OnceLock<String>,
     block_sessions: Mutex<HashMap<BlockId, SessionId>>,
-    /// Where `session` keeps the IDs of the sessions workmux created.
+    /// Where `session` keeps the IDs of the sessions workrex created.
     registry: Option<PathBuf>,
     /// Env file the next respawned block sources (see `hosting`).
-    respawn_env: Mutex<Option<PathBuf>>,
+    respawn_env: Mutex<std::collections::VecDeque<PathBuf>>,
     program_status: Arc<ProgramStatuses>,
     pane_reads: Arc<PaneReads>,
 }
@@ -878,7 +878,7 @@ impl RexBackend {
         Self {
             program,
             reads: Mutex::default(),
-            reuse: std::env::var("WORKMUX_REX_READ_REUSE_MS")
+            reuse: std::env::var("WORKREX_REX_READ_REUSE_MS")
                 .ok()
                 .and_then(|ms| ms.parse().ok())
                 .map_or(READ_REUSE, Duration::from_millis),
@@ -890,7 +890,7 @@ impl RexBackend {
             registry: crate::xdg::state_dir()
                 .ok()
                 .map(|dir| dir.join("rex-sessions.json")),
-            respawn_env: Mutex::new(None),
+            respawn_env: Mutex::new(std::collections::VecDeque::new()),
             program_status: Arc::default(),
             pane_reads: Arc::default(),
         }
@@ -1623,7 +1623,7 @@ impl Multiplexer for RexBackend {
 
     fn is_running(&self) -> Result<bool> {
         // An unsupported server is running, so a command that acts on it
-        // goes on to a call that names why workmux cannot use it.
+        // goes on to a call that names why workrex cannot use it.
         match self.run(&["api", "call", "session.list", "-"], Some("{}")) {
             Ok(_) | Err(CallError::Unsupported(_)) => Ok(true),
             Err(_) => Ok(false),
@@ -2061,7 +2061,7 @@ impl Multiplexer for RexBackend {
         Ok(())
     }
 
-    /// Like tmux `select-pane`, this moves no client: `select_window` and
+    /// Selecting a block updates server focus without switching an app: `select_window` and
     /// `switch_to_pane` switch the app, so a window-mode `add` that runs
     /// both asks the app once.
     fn select_pane(&self, pane_id: &str) -> Result<()> {
@@ -2258,11 +2258,6 @@ impl Multiplexer for RexBackend {
         let direction = match direction {
             SplitDirection::Horizontal => "horizontal",
             SplitDirection::Vertical => "vertical",
-            SplitDirection::Stacked => {
-                return Err(anyhow!(
-                    "split: stacked is only supported by the Zellij backend"
-                ));
-            }
         };
         let anchor = BlockId::parse(target_pane_id)?;
         let session = self.require_session_of(&anchor)?;
@@ -2288,7 +2283,7 @@ impl Multiplexer for RexBackend {
                     "direction": direction,
                     "side": "after",
                     "ratio": anchor_ratio(percentage, size, total),
-                    "layout": self.block_layout(cwd, command)?,
+                    "layout": self.queued_env_layout(cwd, command)?,
                 }),
             )
             .context("Failed to split Rex pane")?;
@@ -2402,7 +2397,7 @@ mod tests {
     fn session_view_keeps_tab_order_and_blocks_per_window() {
         let view = view();
         let labels: Vec<_> = view.windows.iter().map(|w| w.label.as_str()).collect();
-        assert_eq!(labels, ["main", "wm-feat-a", "logs"]);
+        assert_eq!(labels, ["main", "wr-feat-a", "logs"]);
         let editor = &view.windows[1];
         assert_eq!(editor.block_ids().count(), 2);
         assert_eq!(
@@ -2416,13 +2411,13 @@ mod tests {
         let view = view();
         let second_block = view.windows[1].block_ids().nth(1).unwrap().clone();
         let window = view.window_of(&second_block).unwrap();
-        assert_eq!(window.label, "wm-feat-a");
+        assert_eq!(window.label, "wr-feat-a");
         assert_eq!(
             view.window_after(&view.windows[0].window_id),
             Some(&view.windows[1].window_id)
         );
         assert_eq!(view.window_after(&view.windows[2].window_id), None);
-        assert_eq!(view.windows_labeled("wm-feat-a").count(), 1);
+        assert_eq!(view.windows_labeled("wr-feat-a").count(), 1);
     }
 
     #[test]
@@ -2541,7 +2536,7 @@ mod tests {
     }
 
     #[test]
-    fn tmux_key_names_map_to_rex_keys() {
+    fn key_names_map_to_rex_keys() {
         assert_eq!(key_input("q"), KeyInput::Text("q".into()));
         assert_eq!(key_input("Enter"), KeyInput::Key("enter".into()));
         assert_eq!(key_input("Escape"), KeyInput::Key("escape".into()));
@@ -2752,7 +2747,7 @@ mod tests {
             .terminal_blocks()
             .map(|(window, _)| window.label.as_str())
             .collect();
-        assert_eq!(probed, ["wm-agent"]);
+        assert_eq!(probed, ["wr-agent"]);
     }
 
     #[test]
@@ -2764,7 +2759,7 @@ mod tests {
         let running: ProcessReport = serde_json::from_str(PROCESS).unwrap();
         let pane = pane_info(&view, window, &running, "claude".into()).unwrap();
         assert_eq!(pane.pid, Some(85152));
-        assert_eq!(pane.window.as_deref(), Some("wm-feat-a"));
+        assert_eq!(pane.window.as_deref(), Some("wr-feat-a"));
     }
 
     #[test]
@@ -3216,7 +3211,7 @@ mod tests {
         let view = json!({
             "session_id": "session:b",
             "label": "b",
-            "windows": [{ "window_id": "window:w", "label": "wm-feat", "layers": [] }],
+            "windows": [{ "window_id": "window:w", "label": "wr-feat", "layers": [] }],
         })
         .to_string();
         FakeRex::new(&[
@@ -3234,7 +3229,7 @@ mod tests {
 
     fn select_wm_feat(rex: &RexBackend) {
         rex.select_window_target(&WindowTarget::with_id(
-            "wm-feat".into(),
+            "wr-feat".into(),
             None,
             "window:w".into(),
         ))
@@ -3242,7 +3237,7 @@ mod tests {
     }
 
     /// Session B after `add`: the caller's pane in `main`, and the server
-    /// focus on the new agent pane in `wm-feat`.
+    /// focus on the new agent pane in `wr-feat`.
     fn after_add_fake() -> FakeRex {
         let window = |id: &str, label: &str, block: &str| {
             json!({
@@ -3258,7 +3253,7 @@ mod tests {
             "active_window_id": "window:feat",
             "windows": [
                 window("window:main", "main", CALLER_BLOCK),
-                window("window:feat", "wm-feat", "block:agent"),
+                window("window:feat", "wr-feat", "block:agent"),
             ],
         })
         .to_string();
@@ -3284,7 +3279,7 @@ mod tests {
         let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
         fake.rex.select_pane("block:agent").unwrap();
         select_wm_feat(&fake.rex);
-        fake.rex.select_window("", "wm-feat").unwrap();
+        fake.rex.select_window("", "wr-feat").unwrap();
         fake.rex.switch_to_session("", "b").unwrap();
         assert_eq!(fake.rex.shell_switch_session_cmd("b").unwrap(), "true");
         assert!(fake.calls("client.perform").is_empty());
@@ -3472,9 +3467,7 @@ mod tests {
         let hint = fake.rex.focus_new_session("block:agent", "feat-a").unwrap();
         assert_eq!(
             hint.as_deref(),
-            Some(crate::rebrand!(
-                "Rex.app stays put: to see feat-a, press Enter on its row in workmux dashboard."
-            ))
+            Some("Rex.app stays put: to see feat-a, press Enter on its row in workrex dashboard.")
         );
         assert!(
             fake.calls("client.perform").is_empty(),
@@ -3572,12 +3565,12 @@ mod tests {
                 &view_json(
                     "session:s",
                     "proj",
-                    &[("window:1", "wm-x"), ("window:2", "wm-x")],
+                    &[("window:1", "wr-x"), ("window:2", "wr-x")],
                 ),
             ),
             ("session.close_window", "{}"),
         ]);
-        fake.rex.kill_window("wm-x").unwrap();
+        fake.rex.kill_window("wr-x").unwrap();
         let closes = fake.calls("session.close_window");
         assert_eq!(closes.len(), 1, "{closes:?}");
         assert!(closes[0].contains("window:1"), "{closes:?}");
@@ -3607,14 +3600,14 @@ mod tests {
             ),
             (
                 "session.view*session:main",
-                &view_json("session:main", "main", &[("window:m", "wm-a")]),
+                &view_json("session:main", "main", &[("window:m", "wr-a")]),
             ),
             (
                 "session.view*session:rp",
-                &view_json("session:rp", "ReviewParents", &[("window:r", "wm-a")]),
+                &view_json("session:rp", "ReviewParents", &[("window:r", "wr-a")]),
             ),
         ]);
-        let target = WindowTarget::new("wm-a".into(), Some("ReviewParents".into()));
+        let target = WindowTarget::new("wr-a".into(), Some("ReviewParents".into()));
         assert_eq!(
             fake.rex.target_window(&target).unwrap(),
             Some((SessionId("session:rp".into()), WindowId("window:r".into())))
@@ -4237,43 +4230,6 @@ mod tests {
             "updated_ts": 0,
         }))
         .unwrap()
-    }
-
-    /// A remote relay's window closes itself when its remote session ends,
-    /// possibly right after a command last read the relay's session. The
-    /// command must still see the session empty and destroy it.
-    #[test]
-    fn a_relay_session_emptied_after_a_reused_read_is_destroyed() {
-        let fake = FakeRex::new(&[
-            ("session.list", &session_list(&[("session:r", "wm-feat")])),
-            ("session.view", "$cat \"$dir/view\""),
-            ("session.destroy", "{}"),
-        ])
-        .reusing();
-        let relay = [("window:1", "wm-feat")];
-        fake.write("view", &view_json("session:r", "wm-feat", &relay));
-        let names = fake.rex.get_window_names_in_session("wm-feat").unwrap();
-        assert!(names.contains("wm-feat"), "{names:?}");
-        fake.write("view", &view_json("session:r", "wm-feat", &[]));
-
-        let mut record = crate::remote::cache::WorkspaceRecord::new(
-            "w1".into(),
-            "box",
-            "p".into(),
-            PathBuf::from("/src/app"),
-            "feat",
-            "feat",
-            "0".repeat(40),
-            None,
-            "wm-feat".into(),
-            PathBuf::from("/src/app__worktrees/feat"),
-        );
-        record.window_session = Some("wm-feat".into());
-        crate::remote::lifecycle::drop_emptied_session(&fake.rex, &record);
-
-        let destroys = fake.calls("session.destroy");
-        assert_eq!(destroys.len(), 1, "{destroys:?}");
-        assert!(destroys[0].contains("session:r"), "{destroys:?}");
     }
 
     #[test]

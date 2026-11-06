@@ -9,7 +9,7 @@ recheck the shutdown flag so watch changes and watcher destruction do not wait
 indefinitely for an idle run loop. Git and config watchers both use this backend
 on macOS; other platforms use `notify::RecommendedWatcher`.
 
-The backend is compiled into workmux so it is included in crates.io packages as
+The backend is compiled into workrex so it is included in crates.io packages as
 well as source builds. Cargo removes `[patch]` overrides when publishing.
 
 ## Differences from upstream

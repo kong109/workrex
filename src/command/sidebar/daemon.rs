@@ -1,4 +1,4 @@
-//! Sidebar daemon: single process that polls tmux and pushes snapshots to clients.
+//! Sidebar daemon: single process that polls server and pushes snapshots to clients.
 
 #[cfg(target_os = "macos")]
 use super::fsevent::FsEventWatcher as SidebarWatcher;
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::config::{Config, SidebarPosition};
 use crate::git::GitStatus;
 use crate::github::{CheckSummary, PrSummary};
-use crate::multiplexer::{LivePaneInfo, Multiplexer, TmuxBackend, create_backend, detect_backend};
+use crate::multiplexer::{LivePaneInfo, Multiplexer, create_backend, detect_backend};
 use crate::state::StateStore;
 
 use super::app::{SidebarFilterMode, SidebarLayoutMode};
@@ -32,18 +32,18 @@ use super::snapshot::{CheckPathEntry, PrPathEntry, SnapshotInputs, build_snapsho
 /// Compute the socket path for a multiplexer instance.
 pub fn socket_path(instance_id: &str) -> PathBuf {
     // FNV-1a provides a stable fixed-width key across the controller and daemon
-    // while keeping long tmux socket paths below Unix socket limits.
+    // while keeping long server socket paths below Unix socket limits.
     let mut key = 0xcbf29ce484222325u64;
     for byte in instance_id.as_bytes() {
         key ^= u64::from(*byte);
         key = key.wrapping_mul(0x100000001b3);
     }
-    std::env::temp_dir().join(format!("workmux-sidebar-{key:016x}.sock"))
+    std::env::temp_dir().join(format!("workrex-sidebar-{key:016x}.sock"))
 }
 
-/// Result of a batched tmux query.
+/// Result of a batched server query.
 #[derive(Clone)]
-struct TmuxState {
+struct ServerState {
     live_panes: HashMap<String, LivePaneInfo>,
     window_statuses: HashMap<String, Option<String>>,
     active_windows: HashSet<(String, String)>,
@@ -61,10 +61,10 @@ struct TmuxState {
     expanded_groups: Option<String>,
 }
 
-/// Query all sidebar-relevant tmux state in a single server observation.
-fn query_tmux_state(tmux: &dyn crate::multiplexer::DaemonIo) -> Result<TmuxState> {
-    let snapshot = tmux.sidebar_snapshot()?;
-    Ok(TmuxState {
+/// Query all sidebar-relevant server state in a single server observation.
+fn query_server_state(server: &dyn crate::multiplexer::DaemonIo) -> Result<ServerState> {
+    let snapshot = server.sidebar_snapshot()?;
+    Ok(ServerState {
         live_panes: snapshot.live_panes,
         window_statuses: snapshot.window_statuses,
         active_windows: snapshot.active_windows,
@@ -291,18 +291,18 @@ impl SocketServer {
     }
 }
 
-/// Read the sidebar layout mode from tmux global, falling back to settings.json, then config.
+/// Read the sidebar layout mode from server global, falling back to settings.json, then config.
 fn read_sidebar_layout_mode(
     config: &Config,
-    tmux_value: Option<&str>,
+    server_value: Option<&str>,
 ) -> Option<SidebarLayoutMode> {
-    match tmux_value.map(str::trim) {
+    match server_value.map(str::trim) {
         Some("tiles") => return Some(SidebarLayoutMode::Tiles),
         Some("compact") => return Some(SidebarLayoutMode::Compact),
         _ => {}
     }
 
-    // Fall back to persisted setting (user toggled layout in a previous tmux session)
+    // Fall back to persisted setting (user toggled layout in a previous server session)
     if let Ok(store) = StateStore::new()
         && let Ok(settings) = store.load_settings()
     {
@@ -323,9 +323,9 @@ fn read_sidebar_layout_mode(
     None
 }
 
-/// Read the sidebar filter mode from tmux global, falling back to settings.json.
-fn read_sidebar_filter_mode(tmux_value: Option<&str>) -> SidebarFilterMode {
-    if let Some(value) = tmux_value {
+/// Read the sidebar filter mode from server global, falling back to settings.json.
+fn read_sidebar_filter_mode(server_value: Option<&str>) -> SidebarFilterMode {
+    if let Some(value) = server_value {
         return SidebarFilterMode::from_str(value);
     }
 
@@ -340,14 +340,14 @@ fn read_sidebar_filter_mode(tmux_value: Option<&str>) -> SidebarFilterMode {
     SidebarFilterMode::default()
 }
 
-/// Read the sidebar grouping from the tmux global override, falling back to
+/// Read the sidebar grouping from the server global override, falling back to
 /// settings.json and then to the configured grouping. The override is what the
-/// `t` key and `workmux sidebar group` write, so every client agrees.
+/// `t` key and `workrex sidebar group` write, so every client agrees.
 fn read_sidebar_group_by(
     cfg: &Config,
-    tmux_value: Option<&str>,
+    server_value: Option<&str>,
 ) -> Option<crate::config::SidebarGroupBy> {
-    if let Some(value) = tmux_value {
+    if let Some(value) = server_value {
         return super::parse_sidebar_group_by(value).unwrap_or(cfg.sidebar.group_by());
     }
 
@@ -361,10 +361,10 @@ fn read_sidebar_group_by(
     cfg.sidebar.group_by()
 }
 
-/// Group labels the user expanded, from the tmux global option. Labels are
+/// Group labels the user expanded, from the server global option. Labels are
 /// tab separated because a project or session name can contain spaces.
-fn read_expanded_groups(tmux_value: Option<&str>) -> Vec<String> {
-    tmux_value
+fn read_expanded_groups(server_value: Option<&str>) -> Vec<String> {
+    server_value
         .map(|value| {
             value
                 .split('\t')
@@ -376,15 +376,15 @@ fn read_expanded_groups(tmux_value: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Read pane IDs manually marked as sleeping from the tmux global option.
-fn read_sleeping_panes(tmux_value: Option<&str>) -> HashSet<String> {
-    tmux_value
+/// Read pane IDs manually marked as sleeping from the server global option.
+fn read_sleeping_panes(server_value: Option<&str>) -> HashSet<String> {
+    server_value
         .map(|value| value.split_whitespace().map(String::from).collect())
         .unwrap_or_default()
 }
 
-fn read_sidebar_position(config: &Config, tmux_value: Option<&str>) -> SidebarPosition {
-    match tmux_value.map(str::trim) {
+fn read_sidebar_position(config: &Config, server_value: Option<&str>) -> SidebarPosition {
+    match server_value.map(str::trim) {
         Some("top") => SidebarPosition::Top,
         Some("left") => SidebarPosition::Left,
         _ => config.sidebar.position.unwrap_or_default(),
@@ -1698,7 +1698,7 @@ impl ProjectConfigCache {
     }
 }
 
-const CONFIG_BASENAMES: [&str; 4] = ["config.yaml", "config.yml", ".workmux.yaml", ".workmux.yml"];
+const CONFIG_BASENAMES: [&str; 4] = ["config.yaml", "config.yml", ".workrex.yaml", ".workrex.yml"];
 
 /// Whether a filesystem event on a watched config dir should schedule a
 /// config reload.
@@ -1750,10 +1750,10 @@ impl From<HashSet<PathBuf>> for ConfigWatchPaths {
 }
 
 /// Spawn a thread that watches the global config file and per-project
-/// `.workmux.yaml` files and bumps `config_version` whenever a reload succeeds.
+/// `.workrex.yaml` files and bumps `config_version` whenever a reload succeeds.
 ///
 /// Returns a channel for the daemon main loop to send the current set of
-/// project config directories (parents of `.workmux.yaml`) to watch.
+/// project config directories (parents of `.workrex.yaml`) to watch.
 fn spawn_config_watcher(
     term: Arc<AtomicBool>,
     config: Arc<Mutex<Config>>,
@@ -2161,7 +2161,7 @@ impl Scheduler {
         }
     }
 
-    fn notify_tmux_event(&mut self, now: Instant) {
+    fn notify_server_event(&mut self, now: Instant) {
         self.event_observation
             .get_or_insert(now + EVENT_COALESCE_INTERVAL);
     }
@@ -2228,12 +2228,11 @@ impl Scheduler {
 pub fn run() -> Result<()> {
     let mux = create_backend(detect_backend());
     let instance_id = mux.instance_id();
-    let tmux = TmuxBackend::for_socket(&instance_id);
-    let tmux = super::host::daemon_io(mux.as_ref(), tmux)?;
+    let host_io = super::host::daemon_io(mux.as_ref())?;
     let config = Arc::new(Mutex::new(Config::load(None)?));
     let mut view_projects = super::view::ProjectCache::default();
-    // Captured at startup and intentionally not live-reloaded. tmux's
-    // @workmux_pane_status holds the icon string itself; build_snapshot
+    // Captured at startup and intentionally not live-reloaded. server's
+    // @workrex_pane_status holds the icon string itself; build_snapshot
     // compares pane statuses to these exact strings to suppress stale
     // done/waiting markers, so swapping the icons mid-run would mis-suppress.
     let status_icons = config.lock().unwrap().status_icons.clone();
@@ -2265,8 +2264,8 @@ pub fn run() -> Result<()> {
     let (pr_cache, check_cache, github_path_tx) =
         spawn_github_worker(term.clone(), publication_dirty.clone(), wake_tx);
 
-    tmux.set_global_option(
-        "@workmux_sidebar_daemon_pid",
+    host_io.set_global_option(
+        "@workrex_sidebar_daemon_pid",
         &std::process::id().to_string(),
     )?;
 
@@ -2277,7 +2276,7 @@ pub fn run() -> Result<()> {
     let store = StateStore::new()?;
     let mut agent_state_cache = crate::state::AgentStateCache::default();
     let mut compacted_boot_id: Option<String> = None;
-    let mut cached_inputs: Option<(Vec<crate::multiplexer::AgentPane>, TmuxState)> = None;
+    let mut cached_inputs: Option<(Vec<crate::multiplexer::AgentPane>, ServerState)> = None;
     let mut pending_captures: Option<HashMap<String, String>> = None;
     let mut publish_pending = false;
     let mut last_client_seen = Instant::now();
@@ -2291,7 +2290,7 @@ pub fn run() -> Result<()> {
     while !term.load(Ordering::Relaxed) {
         let now = Instant::now();
         if observation_dirty.swap(false, Ordering::Relaxed) {
-            scheduler.notify_tmux_event(now);
+            scheduler.notify_server_event(now);
         }
         if publication_dirty.swap(false, Ordering::Relaxed) {
             publish_pending = true;
@@ -2299,13 +2298,13 @@ pub fn run() -> Result<()> {
 
         if scheduler.observation_due(now) {
             scheduler.finish_observation(now);
-            match query_tmux_state(&*tmux) {
-                Ok(tmux_state) => {
-                    if tmux_state.server_boot_id != compacted_boot_id {
+            match query_server_state(host_io.as_ref()) {
+                Ok(server_state) => {
+                    if server_state.server_boot_id != compacted_boot_id {
                         match store.compact_context(
                             &backend_name,
                             &instance_id,
-                            tmux_state.server_boot_id.as_deref(),
+                            server_state.server_boot_id.as_deref(),
                         ) {
                             Ok(stats) => {
                                 tracing::info!(
@@ -2315,7 +2314,7 @@ pub fn run() -> Result<()> {
                                     recovery_entries = stats.recovery_entries,
                                     "agent state compaction complete"
                                 );
-                                compacted_boot_id = tmux_state.server_boot_id.clone();
+                                compacted_boot_id = server_state.server_boot_id.clone();
                             }
                             Err(error) => {
                                 tracing::warn!(%error, "agent state compaction failed");
@@ -2326,8 +2325,8 @@ pub fn run() -> Result<()> {
                     match store.load_reconciled_agents_from_snapshot_cached(
                         &mut agent_state_cache,
                         mux.as_ref(),
-                        &tmux_state.live_panes,
-                        tmux_state.server_boot_id.as_deref(),
+                        &server_state.live_panes,
+                        server_state.server_boot_id.as_deref(),
                     ) {
                         Ok((agents, stats)) => {
                             let agents = {
@@ -2346,10 +2345,10 @@ pub fn run() -> Result<()> {
                                 "sidebar agent state load"
                             );
                             inactivity_tracker.reconcile_identities(
-                                &tmux_state.live_panes,
-                                tmux_state.server_boot_id.as_deref(),
+                                &server_state.live_panes,
+                                server_state.server_boot_id.as_deref(),
                             );
-                            cached_inputs = Some((agents, tmux_state));
+                            cached_inputs = Some((agents, server_state));
                             publish_pending = true;
                         }
                         Err(error) => {
@@ -2357,7 +2356,7 @@ pub fn run() -> Result<()> {
                         }
                     }
                 }
-                Err(error) => tracing::warn!(%error, "failed to query sidebar tmux state"),
+                Err(error) => tracing::warn!(%error, "failed to query sidebar server state"),
             }
         }
 
@@ -2370,7 +2369,7 @@ pub fn run() -> Result<()> {
             }
         }
 
-        if publish_pending && let Some((agents, tmux_state)) = &cached_inputs {
+        if publish_pending && let Some((agents, server_state)) = &cached_inputs {
             publish_pending = false;
             let live_paths = agents
                 .iter()
@@ -2409,11 +2408,11 @@ pub fn run() -> Result<()> {
             ) = {
                 let cfg = config.lock().unwrap();
                 (
-                    read_sidebar_position(&cfg, tmux_state.position.as_deref()),
-                    read_sidebar_layout_mode(&cfg, tmux_state.layout.as_deref())
+                    read_sidebar_position(&cfg, server_state.position.as_deref()),
+                    read_sidebar_layout_mode(&cfg, server_state.layout.as_deref())
                         .unwrap_or_default(),
                     cfg.sidebar.sort.unwrap_or_default(),
-                    read_sidebar_group_by(&cfg, tmux_state.group_by.as_deref()),
+                    read_sidebar_group_by(&cfg, server_state.group_by.as_deref()),
                     cfg.sidebar.collapse_stale(),
                     cfg.stale_after_secs(),
                     cfg.sidebar.git_status(),
@@ -2430,22 +2429,22 @@ pub fn run() -> Result<()> {
             let mut output = compute_tick(
                 TickInput {
                     agents: agents.clone(),
-                    tmux_state: tmux_state.clone(),
+                    server_state: server_state.clone(),
                     captured_panes: pending_captures.take().unwrap_or_default(),
                     now,
                     now_ts,
                     position,
                     layout_mode,
-                    filter_mode: read_sidebar_filter_mode(tmux_state.filter.as_deref()),
+                    filter_mode: read_sidebar_filter_mode(server_state.filter.as_deref()),
                     sort,
                     group_by,
                     collapse_stale,
                     stale_threshold_secs,
-                    expanded_groups: read_expanded_groups(tmux_state.expanded_groups.as_deref()),
+                    expanded_groups: read_expanded_groups(server_state.expanded_groups.as_deref()),
                     git_statuses: snapshot_status_cache(git_status_enabled, &git_cache),
                     pr_statuses: snapshot_status_cache(git_status_enabled, &pr_cache),
                     check_statuses: snapshot_status_cache(git_status_enabled, &check_cache),
-                    sleeping_pane_ids: read_sleeping_panes(tmux_state.sleeping_panes.as_deref()),
+                    sleeping_pane_ids: read_sleeping_panes(server_state.sleeping_panes.as_deref()),
                 },
                 &mut inactivity_tracker,
                 &last_interrupted,
@@ -2464,21 +2463,21 @@ pub fn run() -> Result<()> {
                 output.snapshot.window_views = view_projects.window_views(
                     views,
                     &output.snapshot.agents,
-                    &tmux_state.live_panes,
-                    &tmux_state.active_pane_ids,
-                    super::view::is_enabled(tmux_state.views_enabled.as_deref()),
+                    &server_state.live_panes,
+                    &server_state.active_pane_ids,
+                    super::view::is_enabled(server_state.views_enabled.as_deref()),
                 );
             }
-            for window in tmux_state.window_pane_counts.keys() {
+            for window in server_state.window_pane_counts.keys() {
                 let scope = output.snapshot.window_views.get(window).cloned();
                 if last_window_views.get(window) != Some(&scope) {
                     let result = match &scope {
-                        Some(scope) => tmux.set_window_option(
+                        Some(scope) => host_io.set_window_option(
                             window,
                             super::view::SCOPE_OPTION,
                             &serde_json::to_string(scope)?,
                         ),
-                        None => tmux.unset_window_option(window, super::view::SCOPE_OPTION),
+                        None => host_io.unset_window_option(window, super::view::SCOPE_OPTION),
                     };
                     match result {
                         Ok(()) => {
@@ -2491,7 +2490,7 @@ pub fn run() -> Result<()> {
                 }
             }
             last_window_views
-                .retain(|window, _| tmux_state.window_pane_counts.contains_key(window));
+                .retain(|window, _| server_state.window_pane_counts.contains_key(window));
             server.broadcast(&output.snapshot);
 
             let stale_threshold = output.snapshot.stale_threshold_secs;
@@ -2550,14 +2549,18 @@ pub fn run() -> Result<()> {
                 .agents
                 .iter()
                 .filter(|agent| super::snapshot::is_jump_target(snapshot, agent))
-                .map(|agent| agent.pane_id.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
+                .map(super::snapshot::NavigationTarget::from_agent)
+                .collect::<Vec<_>>();
+            let agent_list = if agent_list.is_empty() {
+                String::new()
+            } else {
+                serde_json::to_string(&agent_list)?
+            };
             if agent_list != last_agent_list {
                 let result = if agent_list.is_empty() {
-                    tmux.unset_global_option("@workmux_sidebar_agents")
+                    host_io.unset_global_option("@workrex_sidebar_agents")
                 } else {
-                    tmux.set_global_option("@workmux_sidebar_agents", &agent_list)
+                    host_io.set_global_option("@workrex_sidebar_agents", &agent_list)
                 };
                 if let Err(error) = result {
                     tracing::warn!(%error, "failed to publish sidebar agent inventory");
@@ -2614,10 +2617,10 @@ pub fn run() -> Result<()> {
     if let Ok(store) = StateStore::new() {
         store.delete_runtime(&backend_name, &instance_id);
     }
-    let _ = tmux.unset_global_option("@workmux_sidebar_daemon_pid");
-    let _ = tmux.unset_global_option("@workmux_sidebar_agents");
-    let _ = tmux.unset_global_option("@workmux_sleeping_panes");
-    let _ = tmux.unset_global_option("@workmux_sidebar_scope");
+    let _ = host_io.unset_global_option("@workrex_sidebar_daemon_pid");
+    let _ = host_io.unset_global_option("@workrex_sidebar_agents");
+    let _ = host_io.unset_global_option("@workrex_sleeping_panes");
+    let _ = host_io.unset_global_option("@workrex_sidebar_scope");
     Ok(())
 }
 
@@ -2626,7 +2629,7 @@ pub fn run() -> Result<()> {
 /// Inputs gathered from the environment for one daemon tick.
 struct TickInput {
     agents: Vec<crate::multiplexer::AgentPane>,
-    tmux_state: TmuxState,
+    server_state: ServerState,
     captured_panes: HashMap<String, String>,
     now: Instant,
     now_ts: u64,
@@ -2675,7 +2678,7 @@ fn compute_tick(
 ) -> TickOutput {
     let TickInput {
         mut agents,
-        tmux_state,
+        server_state,
         captured_panes,
         now,
         now_ts,
@@ -2722,12 +2725,12 @@ fn compute_tick(
     // known from phase 1, so priority ordering sees the same state clients do.
     let snapshot = build_snapshot(SnapshotInputs {
         agents,
-        tmux_statuses: tmux_state.window_statuses,
-        pane_window_ids: tmux_state.pane_window_ids,
-        pane_window_indexes: tmux_state.pane_window_indexes,
-        active_windows: tmux_state.active_windows,
-        active_pane_ids: tmux_state.active_pane_ids,
-        window_pane_counts: tmux_state.window_pane_counts,
+        server_statuses: server_state.window_statuses,
+        pane_window_ids: server_state.pane_window_ids,
+        pane_window_indexes: server_state.pane_window_indexes,
+        active_windows: server_state.active_windows,
+        active_pane_ids: server_state.active_pane_ids,
+        window_pane_counts: server_state.window_pane_counts,
         position,
         layout_mode,
         filter_mode,
@@ -2790,13 +2793,10 @@ fn apply_tick_effects(
     }
 }
 
-/// Whether the agent's local pane shows its output as it happens. A remote
-/// agent's does only while a connected relay draws it.
+/// Whether local capture can observe this agent. Native remote rows are
+/// observed through their owning nodes, never through the local Rex server.
 fn shows_live_output(agent: &crate::multiplexer::AgentPane) -> bool {
-    agent
-        .remote
-        .as_ref()
-        .is_none_or(|remote| remote.attached && remote.connected)
+    agent.remote.is_none()
 }
 
 /// Capture working panes, including interrupted ones, to detect resumed output.
@@ -2968,7 +2968,7 @@ mod tests {
         reconcile(desired.clone());
         std::fs::create_dir(&dir).unwrap();
         reconcile(desired.clone());
-        let config_path = dir.join(".workmux.yaml");
+        let config_path = dir.join(".workrex.yaml");
         std::fs::write(&config_path, "agent: first").unwrap();
         wake_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(version.load(Ordering::Relaxed) > 0);
@@ -3043,18 +3043,18 @@ mod tests {
                 .resolve(&paths, now, false, crate::config::discover_project_config)
                 .changed
         );
-        std::fs::write(root.join(".workmux.yml"), "agent: root").unwrap();
+        std::fs::write(root.join(".workrex.yml"), "agent: root").unwrap();
         now += PROJECT_CONFIG_REVALIDATE;
         let created = cache.resolve(&paths, now, false, crate::config::discover_project_config);
         assert!(created.changed);
         assert_eq!(created.directories, HashSet::from([root.clone()]));
-        std::fs::write(nested.join(".workmux.yaml"), "agent: nearer").unwrap();
+        std::fs::write(nested.join(".workrex.yaml"), "agent: nearer").unwrap();
         now += PROJECT_CONFIG_REVALIDATE;
         let nearer = cache.resolve(&paths, now, false, crate::config::discover_project_config);
         assert!(nearer.changed);
         assert_eq!(nearer.directories, HashSet::from([nested.clone()]));
         std::fs::write(nested.join("replacement"), "agent: replaced").unwrap();
-        std::fs::rename(nested.join("replacement"), nested.join(".workmux.yaml")).unwrap();
+        std::fs::rename(nested.join("replacement"), nested.join(".workrex.yaml")).unwrap();
         now += PROJECT_CONFIG_REVALIDATE;
         assert!(
             cache
@@ -3062,11 +3062,11 @@ mod tests {
                 .changed
         );
         // An external watcher reload already accounts for a deletion/move.
-        std::fs::remove_file(nested.join(".workmux.yaml")).unwrap();
+        std::fs::remove_file(nested.join(".workrex.yaml")).unwrap();
         let moved = cache.resolve(&paths, now, true, crate::config::discover_project_config);
         assert!(!moved.changed);
         assert_eq!(moved.directories, HashSet::from([root.clone()]));
-        std::fs::remove_file(root.join(".workmux.yml")).unwrap();
+        std::fs::remove_file(root.join(".workrex.yml")).unwrap();
         now += PROJECT_CONFIG_REVALIDATE;
         let deleted = cache.resolve(&paths, now, false, crate::config::discover_project_config);
         assert!(deleted.changed);
@@ -3094,7 +3094,7 @@ mod tests {
     fn project_config_cache_keeps_watches_on_error_and_backs_off() {
         let repo = tempfile::tempdir().unwrap();
         crate::test_support::init_repo(repo.path());
-        std::fs::write(repo.path().join(".workmux.yaml"), "agent: test").unwrap();
+        std::fs::write(repo.path().join(".workrex.yaml"), "agent: test").unwrap();
         let path = repo.path().canonicalize().unwrap();
         let paths = HashSet::from([path.clone()]);
         let observation = crate::config::discover_project_config(&path).unwrap();
@@ -3132,7 +3132,7 @@ mod tests {
         for repo in [&a, &b] {
             std::fs::create_dir(repo).unwrap();
             crate::test_support::init_repo(repo);
-            std::fs::write(repo.join(".workmux.yaml"), "agent: main").unwrap();
+            std::fs::write(repo.join(".workrex.yaml"), "agent: main").unwrap();
         }
         let linked = fixture.path().join("linked");
         crate::test_support::run_git(
@@ -3193,7 +3193,7 @@ mod tests {
         let b = tempfile::tempdir().unwrap();
         for repo in [&a, &b] {
             crate::test_support::init_repo(repo.path());
-            std::fs::write(repo.path().join(".workmux.yaml"), "agent: test").unwrap();
+            std::fs::write(repo.path().join(".workrex.yaml"), "agent: test").unwrap();
             std::fs::create_dir(repo.path().join("nested")).unwrap();
         }
         let a = a.path().canonicalize().unwrap();
@@ -3215,22 +3215,22 @@ mod tests {
 
     #[test]
     fn socket_path_uses_a_stable_fixed_width_instance_key() {
-        let default = socket_path("/private/tmp/tmux-501/default");
-        let long = socket_path("/private/tmp/tmux-501/sidebar-repro-socket");
-        let unicode = socket_path("/private/tmp/tmux-501/サイドバー");
+        let default = socket_path("/private/tmp/server-501/default");
+        let long = socket_path("/private/tmp/server-501/sidebar-repro-socket");
+        let unicode = socket_path("/private/tmp/server-501/サイドバー");
 
         assert_eq!(default.parent(), Some(std::env::temp_dir().as_path()));
         assert_eq!(
             default.file_name().unwrap(),
-            "workmux-sidebar-3d3d4a9387e30f49.sock"
+            "workrex-sidebar-62ea04d3cae893ac.sock"
         );
         assert_eq!(
             long.file_name().unwrap(),
-            "workmux-sidebar-51c46e2d6ee045f1.sock"
+            "workrex-sidebar-cb445652c4bdce1a.sock"
         );
         assert_eq!(
             unicode.file_name().unwrap(),
-            "workmux-sidebar-b596df9918d556c8.sock"
+            "workrex-sidebar-12893d7ce6135a79.sock"
         );
     }
 
@@ -3238,7 +3238,7 @@ mod tests {
     fn socket_path_for_a_long_instance_can_be_bound() {
         let unique = tempfile::tempdir().unwrap();
         let instance_id = format!(
-            "/private/tmp/tmux-501/{}/{}",
+            "/private/tmp/server-501/{}/{}",
             unique.path().display(),
             "long-unicode-name-サイドバー".repeat(8)
         );
@@ -3288,7 +3288,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_and_config_publications_schedule_no_tmux_or_capture_work() {
+    fn worker_and_config_publications_schedule_no_rex_or_capture_work() {
         let start = Instant::now();
         let mut scheduler = Scheduler::new(start);
         scheduler.finish_observation(start);
@@ -3313,13 +3313,13 @@ mod tests {
     }
 
     #[test]
-    fn tmux_events_coalesce_without_postponing_the_first_deadline() {
+    fn rex_events_coalesce_without_postponing_the_first_deadline() {
         let start = Instant::now();
         let mut scheduler = Scheduler::new(start);
         scheduler.finish_observation(start);
         scheduler.finish_capture(start);
-        scheduler.notify_tmux_event(start + Duration::from_millis(10));
-        scheduler.notify_tmux_event(start + Duration::from_millis(40));
+        scheduler.notify_server_event(start + Duration::from_millis(10));
+        scheduler.notify_server_event(start + Duration::from_millis(40));
 
         assert!(!scheduler.observation_due(start + Duration::from_millis(59)));
         assert!(scheduler.observation_due(start + Duration::from_millis(60)));
@@ -3330,9 +3330,9 @@ mod tests {
         let start = Instant::now();
         let mut scheduler = Scheduler::new(start);
         scheduler.finish_observation(start);
-        scheduler.notify_tmux_event(start + Duration::from_millis(20));
+        scheduler.notify_server_event(start + Duration::from_millis(20));
         scheduler.finish_observation(start + Duration::from_millis(70));
-        scheduler.notify_tmux_event(start + Duration::from_millis(80));
+        scheduler.notify_server_event(start + Duration::from_millis(80));
 
         assert!(!scheduler.observation_due(start + Duration::from_millis(129)));
         assert!(scheduler.observation_due(start + Duration::from_millis(130)));
@@ -3343,7 +3343,7 @@ mod tests {
         let start = Instant::now();
         let mut scheduler = Scheduler::new(start);
         scheduler.finish_observation(start);
-        scheduler.notify_tmux_event(start + OBSERVATION_INTERVAL - Duration::from_millis(10));
+        scheduler.notify_server_event(start + OBSERVATION_INTERVAL - Duration::from_millis(10));
         scheduler.finish_observation(start + OBSERVATION_INTERVAL);
 
         assert_eq!(scheduler.event_observation, None);
@@ -3356,7 +3356,7 @@ mod tests {
         let mut scheduler = Scheduler::new(start);
         scheduler.finish_observation(start);
         scheduler.finish_capture(start);
-        scheduler.notify_tmux_event(start + Duration::from_millis(500));
+        scheduler.notify_server_event(start + Duration::from_millis(500));
         scheduler.finish_observation(start + Duration::from_millis(550));
 
         assert!(scheduler.observation_due(start + OBSERVATION_INTERVAL));
@@ -4264,8 +4264,8 @@ mod tests {
         let repo = dir.path().join("repo");
         let linked = dir.path().join("linked");
         init_repo(&repo);
-        run_git(&repo, &["config", "user.name", "Workmux Tests"]);
-        run_git(&repo, &["config", "user.email", "workmux@example.com"]);
+        run_git(&repo, &["config", "user.name", "Workrex Tests"]);
+        run_git(&repo, &["config", "user.email", "workrex@example.com"]);
         std::fs::write(repo.join("tracked"), "content").unwrap();
         run_git(&repo, &["add", "tracked"]);
         run_git(&repo, &["commit", "-q", "-m", "initial"]);
@@ -4317,7 +4317,7 @@ mod tests {
     fn config_reload_triggers_on_mutations_of_config_files() {
         use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
 
-        let config = PathBuf::from("/home/u/.config/workmux/config.yaml");
+        let config = PathBuf::from("/home/u/.config/workrex/config.yaml");
         for kind in [
             notify::EventKind::Modify(ModifyKind::Any),
             notify::EventKind::Create(CreateKind::File),
@@ -4328,13 +4328,13 @@ mod tests {
         }
 
         let project = notify::Event::new(notify::EventKind::Modify(ModifyKind::Any))
-            .add_path(PathBuf::from("/repo/.workmux.yaml"));
+            .add_path(PathBuf::from("/repo/.workrex.yaml"));
         assert!(config_event_triggers_reload(&project));
 
         let atomic_rename = notify::Event::new(notify::EventKind::Modify(ModifyKind::Name(
             RenameMode::Both,
         )))
-        .add_path(PathBuf::from("/home/u/.config/workmux/config.yaml.tmp"))
+        .add_path(PathBuf::from("/home/u/.config/workrex/config.yaml.tmp"))
         .add_path(config);
         assert!(config_event_triggers_reload(&atomic_rename));
     }
@@ -4343,7 +4343,7 @@ mod tests {
     fn config_reload_ignores_access_events_and_other_files() {
         use notify::event::{AccessKind, AccessMode, ModifyKind};
 
-        let config = PathBuf::from("/home/u/.config/workmux/config.yaml");
+        let config = PathBuf::from("/home/u/.config/workrex/config.yaml");
         for kind in [
             notify::EventKind::Access(AccessKind::Open(AccessMode::Any)),
             notify::EventKind::Access(AccessKind::Close(AccessMode::Read)),
@@ -4354,7 +4354,7 @@ mod tests {
         }
 
         let unrelated = notify::Event::new(notify::EventKind::Modify(ModifyKind::Any))
-            .add_path(PathBuf::from("/home/u/.config/workmux/other.txt"));
+            .add_path(PathBuf::from("/home/u/.config/workrex/other.txt"));
         assert!(!config_event_triggers_reload(&unrelated));
     }
 
@@ -4864,7 +4864,7 @@ mod tests {
         use crate::multiplexer::AgentStatus;
         use crate::state::{PaneKey, StateStore};
 
-        const BACKEND: &str = "tmux";
+        const BACKEND: &str = "server";
         const INSTANCE: &str = "test";
 
         fn test_store() -> (StateStore, tempfile::TempDir) {
@@ -4914,7 +4914,7 @@ mod tests {
             let output = compute_tick(
                 TickInput {
                     agents,
-                    tmux_state: TmuxState {
+                    server_state: ServerState {
                         live_panes: HashMap::new(),
                         window_statuses: HashMap::new(),
                         active_windows: HashSet::new(),

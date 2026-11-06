@@ -40,7 +40,7 @@ pub(super) fn origin_block() -> Option<BlockId> {
 
 /// The pane the user is working in: the caller's pane while it is alive,
 /// else the block the server has focused. The dashboard in its floating
-/// layer reports the block it was opened over, as a tmux popup reports the
+/// layer reports the block it was opened over, as a rex popup reports the
 /// pane beneath it, and no pane when it does not know that block.
 pub(super) fn active_block(
     view: &SessionView,
@@ -85,7 +85,7 @@ impl RexBackend {
     }
 
     /// The dashboard layer's peek, which keeps the keyboard on the dashboard
-    /// as a tmux popup does. A block in the layer's tab already shows around
+    /// as a rex popup does. A block in the layer's tab already shows around
     /// the layer. Showing any other tab would hide the layer with the
     /// keyboard still in it, so that peek fails with a hint.
     pub(super) fn peek_block(&self, block: &BlockId) -> Result<()> {

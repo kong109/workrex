@@ -1,0 +1,120 @@
+---
+interface Props {
+  remote?: boolean;
+}
+const { remote = false } = Astro.props;
+const location = remote ? 'devbox · Rex server' : 'Local Rex server';
+---
+
+<section class="rex-workflow" aria-label="Workrex workflow illustration">
+  <div class="server">
+    <span>{location}</span>
+    <span class="kind">Workflow illustration</span>
+  </div>
+  <div class="sessions">
+    <article>
+      <p class="label">Rex session</p>
+      <h3>fix-login</h3>
+      <p>Git branch and worktree</p>
+      <div class="window">
+        <span>editor tab</span><strong>Agent block</strong>
+      </div>
+    </article>
+    <article>
+      <p class="label">Rex session</p>
+      <h3>parser-tests</h3>
+      <p>Git branch and worktree</p>
+      <div class="window">
+        <span>editor tab</span><strong>Agent block</strong>
+      </div>
+    </article>
+  </div>
+  <pre><code>workrex add fix-login{remote ? ' --remote devbox' : ''} -p "Fix the redirect"
+workrex add parser-tests{remote ? ' --remote devbox' : ''} -p "Test the parser"
+workrex dashboard</code></pre>
+  <p class="note">
+    Each task owns its files and Rex terminal IDs. The dashboard shows progress
+    and opens the selected agent in Rex.app.
+  </p>
+</section>
+
+<style>
+  .rex-workflow {
+    border: 1px solid var(--sl-color-gray-5, #33464a);
+    border-radius: 0.75rem;
+    overflow: hidden;
+    background: var(--sl-color-black, #11191a);
+  }
+  .server {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.8rem 1.1rem;
+    border-bottom: 1px solid var(--sl-color-gray-5, #33464a);
+    font-size: 0.85rem;
+  }
+  .kind,
+  .label,
+  .note {
+    color: var(--sl-color-gray-3, #a6b5b7);
+  }
+  .sessions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+    padding: 1.1rem;
+  }
+  article {
+    min-width: 0;
+    border: 1px solid var(--sl-color-gray-5, #33464a);
+    border-radius: 0.5rem;
+    padding: 1rem;
+  }
+  .label {
+    margin: 0;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  h3 {
+    margin: 0.4rem 0;
+    font-size: 1rem;
+  }
+  article p {
+    font-size: 0.8rem;
+  }
+  .window {
+    display: grid;
+    gap: 0.75rem;
+    margin-top: 1rem;
+    padding: 0.7rem;
+    background: var(--sl-color-gray-6, #1e2c2e);
+    border-radius: 0.3rem;
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 0.75rem;
+  }
+  .window strong {
+    color: var(--sl-color-text-accent, #66dbc3);
+    font-weight: 500;
+  }
+  pre {
+    margin: 0;
+    border-radius: 0;
+    padding: 1.1rem;
+    font-size: 0.8rem;
+    overflow-x: auto;
+  }
+  .note {
+    margin: 0;
+    padding: 0.9rem 1.1rem 1.1rem;
+    font-size: 0.85rem;
+  }
+  @media (max-width: 32rem) {
+    .sessions {
+      grid-template-columns: 1fr;
+    }
+    .kind {
+      display: none;
+    }
+  }
+</style>

@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use tracing::debug;
 
 use crate::util::{PROJECT_PLACEHOLDER, expand_project_placeholder};
-use crate::{cmd, git, nerdfont};
-use which::{which, which_in};
+use crate::{git, nerdfont};
+use which::which;
 
 /// Default script for cleaning up node_modules directories before worktree deletion.
 /// This script moves node_modules to a temporary location and deletes them in the background,
-/// making the workmux remove command return almost instantly.
+/// making the workrex remove command return almost instantly.
 const NODE_MODULES_CLEANUP_SCRIPT: &str = include_str!("scripts/cleanup_node_modules.sh");
 
 /// Placeholder usable in `pre_remove` that expands to the built-in
@@ -152,7 +152,7 @@ pub struct FileConfig {
     pub symlink: Option<Vec<String>>,
 }
 
-/// Configuration for agent status icons displayed in tmux window bar
+/// Configuration for agent status icons displayed in Rex window bar
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct StatusIcons {
     /// Icon shown when agent is working. Default: 🤖
@@ -252,7 +252,7 @@ pub struct DashboardConfig {
     pub commit: Option<String>,
 
     /// Text to send to agent for merge action (m key).
-    /// Default: "!workmux merge"
+    /// Default: "!workrex merge"
     pub merge: Option<String>,
 
     /// Dashboard arrangement: stacked (default) or side_by_side.
@@ -319,7 +319,7 @@ pub enum AgentColumn {
     PrTitle,
     /// Issues GitHub reports as closed by the pull request.
     PrIssues,
-    /// Multiplexer window index, as shown in the tmux status bar.
+    /// Multiplexer window index, as shown in the Rex status bar.
     Window,
     /// Agent status (icons).
     Status,
@@ -684,7 +684,7 @@ pub enum SidebarSort {
     /// stale or interrupted, sleeping. Recent activity breaks ties.
     Priority,
     /// Multiplexer window order (session name, then window index). Keeps
-    /// rows stable while agents work, matching the tmux window list.
+    /// rows stable while agents work, matching the Rex window list.
     Window,
 }
 
@@ -885,7 +885,7 @@ enum SidebarDimension {
 /// Configuration for a single window within a session (session mode only)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct WindowConfig {
-    /// Optional window name. If omitted, tmux auto-names based on running command.
+    /// Optional window name. If omitted, Rex assigns a default window label.
     #[serde(default)]
     pub name: Option<String>,
 
@@ -894,7 +894,7 @@ pub struct WindowConfig {
     pub panes: Option<Vec<PaneConfig>>,
 }
 
-/// Configuration for the workmux tool, read from .workmux.yaml
+/// Configuration for the workrex tool, read from .workrex.yaml
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct Config {
     /// The primary branch to merge into (optional, auto-detected if not set)
@@ -903,7 +903,7 @@ pub struct Config {
 
     /// Default base branch/commit to branch from when creating new worktrees.
     /// The value "auto" uses the effective main branch.
-    /// Used as fallback when --base is not passed to `workmux add`.
+    /// Used as fallback when --base is not passed to `workrex add`.
     #[serde(default)]
     pub base_branch: Option<String>,
 
@@ -912,12 +912,12 @@ pub struct Config {
     #[serde(default)]
     pub worktree_dir: Option<String>,
 
-    /// Prefix for tmux window names (optional, defaults to "wm-")
+    /// Prefix for Rex window names (optional, defaults to "wr-")
     /// Supports a `{project}` placeholder for the main worktree's directory name.
     #[serde(default)]
     pub window_prefix: Option<String>,
 
-    /// Tmux pane configuration (single window layout, mutually exclusive with `windows`)
+    /// Rex pane configuration (single window layout, mutually exclusive with `windows`)
     #[serde(default)]
     pub panes: Option<Vec<PaneConfig>>,
 
@@ -950,11 +950,11 @@ pub struct Config {
     #[serde(default)]
     pub agent: Option<String>,
 
-    /// Default merge strategy for `workmux merge`
+    /// Default merge strategy for `workrex merge`
     #[serde(default)]
     pub merge_strategy: Option<MergeStrategy>,
 
-    /// Keep worktree, window, and branch by default after `workmux merge`
+    /// Keep worktree, window, and branch by default after `workrex merge`
     #[serde(default)]
     pub merge_keep: Option<bool>,
 
@@ -979,7 +979,7 @@ pub struct Config {
     #[serde(default)]
     pub remote_files: FileConfig,
 
-    /// Whether to auto-apply workmux status to tmux window format.
+    /// Whether to auto-apply workrex status to Rex window format.
     /// Default: true
     #[serde(default)]
     pub status_format: Option<bool>,
@@ -1017,18 +1017,18 @@ pub struct Config {
     #[serde(default)]
     pub theme: ThemeConfig,
 
-    /// Mode for tmux operations: window (default) or session
+    /// Mode for Rex operations: session (default) or window
     #[serde(default)]
     /// None means "use default" (Session under Rex, else Window), Some means explicitly set
     pub mode: Option<MuxMode>,
 
-    /// Session mode only. Session to return to when a workmux-managed session
+    /// Session mode only. Session to return to when a workrex-managed session
     /// closes. Not prefixed with `window_prefix`, so it can name a session
-    /// workmux does not manage.
+    /// workrex does not manage.
     #[serde(default)]
     pub default_session: Option<String>,
 
-    /// Placement for new tmux windows in window mode.
+    /// Placement for new Rex windows in window mode.
     #[serde(default)]
     pub window_placement: Option<WindowPlacement>,
 
@@ -1061,7 +1061,7 @@ pub struct Config {
     pub sandbox: SandboxConfig,
 
     /// SSH remotes that can run agents, keyed by remote name. Global-only:
-    /// a project config must not be able to point workmux at a host.
+    /// a project config must not be able to point workrex at a host.
     #[serde(default)]
     pub remotes: BTreeMap<String, RemoteConfig>,
 
@@ -1194,7 +1194,7 @@ impl<'de> Deserialize<'de> for AgentEntry {
 pub struct PaneConfig {
     /// Optional display name for the pane.
     ///
-    /// Supported by the Zellij backend. Other backends may ignore this value.
+    /// Reserved for pane layout metadata.
     #[serde(default)]
     pub name: Option<String>,
 
@@ -1208,7 +1208,7 @@ pub struct PaneConfig {
     #[serde(default)]
     pub focus: bool,
 
-    /// Split direction for the new pane (horizontal, vertical, or Zellij-only stacked).
+    /// Split direction for the new pane (horizontal or vertical).
     ///
     /// The pane splits from `target` when specified, otherwise from the most
     /// recently created pane.
@@ -1249,7 +1249,6 @@ pub struct LayoutConfig {
 pub enum SplitDirection {
     Horizontal,
     Vertical,
-    Stacked,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
@@ -1497,7 +1496,7 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
     }
 }
 
-/// Placement for new tmux windows in window mode.
+/// Placement for new Rex windows in window mode.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowPlacement {
@@ -1521,11 +1520,11 @@ pub struct RemoteConfig {
     /// Override sandbox.enabled for this remote; unset follows the effective sandbox setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<RemoteIsolation>,
-    /// Local path of a Linux workmux binary to upload instead of downloading
-    /// the release matching this workmux version.
+    /// Local path of a Linux workrex binary to upload instead of downloading
+    /// the release matching this workrex version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
-    /// Where the agents' terminals live: the node's tmux, relayed into a
+    /// Where the agents' terminals live: the node's Rex, relayed into a
     /// local window (default), or the node's Rex server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<RemoteTerminal>,
@@ -1539,7 +1538,6 @@ pub struct RemoteConfig {
 #[serde(rename_all = "lowercase")]
 pub enum RemoteTerminal {
     #[default]
-    Tmux,
     Rex,
 }
 
@@ -1557,10 +1555,10 @@ pub enum RemoteIsolation {
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MuxMode {
-    /// Create windows within the current tmux session (default)
-    #[default]
+    /// Create windows within the current Rex session.
     Window,
-    /// Create new tmux sessions for each worktree
+    /// Create a Rex session for each worktree.
+    #[default]
     Session,
 }
 
@@ -2080,21 +2078,21 @@ pub struct ContainerConfig {
     /// the sandbox without restructuring the project.
     ///
     /// Masking applies to both the current worktree and, where applicable, the
-    /// main-worktree mount (which workmux adds for symlink resolution), so a
+    /// main-worktree mount (which workrex adds for symlink resolution), so a
     /// symlinked secret cannot be read via the alias path.
     ///
     /// Only existing regular files are masked; missing paths are skipped with
     /// a warning. Directories are not supported.
     ///
     /// Security: this field is global-only. It is ignored when set in a
-    /// project's `.workmux.yaml`, and workmux fails fast rather than running
+    /// project's `.workrex.yaml`, and workrex fails fast rather than running
     /// with excluded_files on a runtime that lacks file-level bind mounts
     /// (Apple Container).
     #[serde(default)]
     pub excluded_files: Option<Vec<String>>,
 
     /// OCI runtime to run the container under (docker/local Podman `--runtime`).
-    /// When unset, workmux omits `--runtime` and the engine uses its configured
+    /// When unset, workrex omits `--runtime` and the engine uses its configured
     /// default. Set to e.g. "kata" to run the container under a VM-based OCI
     /// runtime for stronger isolation. The named runtime must be installed and
     /// registered with the container runtime. Global-only: ignored in project
@@ -2177,12 +2175,12 @@ impl ContainerConfig {
     /// are emitted in `Config::merge` where both values are visible.
     fn merge(global: Self, project: Self) -> Self {
         // Security: excluded_files is global-only. Project config cannot set it --
-        // otherwise a repo's .workmux.yaml could delete user-level secret
+        // otherwise a repo's .workrex.yaml could delete user-level secret
         // protections by providing an empty/overriding list.
         if project.excluded_files.is_some() {
             tracing::warn!(
-                "sandbox.container.excluded_files in project config (.workmux.yaml) is ignored -- \
-                move it to your global config (~/.config/workmux/config.yaml)"
+                "sandbox.container.excluded_files in project config (.workrex.yaml) is ignored -- \
+                move it to your global config (~/.config/workrex/config.yaml)"
             );
         }
         Self {
@@ -2381,7 +2379,7 @@ pub struct SandboxConfig {
     /// Environment variables to set in the sandbox with explicit values.
     /// Unlike env_passthrough (which reads from host), these are set directly.
     /// Global-only: project config cannot set this to prevent a sandboxed agent
-    /// from injecting env vars into its next session via .workmux.yaml.
+    /// from injecting env vars into its next session via .workrex.yaml.
     #[serde(default)]
     pub env: Option<HashMap<String, String>>,
 
@@ -2548,12 +2546,12 @@ pub struct ConfigLocation {
     pub config_path: PathBuf,
     /// Absolute path to the directory containing the config
     pub config_dir: PathBuf,
-    /// Relative path from repo root to config dir (e.g., "backend" for backend/.workmux.yaml)
+    /// Relative path from repo root to config dir (e.g., "backend" for backend/.workrex.yaml)
     /// Empty if config is at repo root
     pub rel_dir: PathBuf,
 }
 
-/// Find the nearest .workmux.yaml by walking up from start_dir to repo root.
+/// Find the nearest .workrex.yaml by walking up from start_dir to repo root.
 /// Returns ConfigLocation with the relative path computed at discovery time.
 pub fn find_project_config(start_dir: &Path) -> anyhow::Result<Option<ConfigLocation>> {
     match discover_project_config(start_dir) {
@@ -2595,7 +2593,7 @@ impl ProjectConfigDiscovery {
 
 /// Discover without converting failed probes into confirmed absence.
 pub(crate) fn discover_project_config(start_dir: &Path) -> anyhow::Result<ProjectConfigDiscovery> {
-    let config_names = [".workmux.yaml", ".workmux.yml"];
+    let config_names = [".workrex.yaml", ".workrex.yml"];
     let mut discovery = ProjectConfigDiscovery {
         location: None,
         repository: None,
@@ -2754,15 +2752,6 @@ pub fn validate_panes_config(panes: &[PaneConfig]) -> anyhow::Result<()> {
             );
         }
 
-        if matches!(pane.split, Some(SplitDirection::Stacked))
-            && (pane.size.is_some() || pane.percentage.is_some())
-        {
-            anyhow::bail!(
-                "Pane {} with 'split: stacked' cannot have 'size' or 'percentage' specified.",
-                i
-            );
-        }
-
         // If target is specified, validate it's a valid index
         if let Some(target) = pane.target
             && target >= i
@@ -2800,9 +2789,9 @@ pub fn validate_layouts_config(layouts: &HashMap<String, LayoutConfig>) -> anyho
 
 /// Get the path to the global config file.
 ///
-/// Resolves via `$XDG_CONFIG_HOME/workmux/` (default `~/.config/workmux/`).
+/// Resolves via `$XDG_CONFIG_HOME/workrex/` (default `~/.config/workrex/`).
 /// If a custom `XDG_CONFIG_HOME` is set and no config exists there yet,
-/// falls back to the legacy `~/.config/workmux/` location for reading.
+/// falls back to the legacy `~/.config/workrex/` location for reading.
 /// Prefers existing .yml file to avoid shadowing, otherwise defaults to .yaml.
 pub fn global_config_path() -> Option<PathBuf> {
     let xdg_dir = crate::xdg::config_dir().ok()?;
@@ -2817,9 +2806,9 @@ pub fn global_config_path() -> Option<PathBuf> {
         return Some(yaml);
     }
 
-    // Legacy fallback: if XDG_CONFIG_HOME points elsewhere, check ~/.config/workmux/
+    // Legacy fallback: if XDG_CONFIG_HOME points elsewhere, check ~/.config/workrex/
     if let Some(home) = home::home_dir() {
-        let legacy_dir = home.join(".config/workmux");
+        let legacy_dir = home.join(".config/workrex");
         if legacy_dir != xdg_dir {
             let legacy_yml = legacy_dir.join("config.yml");
             let legacy_yaml = legacy_dir.join("config.yaml");
@@ -3211,13 +3200,13 @@ impl Config {
         };
 
         // Deep merge auto_name. Security: command is global-only to prevent
-        // a malicious .workmux.yaml from executing arbitrary commands on the host.
+        // a malicious .workrex.yaml from executing arbitrary commands on the host.
         merged.auto_name = match (self.auto_name, project.auto_name) {
             (Some(global), Some(project)) => {
                 if project.command.is_some() {
                     tracing::warn!(
-                        "auto_name.command in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "auto_name.command in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 Some(AutoNameConfig {
@@ -3231,8 +3220,8 @@ impl Config {
             (None, Some(project)) => {
                 if project.command.is_some() {
                     tracing::warn!(
-                        "auto_name.command in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "auto_name.command in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 Some(AutoNameConfig {
@@ -3396,35 +3385,35 @@ impl Config {
             image: project.sandbox.image.clone().or(self.sandbox.image.clone()),
             // Security: env_passthrough is global-only. Project config cannot
             // set it -- this prevents a malicious repo from requesting
-            // passthrough of host env secrets via .workmux.yaml.
+            // passthrough of host env secrets via .workrex.yaml.
             env_passthrough: {
                 if project.sandbox.env_passthrough.is_some() {
                     tracing::warn!(
-                        "env_passthrough in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "env_passthrough in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 self.sandbox.env_passthrough.clone()
             },
             // Security: env is global-only. A sandboxed agent could modify
-            // .workmux.yaml to inject env vars into its next session.
+            // .workrex.yaml to inject env vars into its next session.
             env: {
                 if project.sandbox.env.is_some() {
                     tracing::warn!(
-                        "env in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "env in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 self.sandbox.env
             },
             // Security: rpc_host is global-only. Project config cannot
             // set it -- this prevents a malicious repo from redirecting
-            // RPC traffic to attacker infrastructure via .workmux.yaml.
+            // RPC traffic to attacker infrastructure via .workrex.yaml.
             rpc_host: {
                 if project.sandbox.rpc_host.is_some() {
                     tracing::warn!(
-                        "rpc_host in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "rpc_host in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 self.sandbox.rpc_host.clone()
@@ -3436,36 +3425,36 @@ impl Config {
                 .or(self.sandbox.toolchain.clone()),
             // Security: host_commands is global-only. Project config cannot
             // set it -- this prevents a malicious repo from granting itself
-            // host-exec access via .workmux.yaml.
+            // host-exec access via .workrex.yaml.
             host_commands: {
                 if project.sandbox.host_commands.is_some() {
                     tracing::warn!(
-                        "host_commands in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "host_commands in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 self.sandbox.host_commands.clone()
             },
             // Security: extra_mounts is global-only. Project config cannot
             // set it -- this prevents a malicious repo from mounting over
-            // host paths via .workmux.yaml.
+            // host paths via .workrex.yaml.
             extra_mounts: {
                 if project.sandbox.extra_mounts.is_some() {
                     tracing::warn!(
-                        "extra_mounts in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "extra_mounts in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 self.sandbox.extra_mounts.clone()
             },
             // Security: agent_config_dir is global-only. Project config cannot
             // set it -- this prevents a malicious repo from redirecting agent
-            // config mounts via .workmux.yaml.
+            // config mounts via .workrex.yaml.
             agent_config_dir: {
                 if project.sandbox.agent_config_dir.is_some() {
                     tracing::warn!(
-                        "agent_config_dir in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "agent_config_dir in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 self.sandbox.agent_config_dir.clone()
@@ -3478,51 +3467,51 @@ impl Config {
             // (e.g. a VM runtime vs runc); cap_add/security_opt control the
             // container's capability/seccomp/apparmor confinement, and permissive
             // values relax it. A malicious repo must not be able to set them via
-            // .workmux.yaml.
+            // .workrex.yaml.
             container: {
                 if project.sandbox.container.devices.is_some() {
                     tracing::warn!(
-                        "sandbox.container.devices in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "sandbox.container.devices in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 if project.sandbox.container.group_add.is_some() {
                     tracing::warn!(
-                        "sandbox.container.group_add in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "sandbox.container.group_add in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 if project.sandbox.container.oci_runtime.is_some() {
                     tracing::warn!(
-                        "sandbox.container.oci_runtime in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "sandbox.container.oci_runtime in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 if project.sandbox.container.cap_add.is_some() {
                     tracing::warn!(
-                        "sandbox.container.cap_add in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "sandbox.container.cap_add in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 if project.sandbox.container.security_opt.is_some() {
                     tracing::warn!(
-                        "sandbox.container.security_opt in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "sandbox.container.security_opt in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 ContainerConfig::merge(self.sandbox.container, project.sandbox.container)
             },
             // Security: network is global-only. Project config cannot
             // set it -- this prevents a malicious repo from weakening
-            // network restrictions via .workmux.yaml.
+            // network restrictions via .workrex.yaml.
             network: {
                 if project.sandbox.network.policy.is_some()
                     || project.sandbox.network.allowed_domains.is_some()
                     || project.sandbox.network.max_connections.is_some()
                 {
                     tracing::warn!(
-                        "network in project config (.workmux.yaml) is ignored -- \
-                        move it to your global config (~/.config/workmux/config.yaml)"
+                        "network in project config (.workrex.yaml) is ignored -- \
+                        move it to your global config (~/.config/workrex/config.yaml)"
                     );
                 }
                 self.sandbox.network.clone()
@@ -3535,11 +3524,11 @@ impl Config {
 
         // Security: agents is global-only. Project config cannot define agents
         // -- this prevents a malicious repo from executing arbitrary commands
-        // via .workmux.yaml.
+        // via .workrex.yaml.
         merged.agents = if !project.agents.is_empty() {
             tracing::warn!(
-                "agents in project config (.workmux.yaml) is ignored -- \
-                move it to your global config (~/.config/workmux/config.yaml)"
+                "agents in project config (.workrex.yaml) is ignored -- \
+                move it to your global config (~/.config/workrex/config.yaml)"
             );
             self.agents
         } else {
@@ -3547,12 +3536,12 @@ impl Config {
         };
 
         // Security: remotes is global-only. Project config cannot define
-        // hosts -- this prevents a malicious repo from pointing workmux at
-        // an attacker-controlled SSH destination via .workmux.yaml.
+        // hosts -- this prevents a malicious repo from pointing workrex at
+        // an attacker-controlled SSH destination via .workrex.yaml.
         if !project.remotes.is_empty() {
             tracing::warn!(
-                "remotes in project config (.workmux.yaml) is ignored -- \
-                move it to your global config (~/.config/workmux/config.yaml)"
+                "remotes in project config (.workrex.yaml) is ignored -- \
+                move it to your global config (~/.config/workrex/config.yaml)"
             );
         }
         merged.remotes = self.remotes;
@@ -3592,14 +3581,14 @@ impl Config {
     }
 
     /// Get the window prefix to use.
-    /// Priority: explicit window_prefix config > nerdfont icon > "wm-"
+    /// Priority: explicit window_prefix config > nerdfont icon > "wr-"
     pub fn window_prefix(&self) -> &str {
         if let Some(ref prefix) = self.window_prefix {
             prefix
         } else if nerdfont::is_enabled() {
             "\u{f418} " // nf-oct-git_branch
         } else {
-            "wm-"
+            "wr-"
         }
     }
 
@@ -3610,17 +3599,14 @@ impl Config {
     }
 
     pub fn remote_mode(&self) -> MuxMode {
-        self.mode.unwrap_or(MuxMode::Window)
+        self.mode.unwrap_or(MuxMode::Session)
     }
 
-    pub fn mode_for(&self, backend: crate::multiplexer::BackendType) -> MuxMode {
-        self.mode.unwrap_or(match backend {
-            crate::multiplexer::BackendType::Rex => MuxMode::Session,
-            _ => MuxMode::Window,
-        })
+    pub fn mode_for(&self, _backend: crate::multiplexer::BackendType) -> MuxMode {
+        self.mode.unwrap_or(MuxMode::Session)
     }
 
-    /// Session to return to when a workmux-managed session closes.
+    /// Session to return to when a workrex-managed session closes.
     /// Blank values are treated as unset.
     pub fn default_session(&self) -> Option<&str> {
         self.default_session
@@ -3634,27 +3620,27 @@ impl Config {
         self.window_placement.unwrap_or_default()
     }
 
-    /// Create an example .workmux.yaml configuration file
+    /// Create an example .workrex.yaml configuration file
     pub fn init() -> anyhow::Result<()> {
         use std::path::PathBuf;
 
-        let config_path = PathBuf::from(".workmux.yaml");
+        let config_path = PathBuf::from(".workrex.yaml");
 
         if config_path.exists() {
             return Err(anyhow::anyhow!(
-                ".workmux.yaml already exists. Remove it first if you want to regenerate it."
+                ".workrex.yaml already exists. Remove it first if you want to regenerate it."
             ));
         }
 
-        fs::write(&config_path, crate::rebrand!(EXAMPLE_PROJECT_CONFIG))?;
+        fs::write(&config_path, EXAMPLE_PROJECT_CONFIG)?;
 
-        println!("✓ Created .workmux.yaml");
+        println!("✓ Created .workrex.yaml");
         println!("\nThis file provides project-specific overrides.");
         println!(
             "For global settings, edit {}",
             global_config_path()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "~/.config/workmux/config.yaml".to_string())
+                .unwrap_or_else(|| "~/.config/workrex/config.yaml".to_string())
         );
 
         Ok(())
@@ -3662,9 +3648,9 @@ impl Config {
 }
 
 /// Example project configuration with all options documented.
-/// Used by `workmux init` and `workmux config show`.
-pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
-# For global settings, edit ~/.config/workmux/config.yaml
+/// Used by `workrex init` and `workrex config show`.
+pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workrex project configuration
+# For global settings, edit ~/.config/workrex/config.yaml
 # All options below are commented out - uncomment to override defaults.
 
 #-------------------------------------------------------------------------------
@@ -3696,12 +3682,12 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # Default: The currently checked out branch.
 # base_branch: auto
 
-# Default merge strategy for `workmux merge`.
+# Default merge strategy for `workrex merge`.
 # Options: merge (default), rebase, squash
 # CLI flags (--rebase, --squash) always override this.
 # merge_strategy: rebase
 
-# Keep the worktree, window, and branch after `workmux merge` by default.
+# Keep the worktree, window, and branch after `workrex merge` by default.
 # Keep and cleanup CLI flags always override this.
 # merge_keep: true
 
@@ -3717,7 +3703,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # Directory where worktrees are created.
 # Can be relative to repo root or absolute. Supports `~` for home directory
 # and `{project}` for the main worktree's directory name, so a global config
-# can namespace each repo, e.g. `~/.workmux/{project}`.
+# can namespace each repo, e.g. `~/.workrex/{project}`.
 # Default: Sibling directory '<project>__worktrees'.
 # worktree_dir: .worktrees
 
@@ -3725,33 +3711,33 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # Options: full (default), basename (part after last '/').
 # worktree_naming: basename
 
-# Prefix added to worktree directories and tmux window names.
+# Prefix added to worktree directories and Rex window names.
 # worktree_prefix: ""
 
-# Prefix for tmux window and session names. Supports `{project}` for the main
+# Prefix for Rex window and session names. Supports `{project}` for the main
 # worktree's directory name, e.g. `{project} ` to scope session names by repo.
-# Default: "wm-"
-# window_prefix: "wm-"
+# Default: "wr-"
+# window_prefix: "wr-"
 
 #-------------------------------------------------------------------------------
-# Tmux
+# Rex
 #-------------------------------------------------------------------------------
 
-# Mode for tmux operations: window (default) or session.
-# - window: Create windows within the current tmux session
-# - session: Create tmux sessions for each worktree
+# Mode for Rex operations: session (default) or window.
+# - window: Create windows within the current Rex session
+# - session: Create Rex sessions for each worktree
 # mode: session
 
-# Session mode only. Session to return to when a workmux session is closed or
+# Session mode only. Session to return to when a workrex session is closed or
 # removed, instead of whichever session the client was in previously.
 # Not prefixed with window_prefix. Default: the client's previous session.
 # default_session: main
 
-# Placement for new tmux windows in window mode.
+# Placement for new Rex windows in window mode.
 # Options: after_current (default), rightmost
 # window_placement: rightmost
 
-# Custom tmux pane layout (mutually exclusive with 'windows').
+# Custom Rex pane layout (mutually exclusive with 'windows').
 # Default: Two-pane layout with shell and clear command.
 # panes:
 #   - command: pnpm install
@@ -3762,10 +3748,9 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #     split: vertical
 #     size: 5
 #   - command: just test --watch
-#     split: stacked  # Zellij only
 
 # Multiple windows per session (session mode only, mutually exclusive with 'panes').
-# Each window can have its own pane layout. Unnamed windows get tmux's
+# Each window can have its own pane layout. Unnamed windows get Rex's
 # automatic naming based on the running command.
 # windows:
 #   - name: editor
@@ -3780,7 +3765,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   - panes:
 #       - command: tail -f app.log
 
-# Auto-apply agent status icons to tmux window format.
+# Auto-apply agent status icons to Rex window format.
 # Default: true
 # status_format: true
 
@@ -3798,7 +3783,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # Default: "claude"
 # agent: claude
 
-# LLM-based branch name generation (`workmux add -A`).
+# LLM-based branch name generation (`workrex add -A`).
 # auto_name:
 #   model: "gpt-4o-mini"
 #   system_prompt: "Generate a kebab-case git branch name."
@@ -3814,7 +3799,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # Default: ["bash", "-c"]
 # hook_shell: ["/opt/homebrew/bin/bash", "-c"]
 
-# Commands to run in new worktree before tmux window opens.
+# Commands to run in new worktree before Rex window opens.
 # These block window creation - use for short tasks only.
 # Use "<global>" to inherit from global config.
 # Set to empty list to disable: `post_create: []`
@@ -3826,11 +3811,11 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # Aborts the merge if any command fails.
 # Use "<global>" to inherit from global config.
 # Environment variables available:
-#   - WM_BRANCH_NAME: The name of the branch being merged
-#   - WM_TARGET_BRANCH: The name of the target branch (e.g., main)
-#   - WM_WORKTREE_PATH: Absolute path to the worktree
-#   - WM_PROJECT_ROOT: Absolute path of the main project directory
-#   - WM_HANDLE: The worktree handle/window name
+#   - WORKREX_BRANCH_NAME: The name of the branch being merged
+#   - WORKREX_TARGET_BRANCH: The name of the target branch (e.g., main)
+#   - WORKREX_WORKTREE_PATH: Absolute path to the worktree
+#   - WORKREX_PROJECT_ROOT: Absolute path of the main project directory
+#   - WORKREX_HANDLE: The worktree handle/window name
 # pre_merge:
 #   - "<global>"
 #   - cargo test
@@ -3845,13 +3830,13 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # Use "<global>" to inherit from global config.
 # Set to empty list to disable: `pre_remove: []`
 # Environment variables available:
-#   - WM_HANDLE: The worktree handle (directory name)
-#   - WM_WORKTREE_PATH: Absolute path of the worktree being deleted
-#   - WM_PROJECT_ROOT: Absolute path of the main project directory
+#   - WORKREX_HANDLE: The worktree handle (directory name)
+#   - WORKREX_WORKTREE_PATH: Absolute path of the worktree being deleted
+#   - WORKREX_PROJECT_ROOT: Absolute path of the main project directory
 # pre_remove:
 #   - "<global>"
-#   - mkdir -p "$WM_PROJECT_ROOT/artifacts/$WM_HANDLE"
-#   - cp -r test-results/ "$WM_PROJECT_ROOT/artifacts/$WM_HANDLE/"
+#   - mkdir -p "$WORKREX_PROJECT_ROOT/artifacts/$WORKREX_HANDLE"
+#   - cp -r test-results/ "$WORKREX_PROJECT_ROOT/artifacts/$WORKREX_HANDLE/"
 #   - "<cleanup-node-modules>"
 
 #-------------------------------------------------------------------------------
@@ -3898,7 +3883,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # Used only when no sort preference has been persisted in the dashboard.
 # dashboard:
 #   commit: "Commit staged changes with a descriptive message"
-#   merge: "!workmux merge"
+#   merge: "!workrex merge"
 #   layout: stacked # or side_by_side (preview left, table right)
 #   preview_size: 60
 #   agent_columns: [number, project, worktree, git, pr, status, time, title]
@@ -3979,7 +3964,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   #   # OCI runtime to run under (docker/local Podman --runtime). Unset omits
 #   #   # the flag and uses the engine's configured default.
 #   #   # Set to e.g. "kata" for VM-based isolation (runtime must be installed
-#   #   # and registered). GLOBAL-ONLY: ignored in a project .workmux.yaml.
+#   #   # and registered). GLOBAL-ONLY: ignored in a project .workrex.yaml.
 #   #   # oci_runtime: kata
 #   #   # Extra capabilities / security options (docker/podman --cap-add /
 #   #   # --security-opt). Empty by default and GLOBAL-ONLY. Permissive values
@@ -3990,7 +3975,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   #   # Mask files out of the worktree bind mounts (paths relative to the
 #   #   # worktree root). Each listed file is shadowed by /dev/null so the
 #   #   # sandboxed agent cannot read it. Missing files are skipped.
-#   #   # GLOBAL-ONLY: ignored when set in a project .workmux.yaml.
+#   #   # GLOBAL-ONLY: ignored when set in a project .workrex.yaml.
 #   #   # excluded_files:
 #   #   #   - .env
 #   #   #   - .env.local
@@ -4014,8 +3999,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 /// Resolves an executable name or path to its full absolute path.
 ///
 /// For absolute paths, returns as-is. For relative paths, resolves against current directory.
-/// For plain executable names (e.g., "claude"), searches first in tmux's global PATH
-/// (since panes will run in tmux's environment), then falls back to the current shell's PATH.
+/// For plain executable names (e.g., "claude"), searches the invoking shell's PATH.
 /// Returns None if the executable cannot be found.
 pub fn resolve_executable_path(executable: &str) -> Option<String> {
     let exec_path = Path::new(executable);
@@ -4032,27 +4016,12 @@ pub fn resolve_executable_path(executable: &str) -> Option<String> {
             return Some(current_dir.join(exec_path).to_string_lossy().into_owned());
         }
     } else {
-        if let Some(tmux_path) = tmux_global_path() {
-            let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            if let Ok(found) = which_in(executable, Some(tmux_path.as_str()), &cwd) {
-                return Some(found.to_string_lossy().into_owned());
-            }
-        }
-
         if let Ok(found) = which(executable) {
             return Some(found.to_string_lossy().into_owned());
         }
     }
 
     None
-}
-
-pub fn tmux_global_path() -> Option<String> {
-    let output = cmd::Cmd::new("tmux")
-        .args(&["show-environment", "-g", "PATH"])
-        .run_and_capture_stdout()
-        .ok()?;
-    output.strip_prefix("PATH=").map(|s| s.to_string())
 }
 
 /// Checks if a command string corresponds to the given agent command.
@@ -4112,15 +4081,14 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn unset_mode_is_session_under_rex_and_window_under_tmux() {
+    fn unset_mode_is_session_under_rex() {
         use super::MuxMode;
         use crate::multiplexer::BackendType;
         let config = Config::default();
         assert_eq!(config.mode_for(BackendType::Rex), MuxMode::Session);
-        assert_eq!(config.mode_for(BackendType::Tmux), MuxMode::Window);
         let window: Config = serde_yaml::from_str("mode: window\n").expect("config parses");
         assert_eq!(window.mode_for(BackendType::Rex), MuxMode::Window);
-        assert_eq!(config.remote_mode(), MuxMode::Window);
+        assert_eq!(config.remote_mode(), MuxMode::Session);
         let session: Config = serde_yaml::from_str("mode: session\n").expect("config parses");
         assert_eq!(session.remote_mode(), MuxMode::Session);
     }
@@ -4531,7 +4499,7 @@ mod tests {
     fn frozen_source_bypasses_live_config_discovery() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
-            root.path().join(".workmux.yaml"),
+            root.path().join(".workrex.yaml"),
             "status_icons:\n  working: hostile\n",
         )
         .unwrap();
@@ -4612,11 +4580,11 @@ mod tests {
 
     #[test]
     fn frozen_source_env_is_authoritative_in_child_process() {
-        const OUTPUT_ENV: &str = "WORKMUX_FROZEN_CONFIG_TEST_OUTPUT";
+        const OUTPUT_ENV: &str = "WORKREX_FROZEN_CONFIG_TEST_OUTPUT";
 
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
-            root.path().join(".workmux.yaml"),
+            root.path().join(".workrex.yaml"),
             "status_icons:\n  working: hostile\n",
         )
         .unwrap();
@@ -4640,7 +4608,7 @@ mod tests {
             ])
             .env(crate::frozen_config::FROZEN_CONFIG_ENV, snapshot.path())
             .env(OUTPUT_ENV, &output_path)
-            .env_remove("WM_SANDBOX_GUEST")
+            .env_remove("WORKREX_SANDBOX_GUEST")
             .current_dir(root.path())
             .output()
             .unwrap();
@@ -4655,7 +4623,7 @@ mod tests {
 
     #[test]
     fn frozen_source_env_subprocess_helper() {
-        const OUTPUT_ENV: &str = "WORKMUX_FROZEN_CONFIG_TEST_OUTPUT";
+        const OUTPUT_ENV: &str = "WORKREX_FROZEN_CONFIG_TEST_OUTPUT";
         let Some(output_path) = std::env::var_os(OUTPUT_ENV) else {
             return;
         };
@@ -5508,7 +5476,7 @@ agents:
         const TEST: &str = "config::tests::project_discovery_repository_fallback_is_isolated";
         if !crate::test_support::is_isolated_child(TEST) {
             let cwd = git_tempdir();
-            fs::write(cwd.path().join(".workmux.yaml"), "agent: unrelated").unwrap();
+            fs::write(cwd.path().join(".workrex.yaml"), "agent: unrelated").unwrap();
             crate::test_support::run_isolated_test(TEST, cwd.path(), &[]);
             return;
         }
@@ -5532,17 +5500,17 @@ agents:
             repo.path(),
             &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
         );
-        fs::write(repo.path().join(".workmux.yml"), "agent: main").unwrap();
+        fs::write(repo.path().join(".workrex.yml"), "agent: main").unwrap();
         let fallback = find_project_config(&linked).unwrap().unwrap();
         assert_eq!(fallback.config_dir, repo.path().canonicalize().unwrap());
         assert!(fallback.rel_dir.as_os_str().is_empty());
-        fs::write(linked.join(".workmux.yaml"), "agent: linked").unwrap();
+        fs::write(linked.join(".workrex.yaml"), "agent: linked").unwrap();
         assert_eq!(
             find_project_config(&linked).unwrap().unwrap().config_dir,
             linked.canonicalize().unwrap()
         );
-        fs::remove_file(linked.join(".workmux.yaml")).unwrap();
-        fs::remove_file(repo.path().join(".workmux.yml")).unwrap();
+        fs::remove_file(linked.join(".workrex.yaml")).unwrap();
+        fs::remove_file(repo.path().join(".workrex.yml")).unwrap();
         assert!(find_project_config(&linked).unwrap().is_none());
         println!("{}", crate::test_support::ISOLATED_TEST_CANARY);
     }
@@ -5552,7 +5520,7 @@ agents:
         let temp = tempfile::tempdir().unwrap();
         fs::write(
             temp.path().join(".git"),
-            "gitdir: /missing/workmux-test-gitdir",
+            "gitdir: /missing/workrex-test-gitdir",
         )
         .unwrap();
         assert!(super::discover_project_config(temp.path()).is_err());
@@ -5565,10 +5533,10 @@ agents:
                 .is_none()
         );
         crate::test_support::init_repo(temp.path());
-        std::os::unix::fs::symlink(".workmux.yaml", temp.path().join(".workmux.yaml")).unwrap();
+        std::os::unix::fs::symlink(".workrex.yaml", temp.path().join(".workrex.yaml")).unwrap();
         assert!(super::discover_project_config(temp.path()).is_err());
-        fs::remove_file(temp.path().join(".workmux.yaml")).unwrap();
-        fs::write(temp.path().join(".workmux.yaml"), "agent: recovered").unwrap();
+        fs::remove_file(temp.path().join(".workrex.yaml")).unwrap();
+        fs::write(temp.path().join(".workrex.yaml"), "agent: recovered").unwrap();
         assert!(
             super::discover_project_config(temp.path())
                 .unwrap()
@@ -5594,20 +5562,20 @@ agents:
         let temp = git_tempdir();
         let root = temp.path();
 
-        // Create nested structure: root/backend/.workmux.yaml
+        // Create nested structure: root/backend/.workrex.yaml
         let backend = root.join("backend");
         fs::create_dir_all(&backend).unwrap();
-        fs::write(backend.join(".workmux.yaml"), "agent: claude").unwrap();
+        fs::write(backend.join(".workrex.yaml"), "agent: claude").unwrap();
 
         // Create deeper directory: root/backend/src
         let src = backend.join("src");
         fs::create_dir_all(&src).unwrap();
 
-        // Find from src should find backend/.workmux.yaml
+        // Find from src should find backend/.workrex.yaml
         let result = find_project_config(&src).unwrap();
         assert!(result.is_some());
         let loc = result.unwrap();
-        let backend_config = backend.join(".workmux.yaml").canonicalize().unwrap();
+        let backend_config = backend.join(".workrex.yaml").canonicalize().unwrap();
         assert_eq!(loc.config_path, backend_config);
         assert_eq!(loc.config_dir, backend.canonicalize().unwrap());
         assert_eq!(loc.rel_dir, std::path::PathBuf::from("backend"));
@@ -5619,18 +5587,18 @@ agents:
         let root = temp.path();
 
         // Create root config
-        fs::write(root.join(".workmux.yaml"), "agent: root").unwrap();
+        fs::write(root.join(".workrex.yaml"), "agent: root").unwrap();
 
         // Create nested config
         let backend = root.join("backend");
         fs::create_dir_all(&backend).unwrap();
-        fs::write(backend.join(".workmux.yaml"), "agent: backend").unwrap();
+        fs::write(backend.join(".workrex.yaml"), "agent: backend").unwrap();
 
         // Find from backend should find backend config, not root
         let result = find_project_config(&backend).unwrap();
         assert!(result.is_some());
         let loc = result.unwrap();
-        let backend_config = backend.join(".workmux.yaml").canonicalize().unwrap();
+        let backend_config = backend.join(".workrex.yaml").canonicalize().unwrap();
         assert_eq!(loc.config_path, backend_config);
         assert_eq!(loc.config_dir, backend.canonicalize().unwrap());
     }
@@ -5832,15 +5800,15 @@ agents:
     #[test]
     fn remotes_parse_from_yaml() {
         let config: Config = serde_yaml::from_str(
-            "remotes:\n  hetzner:\n    host: wm-remote-test\n    path: ~/.workmux-node-x\n    \
-             isolation: none\n    binary: /tmp/workmux\n  box:\n    host: dev@box\nplacement: hetzner\n",
+            "remotes:\n  hetzner:\n    host: wr-remote-test\n    path: ~/.workrex-node-x\n    \
+             isolation: none\n    binary: /tmp/workrex\n  box:\n    host: dev@box\nplacement: hetzner\n",
         )
         .unwrap();
         let hetzner = &config.remotes["hetzner"];
-        assert_eq!(hetzner.host, "wm-remote-test");
-        assert_eq!(hetzner.path.as_deref(), Some("~/.workmux-node-x"));
+        assert_eq!(hetzner.host, "wr-remote-test");
+        assert_eq!(hetzner.path.as_deref(), Some("~/.workrex-node-x"));
         assert_eq!(hetzner.isolation, Some(RemoteIsolation::None));
-        assert_eq!(hetzner.binary.as_deref(), Some("/tmp/workmux"));
+        assert_eq!(hetzner.binary.as_deref(), Some("/tmp/workrex"));
         assert_eq!(config.remotes["box"].isolation, None);
         assert_eq!(config.placement.as_deref(), Some("hetzner"));
     }
@@ -5941,7 +5909,7 @@ agents:
 
     #[test]
     fn container_oci_runtime_is_global_only() {
-        // oci_runtime changes the isolation boundary, so a project .workmux.yaml
+        // oci_runtime changes the isolation boundary, so a project .workrex.yaml
         // must not be able to override the global value.
         let global = container_cfg(|c| c.oci_runtime = Some("kata".into()));
         let project = container_cfg(|c| c.oci_runtime = Some("runc".into()));
@@ -5952,7 +5920,7 @@ agents:
     #[test]
     fn container_cap_add_and_security_opt_are_global_only() {
         // Capabilities / security options relax confinement, so a project
-        // .workmux.yaml must not be able to override the global values.
+        // .workrex.yaml must not be able to override the global values.
         let global = container_cfg(|c| {
             c.cap_add = Some(vec!["ALL".into()]);
             c.security_opt = Some(vec!["seccomp=unconfined".into()]);
@@ -6090,7 +6058,7 @@ agents:
 
     #[test]
     fn test_excluded_files_merge_project_is_ignored() {
-        // Security: excluded_files is global-only. A project config (.workmux.yaml)
+        // Security: excluded_files is global-only. A project config (.workrex.yaml)
         // MUST NOT be able to weaken or replace the global list; otherwise a
         // malicious repo could delete user-level secret protections.
         let global = container_cfg(|container| {
@@ -7475,34 +7443,6 @@ layouts:
     }
 
     #[test]
-    fn validate_panes_stacked_split_ok() {
-        let panes = vec![
-            pane("vim"),
-            PaneConfig {
-                command: Some("tail -f app.log".into()),
-                split: Some(SplitDirection::Stacked),
-                ..Default::default()
-            },
-        ];
-        assert!(super::validate_panes_config(&panes).is_ok());
-    }
-
-    #[test]
-    fn validate_panes_stacked_split_rejects_size() {
-        let panes = vec![
-            pane("vim"),
-            PaneConfig {
-                command: Some("tail -f app.log".into()),
-                split: Some(SplitDirection::Stacked),
-                size: Some(10),
-                ..Default::default()
-            },
-        ];
-        let err = super::validate_panes_config(&panes).unwrap_err();
-        assert!(err.to_string().contains("split: stacked"));
-    }
-
-    #[test]
     fn validate_panes_empty_name_fails() {
         let panes = vec![PaneConfig {
             name: Some("  ".into()),
@@ -7511,19 +7451,6 @@ layouts:
 
         let err = super::validate_panes_config(&panes).unwrap_err();
         assert!(err.to_string().contains("empty 'name'"));
-    }
-
-    #[test]
-    fn stacked_split_deserializes_from_yaml() {
-        let yaml = r#"
-panes:
-  - command: vim
-  - command: tail -f app.log
-    split: stacked
-"#;
-        let config: super::Config = serde_yaml::from_str(yaml).unwrap();
-        let panes = config.panes.unwrap();
-        assert_eq!(panes[1].split, Some(SplitDirection::Stacked));
     }
 
     #[test]

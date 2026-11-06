@@ -1,63 +1,62 @@
 ---
 title: "Session mode"
-description: Create worktrees in their own tmux or Rex sessions instead of windows
+description: Organize worktrees into Rex sessions or tabs
 ---
 
-In window mode, workrex creates a **window** for each worktree in your current session. In session mode, each worktree gets its own **session** instead, with its own window list, history and layout. Use session mode when you want several windows per worktree, or when you want worktrees kept apart.
-
-The default depends on the backend:
-
-- Under tmux, the default is window mode.
-- Under [Rex](/guide/rex/#session-mode), the default is session mode, and each worktree gets its own Rex session.
+Workrex creates one Rex session per worktree by default. A Rex session is a
+workspace with its own tabs and terminal block layout. Use window mode when a
+task should occupy a tab inside an existing session instead.
 
 ## Enabling session mode
 
-Session mode needs tmux or Rex. To turn it on for one project, set it in the project config:
+Session mode is the default. You can make the choice explicit in `.workrex.yaml`
+or `~/.config/workrex/config.yaml`:
 
 ```yaml
-# .workmux.yaml
 mode: session
 ```
 
-To turn it on everywhere, set it in the global config. workrex keeps the workmux names for config paths, so an existing workmux config works. See [Configuration](/guide/configuration/).
-
-```yaml
-# ~/.config/workmux/config.yaml
-mode: session
-```
-
-To choose the mode for one command, pass `--mode`:
+To choose a mode for one command:
 
 ```bash
 workrex add feature-branch --mode session
 workrex open feature-branch --mode window
 ```
 
-`--mode` overrides the config for the current command. This lets you use window mode by default but create individual worktrees as sessions when needed, or temporarily reopen a session-mode worktree as a window. `--session` is shorthand for `--mode session`.
+`--session` is shorthand for `--mode session`. Workrex stores the mode per
+worktree so later `open`, `close`, `remove`, and `merge` operations address the
+same kind of target. Existing worktrees keep their recorded mode.
 
 ## How it works
 
-- **Persistence**: The mode is stored per-worktree in git config. Once a worktree is created with session mode, `open`, `close`, `remove`, and `merge` automatically use the correct mode.
-- **Navigation under tmux**: `workrex add` switches your client to the new session. When a session closes, clients still viewing it return to their previous sessions. For an in-session `merge`, the merge target's managed session takes precedence when available; for `remove`, the main branch's managed session takes precedence. A configured [`default_session`](#returning-to-a-default-session) is used when no managed session is available. Clients already viewing other sessions stay put. If preferred navigation is unavailable or cannot be safely targeted, tmux chooses another session. Closing the last session detaches its clients.
-- **Navigation under Rex**: `workrex add` does not move Rex.app to the new session. It prints which dashboard row to open instead. When a session that Rex.app shows closes, workrex prefers the same managed session and `default_session` as under tmux, then falls back to the session the worktree was added from. See [Rex session mode](/guide/rex/#session-mode) for the details.
+`add` creates the Rex session and starts its configured terminal blocks. It
+leaves Rex.app showing the caller's tab, because an agent may launch the command
+in the background. Open the new task from the dashboard or sidebar to show it
+in the app. Jumps across tabs require Remote Control in Rex Settings.
+
+Workrex records session IDs, so renaming a session in Rex does not lose the
+worktree association. A session label, a session ID, a Git branch, and a worktree
+handle are different identifiers.
 
 ## Returning to a default session
 
-By default a client viewing a closing session returns to whichever session it was in previously. Set `default_session` to name a session to prefer instead:
+When `close`, `remove`, or `merge` closes the session Rex.app is showing, Workrex
+prefers the destination branch's managed session when one is available. It then
+tries `default_session`, followed by the session the worktree was added from.
+An app showing another session stays where it is.
 
 ```yaml
-# .workmux.yaml
-mode: session
 default_session: main
 ```
 
-`close`, `remove` and `merge` then send clients to the `main` session rather than to whatever each was viewing before. A managed session for the destination branch still wins, so this applies only where workrex would otherwise fall back to the previous session (under tmux) or to the session the worktree was added from (under Rex).
-
-The value is a literal session name, so `window_prefix` is not applied and it can name a session workrex does not manage. If no session matches it exactly, clients fall back to their previous sessions as before.
+This value is an exact Rex session label. Workrex does not prepend
+`window_prefix`. Without a matching destination, Rex chooses its first session.
+See [Rex session mode](/guide/rex/#session-mode) for navigation details.
 
 ## Multiple windows per session
 
-Use the `windows` config to create multiple windows in each session. Each window can have its own pane layout. This is mutually exclusive with the top-level `panes` config.
+Use `windows` to create several tabs inside each task's session. Each tab has
+its own block layout. This is mutually exclusive with top-level `panes`.
 
 ```yaml
 mode: session
@@ -71,22 +70,25 @@ windows:
   - name: tests
     panes:
       - command: just test --watch
-  - panes:
-      - command: tail -f app.log
 ```
 
-Each window supports:
+`name` labels the Rex window, which Rex.app displays as a tab. Its `panes` use
+the same layout syntax as top-level `panes`. The last `focus: true` block in the
+configuration determines the session's active block and window.
 
-| Option  | Description                                               | Default      |
-| ------- | --------------------------------------------------------- | ------------ |
-| `name`  | Window name (if omitted, tmux names it after the command) | Auto         |
-| `panes` | Pane layout (same syntax as top-level `panes`)            | Single shell |
+## Window mode
 
-Named windows keep their name permanently. Under tmux, unnamed windows use tmux's automatic naming based on the running command.
+For a tab in a known Rex session, set `mode: window` or pass it explicitly:
 
-`focus: true` works across windows: the last pane with focus set determines which window is active when the session opens.
+```bash
+workrex add feature-branch --mode window --parent-session project-work
+```
+
+Inspect the desired session before choosing its label. Repository paths do not
+identify sessions. Native Rex commands target full session, window, and block
+IDs; see [Rex concepts](/guide/rex/#rex-concepts).
 
 ## Limitations
 
-- **tmux and Rex only**: WezTerm, kitty and Zellij do not support session mode.
-- **No duplicates**: Unlike window mode which supports opening multiple windows for the same worktree (with `-2`, `-3` suffixes), session mode creates one session per worktree.
+Session mode creates one session per worktree. `open --new` needs window mode,
+where duplicate views use distinct managed window labels.

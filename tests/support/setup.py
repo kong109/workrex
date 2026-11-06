@@ -1,27 +1,26 @@
-"""Helpers for interactive `workmux setup` tests."""
+"""Helpers for interactive `workrex setup` tests."""
 
 import json
 import shlex
 from pathlib import Path
 
 from ..conftest import (
-    MuxEnvironment,
     get_scripts_dir,
     make_env_script,
     poll_until_file_has_content,
     wait_for_pane_output,
 )
-from .bin_name import rebrand
+from ..rex_env import RexEnvironment
 
 
 def write_claude_manual_status_hook(claude_dir: Path) -> None:
     claude_dir.mkdir(parents=True, exist_ok=True)
     plugin_path = Path(__file__).parents[2] / ".claude-plugin" / "plugin.json"
-    plugin = json.loads(rebrand(plugin_path.read_text()))
+    plugin = json.loads(plugin_path.read_text())
     (claude_dir / "settings.json").write_text(json.dumps({"hooks": plugin["hooks"]}))
 
 
-def install_opencode_version(env: MuxEnvironment, version: str) -> None:
+def install_opencode_version(env: RexEnvironment, version: str) -> None:
     """Make setup tests independent of the host's installed OpenCode version."""
     env.install_script(
         env.fake_bin_dir / "opencode",
@@ -29,7 +28,7 @@ def install_opencode_version(env: MuxEnvironment, version: str) -> None:
     )
 
 
-def run_setup_interactive(env: MuxEnvironment, workmux_exe_path: Path) -> Path:
+def run_setup_interactive(env: RexEnvironment, workrex_exe_path: Path) -> Path:
     scripts_dir = get_scripts_dir(env)
     exit_code_file = scripts_dir / "setup_exit_code.txt"
     if exit_code_file.exists():
@@ -38,7 +37,7 @@ def run_setup_interactive(env: MuxEnvironment, workmux_exe_path: Path) -> Path:
     script = make_env_script(
         env,
         (
-            f"{shlex.quote(str(workmux_exe_path))} setup; "
+            f"{shlex.quote(str(workrex_exe_path))} setup; "
             f"echo $? > {shlex.quote(str(exit_code_file))}"
         ),
         {
@@ -54,15 +53,15 @@ def run_setup_interactive(env: MuxEnvironment, workmux_exe_path: Path) -> Path:
 
 
 def run_setup_with_answers(
-    env: MuxEnvironment,
-    workmux_exe_path: Path,
+    env: RexEnvironment,
+    workrex_exe_path: Path,
     *,
     hooks_answer: str = "y",
     skills_answer: str = "n",
     expected_output: tuple[str, ...] = (),
     timeout: float = 5.0,
 ) -> Path:
-    exit_code_file = run_setup_interactive(env, workmux_exe_path)
+    exit_code_file = run_setup_interactive(env, workrex_exe_path)
     for text in expected_output:
         wait_for_pane_output(env, "test", text, timeout=timeout)
     wait_for_pane_output(

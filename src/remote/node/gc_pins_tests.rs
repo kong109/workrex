@@ -11,7 +11,7 @@ fn own_pins_are_collected_unless_the_status_wrapper_or_shim_runs_them_and_upstre
     fs::create_dir_all(&bin).unwrap();
     let (old, live) = (format!("{BIN}-0.1.277"), format!("{BIN}-0.1.278"));
     let (shimmed, dev) = (format!("{BIN}-0.1.276"), format!("{BIN}-dev-ba7816bf8f01"));
-    let upstream = ["workmux-0.1.278", "workmux-dev-ba7816bf8f01"].map(String::from);
+    let upstream = ["workrex-0.1.278", "workrex-dev-ba7816bf8f01"].map(String::from);
     for name in [&old, &live, &shimmed, &dev, &upstream[0], &upstream[1]] {
         fs::write(bin.join(name), "").unwrap();
     }

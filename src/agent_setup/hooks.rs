@@ -1,19 +1,18 @@
 //! Shared JSON hook utilities for agent status tracking setup.
 //!
 //! Agents like Claude Code, Codex, and Gemini all use the same pattern:
-//! hooks are stored as JSON objects under a "hooks" key, with workmux
+//! hooks are stored as JSON objects under a "hooks" key, with workrex
 //! commands in the "command" fields. This module provides shared helpers.
 
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-pub(crate) fn is_workmux_hook_command(command: &str) -> bool {
-    command.contains(crate::rebrand!("workmux set-window-status"))
-        || command.contains(crate::rebrand!("workmux register-agent"))
+pub(crate) fn is_workrex_hook_command(command: &str) -> bool {
+    command.contains("workrex set-window-status") || command.contains("workrex register-agent")
 }
 
-/// Check if a parsed JSON value contains any workmux status hooks.
-pub fn has_workmux_hooks(settings: &Value) -> bool {
+/// Check if a parsed JSON value contains any workrex status hooks.
+pub fn has_workrex_hooks(settings: &Value) -> bool {
     let Some(hooks) = settings.get("hooks").and_then(|v| v.as_object()) else {
         return false;
     };
@@ -27,7 +26,7 @@ pub fn has_workmux_hooks(settings: &Value) -> bool {
             };
             for hook in hook_list {
                 if let Some(cmd) = hook.get("command").and_then(|v| v.as_str())
-                    && is_workmux_hook_command(cmd)
+                    && is_workrex_hook_command(cmd)
                 {
                     return true;
                 }
@@ -37,12 +36,12 @@ pub fn has_workmux_hooks(settings: &Value) -> bool {
     false
 }
 
-/// Remove workmux hook commands from `settings` in place.
+/// Remove workrex hook commands from `settings` in place.
 ///
 /// Removes individual hook entries whose command contains
-/// `workmux set-window-status`, then cleans up empty groups
+/// `workrex set-window-status`, then cleans up empty groups
 /// and events. Returns true if anything was removed.
-pub fn remove_workmux_hooks(settings: &mut Value) -> bool {
+pub fn remove_workrex_hooks(settings: &mut Value) -> bool {
     let Some(hooks) = settings.get_mut("hooks").and_then(|v| v.as_object_mut()) else {
         return false;
     };
@@ -55,14 +54,14 @@ pub fn remove_workmux_hooks(settings: &mut Value) -> bool {
             continue;
         };
 
-        // For each group, remove only workmux hooks from its inner hooks array
+        // For each group, remove only workrex hooks from its inner hooks array
         for group in groups_arr.iter_mut() {
             if let Some(hooks_list) = group.get_mut("hooks").and_then(|h| h.as_array_mut()) {
                 let len_before = hooks_list.len();
                 hooks_list.retain(|e| {
                     !e.get("command")
                         .and_then(|c| c.as_str())
-                        .is_some_and(is_workmux_hook_command)
+                        .is_some_and(is_workrex_hook_command)
                 });
                 if hooks_list.len() < len_before {
                     modified = true;
@@ -90,8 +89,8 @@ pub fn remove_workmux_hooks(settings: &mut Value) -> bool {
     modified
 }
 
-/// Remove workmux-status plugin entries from enabledPlugins.
-pub fn remove_workmux_plugins(settings: &mut Value) -> bool {
+/// Remove workrex-status plugin entries from enabledPlugins.
+pub fn remove_workrex_plugins(settings: &mut Value) -> bool {
     let Some(plugins) = settings
         .get_mut("enabledPlugins")
         .and_then(|v| v.as_object_mut())
@@ -295,28 +294,28 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_has_workmux_hooks_empty() {
+    fn test_has_workrex_hooks_empty() {
         let settings = json!({});
-        assert!(!has_workmux_hooks(&settings));
+        assert!(!has_workrex_hooks(&settings));
     }
 
     #[test]
-    fn test_has_workmux_hooks_present() {
+    fn test_has_workrex_hooks_present() {
         let settings = json!({
             "hooks": {
                 "Stop": [{
                     "hooks": [{
                         "type": "command",
-                        "command": crate::rebrand!("workmux set-window-status done")
+                        "command": "workrex set-window-status done"
                     }]
                 }]
             }
         });
-        assert!(has_workmux_hooks(&settings));
+        assert!(has_workrex_hooks(&settings));
     }
 
     #[test]
-    fn test_has_workmux_hooks_other_hooks_only() {
+    fn test_has_workrex_hooks_other_hooks_only() {
         let settings = json!({
             "hooks": {
                 "Stop": [{
@@ -327,30 +326,30 @@ mod tests {
                 }]
             }
         });
-        assert!(!has_workmux_hooks(&settings));
+        assert!(!has_workrex_hooks(&settings));
     }
 
     #[test]
-    fn test_remove_workmux_hooks_mixed() {
+    fn test_remove_workrex_hooks_mixed() {
         let mut settings = json!({
             "hooks": {
                 "Stop": [{
-                    "hooks": [{ "type": "command", "command": crate::rebrand!("workmux set-window-status done") }]
+                    "hooks": [{ "type": "command", "command": "workrex set-window-status done" }]
                 }, {
                     "hooks": [{ "type": "command", "command": "afplay /System/Library/Sounds/Glass.aiff" }]
                 }]
             },
             "enabledPlugins": {
-                (concat!(env!("CARGO_BIN_NAME"), "-status@workmux")): true,
+                (concat!(env!("CARGO_BIN_NAME"), "-status@workrex")): true,
                 "other-plugin@1.0": true
             }
         });
 
-        assert!(remove_workmux_hooks(&mut settings));
-        assert!(remove_workmux_plugins(&mut settings));
+        assert!(remove_workrex_hooks(&mut settings));
+        assert!(remove_workrex_plugins(&mut settings));
         remove_empty_hooks_wrapper(&mut settings);
 
-        // Workmux hook group removed, non-workmux group preserved
+        // Workrex hook group removed, non-workrex group preserved
         let stop = settings["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 1);
         assert!(
@@ -360,7 +359,7 @@ mod tests {
                 .contains("Glass")
         );
 
-        // Workmux plugin removed, other plugin preserved
+        // Workrex plugin removed, other plugin preserved
         assert!(
             settings["enabledPlugins"]
                 .as_object()
@@ -371,48 +370,48 @@ mod tests {
             !settings["enabledPlugins"]
                 .as_object()
                 .unwrap()
-                .contains_key(concat!(env!("CARGO_BIN_NAME"), "-status@workmux"))
+                .contains_key(concat!(env!("CARGO_BIN_NAME"), "-status@workrex"))
         );
     }
 
     #[test]
-    fn test_remove_workmux_registration_hook() {
+    fn test_remove_workrex_registration_hook() {
         let mut settings = json!({
             "hooks": {
                 "SessionStart": [{
-                    "hooks": [{ "type": "command", "command": crate::rebrand!("workmux register-agent") }]
+                    "hooks": [{ "type": "command", "command": "workrex register-agent" }]
                 }]
             }
         });
 
-        assert!(remove_workmux_hooks(&mut settings));
+        assert!(remove_workrex_hooks(&mut settings));
         remove_empty_hooks_wrapper(&mut settings);
         assert!(settings.get("hooks").is_none());
     }
 
     #[test]
-    fn test_remove_workmux_hooks_only_workmux() {
+    fn test_remove_workrex_hooks_only_workrex() {
         let mut settings = json!({
             "hooks": {
                 "Stop": [{
-                    "hooks": [{ "type": "command", "command": crate::rebrand!("workmux set-window-status done") }]
+                    "hooks": [{ "type": "command", "command": "workrex set-window-status done" }]
                 }]
             }
         });
 
-        assert!(remove_workmux_hooks(&mut settings));
+        assert!(remove_workrex_hooks(&mut settings));
         remove_empty_hooks_wrapper(&mut settings);
         // Empty hooks object should be removed
         assert!(settings.get("hooks").is_none());
     }
 
     #[test]
-    fn test_remove_workmux_hooks_mixed_in_same_group() {
+    fn test_remove_workrex_hooks_mixed_in_same_group() {
         let mut settings = json!({
             "hooks": {
                 "Stop": [{
                     "hooks": [
-                        { "type": "command", "command": crate::rebrand!("workmux set-window-status done") },
+                        { "type": "command", "command": "workrex set-window-status done" },
                         { "type": "command", "command": "afplay /System/Library/Sounds/Glass.aiff" },
                         { "type": "command", "command": "echo user-hook" }
                     ]
@@ -420,9 +419,9 @@ mod tests {
             }
         });
 
-        assert!(remove_workmux_hooks(&mut settings));
+        assert!(remove_workrex_hooks(&mut settings));
 
-        // The group should still exist with non-workmux hooks preserved
+        // The group should still exist with non-workrex hooks preserved
         let stop = settings["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 1);
         let hooks = stop[0]["hooks"].as_array().unwrap();
@@ -432,51 +431,51 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_workmux_hooks_idempotent() {
+    fn test_remove_workrex_hooks_idempotent() {
         let mut settings = json!({
             "hooks": {
                 "Stop": [{
-                    "hooks": [{ "type": "command", "command": crate::rebrand!("workmux set-window-status done") }]
+                    "hooks": [{ "type": "command", "command": "workrex set-window-status done" }]
                 }]
             }
         });
-        assert!(remove_workmux_hooks(&mut settings));
+        assert!(remove_workrex_hooks(&mut settings));
         // Second call should return false (nothing to remove)
-        assert!(!remove_workmux_hooks(&mut settings));
+        assert!(!remove_workrex_hooks(&mut settings));
     }
 
     #[test]
-    fn test_remove_workmux_hooks_empty_settings() {
+    fn test_remove_workrex_hooks_empty_settings() {
         let mut settings = json!({});
-        assert!(!remove_workmux_hooks(&mut settings));
+        assert!(!remove_workrex_hooks(&mut settings));
     }
 
     #[test]
-    fn test_remove_workmux_plugins_empty() {
+    fn test_remove_workrex_plugins_empty() {
         let mut settings = json!({});
-        assert!(!remove_workmux_plugins(&mut settings));
+        assert!(!remove_workrex_plugins(&mut settings));
     }
 
     #[test]
-    fn test_remove_workmux_plugins_only_workmux() {
+    fn test_remove_workrex_plugins_only_workrex() {
         let mut settings = json!({
             "enabledPlugins": {
-                (concat!(env!("CARGO_BIN_NAME"), "-status@workmux")): true
+                (concat!(env!("CARGO_BIN_NAME"), "-status@workrex")): true
             }
         });
-        assert!(remove_workmux_plugins(&mut settings));
+        assert!(remove_workrex_plugins(&mut settings));
         assert!(settings["enabledPlugins"].as_object().unwrap().is_empty());
     }
 
     #[test]
-    fn test_remove_workmux_plugins_idempotent() {
+    fn test_remove_workrex_plugins_idempotent() {
         let mut settings = json!({
             "enabledPlugins": {
-                (concat!(env!("CARGO_BIN_NAME"), "-status@workmux")): true
+                (concat!(env!("CARGO_BIN_NAME"), "-status@workrex")): true
             }
         });
-        assert!(remove_workmux_plugins(&mut settings));
-        assert!(!remove_workmux_plugins(&mut settings));
+        assert!(remove_workrex_plugins(&mut settings));
+        assert!(!remove_workrex_plugins(&mut settings));
     }
 
     #[test]
@@ -510,7 +509,7 @@ mod tests {
                 "Stop": [{
                     "hooks": [
                         { "type": "command", "command": "afplay Glass.aiff" },
-                        { "type": "command", "command": crate::rebrand!("workmux set-window-status done") }
+                        { "type": "command", "command": "workrex set-window-status done" }
                     ]
                 }]
             }
@@ -518,7 +517,7 @@ mod tests {
         let required = json!({
             "Stop": [{
                 "hooks": [
-                    { "type": "command", "command": crate::rebrand!("workmux set-window-status done") }
+                    { "type": "command", "command": "workrex set-window-status done" }
                 ]
             }]
         });
@@ -532,14 +531,14 @@ mod tests {
             "hooks": {
                 "Notification": [{
                     "matcher": "other_event",
-                    "hooks": [{ "command": crate::rebrand!("workmux set-window-status waiting") }]
+                    "hooks": [{ "command": "workrex set-window-status waiting" }]
                 }]
             }
         });
         let required = json!({
             "Notification": [{
                 "matcher": "permission_prompt|elicitation_dialog",
-                "hooks": [{ "command": crate::rebrand!("workmux set-window-status waiting") }]
+                "hooks": [{ "command": "workrex set-window-status waiting" }]
             }]
         });
 
@@ -553,7 +552,7 @@ mod tests {
                 "Stop": [{
                     "hooks": [
                         { "type": "command", "command": "afplay Glass.aiff" },
-                        { "type": "command", "command": crate::rebrand!("workmux set-window-status done") }
+                        { "type": "command", "command": "workrex set-window-status done" }
                     ]
                 }]
             }
@@ -562,7 +561,7 @@ mod tests {
         let required = json!({
             "Stop": [{
                 "hooks": [
-                    { "type": "command", "command": crate::rebrand!("workmux set-window-status done") }
+                    { "type": "command", "command": "workrex set-window-status done" }
                 ]
             }]
         });
@@ -576,15 +575,15 @@ mod tests {
         let mut config = json!({
             "hooks": {
                 "Stop": [{
-                    "hooks": [{ "command": crate::rebrand!("workmux set-window-status done") }]
+                    "hooks": [{ "command": "workrex set-window-status done" }]
                 }]
             }
         });
         let required = json!({
             "Stop": [{
                 "hooks": [
-                    { "command": crate::rebrand!("workmux set-window-status done") },
-                    { "command": crate::rebrand!("workmux register-agent") }
+                    { "command": "workrex set-window-status done" },
+                    { "command": "workrex register-agent" }
                 ]
             }]
         });
@@ -593,24 +592,21 @@ mod tests {
         let groups = config["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[1]["hooks"].as_array().unwrap().len(), 1);
-        assert_eq!(
-            groups[1]["hooks"][0]["command"],
-            crate::rebrand!("workmux register-agent")
-        );
+        assert_eq!(groups[1]["hooks"][0]["command"], "workrex register-agent");
     }
 
     #[test]
     fn test_merge_hook_groups_into_empty() {
         let mut config = json!({ "hooks": {} });
         let hooks_to_add = json!({
-            "Stop": [{"hooks": [{"type": "command", "command": crate::rebrand!("workmux set-window-status done")}]}]
+            "Stop": [{"hooks": [{"type": "command", "command": "workrex set-window-status done"}]}]
         });
         merge_hook_groups(&mut config, &hooks_to_add).unwrap();
         let hooks = config["hooks"].as_object().unwrap();
         assert_eq!(hooks.len(), 1);
         assert_eq!(
             config["hooks"]["Stop"][0]["hooks"][0]["command"],
-            crate::rebrand!("workmux set-window-status done")
+            "workrex set-window-status done"
         );
     }
 
@@ -618,7 +614,7 @@ mod tests {
     fn test_merge_hook_groups_into_empty_root_creates_hooks() {
         let mut config = json!({});
         let hooks_to_add = json!({
-            "Stop": [{"hooks": [{"type": "command", "command": crate::rebrand!("workmux set-window-status done")}]}]
+            "Stop": [{"hooks": [{"type": "command", "command": "workrex set-window-status done"}]}]
         });
         merge_hook_groups(&mut config, &hooks_to_add).unwrap();
         let hooks = config["hooks"].as_object().unwrap();
@@ -630,12 +626,12 @@ mod tests {
         let mut config = json!({
             "hooks": {
                 "Stop": [{
-                    "hooks": [{"type": "command", "command": crate::rebrand!("workmux set-window-status done")}]
+                    "hooks": [{"type": "command", "command": "workrex set-window-status done"}]
                 }]
             }
         });
         let hooks_to_add = json!({
-            "Stop": [{"hooks": [{"type": "command", "command": crate::rebrand!("workmux set-window-status done")}]}]
+            "Stop": [{"hooks": [{"type": "command", "command": "workrex set-window-status done"}]}]
         });
         merge_hook_groups(&mut config, &hooks_to_add).unwrap();
         let stop = config["hooks"]["Stop"].as_array().unwrap();
@@ -652,7 +648,7 @@ mod tests {
             }
         });
         let hooks_to_add = json!({
-            "Stop": [{"hooks": [{"type": "command", "command": crate::rebrand!("workmux set-window-status done")}]}]
+            "Stop": [{"hooks": [{"type": "command", "command": "workrex set-window-status done"}]}]
         });
         merge_hook_groups(&mut config, &hooks_to_add).unwrap();
         let stop = config["hooks"]["Stop"].as_array().unwrap();
@@ -670,7 +666,7 @@ mod tests {
         });
         let hooks_to_add = json!({
             "UserPromptSubmit": [{
-                "hooks": [{"type": "command", "command": crate::rebrand!("workmux set-window-status working")}]
+                "hooks": [{"type": "command", "command": "workrex set-window-status working"}]
             }]
         });
         merge_hook_groups(&mut config, &hooks_to_add).unwrap();
@@ -687,7 +683,7 @@ mod tests {
     fn test_merge_hook_groups_skips_non_array() {
         let mut config = json!({ "hooks": {} });
         let hooks_to_add = json!({
-            "Stop": [{"hooks": [{"type": "command", "command": crate::rebrand!("workmux set-window-status done")}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "workrex set-window-status done"}]}],
             "InvalidEvent": "not an array"
         });
         merge_hook_groups(&mut config, &hooks_to_add).unwrap();
@@ -709,7 +705,7 @@ mod tests {
             }
         });
         let hooks_to_add = json!({
-            "Stop": [{"hooks": [{"type": "command", "command": crate::rebrand!("workmux set-window-status done")}]}]
+            "Stop": [{"hooks": [{"type": "command", "command": "workrex set-window-status done"}]}]
         });
         let result = merge_hook_groups(&mut config, &hooks_to_add);
         assert!(result.is_err());

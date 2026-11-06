@@ -238,7 +238,7 @@ fn worktree_context_commands() -> Vec<PaletteCommand> {
 fn has_modal(app: &App) -> bool {
     app.sweep_progress.is_some()
         || app.show_help
-        || app.pending_kill_pane_id.is_some()
+        || app.pending_kill_target.is_some()
         || app.pending_remove.is_some()
         || app.pending_base_picker.is_some()
         || app.pending_project_picker.is_some()

@@ -48,9 +48,9 @@ workrex remote logs devbox                # list log files
 workrex remote logs devbox r0123456789ab   # print one request's output
 ```
 
-The pane prints the exact command for its request. Logs are private files under `~/.local/state/workmux/remote/<remote>/operation-logs/`, readable without a connection to the server. They may contain sensitive hook output and aren't deleted automatically. Hook output never goes to the server.
+The pane prints the exact command for its request. Logs are private files under `~/.local/state/workrex/remote/<remote>/operation-logs/`, readable without a connection to the server. They may contain sensitive hook output and aren't deleted automatically. Hook output never goes to the server.
 
-This state path keeps its workmux name. See [configuration](/guide/configuration/).
+This state path keeps its workrex name. See [configuration](/guide/configuration/).
 
 ## Rebasing
 

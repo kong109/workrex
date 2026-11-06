@@ -1,9 +1,9 @@
 ---
 title: "remove"
-description: Remove worktrees, tmux windows, and branches without merging
+description: Remove worktrees, Rex windows, and branches without merging
 ---
 
-Removes worktrees, tmux windows, and branches without merging (unless you keep the branches). Useful for abandoning work or cleaning up experimental branches. Supports removing multiple worktrees in a single command. Alias: `rm`
+Removes worktrees, Rex windows, and branches without merging (unless you keep the branches). Useful for abandoning work or cleaning up experimental branches. Supports removing multiple worktrees in a single command. Alias: `rm`
 
 ```bash
 workrex remove [name]... [flags]
@@ -20,7 +20,7 @@ workrex remove [name]... [flags]
 | `--all`             | Remove all worktrees at once (except the main worktree). Prompts for confirmation unless `--force` is used. Safely skips worktrees with uncommitted changes or unmerged commits. |
 | `--gone`            | Remove worktrees whose upstream remote branch has been deleted (e.g., after a PR is merged on GitHub). Automatically runs `git fetch --prune` first.                             |
 | `--force, -f`       | Skip confirmation prompt and ignore uncommitted changes.                                                                                                                         |
-| `--keep-branch, -k` | Remove only the worktree and tmux window while keeping the local branch.                                                                                                         |
+| `--keep-branch, -k` | Remove only the worktree and Rex window while keeping the local branch.                                                                                                          |
 
 ## Examples
 
@@ -72,25 +72,25 @@ When `remove` closes a Rex session that Rex.app shows, the app moves to the firs
 
 When removing a worktree from its own terminal target, filesystem cleanup runs
 in a detached worker after that target closes. Surviving background processes
-can still write into the renamed `.workmux_trash_*` directory. Rust cleanup
+can still write into the renamed `.workrex_trash_*` directory. Rust cleanup
 continues deleting unrelated files and directories after an individual failure,
 using descriptor-relative operations without following symlink targets. workrex retries
 `DirectoryNotEmpty` errors with backoff for a five-second retry window; an
 individual recursive deletion can take longer. It does not kill those processes.
 
 Before renaming the worktree, workrex saves a pending filesystem-cleanup record
-under `$XDG_STATE_HOME/workmux/pending-cleanup/` (by default,
-`~/.local/state/workmux/pending-cleanup/`). The record includes the original and
+under `$XDG_STATE_HOME/workrex/pending-cleanup/` (by default,
+`~/.local/state/workrex/pending-cleanup/`). The record includes the original and
 quarantine paths and the captured directory's device and inode. It is cleared
 only after filesystem deletion succeeds.
 
 If deletion fails, the record remains and the worker writes the error and a
 bounded snapshot of remaining entries, along with the paths and errors from
-failed deletion operations, to `workmux.log` in the same state directory.
+failed deletion operations, to `workrex.log` in the same state directory.
 Records also survive failures in intervening Git operations. They are diagnostic
 recovery records, not an automatic cleanup queue: inspect them and stop any
 remaining writers before manually recovering the exact quarantined directory.
 Do not replay branch deletion from a record, since Git cleanup may already have
 completed and the original branch or worktree path may have been reused.
 
-Config and state paths keep their workmux names so existing workmux configs work. See [Configuration](/guide/configuration/).
+Configuration and state live under Workrex-owned paths. See [Configuration](/guide/configuration/).

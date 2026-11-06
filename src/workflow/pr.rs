@@ -482,8 +482,8 @@ mod tests {
     #[test]
     fn parses_github_pr_url() {
         for value in [
-            "https://github.com/raine/workmux/pull/190",
-            "https://github.com/raine/workmux/pull/190/",
+            "https://github.com/kong109/workrex/pull/190",
+            "https://github.com/kong109/workrex/pull/190/",
             "https://github.example.com/owner/repo/pull/190",
         ] {
             assert_eq!(PrReference::from_str(value).unwrap().number(), 190);
@@ -559,11 +559,11 @@ mod tests {
         for value in [
             "0",
             "not-a-pr",
-            "http://github.com/raine/workmux/pull/190",
-            "https://github.com/raine/workmux/issues/190",
-            "https://github.com/raine/workmux/pull/0",
-            "https://github.com/raine/workmux/pull/not-a-number",
-            "https://github.com/raine/workmux/pull/190/files",
+            "http://github.com/kong109/workrex/pull/190",
+            "https://github.com/kong109/workrex/issues/190",
+            "https://github.com/kong109/workrex/pull/0",
+            "https://github.com/kong109/workrex/pull/not-a-number",
+            "https://github.com/kong109/workrex/pull/190/files",
         ] {
             assert_eq!(
                 PrReference::from_str(value).unwrap_err().to_string(),

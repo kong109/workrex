@@ -18,16 +18,16 @@ use crate::multiplexer::types::{AgentPane, AgentStatus, RemoteAgent, RemoteRef};
 /// instances.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct PaneKey {
-    /// Backend type: "tmux", "wezterm", "zellij"
+    /// Backend type: "rex", "rex", "rex"
     pub backend: String,
 
-    /// Backend instance identifier (e.g., tmux socket path, wezterm mux ID)
+    /// Backend instance identifier (e.g., rex socket path, rex mux ID)
     pub instance: String,
 
     /// Pane identifier within the backend.
-    /// - tmux: pane ID (e.g., "%42")
-    /// - WezTerm: numeric pane ID
-    /// - Zellij: terminal pane ID (e.g., "terminal_5")
+    /// - rex: pane ID (e.g., "%42")
+    /// - Rex: numeric pane ID
+    /// - Rex: terminal pane ID (e.g., "terminal_5")
     pub pane_id: String,
 }
 
@@ -107,7 +107,7 @@ pub struct AgentState {
     pub updated_ts: u64,
 
     /// Window/tab name where this agent is running.
-    /// Stored here because some backends (Zellij) can't query unfocused panes.
+    /// Stored here because some backends (Rex) can't query unfocused panes.
     #[serde(default)]
     pub window_name: Option<String>,
 
@@ -116,7 +116,7 @@ pub struct AgentState {
     #[serde(default)]
     pub session_name: Option<String>,
 
-    /// Multiplexer server boot identifier (e.g., tmux start_time).
+    /// Multiplexer server boot identifier (e.g., rex start_time).
     /// Used to distinguish intentional pane closes from server crashes:
     /// if this doesn't match the current server's boot_id, the server restarted.
     #[serde(default)]
@@ -125,7 +125,7 @@ pub struct AgentState {
     /// Cached agent identity (canonical profile name, e.g. "claude", "kiro-cli").
     ///
     /// Classified once by `crate::agent_identity::classify_agent_kind` from the
-    /// foreground command and pane title. Cached because tmux reports an
+    /// foreground command and pane title. Cached because rex reports an
     /// agent's `pane_current_command` as a version string ("2.1.118") or a
     /// generic interpreter ("node", "Python") that the stem-based profile
     /// resolver cannot identify; the title that disambiguates them drifts
@@ -304,7 +304,7 @@ mod tests {
     fn legacy_state(status: Option<&str>, status_ts: Option<u64>, updated_ts: u64) -> AgentState {
         serde_json::from_value(serde_json::json!({
             "pane_key": {
-                "backend": "tmux",
+                "backend": "rex",
                 "instance": "default",
                 "pane_id": "%1"
             },
@@ -315,7 +315,7 @@ mod tests {
             "pane_pid": 123,
             "command": "node",
             "updated_ts": updated_ts,
-            "window_name": "wm-test",
+            "window_name": "wr-test",
             "session_name": "main",
             "boot_id": null
         }))
@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(state.activity_ts(), Some(100));
         assert_eq!(
             state
-                .to_agent_pane("main".into(), "wm-test".into())
+                .to_agent_pane("main".into(), "wr-test".into())
                 .activity_ts,
             Some(100)
         );
@@ -345,19 +345,19 @@ mod tests {
     #[test]
     fn test_pane_key_to_filename() {
         let key = PaneKey {
-            backend: "tmux".to_string(),
+            backend: "rex".to_string(),
             instance: "default".to_string(),
             pane_id: "%1".to_string(),
         };
         // % is encoded as %25 for filesystem safety
-        assert_eq!(key.to_filename(), "tmux__default__%251.json");
+        assert_eq!(key.to_filename(), "rex__default__%251.json");
     }
 
     #[test]
     fn test_pane_key_from_filename() {
         // %25 decodes to %
-        let key = PaneKey::from_filename("tmux__default__%251.json").unwrap();
-        assert_eq!(key.backend, "tmux");
+        let key = PaneKey::from_filename("rex__default__%251.json").unwrap();
+        assert_eq!(key.backend, "rex");
         assert_eq!(key.instance, "default");
         assert_eq!(key.pane_id, "%1");
     }
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn test_pane_key_roundtrip() {
         let original = PaneKey {
-            backend: "wezterm".to_string(),
+            backend: "rex".to_string(),
             instance: "mux-123".to_string(),
             pane_id: "tab_5".to_string(),
         };
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn test_pane_key_with_underscores_in_pane_id() {
         let key = PaneKey {
-            backend: "tmux".to_string(),
+            backend: "rex".to_string(),
             instance: "default".to_string(),
             pane_id: "pane_with_underscores".to_string(),
         };
@@ -395,10 +395,10 @@ mod tests {
 
     #[test]
     fn test_pane_key_with_socket_path() {
-        // Real-world tmux socket path
+        // Real-world rex socket path
         let key = PaneKey {
-            backend: "tmux".to_string(),
-            instance: "/private/tmp/tmux-501/default".to_string(),
+            backend: "rex".to_string(),
+            instance: "/private/tmp/rex-501/default".to_string(),
             pane_id: "%79".to_string(),
         };
         let filename = key.to_filename();
@@ -406,7 +406,7 @@ mod tests {
         assert!(!filename.contains('/'));
         // Verify roundtrip works
         let parsed = PaneKey::from_filename(&filename).unwrap();
-        assert_eq!(parsed.instance, "/private/tmp/tmux-501/default");
+        assert_eq!(parsed.instance, "/private/tmp/rex-501/default");
         assert_eq!(parsed.pane_id, "%79");
     }
 }

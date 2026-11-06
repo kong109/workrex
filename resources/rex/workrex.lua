@@ -67,7 +67,7 @@ rex.action{
   title = "workrex: Open Dashboard",
   description = "Show every workrex agent in a floating layer.",
   category = "workrex",
-  keywords = "workrex workmux agents dashboard",
+  keywords = "workrex workrex agents dashboard",
   args = { args = "array?" },
   run = function(ctx, args)
     local view, err = rex.session.view{}

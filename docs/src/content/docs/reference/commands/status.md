@@ -30,8 +30,8 @@ omitted when every agent's session is named after its project.
 ```json
 {
   "context": {
-    "backend": "tmux",
-    "instance": "/private/tmp/tmux-501/default"
+    "backend": "rex",
+    "instance": "unix:///tmp/rex/server.sock"
   },
   "scope": {
     "repository": "/Users/user/code/project",
@@ -75,7 +75,7 @@ The counts describe successive stages of the observation.
 The observation does not remove stale or invalid state files. It excludes stale
 entries from `agents` and leaves persisted evidence available for later cleanup
 or diagnosis. If invalid state blocks an observation, inspect the agents
-directory (`~/.local/state/workmux/agents/` by default) and remove or repair the file
+directory (`~/.local/state/workrex/agents/` by default) and remove or repair the file
 reported in the warning log.
 
 `scope.repository` is the current repository when it can be resolved. With no
@@ -96,7 +96,7 @@ Agents on [remote servers](/guide/remote/) are reported with the local ones, lab
 - `name`, `host`: the remote and its SSH host
 - `ws_id`: the workspace's id on the remote
 - `pane`: the agent's pane index in the remote session
-- `attached`: whether a local window relays the agent
+- `attached`: whether a local terminal relays the agent; always `false` for native Rex sessions
 - `connected`: whether the remote answered recently
 - `last_seen`: Unix time of the remote's last answer, or `null`
 - `ended`: present when the agent's session ended under it, for example `host_reboot` after the remote host restarted. `workrex open` starts it again.
@@ -127,8 +127,8 @@ State files for another context can belong to an old or concurrently running
 multiplexer instance. Their presence is evidence of another context, not proof
 that the selected context is wrong.
 
-workrex can observe only agents that produced tracking state. An agent without
-configured or functioning status hooks remains invisible to this command.
+Workrex observes agents through tracking hooks or Rex program status. A process
+that reports neither does not appear as a tracked agent.
 
 ## Errors
 
@@ -143,4 +143,4 @@ The command fails when it cannot complete the requested observation, including:
 - missing or ambiguous requested worktrees, reported in `target_errors` when an
   observation can otherwise be completed
 
-State paths keep their workmux names so existing workmux configs work. See [Configuration](/guide/configuration/).
+State lives under Workrex-owned paths. See [Configuration](/guide/configuration/).

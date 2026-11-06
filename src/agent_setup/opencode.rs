@@ -19,16 +19,16 @@ use std::process::Command;
 use super::{StatusCheck, UpdatePreview};
 
 /// OpenCode distribution files, embedded at compile time.
-const PLUGIN_SOURCE: &str =
-    crate::rebrand_include!("../../resources/opencode/plugins/workmux-status.ts");
+const PLUGIN_SOURCE: &str = include_str!("../../resources/opencode/plugins/workrex-status.ts");
 const PACKAGE_JSON: &str = include_str!("../../resources/opencode/package.json");
 const MANIFEST_FILE: &str = concat!(".", env!("CARGO_BIN_NAME"), "-status.json");
-// Named after the binary so upstream workmux's plugin, at the `workmux-status` paths, coexists.
+// Plugin discovery paths are owned by Workrex.
 const PLUGIN_FILE: &str = concat!("plugins/", env!("CARGO_BIN_NAME"), "-status.ts");
 const LEGACY_PLUGIN_FILE: &str = concat!("plugin/", env!("CARGO_BIN_NAME"), "-status.ts");
 const V2_DIR: &str = concat!("plugins/", env!("CARGO_BIN_NAME"), "-status");
 // SHA-256 of shipped sources before installation manifests were introduced.
 const V1_FINGERPRINTS: &[&str] = &[
+    "8dcfaac6ca8e4a34f7fa3ac4cb597845aaf8984fc94c14bda3480170582bf7f4",
     "7bf6a3de74f324c33e8879d0a083420d9b691ae0a6be18cbdb1f9cdb63dd65ca", // 0b0c3875
     "2575dad519ce2aa0d0271380afeae9f967ba6b1432bc4afdaf30e1f6f457064d", // d0cd0326
     "2be9fadfb44207ddd1750f6858bcbb858ba3ac40b948599b5ad162b41bf9cc1d", // 6bc94476
@@ -39,15 +39,15 @@ const V1_FINGERPRINTS: &[&str] = &[
 const V2_FILES: &[(&str, &str)] = &[
     (
         "index.ts",
-        crate::rebrand_include!("../../resources/opencode/v2/workmux-status/index.ts"),
+        include_str!("../../resources/opencode/v2/workrex-status/index.ts"),
     ),
     (
         "tui.ts",
-        crate::rebrand_include!("../../resources/opencode/v2/workmux-status/tui.ts"),
+        include_str!("../../resources/opencode/v2/workrex-status/tui.ts"),
     ),
     (
         "status.ts",
-        crate::rebrand_include!("../../resources/opencode/v2/workmux-status/status.ts"),
+        include_str!("../../resources/opencode/v2/workrex-status/status.ts"),
     ),
 ];
 
@@ -440,7 +440,7 @@ fn install_at(config_dir: &Path, version: OpenCodeVersion) -> Result<()> {
     Ok(())
 }
 
-/// Install workmux plugin for OpenCode.
+/// Install workrex plugin for OpenCode.
 /// Returns a description of what was done.
 pub fn install() -> Result<String> {
     let config_dir = opencode_config_dir()
@@ -467,7 +467,7 @@ fn install_version(config_dir: &Path, version: OpenCodeVersion) -> Result<String
     ))
 }
 
-/// Remove workmux plugin files from OpenCode config directory.
+/// Remove workrex plugin files from OpenCode config directory.
 ///
 /// Removes plugin files from both supported locations. It removes package.json
 /// only when the file consists entirely of the bundled package configuration.
@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_install_migrates_only_the_workmux_plugin_and_is_idempotent() {
+    fn v2_install_migrates_only_the_workrex_plugin_and_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let plugins = tmp.path().join("plugins");
         fs::create_dir_all(&plugins).unwrap();
@@ -886,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_removes_both_workmux_versions_but_keeps_other_plugins() {
+    fn uninstall_removes_both_workrex_versions_but_keeps_other_plugins() {
         let tmp = tempfile::tempdir().unwrap();
         install_at(tmp.path(), OpenCodeVersion::V2).unwrap();
         let custom = v2_dir(tmp.path()).join("custom.ts");

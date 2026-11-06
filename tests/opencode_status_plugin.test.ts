@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { WorkmuxStatusPlugin } from '../resources/opencode/plugins/workmux-status';
+import { WorkrexStatusPlugin } from '../resources/opencode/plugins/workrex-status';
 
 async function createHarness({
   failRegistration = false,
@@ -21,7 +21,7 @@ async function createHarness({
     return {
       quiet: async () => {
         commands.push(command);
-        if (command === 'workmux register-agent' && failRegistration) {
+        if (command === 'workrex register-agent' && failRegistration) {
           throw new Error('registration failed');
         }
         if (status !== undefined) {
@@ -43,7 +43,7 @@ async function createHarness({
       },
     },
   };
-  const hooks = await WorkmuxStatusPlugin({ $: shell, client } as never);
+  const hooks = await WorkrexStatusPlugin({ $: shell, client } as never);
 
   return {
     commands,
@@ -76,7 +76,7 @@ const userMessage = (sessionID: string) => ({
   properties: { sessionID, info: { role: 'user', sessionID } },
 });
 
-describe('WorkmuxStatusPlugin', () => {
+describe('WorkrexStatusPlugin', () => {
   test('awaits registration during initialization before status handling', async () => {
     let finishRegistration!: () => void;
     const registration = new Promise<void>((resolve) => {
@@ -85,7 +85,7 @@ describe('WorkmuxStatusPlugin', () => {
     let initialized = false;
     const shell = () => ({ quiet: () => registration });
 
-    const initialization = WorkmuxStatusPlugin({ $: shell } as never).then((hooks) => {
+    const initialization = WorkrexStatusPlugin({ $: shell } as never).then((hooks) => {
       initialized = true;
       return hooks;
     });
@@ -103,8 +103,8 @@ describe('WorkmuxStatusPlugin', () => {
     await harness.emit(sessionStatus('parent', 'busy'));
 
     expect(harness.commands).toEqual([
-      'workmux register-agent',
-      'workmux set-window-status working',
+      'workrex register-agent',
+      'workrex set-window-status working',
     ]);
   });
 
@@ -113,8 +113,8 @@ describe('WorkmuxStatusPlugin', () => {
     await harness.emit(sessionStatus('parent', 'busy'));
 
     expect(harness.commands).toEqual([
-      'workmux register-agent',
-      'workmux set-window-status working',
+      'workrex register-agent',
+      'workrex set-window-status working',
     ]);
     expect(harness.statuses).toEqual(['working']);
   });
@@ -143,19 +143,19 @@ describe('WorkmuxStatusPlugin', () => {
         },
       };
     };
-    const hooks = await WorkmuxStatusPlugin({ $: shell } as never);
+    const hooks = await WorkrexStatusPlugin({ $: shell } as never);
 
     const busy = hooks.event?.({ event: sessionStatus('parent', 'busy') } as never);
     const idle = hooks.event?.({ event: sessionStatus('parent', 'idle') } as never);
     await Promise.resolve();
-    expect(commands).toEqual(['workmux set-window-status working']);
+    expect(commands).toEqual(['workrex set-window-status working']);
 
     completions.shift()?.();
     await busy;
     await Promise.resolve();
     expect(commands).toEqual([
-      'workmux set-window-status working',
-      'workmux set-window-status done',
+      'workrex set-window-status working',
+      'workrex set-window-status done',
     ]);
     expect(applied).toEqual(['working']);
 

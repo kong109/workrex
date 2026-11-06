@@ -3,7 +3,7 @@
 //! Detects pi via its config directory at `~/.pi/agent/`.
 //! Override with `PI_CODING_AGENT_DIR` env var.
 //!
-//! Installs extension by writing `workmux-status.ts` to the extensions directory.
+//! Installs extension by writing `workrex-status.ts` to the extensions directory.
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -12,8 +12,7 @@ use super::{StatusCheck, UpdatePreview};
 use crate::agent_setup::extension_file;
 
 /// The pi extension source, embedded at compile time.
-const EXTENSION_SOURCE: &str =
-    crate::rebrand_include!("../../resources/pi/extensions/workmux-status.ts");
+const EXTENSION_SOURCE: &str = include_str!("../../resources/pi/extensions/workrex-status.ts");
 
 fn pi_agent_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
@@ -42,7 +41,7 @@ pub fn detect() -> Option<&'static str> {
     None
 }
 
-/// Check if workmux extension is installed for pi.
+/// Check if workrex extension is installed for pi.
 pub fn check() -> Result<StatusCheck> {
     extension_file::check_installed(extension_path().as_deref(), EXTENSION_SOURCE)
 }
@@ -63,7 +62,7 @@ pub(crate) fn update_preview() -> Result<Option<UpdatePreview>> {
     }))
 }
 
-/// Install workmux extension for pi.
+/// Install workrex extension for pi.
 /// Returns a description of what was done.
 pub fn install() -> Result<String> {
     let dir =
@@ -87,7 +86,7 @@ pub(crate) fn install_dir(dir: &Path) -> Result<String> {
     ))
 }
 
-/// Remove workmux extension for pi agent.
+/// Remove workrex extension for pi agent.
 ///
 /// Deletes the extension file and cleans up empty parent directories.
 pub fn uninstall() -> Result<String> {
@@ -112,7 +111,7 @@ mod tests {
     #[test]
     fn test_uninstall_no_extension_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let ext_path = tmp.path().join("extensions/workmux-status.ts");
+        let ext_path = tmp.path().join("extensions/workrex-status.ts");
         let result = uninstall_at(ext_path).unwrap();
         assert!(result.contains("No pi extension found"));
     }
@@ -122,7 +121,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ext_dir = tmp.path().join("extensions");
         std::fs::create_dir_all(&ext_dir).unwrap();
-        let ext_path = ext_dir.join("workmux-status.ts");
+        let ext_path = ext_dir.join("workrex-status.ts");
         std::fs::write(&ext_path, "// extension").unwrap();
 
         let result = uninstall_at(ext_path.clone()).unwrap();
@@ -133,7 +132,7 @@ mod tests {
     #[test]
     fn test_uninstall_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        let ext_path = tmp.path().join("extensions/workmux-status.ts");
+        let ext_path = tmp.path().join("extensions/workrex-status.ts");
         let result1 = uninstall_at(ext_path.clone()).unwrap();
         assert!(result1.contains("No pi extension found"));
         let result2 = uninstall_at(ext_path).unwrap();

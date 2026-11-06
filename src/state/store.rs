@@ -16,15 +16,15 @@ use crate::agent_identity::AgentKind;
 use crate::config::SandboxRuntime;
 use crate::util::{write_atomic, write_atomic_durable};
 
-/// Manages filesystem-based state persistence for workmux agents.
+/// Manages filesystem-based state persistence for workrex agents.
 ///
 /// Directory structure:
 /// ```text
-/// $XDG_STATE_HOME/workmux/           # ~/.local/state/workmux/
+/// $XDG_STATE_HOME/workrex/           # ~/.local/state/workrex/
 /// ├── settings.json                   # Global dashboard settings
 /// └── agents/
-///     ├── tmux__default__%1.json     # {backend}__{instance}__{pane_id}.json
-///     └── wezterm__main__3.json
+///     ├── rex__default__%1.json     # {backend}__{instance}__{pane_id}.json
+///     └── rex__main__3.json
 /// ```
 pub struct StateStore {
     base_path: PathBuf,
@@ -164,8 +164,6 @@ pub struct ReconciledAgentReport {
     pub state_files_invalid_matching_context: usize,
     pub state_files_matching_context: usize,
     pub agents: Vec<crate::multiplexer::AgentPane>,
-    /// Local panes relaying remote agents, kept apart from `agents`.
-    pub remote_agents: Vec<crate::multiplexer::AgentPane>,
 }
 
 struct AgentInventory {
@@ -1167,7 +1165,7 @@ impl StateStore {
     /// before `git worktree move` renders the old path non-existent).
     ///
     /// `old_full_base` / `new_full_base` are the prefixed window/session
-    /// base names (e.g. "wm-old-handle" / "wm-new-handle"). `-N` duplicate
+    /// base names (e.g. "wr-old-handle" / "wr-new-handle"). `-N` duplicate
     /// suffixes on window names are preserved.
     ///
     /// Returns the number of agent state files updated.
@@ -1314,9 +1312,8 @@ impl StateStore {
     ///
     /// Uses batched pane queries for performance, with backend-specific fallback validation.
     ///
-    /// Returns only valid local agents; removes stale state files. Panes
-    /// relaying remote agents are reconciled the same way but left out,
-    /// because their workdir is not a local worktree.
+    /// Returns valid local agents and removes stale state files. Agent states
+    /// with remote metadata are excluded because their workdir is remote.
     pub fn load_reconciled_agents(
         &self,
         mux: &dyn crate::multiplexer::Multiplexer,
@@ -1324,8 +1321,8 @@ impl StateStore {
         Ok(split_remote(self.load_all_reconciled_agents(mux)?).0)
     }
 
-    /// Like [`StateStore::load_reconciled_agents`], including panes that
-    /// relay remote agents.
+    /// Like [`StateStore::load_reconciled_agents`], including agent states
+    /// with remote metadata.
     pub fn load_all_reconciled_agents(
         &self,
         mux: &dyn crate::multiplexer::Multiplexer,
@@ -1359,7 +1356,7 @@ impl StateStore {
             .filter_map(Option::as_ref)
             .filter(|key| key.backend == backend && key.instance == instance)
             .count();
-        let (agents, remote_agents) = split_remote(self.reconcile_agents_for_context(
+        let (agents, _) = split_remote(self.reconcile_agents_for_context(
             inventory.states,
             mux,
             &instance,
@@ -1376,7 +1373,6 @@ impl StateStore {
             state_files_invalid_matching_context,
             state_files_matching_context,
             agents,
-            remote_agents,
         })
     }
 
@@ -1440,12 +1436,6 @@ impl StateStore {
     ) -> Result<Vec<crate::multiplexer::AgentPane>> {
         let backend = mux.name();
         let mut reports = super::reported::Reports::new(mux, instance);
-        let auto_renamed_tmux_windows = if backend == "tmux" {
-            tmux_auto_renamed_windows(live_panes)
-        } else {
-            HashSet::new()
-        };
-
         let mut valid_agents = Vec::new();
 
         for state in all_agents {
@@ -1563,19 +1553,7 @@ impl StateStore {
                     if let Some(window_id) = live.window_id.clone() {
                         agent_pane.window_id = window_id;
                     }
-                    // Only the tmux backend can reliably distinguish auto-renamed
-                    // window names from sticky user-set ones via pane_current_command.
-                    if backend == "tmux" {
-                        if live
-                            .window
-                            .as_ref()
-                            .is_some_and(|window| auto_renamed_tmux_windows.contains(window))
-                        {
-                            agent_pane.window_cmd = live.window.clone();
-                        } else {
-                            agent_pane.window_cmd = live.current_command.clone();
-                        }
-                    }
+                    agent_pane.window_cmd = live.current_command.clone();
                     valid_agents.push(agent_pane);
                 }
             }
@@ -1589,7 +1567,7 @@ impl StateStore {
     }
 }
 
-/// Split reconciled agents into local agents and panes relaying remote ones.
+/// Split reconciled agent states by local or remote workdir.
 pub(crate) fn split_remote(
     agents: Vec<crate::multiplexer::AgentPane>,
 ) -> (
@@ -1599,16 +1577,8 @@ pub(crate) fn split_remote(
     agents.into_iter().partition(|agent| agent.remote.is_none())
 }
 
-/// Legacy tmux IDs identify a possible matching server by start time alone.
-/// Callers merging pane state must also verify the pane PID.
-pub(super) fn same_server_boot(backend: &str, stored: &str, current: &str) -> bool {
+pub(super) fn same_server_boot(_backend: &str, stored: &str, current: &str) -> bool {
     stored == current
-        || (backend == "tmux"
-            && !stored.is_empty()
-            && stored.bytes().all(|byte| byte.is_ascii_digit())
-            && current.split_once(':').is_some_and(|(start, pid)| {
-                start == stored && !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit())
-            }))
 }
 
 fn server_lifecycle_changed(backend: &str, stored: Option<&str>, current: Option<&str>) -> bool {
@@ -1617,19 +1587,7 @@ fn server_lifecycle_changed(backend: &str, stored: Option<&str>, current: Option
     })
 }
 
-fn tmux_auto_renamed_windows(
-    live_panes: &std::collections::HashMap<String, crate::multiplexer::LivePaneInfo>,
-) -> HashSet<String> {
-    live_panes
-        .values()
-        .filter_map(|pane| match (&pane.window, &pane.current_command) {
-            (Some(window), Some(command)) if window == command => Some(window.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Get the workmux state directory (`$XDG_STATE_HOME/workmux`).
+/// Get the workrex state directory (`$XDG_STATE_HOME/workrex`).
 ///
 /// Delegates to `crate::xdg::state_dir()`.
 pub fn get_state_dir() -> Result<PathBuf> {
@@ -1692,11 +1650,10 @@ fn read_agent_file(path: &Path) -> Result<Option<AgentState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::multiplexer::{AgentStatus, LivePaneInfo};
+    use crate::multiplexer::AgentStatus;
     use crate::state::test_support::{
-        default_pane_key as test_pane_key, temp_store as test_store, tmux_pane_key,
+        default_pane_key as test_pane_key, rex_pane_key, temp_store as test_store,
     };
-    use std::collections::HashMap;
 
     fn test_agent_state(key: PaneKey) -> AgentState {
         AgentState {
@@ -1709,7 +1666,7 @@ mod tests {
             pane_pid: 12345,
             command: "node".to_string(),
             updated_ts: 1234567890,
-            window_name: Some("wm-test".to_string()),
+            window_name: Some("wr-test".to_string()),
             session_name: Some("main".to_string()),
             boot_id: None,
             agent_kind: None,
@@ -1722,18 +1679,18 @@ mod tests {
     #[test]
     fn test_previous_server_lifecycle_requires_stored_boot_id() {
         assert!(server_lifecycle_changed(
-            "tmux",
+            "rex",
             Some("old"),
             Some("current")
         ));
-        assert!(server_lifecycle_changed("tmux", Some("old"), None));
+        assert!(server_lifecycle_changed("rex", Some("old"), None));
         assert!(!server_lifecycle_changed(
-            "tmux",
+            "rex",
             Some("current"),
             Some("current")
         ));
-        assert!(!server_lifecycle_changed("tmux", None, Some("current")));
-        assert!(!server_lifecycle_changed("tmux", None, None));
+        assert!(!server_lifecycle_changed("rex", None, Some("current")));
+        assert!(!server_lifecycle_changed("rex", None, None));
     }
 
     #[test]
@@ -1765,8 +1722,8 @@ mod tests {
     fn test_list_all_agents() {
         let (store, _dir) = test_store();
 
-        let key1 = tmux_pane_key("%1");
-        let key2 = tmux_pane_key("%2");
+        let key1 = rex_pane_key("%1");
+        let key2 = rex_pane_key("%2");
 
         store.upsert_agent(&test_agent_state(key1)).unwrap();
         store.upsert_agent(&test_agent_state(key2)).unwrap();
@@ -1800,7 +1757,7 @@ mod tests {
     #[test]
     fn clear_agent_status_resets_status_and_preserves_identity() {
         let (store, _dir) = test_store();
-        let key = tmux_pane_key("%1");
+        let key = rex_pane_key("%1");
         let mut state = test_agent_state(key.clone());
         state.agent_kind = Some("claude".to_string());
         state.agent_session_id = Some("session-1".to_string());
@@ -1826,10 +1783,10 @@ mod tests {
     #[test]
     fn clear_agent_status_leaves_other_panes_and_instances_untouched() {
         let (store, _dir) = test_store();
-        let target = tmux_pane_key("%1");
-        let other_pane = tmux_pane_key("%2");
+        let target = rex_pane_key("%1");
+        let other_pane = rex_pane_key("%2");
         let other_instance = PaneKey {
-            backend: "zellij".to_string(),
+            backend: "rex".to_string(),
             instance: "other-session".to_string(),
             pane_id: "%1".to_string(),
         };
@@ -2013,10 +1970,10 @@ mod tests {
 
     #[test]
     fn ambiguous_invalid_filename_is_not_attributed() {
-        assert!(unambiguous_pane_key_from_filename("tmux__instance__part__%1.json").is_none());
-        assert!(unambiguous_pane_key_from_filename("tmux__instance___%1.json").is_none());
-        assert!(unambiguous_pane_key_from_filename("tmux__%FF__%1.json").is_none());
-        assert!(unambiguous_pane_key_from_filename("tmux__instance__%251.json").is_some());
+        assert!(unambiguous_pane_key_from_filename("rex__instance__part__%1.json").is_none());
+        assert!(unambiguous_pane_key_from_filename("rex__instance___%1.json").is_none());
+        assert!(unambiguous_pane_key_from_filename("rex__%FF__%1.json").is_none());
+        assert!(unambiguous_pane_key_from_filename("rex__instance__%251.json").is_some());
     }
 
     #[cfg(unix)]
@@ -2082,113 +2039,62 @@ mod tests {
 
         // Agent at the worktree root
         let root_key = PaneKey {
-            backend: "tmux".to_string(),
+            backend: "rex".to_string(),
             instance: "default".to_string(),
             pane_id: "%1".to_string(),
         };
         let mut root_state = test_agent_state(root_key.clone());
         root_state.workdir = PathBuf::from("/repo/wt/old");
-        root_state.window_name = Some("wm-old".to_string());
-        root_state.session_name = Some("wm-old".to_string());
+        root_state.window_name = Some("wr-old".to_string());
+        root_state.session_name = Some("wr-old".to_string());
         store.upsert_agent(&root_state).unwrap();
 
         // Agent in a subdirectory of the worktree
         let sub_key = PaneKey {
-            backend: "tmux".to_string(),
+            backend: "rex".to_string(),
             instance: "default".to_string(),
             pane_id: "%2".to_string(),
         };
         let mut sub_state = test_agent_state(sub_key.clone());
         sub_state.workdir = PathBuf::from("/repo/wt/old/src/nested");
-        sub_state.window_name = Some("wm-old-2".to_string()); // duplicate suffix
-        sub_state.session_name = Some("wm-old".to_string());
+        sub_state.window_name = Some("wr-old-2".to_string()); // duplicate suffix
+        sub_state.session_name = Some("wr-old".to_string());
         store.upsert_agent(&sub_state).unwrap();
 
         // Unrelated agent in a different worktree
         let other_key = PaneKey {
-            backend: "tmux".to_string(),
+            backend: "rex".to_string(),
             instance: "default".to_string(),
             pane_id: "%3".to_string(),
         };
         let mut other_state = test_agent_state(other_key.clone());
         other_state.workdir = PathBuf::from("/repo/wt/unrelated");
-        other_state.window_name = Some("wm-unrelated".to_string());
+        other_state.window_name = Some("wr-unrelated".to_string());
         store.upsert_agent(&other_state).unwrap();
 
         let migrated = store
             .migrate_worktree_paths(
                 &PathBuf::from("/repo/wt/old"),
                 &PathBuf::from("/repo/wt/new"),
-                "wm-old",
-                "wm-new",
+                "wr-old",
+                "wr-new",
             )
             .unwrap();
         assert_eq!(migrated, 2);
 
         let root_after = store.get_agent(&root_key).unwrap().unwrap();
         assert_eq!(root_after.workdir, PathBuf::from("/repo/wt/new"));
-        assert_eq!(root_after.window_name.as_deref(), Some("wm-new"));
-        assert_eq!(root_after.session_name.as_deref(), Some("wm-new"));
+        assert_eq!(root_after.window_name.as_deref(), Some("wr-new"));
+        assert_eq!(root_after.session_name.as_deref(), Some("wr-new"));
 
         let sub_after = store.get_agent(&sub_key).unwrap().unwrap();
         assert_eq!(sub_after.workdir, PathBuf::from("/repo/wt/new/src/nested"));
-        assert_eq!(sub_after.window_name.as_deref(), Some("wm-new-2"));
-        assert_eq!(sub_after.session_name.as_deref(), Some("wm-new"));
+        assert_eq!(sub_after.window_name.as_deref(), Some("wr-new-2"));
+        assert_eq!(sub_after.session_name.as_deref(), Some("wr-new"));
 
         let other_after = store.get_agent(&other_key).unwrap().unwrap();
         assert_eq!(other_after.workdir, PathBuf::from("/repo/wt/unrelated"));
-        assert_eq!(other_after.window_name.as_deref(), Some("wm-unrelated"));
-    }
-
-    #[test]
-    fn test_tmux_auto_renamed_windows_detects_focused_pane_name() {
-        let mut live_panes = HashMap::new();
-        live_panes.insert(
-            "%1".to_string(),
-            LivePaneInfo {
-                pid: Some(1),
-                current_command: Some("node".to_string()),
-                working_dir: PathBuf::from("/repo"),
-                title: None,
-                session: Some("work".to_string()),
-                window: Some("node".to_string()),
-                session_id: None,
-                window_id: None,
-                window_index: None,
-            },
-        );
-        live_panes.insert(
-            "%2".to_string(),
-            LivePaneInfo {
-                pid: Some(2),
-                current_command: Some("python".to_string()),
-                working_dir: PathBuf::from("/repo"),
-                title: None,
-                session: Some("work".to_string()),
-                window: Some("node".to_string()),
-                session_id: None,
-                window_id: None,
-                window_index: None,
-            },
-        );
-        live_panes.insert(
-            "%3".to_string(),
-            LivePaneInfo {
-                pid: Some(3),
-                current_command: Some("bash".to_string()),
-                working_dir: PathBuf::from("/repo"),
-                title: None,
-                session: Some("work".to_string()),
-                window: Some("user-name".to_string()),
-                session_id: None,
-                window_id: None,
-                window_index: None,
-            },
-        );
-
-        let auto_renamed = tmux_auto_renamed_windows(&live_panes);
-        assert!(auto_renamed.contains("node"));
-        assert!(!auto_renamed.contains("user-name"));
+        assert_eq!(other_after.window_name.as_deref(), Some("wr-unrelated"));
     }
 
     #[test]
@@ -2261,32 +2167,32 @@ mod tests {
         for pane in 0..285 {
             write_raw_agent(
                 &store,
-                &context_state("tmux", "default", pane, Some("boot"), pane % 43),
+                &context_state("rex", "default", pane, Some("boot"), pane % 43),
             );
         }
         for pane in 285..302 {
             write_raw_agent(
                 &store,
-                &context_state("tmux", "test", pane, Some("test-boot"), pane),
+                &context_state("rex", "test", pane, Some("test-boot"), pane),
             );
         }
         for pane in 302..311 {
-            write_raw_agent(&store, &context_state("wezterm", "main", pane, None, pane));
+            write_raw_agent(&store, &context_state("rex", "main", pane, None, pane));
         }
         fs::write(
-            dir.path().join("agents/tmux__default__legacy__name.json"),
+            dir.path().join("agents/rex__default__legacy__name.json"),
             "{",
         )
         .unwrap();
 
         let mut cache = AgentStateCache::default();
-        let cold = cache.load_context(&store, "tmux", "default").unwrap();
+        let cold = cache.load_context(&store, "rex", "default").unwrap();
         assert_eq!(cold.agents.len(), 285);
         assert_eq!(cold.stats.listed, 312);
         assert_eq!(cold.stats.reads, 286);
         assert_eq!(cold.stats.parses, 286);
 
-        let warm = cache.load_context(&store, "tmux", "default").unwrap();
+        let warm = cache.load_context(&store, "rex", "default").unwrap();
         assert_eq!(warm.agents.len(), 285);
         assert_eq!(warm.stats.listed, 312);
         assert_eq!(warm.stats.reads, 0);
@@ -2296,10 +2202,10 @@ mod tests {
     #[test]
     fn sidebar_cache_invalidates_atomic_replacement_and_deletion() {
         let (store, _dir) = test_store();
-        let mut state = context_state("tmux", "default", 1, Some("boot"), 1);
+        let mut state = context_state("rex", "default", 1, Some("boot"), 1);
         write_raw_agent(&store, &state);
         let mut cache = AgentStateCache::default();
-        let first = cache.load_context(&store, "tmux", "default").unwrap();
+        let first = cache.load_context(&store, "rex", "default").unwrap();
         assert_eq!(first.stats.reads, 1);
 
         let path = store.agent_path(&state.pane_key);
@@ -2310,12 +2216,12 @@ mod tests {
         filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(original_mtime))
             .unwrap();
 
-        let replaced = cache.load_context(&store, "tmux", "default").unwrap();
+        let replaced = cache.load_context(&store, "rex", "default").unwrap();
         assert_eq!(replaced.stats.reads, 1);
         assert_eq!(replaced.agents[0].updated_ts, state.updated_ts);
 
         fs::remove_file(path).unwrap();
-        let deleted = cache.load_context(&store, "tmux", "default").unwrap();
+        let deleted = cache.load_context(&store, "rex", "default").unwrap();
         assert!(deleted.agents.is_empty());
         assert!(cache.files.is_empty());
     }
@@ -2323,18 +2229,18 @@ mod tests {
     #[test]
     fn sidebar_cache_reparses_repaired_malformed_file() {
         let (store, _dir) = test_store();
-        let state = context_state("tmux", "default", 1, Some("boot"), 1);
+        let state = context_state("rex", "default", 1, Some("boot"), 1);
         let path = store.agent_path(&state.pane_key);
         fs::write(&path, "{").unwrap();
         let mut cache = AgentStateCache::default();
-        let malformed = cache.load_context(&store, "tmux", "default").unwrap();
+        let malformed = cache.load_context(&store, "rex", "default").unwrap();
         assert!(malformed.agents.is_empty());
         assert_eq!(malformed.stats.parses, 1);
-        let unchanged = cache.load_context(&store, "tmux", "default").unwrap();
+        let unchanged = cache.load_context(&store, "rex", "default").unwrap();
         assert_eq!(unchanged.stats.parses, 0);
 
         crate::util::write_atomic(&path, &serde_json::to_vec_pretty(&state).unwrap()).unwrap();
-        let repaired = cache.load_context(&store, "tmux", "default").unwrap();
+        let repaired = cache.load_context(&store, "rex", "default").unwrap();
         assert_eq!(repaired.stats.parses, 1);
         assert_eq!(repaired.agents.len(), 1);
     }
@@ -2343,7 +2249,7 @@ mod tests {
     fn deleting_remote_attachments_reaches_earlier_servers() {
         let (store, _dir) = test_store();
         let relay = |pane: usize, boot: &str, ws_id: &str| {
-            let mut state = context_state("tmux", "default", pane, Some(boot), pane);
+            let mut state = context_state("rex", "default", pane, Some(boot), pane);
             state.remote = Some(crate::multiplexer::RemoteRef {
                 remote: "box".into(),
                 ws_id: ws_id.into(),
@@ -2354,16 +2260,16 @@ mod tests {
         };
         write_raw_agent(&store, &relay(1, "old", "w1"));
         write_raw_agent(&store, &relay(2, "old", "w2"));
-        write_raw_agent(&store, &context_state("tmux", "default", 3, Some("old"), 3));
+        write_raw_agent(&store, &context_state("rex", "default", 3, Some("old"), 3));
         store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
         write_raw_agent(&store, &relay(4, "current", "w1"));
 
         store.delete_remote_attachments("box", "w1").unwrap();
 
         let remaining: Vec<_> = store
-            .resurrection_snapshot("tmux", "default")
+            .resurrection_snapshot("rex", "default")
             .unwrap()
             .into_iter()
             .map(|entry| entry.state.remote.map(|at| at.ws_id))
@@ -2380,43 +2286,40 @@ mod tests {
             let boot = format!("boot-{}", pane % 17);
             write_raw_agent(
                 &store,
-                &context_state("tmux", "default", pane, Some(&boot), pane % 21),
+                &context_state("rex", "default", pane, Some(&boot), pane % 21),
             );
         }
         for pane in 242..285 {
             write_raw_agent(
                 &store,
-                &context_state("tmux", "default", pane, Some("current"), pane),
+                &context_state("rex", "default", pane, Some("current"), pane),
             );
         }
-        write_raw_agent(&store, &context_state("tmux", "default", 285, None, 999));
+        write_raw_agent(&store, &context_state("rex", "default", 285, None, 999));
         for pane in 286..303 {
             write_raw_agent(
                 &store,
-                &context_state("tmux", "test", pane, Some("old"), pane),
+                &context_state("rex", "test", pane, Some("old"), pane),
             );
         }
         for pane in 303..312 {
-            write_raw_agent(&store, &context_state("wezterm", "main", pane, None, pane));
+            write_raw_agent(&store, &context_state("rex", "main", pane, None, pane));
         }
 
         let stats = store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
         assert_eq!(stats.compacted, 242);
         assert_eq!(stats.retained_flat, 44);
         assert_eq!(stats.recovery_entries, 21);
         assert_eq!(store.list_all_agents().unwrap().len(), 70);
         assert_eq!(
-            store
-                .resurrection_snapshot("tmux", "default")
-                .unwrap()
-                .len(),
+            store.resurrection_snapshot("rex", "default").unwrap().len(),
             65
         );
 
         let repeated = store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
         assert_eq!(repeated.compacted, 0);
         assert_eq!(repeated.recovery_entries, 21);
@@ -2430,7 +2333,7 @@ mod tests {
                 write_raw_agent(
                     &store,
                     &context_state(
-                        "tmux",
+                        "rex",
                         "default",
                         boot * 10 + pane,
                         Some(&format!("boot-{boot}")),
@@ -2440,14 +2343,11 @@ mod tests {
             }
             let current = format!("boot-{}", boot + 1);
             store
-                .compact_context("tmux", "default", Some(&current))
+                .compact_context("rex", "default", Some(&current))
                 .unwrap();
             assert_eq!(store.list_all_agents().unwrap().len(), 0);
             assert_eq!(
-                store
-                    .resurrection_snapshot("tmux", "default")
-                    .unwrap()
-                    .len(),
+                store.resurrection_snapshot("rex", "default").unwrap().len(),
                 3
             );
         }
@@ -2456,19 +2356,19 @@ mod tests {
     #[test]
     fn compaction_preserves_resurrection_agent_selection() {
         let (store, _dir) = test_store();
-        let mut recognized = context_state("tmux", "default", 1, Some("old-a"), 1);
+        let mut recognized = context_state("rex", "default", 1, Some("old-a"), 1);
         recognized.command = "claude".to_string();
         recognized.updated_ts = 10;
-        let mut newer_unknown = context_state("tmux", "default", 2, Some("old-b"), 1);
+        let mut newer_unknown = context_state("rex", "default", 2, Some("old-b"), 1);
         newer_unknown.command = "shell-with-no-profile".to_string();
         newer_unknown.updated_ts = 20;
         write_raw_agent(&store, &recognized);
         write_raw_agent(&store, &newer_unknown);
 
         store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
-        let snapshot = store.resurrection_snapshot("tmux", "default").unwrap();
+        let snapshot = store.resurrection_snapshot("rex", "default").unwrap();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(
             RecoveryAgentChoice::from_state(&snapshot[0].state)
@@ -2483,7 +2383,7 @@ mod tests {
     fn concurrent_cache_reads_observe_only_complete_atomic_writes() {
         let (store, _dir) = test_store();
         let store = std::sync::Arc::new(store);
-        let state = context_state("tmux", "default", 1, Some("current"), 1);
+        let state = context_state("rex", "default", 1, Some("current"), 1);
         let key = state.pane_key.clone();
         store.upsert_agent(&state).unwrap();
 
@@ -2497,7 +2397,7 @@ mod tests {
         });
         let mut cache = AgentStateCache::default();
         for _ in 0..100 {
-            let loaded = cache.load_context(&store, "tmux", "default").unwrap();
+            let loaded = cache.load_context(&store, "rex", "default").unwrap();
             assert!(loaded.agents.len() <= 1);
             if let Some(agent) = loaded.agents.first() {
                 assert_eq!(agent.boot_id.as_deref(), Some("current"));
@@ -2510,7 +2410,7 @@ mod tests {
     #[test]
     fn upsert_preserves_previous_boot_before_recycled_key_replacement() {
         let (store, _dir) = test_store();
-        let mut old = context_state("tmux", "default", 1, Some("boot-a"), 7);
+        let mut old = context_state("rex", "default", 1, Some("boot-a"), 7);
         old.command = "claude".to_string();
         store.upsert_agent(&old).unwrap();
         let mut current = old.clone();
@@ -2523,7 +2423,7 @@ mod tests {
             store.get_agent(&current.pane_key).unwrap().unwrap().boot_id,
             current.boot_id
         );
-        let recovery = store.resurrection_snapshot("tmux", "default").unwrap();
+        let recovery = store.resurrection_snapshot("rex", "default").unwrap();
         assert!(
             recovery
                 .iter()
@@ -2534,7 +2434,7 @@ mod tests {
     #[test]
     fn clear_agent_status_removes_prompt_only_when_asked() {
         let (store, _dir) = test_store();
-        let key = tmux_pane_key("%1");
+        let key = rex_pane_key("%1");
         let mut state = test_agent_state(key.clone());
         state.prompt = Some("fix the bug".to_string());
         store.upsert_agent(&state).unwrap();
@@ -2552,12 +2452,12 @@ mod tests {
     #[test]
     fn recovery_entries_do_not_archive_prompts() {
         let (store, _dir) = test_store();
-        let mut state = context_state("tmux", "default", 1, Some("old"), 1);
+        let mut state = context_state("rex", "default", 1, Some("old"), 1);
         state.prompt = Some("fix the bug".to_string());
         let manifest = store
             .with_agent_lock(|store| {
-                store.merge_recovery_locked("tmux", "default", std::slice::from_ref(&state))?;
-                store.load_recovery_manifest_locked("tmux", "default")
+                store.merge_recovery_locked("rex", "default", std::slice::from_ref(&state))?;
+                store.load_recovery_manifest_locked("rex", "default")
             })
             .unwrap();
         assert_eq!(manifest.entries.len(), 1);
@@ -2567,15 +2467,15 @@ mod tests {
     #[test]
     fn interrupted_recovery_publication_is_idempotent() {
         let (store, _dir) = test_store();
-        let state = context_state("tmux", "default", 1, Some("old"), 1);
+        let state = context_state("rex", "default", 1, Some("old"), 1);
         store
             .with_agent_lock(|store| {
-                store.merge_recovery_locked("tmux", "default", std::slice::from_ref(&state))?;
-                store.merge_recovery_locked("tmux", "default", std::slice::from_ref(&state))?;
+                store.merge_recovery_locked("rex", "default", std::slice::from_ref(&state))?;
+                store.merge_recovery_locked("rex", "default", std::slice::from_ref(&state))?;
                 Ok(())
             })
             .unwrap();
-        let snapshot = store.resurrection_snapshot("tmux", "default").unwrap();
+        let snapshot = store.resurrection_snapshot("rex", "default").unwrap();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].represented_count, 1);
     }
@@ -2583,18 +2483,18 @@ mod tests {
     #[test]
     fn flat_plan_consumes_state_compacted_during_restoration() {
         let (store, _dir) = test_store();
-        let state = context_state("tmux", "default", 1, Some("old"), 1);
+        let state = context_state("rex", "default", 1, Some("old"), 1);
         write_raw_agent(&store, &state);
-        let snapshot = store.resurrection_snapshot("tmux", "default").unwrap();
+        let snapshot = store.resurrection_snapshot("rex", "default").unwrap();
         store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
 
         let sources: Vec<_> = snapshot.into_iter().map(|record| record.source).collect();
         store.consume_agent_sources(&sources).unwrap();
         assert!(
             store
-                .resurrection_snapshot("tmux", "default")
+                .resurrection_snapshot("rex", "default")
                 .unwrap()
                 .is_empty()
         );
@@ -2603,17 +2503,17 @@ mod tests {
     #[test]
     fn recovery_consumption_removes_the_planned_revision() {
         let (store, _dir) = test_store();
-        let state = context_state("tmux", "default", 1, Some("old"), 1);
+        let state = context_state("rex", "default", 1, Some("old"), 1);
         write_raw_agent(&store, &state);
         store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
-        let snapshot = store.resurrection_snapshot("tmux", "default").unwrap();
+        let snapshot = store.resurrection_snapshot("rex", "default").unwrap();
         let sources: Vec<_> = snapshot.into_iter().map(|record| record.source).collect();
         store.consume_agent_sources(&sources).unwrap();
         assert!(
             store
-                .resurrection_snapshot("tmux", "default")
+                .resurrection_snapshot("rex", "default")
                 .unwrap()
                 .is_empty()
         );
@@ -2622,9 +2522,9 @@ mod tests {
     #[test]
     fn conditional_consumption_preserves_atomic_replacement() {
         let (store, _dir) = test_store();
-        let old = context_state("tmux", "default", 1, Some("boot-a"), 1);
+        let old = context_state("rex", "default", 1, Some("boot-a"), 1);
         write_raw_agent(&store, &old);
-        let snapshot = store.resurrection_snapshot("tmux", "default").unwrap();
+        let snapshot = store.resurrection_snapshot("rex", "default").unwrap();
         let mut replacement = old.clone();
         replacement.boot_id = Some("boot-b".to_string());
         replacement.updated_ts += 1;
@@ -2645,34 +2545,34 @@ mod tests {
     #[test]
     fn recovery_path_migration_updates_compacted_state() {
         let (store, _dir) = test_store();
-        let mut state = context_state("tmux", "default", 1, Some("old"), 1);
+        let mut state = context_state("rex", "default", 1, Some("old"), 1);
         state.workdir = PathBuf::from("/repo/wt/old/src");
         write_raw_agent(&store, &state);
         store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
 
         let migrated = store
             .migrate_worktree_paths(
                 Path::new("/repo/wt/old"),
                 Path::new("/repo/wt/new"),
-                "wm-old",
-                "wm-new",
+                "wr-old",
+                "wr-new",
             )
             .unwrap();
         assert_eq!(migrated, 1);
-        let snapshot = store.resurrection_snapshot("tmux", "default").unwrap();
+        let snapshot = store.resurrection_snapshot("rex", "default").unwrap();
         assert_eq!(snapshot[0].state.workdir, PathBuf::from("/repo/wt/new/src"));
     }
 
     #[test]
     fn recovery_path_migration_preserves_identity_mismatch() {
         let (store, _dir) = test_store();
-        let path = store.recovery_path("tmux", "default");
+        let path = store.recovery_path("rex", "default");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let manifest = RecoveryManifest {
             version: 1,
-            backend: "wezterm".to_string(),
+            backend: "rex".to_string(),
             instance: "other".to_string(),
             last_compacted_boot: None,
             entries: Vec::new(),
@@ -2683,13 +2583,13 @@ mod tests {
             .migrate_worktree_paths(
                 Path::new("/repo/old"),
                 Path::new("/repo/new"),
-                "wm-old",
-                "wm-new",
+                "wr-old",
+                "wr-new",
             )
             .unwrap();
         assert_eq!(migrated, 0);
         assert!(path.exists());
-        assert!(!store.recovery_path("wezterm", "other").exists());
+        assert!(!store.recovery_path("rex", "other").exists());
     }
 
     #[test]
@@ -2700,7 +2600,7 @@ mod tests {
             write_raw_agent(
                 &store,
                 &context_state(
-                    "tmux",
+                    "rex",
                     "default",
                     pane,
                     Some(&format!("old-{}", pane % 18)),
@@ -2711,13 +2611,13 @@ mod tests {
         for pane in 242..285 {
             write_raw_agent(
                 &store,
-                &context_state("tmux", "default", pane, Some("current"), pane),
+                &context_state("rex", "default", pane, Some("current"), pane),
             );
         }
         for pane in 285..311 {
             write_raw_agent(
                 &store,
-                &context_state("tmux", "other", pane, Some("other"), pane),
+                &context_state("rex", "other", pane, Some("other"), pane),
             );
         }
 
@@ -2726,14 +2626,14 @@ mod tests {
         let listing_elapsed = listing_start.elapsed();
         let compact_start = std::time::Instant::now();
         let compact = store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
         let compact_elapsed = compact_start.elapsed();
         let retained_agent_files = fs::read_dir(store.agents_dir()).unwrap().count();
 
         let mut cache = AgentStateCache::default();
         let cold_start = std::time::Instant::now();
-        let cold = cache.load_context(&store, "tmux", "default").unwrap();
+        let cold = cache.load_context(&store, "rex", "default").unwrap();
         let cold_elapsed = cold_start.elapsed();
         let mut warm_samples = Vec::new();
         let mut warm = CachedAgentLoad {
@@ -2742,13 +2642,13 @@ mod tests {
         };
         for _ in 0..100 {
             let start = std::time::Instant::now();
-            warm = cache.load_context(&store, "tmux", "default").unwrap();
+            warm = cache.load_context(&store, "rex", "default").unwrap();
             warm_samples.push(start.elapsed());
         }
         warm_samples.sort_unstable();
 
         let key = PaneKey {
-            backend: "tmux".to_string(),
+            backend: "rex".to_string(),
             instance: "default".to_string(),
             pane_id: "%242".to_string(),
         };
@@ -2756,7 +2656,7 @@ mod tests {
         updated.updated_ts += 1;
         store.upsert_agent(&updated).unwrap();
         let update_start = std::time::Instant::now();
-        let update = cache.load_context(&store, "tmux", "default").unwrap();
+        let update = cache.load_context(&store, "rex", "default").unwrap();
         let update_elapsed = update_start.elapsed();
 
         eprintln!(
@@ -2775,80 +2675,25 @@ mod tests {
     }
 
     #[test]
-    fn legacy_tmux_boot_matches_only_a_valid_same_start_time() {
-        assert!(same_server_boot("tmux", "1700000000", "1700000000:42"));
-        assert!(!same_server_boot("tmux", "1700000000", "1700000001:42"));
-        assert!(!same_server_boot("tmux", "1700000000:41", "1700000000:42"));
-        assert!(!same_server_boot("tmux", "1700000000", "1700000000:"));
-        assert!(!same_server_boot(
-            "tmux",
-            "1700000000",
-            "1700000000:unknown"
-        ));
-        assert!(!same_server_boot("tmux", "unknown", "unknown:42"));
-        assert!(!same_server_boot("wezterm", "1700000000", "1700000000:42"));
-        assert!(!server_lifecycle_changed(
-            "tmux",
-            Some("1700000000"),
-            Some("1700000000:42")
-        ));
-    }
-
-    #[test]
-    fn compaction_retains_same_start_legacy_tmux_records() {
-        let (store, _dir) = test_store();
-        let legacy = context_state("tmux", "default", 1, Some("1700000000"), 1);
-        let older = context_state("tmux", "default", 2, Some("1699999999"), 2);
-        write_raw_agent(&store, &legacy);
-        write_raw_agent(&store, &older);
-        let stats = store
-            .compact_context("tmux", "default", Some("1700000000:42"))
-            .unwrap();
-        assert_eq!(stats.compacted, 1);
-        assert_eq!(stats.retained_flat, 1);
-        assert!(store.get_agent(&legacy.pane_key).unwrap().is_some());
-        assert!(store.get_agent(&older.pane_key).unwrap().is_none());
-    }
-
-    #[test]
-    fn legacy_boot_upgrade_archives_only_a_different_pane_process() {
-        for same_pid in [true, false] {
-            let (store, _dir) = test_store();
-            let legacy = context_state("tmux", "default", 1, Some("1700000000"), 1);
-            write_raw_agent(&store, &legacy);
-            let mut current = legacy.clone();
-            current.boot_id = Some("1700000000:42".to_string());
-            if !same_pid {
-                current.pane_pid += 1;
-            }
-            store.upsert_agent(&current).unwrap();
-            let manifest = store
-                .load_recovery_manifest_locked("tmux", "default")
-                .unwrap();
-            assert_eq!(manifest.entries.len(), usize::from(!same_pid));
-        }
-    }
-
-    #[test]
     fn flat_consumption_preserves_unplanned_compacted_sources() {
         let (store, _dir) = test_store();
-        let mut planned = context_state("tmux", "default", 1, Some("old"), 1);
+        let mut planned = context_state("rex", "default", 1, Some("old"), 1);
         planned.command = "claude".to_string();
         write_raw_agent(&store, &planned);
         let sources: Vec<_> = store
-            .resurrection_snapshot("tmux", "default")
+            .resurrection_snapshot("rex", "default")
             .unwrap()
             .into_iter()
             .map(|record| record.source)
             .collect();
-        let mut unplanned = context_state("tmux", "default", 2, Some("old"), 1);
+        let mut unplanned = context_state("rex", "default", 2, Some("old"), 1);
         unplanned.command = "codex".to_string();
         store.upsert_agent(&unplanned).unwrap();
         store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
         store.consume_agent_sources(&sources).unwrap();
-        let remaining = store.resurrection_snapshot("tmux", "default").unwrap();
+        let remaining = store.resurrection_snapshot("rex", "default").unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].represented_count, 2);
         assert_eq!(remaining[0].state.command, "codex");
@@ -2860,22 +2705,22 @@ mod tests {
         for pane in 1..=2 {
             write_raw_agent(
                 &store,
-                &context_state("tmux", "default", pane, Some("old"), 1),
+                &context_state("rex", "default", pane, Some("old"), 1),
             );
         }
         let sources: Vec<_> = store
-            .resurrection_snapshot("tmux", "default")
+            .resurrection_snapshot("rex", "default")
             .unwrap()
             .into_iter()
             .map(|record| record.source)
             .collect();
         store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
         store.consume_agent_sources(&sources).unwrap();
         assert!(
             store
-                .resurrection_snapshot("tmux", "default")
+                .resurrection_snapshot("rex", "default")
                 .unwrap()
                 .is_empty()
         );
@@ -2884,25 +2729,25 @@ mod tests {
     #[test]
     fn flat_consumption_preserves_history_outside_the_recent_batch() {
         let (store, _dir) = test_store();
-        write_raw_agent(&store, &context_state("tmux", "default", 1, Some("old"), 1));
+        write_raw_agent(&store, &context_state("rex", "default", 1, Some("old"), 1));
         store
-            .compact_context("tmux", "default", Some("middle"))
+            .compact_context("rex", "default", Some("middle"))
             .unwrap();
         write_raw_agent(
             &store,
-            &context_state("tmux", "default", 2, Some("middle"), 1),
+            &context_state("rex", "default", 2, Some("middle"), 1),
         );
         let sources: Vec<_> = store
-            .resurrection_snapshot("tmux", "default")
+            .resurrection_snapshot("rex", "default")
             .unwrap()
             .into_iter()
             .map(|record| record.source)
             .collect();
         store
-            .compact_context("tmux", "default", Some("current"))
+            .compact_context("rex", "default", Some("current"))
             .unwrap();
         store.consume_agent_sources(&sources).unwrap();
-        let remaining = store.resurrection_snapshot("tmux", "default").unwrap();
+        let remaining = store.resurrection_snapshot("rex", "default").unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].represented_count, 2);
     }

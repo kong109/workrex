@@ -18,7 +18,7 @@ mock.module('node:child_process', () => ({
   },
 }));
 
-const { default: workmuxStatusExtension } = await import('../resources/omp/extensions/workmux-status');
+const { default: workrexStatusExtension } = await import('../resources/omp/extensions/workrex-status');
 
 type Handler = (event: unknown, context: unknown) => Promise<void> | void;
 
@@ -36,7 +36,7 @@ function createHarness() {
     },
     on: (name: string, handler: Handler) => handlers.set(name, handler),
   };
-  workmuxStatusExtension(pi as never);
+  workrexStatusExtension(pi as never);
 
   return {
     calls,
@@ -50,7 +50,7 @@ function createHarness() {
   };
 }
 
-describe('omp workmux status extension', () => {
+describe('omp workrex status extension', () => {
   test('does not report waiting between an assistant tool call and execution', async () => {
     const harness = createHarness();
 

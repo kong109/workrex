@@ -9,7 +9,7 @@ use ratatui::style::Style;
 
 use crate::github::{CheckSummary, PrSummary};
 use crate::multiplexer::rex::{AppRefused, LayerHint};
-use crate::multiplexer::{AgentPane, AgentStatus, RemoteAgent};
+use crate::multiplexer::{AgentPane, AgentStatus, Multiplexer, RemoteAgent};
 
 use super::DashboardTab;
 
@@ -34,9 +34,67 @@ fn footer_message(err: &anyhow::Error) -> Option<String> {
 }
 
 /// Selected agent pane target for multiplexer operations.
+#[derive(Clone)]
 pub(crate) struct PaneTarget {
     pub pane_id: String,
     pub window_name: String,
+    pub remote: Option<RemoteAgent>,
+    pub agent_kind: Option<String>,
+}
+
+impl PaneTarget {
+    fn from_agent(agent: &AgentPane) -> Self {
+        Self {
+            pane_id: agent.pane_id.clone(),
+            window_name: agent.window_name.clone(),
+            remote: agent.remote.clone(),
+            agent_kind: agent.agent_kind.clone(),
+        }
+    }
+
+    pub(crate) fn send_keys(
+        &self,
+        mux: &dyn Multiplexer,
+        keys: &str,
+        default_agent: Option<&str>,
+    ) -> anyhow::Result<()> {
+        if let Some(remote) = &self.remote {
+            return crate::remote::agents::send_keys_to_agent(
+                &remote.at,
+                keys,
+                self.agent_kind.as_deref(),
+            );
+        }
+        if mux.requires_focus_for_input() {
+            mux.switch_to_pane(&self.pane_id, Some(&self.window_name))?;
+        }
+        mux.send_keys_to_agent(
+            &self.pane_id,
+            keys,
+            self.agent_kind.as_deref().or(default_agent),
+        )
+    }
+
+    fn send_key(&self, mux: &dyn Multiplexer, key: &str) -> anyhow::Result<()> {
+        match &self.remote {
+            Some(remote) => crate::remote::agents::send_key(&remote.at, key),
+            None => mux.send_key(&self.pane_id, key),
+        }
+    }
+
+    fn paste_text(&self, mux: &dyn Multiplexer, text: &str) -> anyhow::Result<()> {
+        match &self.remote {
+            Some(remote) => crate::remote::agents::paste_text(&remote.at, text),
+            None => mux.paste_text(&self.pane_id, text),
+        }
+    }
+
+    fn kill(&self, mux: &dyn Multiplexer) -> anyhow::Result<()> {
+        match &self.remote {
+            Some(remote) => crate::remote::agents::kill_pane(&remote.at),
+            None => mux.kill_pane(&self.pane_id),
+        }
+    }
 }
 
 fn should_close_after_jump(mux_exits_on_jump: bool, close_on_jump: bool) -> bool {
@@ -137,15 +195,9 @@ impl App {
         self.update_preview();
     }
 
-    /// Parse pane_id to a number for proper ordering.
-    /// Handles tmux format (%0, %10) and numeric formats (WezTerm, kitty).
-    /// Uses u64 since kitty pane IDs can exceed u32 range.
-    fn parse_pane_id(pane_id: &str) -> u64 {
-        pane_id
-            .strip_prefix('%')
-            .unwrap_or(pane_id)
-            .parse()
-            .unwrap_or(u64::MAX)
+    /// Rex block IDs contain time-ordered UUIDs, so their text is a stable order.
+    fn block_order_key(pane_id: &str) -> String {
+        pane_id.to_owned()
     }
 
     /// Sort agents based on the current sort mode
@@ -191,7 +243,7 @@ impl App {
         };
 
         // Helper closure to get numeric pane_id for stable ordering
-        let pane_num = |agent: &AgentPane| Self::parse_pane_id(&agent.pane_id);
+        let pane_num = |agent: &AgentPane| Self::block_order_key(&agent.pane_id);
 
         // Use sort_by_cached_key for better performance (calls key fn O(N) times vs O(N log N))
         // Include pane_id as final tiebreaker for stable ordering within groups
@@ -287,7 +339,7 @@ impl App {
         let current_pane = self.mux.active_pane_id();
 
         // Attempt the switch first - only update state on success
-        // Look up window_name for the target pane (needed by Zellij)
+        // Look up window_name for the target pane (needed to select its Rex window)
         let window_hint = self
             .agents
             .iter()
@@ -322,77 +374,56 @@ impl App {
     }
 
     pub fn jump_to_selected(&mut self) {
-        if let Some(remote) = self.selected_detached() {
-            if self.open_detached(&remote) && self.should_close_after_jump() {
-                self.should_jump = true;
-            }
+        let Some(target) = self.selected_agent_target() else {
             return;
-        }
-        if let Some(target) = self.selected_agent_target() {
+        };
+        if let Some(remote) = &target.remote {
+            self.jump_to_remote_and_track(remote);
+        } else {
             self.switch_to_pane_and_track(&target.pane_id);
         }
     }
 
-    /// The selected remote agent, when no local pane relays it.
-    pub(crate) fn selected_detached(&self) -> Option<RemoteAgent> {
-        let agent = self.agents.get(self.table_state.selected()?)?;
-        if !crate::remote::agents::is_detached(agent) {
-            return None;
+    fn jump_to_remote_and_track(&mut self, remote: &RemoteAgent) {
+        let current = self.mux.active_pane_id();
+        if self.open_remote(remote) {
+            if self.should_close_after_jump() {
+                self.should_jump = true;
+            }
+            if let Some(current) = current {
+                self.last_pane_id = Some(current.clone());
+                save_last_pane_id(&current);
+            }
         }
-        agent.remote.clone()
     }
 
-    /// Open a window relaying a detached remote agent, reporting failure.
-    fn open_detached(&mut self, remote: &RemoteAgent) -> bool {
+    /// Select the recorded native remote session and block, reporting failure.
+    fn open_remote(&mut self, remote: &RemoteAgent) -> bool {
         match crate::remote::agents::open_window(remote) {
             Ok(()) => {
                 self.refresh();
                 true
             }
             Err(err) => {
-                self.status_message = Some((
-                    format!("open {}: {err:#}", remote.handle),
-                    std::time::Instant::now(),
-                ));
+                self.hold_status(format!("open {}: {err:#}", remote.handle));
                 false
             }
         }
     }
 
-    /// Tell the user a pane action does not reach a detached remote agent.
-    pub(crate) fn report_detached(&mut self, remote: &RemoteAgent) {
-        self.status_message = Some((
-            format!(
-                "{} is not attached here; Enter opens it",
-                crate::remote::agents::label(&remote.handle, &remote.at.remote)
-            ),
-            std::time::Instant::now(),
-        ));
-    }
-
     pub(crate) fn selected_agent_target(&self) -> Option<PaneTarget> {
-        let selected = self.table_state.selected()?;
-        let agent = self.agents.get(selected)?;
-        Some(PaneTarget {
-            pane_id: agent.pane_id.clone(),
-            window_name: agent.window_name.clone(),
-        })
+        self.agents
+            .get(self.table_state.selected()?)
+            .map(PaneTarget::from_agent)
     }
 
     pub(crate) fn send_keys_to_selected_agent(&mut self, keys: &str) {
         let Some(target) = self.selected_agent_target() else {
             return;
         };
-
-        if self.mux.requires_focus_for_input() {
-            let _ = self
-                .mux
-                .switch_to_pane(&target.pane_id, Some(&target.window_name));
+        if let Err(err) = target.send_keys(self.mux.as_ref(), keys, self.config.agent.as_deref()) {
+            self.hold_status(format!("send command: {err:#}"));
         }
-
-        let _ = self
-            .mux
-            .send_keys_to_agent(&target.pane_id, keys, self.config.agent.as_deref());
     }
 
     pub fn jump_to_index(&mut self, index: usize) {
@@ -403,76 +434,86 @@ impl App {
         }
     }
 
-    /// Jump to the last visited agent (toggle behavior).
-    /// Reloads from settings to pick up changes from CLI command.
+    /// Jump using current row metadata, including remote execution identity.
     pub fn jump_to_last(&mut self) {
-        // Reload from settings to handle CLI/dashboard interop
         self.last_pane_id = load_last_pane_id();
-
-        let Some(ref last_id) = self.last_pane_id else {
+        let Some(last_id) = self.last_pane_id.clone() else {
             return;
         };
-        let last_id = last_id.clone();
-
-        // Update table selection if the pane exists in current list
-        // (handles filtered/hidden agents gracefully - still switches even if not visible)
         if let Some(idx) = self.agents.iter().position(|a| a.pane_id == last_id) {
             self.table_state.select(Some(idx));
+            self.selected_pane_id = Some(last_id.clone());
         }
-
-        // Switch to the pane (works even if agent is filtered out of dashboard)
-        self.switch_to_pane_and_track(&last_id);
+        let remote = self
+            .all_agents
+            .iter()
+            .chain(&self.agents)
+            .find(|agent| agent.pane_id == last_id)
+            .and_then(|agent| agent.remote.clone());
+        if let Some(remote) = remote {
+            self.jump_to_remote_and_track(&remote);
+        } else if last_id.starts_with("%remote-") {
+            self.hold_status("The last remote agent is no longer available".to_string());
+        } else {
+            self.switch_to_pane_and_track(&last_id);
+        }
     }
 
     pub fn peek_selected(&mut self) {
-        if let Some(remote) = self.selected_detached() {
-            self.open_detached(&remote);
+        let Some(target) = self.selected_agent_target() else {
             return;
-        }
-        // Switch to pane but keep popup open
-        if let Some(selected) = self.table_state.selected()
-            && let Some(agent) = self.agents.get(selected)
+        };
+        if let Some(remote) = &target.remote {
+            self.open_remote(remote);
+        } else if let Err(err) = self
+            .mux
+            .peek_pane(&target.pane_id, Some(&target.window_name))
         {
-            // Don't set should_jump - popup stays open
-            if let Err(err) = self.mux.peek_pane(&agent.pane_id, Some(&agent.window_name)) {
-                self.show_switch_error(&err);
-            }
+            self.show_switch_error(&err);
         }
     }
 
-    /// Kill the selected agent's pane and remove it from the list.
-    /// Shows a confirmation popup for working agents.
+    /// Confirm a working agent's exact target before killing it.
     pub fn kill_selected(&mut self) {
-        if let Some(selected) = self.table_state.selected()
-            && let Some(agent) = self.agents.get(selected)
+        let Some(target) = self.selected_agent_target() else {
+            return;
+        };
+        if self
+            .agents
+            .get(self.table_state.selected().unwrap())
+            .is_some_and(|agent| agent.status == Some(AgentStatus::Working))
         {
-            if agent.status == Some(AgentStatus::Working) {
-                // Show confirmation popup
-                self.pending_kill_pane_id = Some(agent.pane_id.clone());
-            } else {
-                self.do_kill(&agent.pane_id.clone());
-            }
+            self.pending_kill_target = Some(target);
+        } else {
+            self.do_kill(&target);
         }
     }
 
     /// Execute the pending kill confirmation.
     pub fn confirm_kill(&mut self) {
-        if let Some(pane_id) = self.pending_kill_pane_id.take() {
-            self.do_kill(&pane_id);
+        if let Some(target) = self.pending_kill_target.clone()
+            && self.do_kill(&target)
+        {
+            self.pending_kill_target = None;
         }
     }
 
     /// Kill a pane and remove it from the agent list.
-    fn do_kill(&mut self, pane_id: &str) {
-        let _ = self.mux.kill_pane(pane_id);
-
+    fn do_kill(&mut self, target: &PaneTarget) -> bool {
+        if let Err(err) = target.kill(self.mux.as_ref()) {
+            self.hold_status(format!("kill agent: {err:#}"));
+            return false;
+        }
+        // Only remove the execution that was successfully killed. A refresh may
+        // already have replaced the row while its confirmation was open.
+        let matches = |agent: &AgentPane| {
+            agent.pane_id == target.pane_id
+                && agent.remote.as_ref().map(|remote| &remote.at)
+                    == target.remote.as_ref().map(|remote| &remote.at)
+        };
         let selected = self.table_state.selected().unwrap_or(0);
-
-        // Remove from local lists immediately for responsive UI
-        self.agents.retain(|a| a.pane_id != pane_id);
-        self.all_agents.retain(|a| a.pane_id != pane_id);
-
-        // Adjust selection
+        self.agents.retain(|a| !matches(a));
+        self.all_agents.retain(|a| !matches(a));
         if self.agents.is_empty() {
             self.table_state.select(None);
             self.selected_pane_id = None;
@@ -481,27 +522,26 @@ impl App {
             self.table_state.select(Some(new_idx));
             self.selected_pane_id = self.agents.get(new_idx).map(|a| a.pane_id.clone());
         }
-
-        // Force preview refresh for new selection
         self.preview_pane_id = None;
         self.update_preview();
+        true
     }
 
     /// Send a key to the selected agent's pane
-    pub fn send_key_to_selected(&self, key: &str) {
-        if let Some(selected) = self.table_state.selected()
-            && let Some(agent) = self.agents.get(selected)
+    pub fn send_key_to_selected(&mut self, key: &str) {
+        if let Some(target) = self.selected_agent_target()
+            && let Err(err) = target.send_key(self.mux.as_ref(), key)
         {
-            let _ = self.mux.send_key(&agent.pane_id, key);
+            self.hold_status(format!("send key: {err:#}"));
         }
     }
 
     /// Paste text to the selected agent's pane.
-    pub fn paste_text_to_selected(&self, text: &str) {
-        if let Some(selected) = self.table_state.selected()
-            && let Some(agent) = self.agents.get(selected)
+    pub fn paste_text_to_selected(&mut self, text: &str) {
+        if let Some(target) = self.selected_agent_target()
+            && let Err(err) = target.paste_text(self.mux.as_ref(), text)
         {
-            let _ = self.mux.paste_text(&agent.pane_id, text);
+            self.hold_status(format!("paste text: {err:#}"));
         }
     }
 
@@ -552,7 +592,7 @@ impl App {
         };
 
         let base_style = Style::default().fg(base_color);
-        let mut spans = ansi::parse_tmux_styles(icon, base_style);
+        let mut spans = ansi::parse_terminal_styles(icon, base_style);
         let disconnected = agent
             .remote
             .as_ref()
@@ -775,7 +815,7 @@ mod tests {
 
     #[test]
     fn a_switch_error_not_written_for_the_user_leaves_the_footer_empty() {
-        let err = anyhow::anyhow!(r#"tmux command failed: ["switch-client", "-t", "%2"]"#);
+        let err = anyhow::anyhow!(r#"Rex session selection failed"#);
         assert_eq!(footer_message(&err), None);
     }
 

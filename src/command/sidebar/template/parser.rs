@@ -11,7 +11,7 @@ pub enum Token {
     Field(TokenId),
     /// Layout fill marker.
     Fill,
-    /// Tmux-style directive (`#[fg=red,bold]`). Carries the raw directive
+    /// Rex-style directive (`#[fg=red,bold]`). Carries the raw directive
     /// content (without the surrounding `#[` and `]`).
     Style(String),
 }
@@ -130,7 +130,7 @@ impl std::error::Error for ParseError {}
 /// - `}}` → literal `}`
 /// - `{name}` → field token
 /// - `{fill}` → fill marker
-/// - `#[fg=red,bold]` → tmux-style directive token (zero-width). Unclosed
+/// - `#[fg=red,bold]` → rex-style directive token (zero-width). Unclosed
 ///   `#[...` falls back to literal text.
 pub fn parse_line(input: &str) -> Result<Vec<Token>, ParseError> {
     let mut tokens = Vec::new();
@@ -147,7 +147,7 @@ pub fn parse_line(input: &str) -> Result<Vec<Token>, ParseError> {
             chars.next();
 
             // Look for closing `]`. The directive body cannot contain `]`,
-            // matching `tmux_style::parse_tmux_styles`.
+            // matching `rex_style::parse_terminal_styles`.
             let mut directive = String::new();
             let mut found_close = false;
             for (_, inner_c) in chars.by_ref() {
@@ -166,7 +166,7 @@ pub fn parse_line(input: &str) -> Result<Vec<Token>, ParseError> {
                 tokens.push(Token::Style(directive));
             } else {
                 // Unclosed `#[`: render the prefix and the consumed body
-                // literally (matches `tmux_style::parse_tmux_styles`).
+                // literally (matches `rex_style::parse_terminal_styles`).
                 literal.push_str("#[");
                 literal.push_str(&directive);
                 saw_unclosed_style = true;
