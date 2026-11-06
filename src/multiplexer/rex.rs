@@ -1070,9 +1070,16 @@ impl RexBackend {
         if let Some(input) = stdin
             && let Some(mut pipe) = child.stdin.take()
         {
-            pipe.write_all(input.as_bytes())
-                .context("Failed to write rex input")
-                .map_err(CallError::Failed)?;
+            // A rex that answers before reading its input, as it does on an
+            // early error, closes the pipe. Its exit status and output still
+            // carry the answer.
+            if let Err(error) = pipe.write_all(input.as_bytes())
+                && error.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(CallError::Failed(
+                    anyhow!(error).context("Failed to write rex input"),
+                ));
+            }
         }
         let Some(timeout) = timeout else {
             return child
