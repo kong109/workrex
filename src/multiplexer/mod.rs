@@ -35,22 +35,33 @@ fn export_path_prefix(dir: &Path) -> String {
     )
 }
 
+/// Prefix `command` with statements that export the status target in the
+/// pane's `shell`. Exporting, rather than an `env` prefix, keeps the
+/// command's first word subject to the shell's aliases.
 fn command_with_status_target(
     command: &str,
+    shell: &str,
     backend: &str,
     instance: &str,
     pane_id: &str,
 ) -> String {
-    format!(
-        "export {}={} {}={} {}={}; {}",
-        STATUS_TARGET_BACKEND_ENV,
-        agent::shell_quote(backend),
-        STATUS_TARGET_INSTANCE_ENV,
-        agent::shell_quote(instance),
-        STATUS_TARGET_PANE_ENV,
-        agent::shell_quote(pane_id),
-        command
-    )
+    let vars = [
+        (STATUS_TARGET_BACKEND_ENV, backend),
+        (STATUS_TARGET_INSTANCE_ENV, instance),
+        (STATUS_TARGET_PANE_ENV, pane_id),
+    ];
+    if util::is_nushell(shell) {
+        let assignments: String = vars
+            .iter()
+            .map(|(name, value)| format!("$env.{name} = {}; ", util::nu_quote(value)))
+            .collect();
+        return format!("{assignments}{command}");
+    }
+    let assignments: Vec<String> = vars
+        .iter()
+        .map(|(name, value)| format!("{name}={}", agent::shell_quote(value)))
+        .collect();
+    format!("export {}; {command}", assignments.join(" "))
 }
 
 fn adoption_targets(
@@ -885,6 +896,7 @@ pub trait Multiplexer: Send + Sync {
                 let final_command = if is_agent_pane {
                     command_with_status_target(
                         &final_command,
+                        &shell,
                         self.name(),
                         &self.instance_id(),
                         &spawned_id,
@@ -1209,6 +1221,7 @@ mod tests {
         );
         let launch = command_with_status_target(
             "workrex-test-agent prompt",
+            "/bin/sh",
             "rex",
             "unix:///tmp/a b's.sock",
             "block:test",
@@ -1237,6 +1250,46 @@ mod tests {
                 "{shell}"
             );
         }
+    }
+
+    #[test]
+    fn status_target_preserves_nushell_aliases_and_exports_identity() {
+        let Ok(nu) = which::which("nu") else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        crate::test_support::write_script(
+            &dir.path().join("workrex-test-agent"),
+            "#!/bin/sh\nprintf '%s\\n' \"$WORKREX_STATUS_INSTANCE\" \"$WORKREX_STATUS_PANE_ID\" \"$@\"\n",
+        );
+        let path = format!(
+            "{}:{}",
+            dir.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let instance = r#"unix:///tmp/a b's "q" \ $x (y).sock"#;
+        let launch = command_with_status_target(
+            "workrex-test-agent prompt",
+            &nu.to_string_lossy(),
+            "rex",
+            instance,
+            "block:test",
+        );
+        let script = format!("alias workrex-test-agent = workrex-test-agent aliased\n{launch}\n");
+        let output = std::process::Command::new(nu)
+            .args(["--no-config-file", "-c", &script])
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{instance}\nblock:test\naliased\nprompt\n")
+        );
     }
 
     fn pane_with(pid: Option<u32>, command: Option<&str>) -> Option<LivePaneInfo> {

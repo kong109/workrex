@@ -59,6 +59,16 @@ pub fn is_posix_shell(shell: &str) -> bool {
     matches!(shell_name, "bash" | "zsh" | "sh" | "dash" | "ksh" | "ash")
 }
 
+pub fn is_nushell(shell: &str) -> bool {
+    Path::new(shell).file_name().and_then(|s| s.to_str()) == Some("nu")
+}
+
+/// Quote `s` as a Nushell double-quoted string, which takes it literally
+/// once backslashes and double quotes are escaped.
+pub fn nu_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// Return the last `lines` lines from terminal output.
 pub fn tail_lines(output: &str, lines: u16) -> String {
     let all_lines: Vec<&str> = output.lines().collect();
