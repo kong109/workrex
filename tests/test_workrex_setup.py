@@ -267,7 +267,18 @@ class TestSetupInstall:
         run_setup_with_answers(
             mux_server,
             workrex_exe_path,
-            expected_output=("are also installed for Claude Code",),
+            expected_output=(
+                "Claude Code (found Claude config directory): update available",
+                "workrex register-agent",
+            ),
+        )
+
+        settings = json.loads((claude_dir / "settings.json").read_text())
+        session_start = settings["hooks"]["SessionStart"]
+        assert any(
+            hook["command"] == "workrex register-agent"
+            for entry in session_start
+            for hook in entry["hooks"]
         )
 
     def test_outdated_opencode_plugin_explains_update_prompt(
@@ -287,15 +298,18 @@ class TestSetupInstall:
         ).read_text()
         (plugin_dir / "workrex-status.ts").write_text(historical_plugin)
 
-        # This historical version is upstream's; setup warns and leaves it in place.
         run_setup_with_answers(
             mux_server,
             workrex_exe_path,
-            expected_output=("are also installed for OpenCode",),
+            expected_output=(
+                "OpenCode (found OpenCode config directory): update available",
+                "workrex register-agent",
+            ),
         )
 
-        # The fixture is upstream workrex's plugin, which workrex leaves in place.
-        assert (plugin_dir / "workrex-status.ts").read_text() == historical_plugin
+        updated_plugin = (plugin_dir / "workrex-status.ts").read_text()
+        assert updated_plugin != historical_plugin
+        assert "workrex register-agent" in updated_plugin
 
     def test_claude_install_accept(
         self,

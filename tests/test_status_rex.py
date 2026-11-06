@@ -97,6 +97,11 @@ def foreground_name(env: RexEnvironment, block: str) -> str:
     return (process.get("foreground") or {}).get("name", "")
 
 
+def pane_shell(env: RexEnvironment) -> str:
+    """The shell program a new worktree block runs: workrex starts `$SHELL -l`."""
+    return Path(env.env["SHELL"]).name
+
+
 def report(env: RexEnvironment, block: str, body: str) -> None:
     env.send_keys(block, body)
     assert poll_until(
@@ -217,7 +222,9 @@ def test_agent_run_from_the_shell_is_dropped_after_it_exits(
     assert agent_status(rex, workrex_exe_path, repo_path, block) == "done"
 
     rex.send_keys(block, "exit")
-    assert poll_until(lambda: foreground_name(rex, block) == "zsh", timeout=10)
+    assert poll_until(
+        lambda: foreground_name(rex, block) == pane_shell(rex), timeout=10
+    )
     assert agent_status(rex, workrex_exe_path, repo_path, block) is None
 
 
@@ -675,7 +682,7 @@ def test_an_agent_stored_by_an_older_build_stays_listed_until_it_exits(
 
     process = env.block_call(block, "process") or {}
     subprocess.run(["kill", str(process["foreground"]["pid"])], check=True)
-    assert poll_until(lambda: foreground_name(env, block) == "zsh", timeout=5)
+    assert poll_until(lambda: foreground_name(env, block) == pane_shell(env), timeout=5)
     assert agent_status(env, workrex_exe_path, repo_path, block) is None
 
 

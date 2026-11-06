@@ -342,8 +342,11 @@ class TestEdgeCases:
         # Create an old branch without backend/
         run_cmd(["git", "checkout", "--orphan", "old-base"], cwd=repo_path, env=env)
         run_cmd(["git", "rm", "-rf", "."], cwd=repo_path, env=env)
+        # Stage only readme.md: `git rm` removed the .gitignore that keeps the
+        # test HOME out of commits, and checking main out again would delete
+        # a committed HOME along with its global config.
         (repo_path / "readme.md").write_text("old structure")
-        run_cmd(["git", "add", "."], cwd=repo_path, env=env)
+        run_cmd(["git", "add", "readme.md"], cwd=repo_path, env=env)
         run_cmd(["git", "commit", "-m", "old base"], cwd=repo_path, env=env)
 
         # Switch back to main
