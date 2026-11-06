@@ -2709,6 +2709,29 @@ mod tests {
     }
 
     #[test]
+    fn a_rex_that_answers_without_reading_its_input_is_heard() {
+        let dir = tempfile::tempdir().unwrap();
+        let rex = RexBackend::scripted(
+            dir.path(),
+            "case \"$*\" in\n\
+             \x20 *server.version*) echo '{\"rex_version\":\"t\",\"api_revision\":8}';;\n\
+             \x20 *session.focus_block*) echo '{}';;\n\
+             \x20 *) echo 'Error: early failure' >&2; exit 1;;\nesac\n"
+                .to_string(),
+        );
+        // More than a pipe holds, so the write outlives the exited rex.
+        let input = json!({ "pad": "x".repeat(1 << 20) });
+
+        rex.api::<Value>("session.focus_block", input.clone())
+            .unwrap();
+        let error = rex.api::<Value>("session.close_window", input).unwrap_err();
+        assert!(
+            error.to_string().contains("Error: early failure"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn an_unsupported_server_fails_every_call_after_one_version_query() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
