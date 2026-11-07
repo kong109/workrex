@@ -776,26 +776,22 @@ fn canonical_endpoint(server: Option<&str>) -> Option<String> {
     // `RexBackend::new` treats as unset, is trimmed away.
     match server.filter(|server| !server.trim().is_empty()) {
         Some(server) => Some(canonical_address(server)),
-        None => default_socket(
-            std::env::var_os("REX_RUNTIME_DIR").as_deref(),
-            std::env::current_dir().ok().as_deref(),
-            || {
-                let xdg_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
-                if cfg!(target_os = "macos") {
-                    macos_default_socket(xdg_runtime_dir.as_deref(), home::home_dir().as_deref())
-                } else if cfg!(target_os = "linux") {
-                    // SAFETY: getuid has no preconditions and cannot fail.
-                    let uid = unsafe { libc::getuid() };
-                    linux_default_socket(
-                        xdg_runtime_dir.as_deref(),
-                        &Path::new("/run/user").join(uid.to_string()),
-                        |dir| linux_runtime_dir(dir, uid),
-                    )
-                } else {
-                    None
-                }
-            },
-        )
+        None => default_socket(std::env::var_os("REX_RUNTIME_DIR").as_deref(), || {
+            let xdg_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+            if cfg!(target_os = "macos") {
+                macos_default_socket(xdg_runtime_dir.as_deref(), home::home_dir().as_deref())
+            } else if cfg!(target_os = "linux") {
+                // SAFETY: getuid has no preconditions and cannot fail.
+                let uid = unsafe { libc::getuid() };
+                linux_default_socket(
+                    xdg_runtime_dir.as_deref(),
+                    &Path::new("/run/user").join(uid.to_string()),
+                    |dir| linux_runtime_dir(dir, uid),
+                )
+            } else {
+                None
+            }
+        })
         .map(|socket| unix_endpoint(&socket)),
     }
 }
@@ -824,22 +820,17 @@ fn canonical_address(address: &str) -> String {
 }
 
 /// Where rex looks for the local server when REX_SERVER is unset: in a
-/// nonempty REX_RUNTIME_DIR, taken from the working directory when relative,
-/// else where the platform puts it.
+/// nonempty REX_RUNTIME_DIR, else where the platform puts it. Rex takes a
+/// relative REX_RUNTIME_DIR from its logical `$PWD`, which a symlink can
+/// part from the physical working directory, so that one names no socket.
 fn default_socket(
     rex_runtime_dir: Option<&OsStr>,
-    cwd: Option<&Path>,
     platform_default: impl FnOnce() -> Option<PathBuf>,
 ) -> Option<PathBuf> {
     let Some(dir) = rex_runtime_dir.filter(|dir| !dir.is_empty()).map(Path::new) else {
         return platform_default();
     };
-    let dir = if dir.is_absolute() {
-        dir.to_path_buf()
-    } else {
-        cwd?.join(dir)
-    };
-    Some(dir.join("server.sock"))
+    dir.is_absolute().then(|| dir.join("server.sock"))
 }
 
 /// Under any absolute XDG_RUNTIME_DIR, else under Application Support.
@@ -2877,9 +2868,7 @@ mod tests {
             assert!(!same_server(Some(&spelling), &endpoint(&a)), "{spelling}");
         }
         assert_eq!(
-            unix_endpoint(
-                &default_socket(Some(b.join("L/..").as_os_str()), None, || None).unwrap()
-            ),
+            unix_endpoint(&default_socket(Some(b.join("L/..").as_os_str()), || None).unwrap()),
             endpoint(&b)
         );
     }
@@ -2915,21 +2904,15 @@ mod tests {
 
     #[test]
     fn rex_runtime_dir_holds_the_default_socket_on_every_platform() {
-        let cwd = Path::new("/work");
         let platform = || Some(PathBuf::from("/platform/rex/server.sock"));
-        let socket = |dir: Option<&str>, cwd| default_socket(dir.map(OsStr::new), cwd, platform);
-        assert_eq!(
-            socket(Some("/rt"), Some(cwd)),
-            Some(PathBuf::from("/rt/server.sock"))
-        );
-        // A relative one is taken from the working directory.
-        assert_eq!(
-            socket(Some("rt"), Some(cwd)),
-            Some(PathBuf::from("/work/rt/server.sock"))
-        );
-        assert_eq!(socket(Some("rt"), None), None);
-        assert_eq!(socket(Some(""), Some(cwd)), platform());
-        assert_eq!(socket(None, Some(cwd)), platform());
+        let socket = |dir: Option<&str>| default_socket(dir.map(OsStr::new), platform);
+        assert_eq!(socket(Some("/rt")), Some(PathBuf::from("/rt/server.sock")));
+        // Rex takes a relative one from its logical $PWD, which workrex
+        // can't know.
+        assert_eq!(socket(Some("rt")), None);
+        assert_eq!(socket(Some("..")), None);
+        assert_eq!(socket(Some("")), platform());
+        assert_eq!(socket(None), platform());
     }
 
     #[test]
