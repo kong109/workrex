@@ -92,22 +92,32 @@ pub fn run(cmd: SetWindowStatusCommand) -> Result<()> {
     }) {
         return Ok(());
     }
-    let only_clears_waiting = hook
-        .as_ref()
-        .is_some_and(|hook| hook.only_clears_waiting(muse_session.as_deref()));
     run_for_status_target(hook.as_ref(), |mux, pane_id| {
-        if only_clears_waiting
-            && crate::state::agent_status(mux, pane_id) != Some(AgentStatus::Waiting)
+        let stored = crate::state::stored_agent(mux, pane_id);
+        let side_session = hook.as_ref().is_some_and(|hook| {
+            hook.is_muse_side_session(
+                muse_session.as_deref(),
+                stored
+                    .as_ref()
+                    .and_then(|agent| agent.agent_session_id.as_deref()),
+            )
+        });
+        if hook
+            .as_ref()
+            .is_some_and(|hook| hook.only_clears_waiting(&cmd, in_muse, side_session))
+            && stored.and_then(|agent| agent.status) != Some(AgentStatus::Waiting)
         {
             return Ok(());
         }
+        // A side session's id and prompt are not the pane agent's.
+        let own = hook.as_ref().filter(|_| !side_session);
         apply_status_update(
             &cmd,
             &config,
             mux,
             pane_id,
-            hook.as_ref().and_then(HookInput::session_id),
-            hook.as_ref().and_then(HookInput::prompt),
+            own.and_then(HookInput::session_id),
+            own.and_then(HookInput::prompt),
         )
     })
 }
@@ -411,19 +421,34 @@ impl HookInput {
         user_shell || post_stop
     }
 
-    /// Muse runs `ToolUseStart` hooks only asynchronously, so one can land
-    /// after the turn's `Stop` or `Interrupt`. Muse also reports tool calls
-    /// from side sessions of its own, such as the reminder check it runs
-    /// around each turn, under their own `session_id`, and only their
-    /// `ToolUseStart` is marked `post_stop`. Neither kind is the pane's agent
-    /// at work, so their only job is to clear `waiting` once the user answers
-    /// an approval.
-    fn only_clears_waiting(&self, muse_session: Option<&str>) -> bool {
-        let Some(main) = muse_session else {
+    /// Muse reports tool calls from side sessions of its own, such as the
+    /// reminder check it runs around each turn, under their own `session_id`,
+    /// and only their `ToolUseStart` is marked `post_stop`. The pane's agent
+    /// is the session registered at the last `SessionStart`, which follows
+    /// `/clear` and `/new`, or `MUSE_SESSION_ID`, which names the session the
+    /// process started with. Side sessions send no `SessionStart`.
+    fn is_muse_side_session(&self, muse_session: Option<&str>, registered: Option<&str>) -> bool {
+        let Some(launched) = muse_session else {
             return false;
         };
-        self.hook_event_name.as_deref() == Some("ToolUseStart")
-            || self.session_id().is_some_and(|session| session != main)
+        self.session_id()
+            .is_some_and(|session| session != launched && Some(session) != registered)
+    }
+
+    /// Muse runs `ToolUseStart` hooks only asynchronously, so one can land
+    /// after the turn's `Stop` or `Interrupt`. Neither that nor a side
+    /// session's event is the pane's agent at work, so their only job is to
+    /// clear `waiting` once the user answers an approval. A `Notification`
+    /// from either still means an approval is pending, so `waiting` applies.
+    fn only_clears_waiting(
+        &self,
+        cmd: &SetWindowStatusCommand,
+        in_muse: bool,
+        side_session: bool,
+    ) -> bool {
+        in_muse
+            && !matches!(cmd, SetWindowStatusCommand::Waiting)
+            && (self.hook_event_name.as_deref() == Some("ToolUseStart") || side_session)
     }
 
     /// Grok sends `idle_prompt` about a minute after any turn ends and
@@ -930,11 +955,14 @@ mod tests {
     fn only_muse_tool_use_start_is_limited_to_clearing_waiting() {
         let start =
             parse_hook_input(r#"{"hook_event_name":"ToolUseStart","session_id":"s"}"#).unwrap();
-        assert!(start.only_clears_waiting(Some("s")));
-        assert!(!start.only_clears_waiting(None));
+        let working = SetWindowStatusCommand::Working;
+        assert!(start.only_clears_waiting(&working, true, false));
+        assert!(!start.only_clears_waiting(&working, false, false));
         let done =
             parse_hook_input(r#"{"hook_event_name":"PostToolUse","session_id":"s"}"#).unwrap();
-        assert!(!done.only_clears_waiting(Some("s")));
+        assert!(!done.only_clears_waiting(&working, true, false));
+        assert!(done.only_clears_waiting(&working, true, true));
+        assert!(!done.only_clears_waiting(&SetWindowStatusCommand::Waiting, true, true));
     }
 
     #[test]
@@ -945,15 +973,23 @@ mod tests {
             r#"{"hook_event_name":"PostToolUse","tool_name":"submit_reminder_decision","tool_use_id":"call_2","session_id":"side"}"#,
         )
         .unwrap();
-        assert!(side.only_clears_waiting(Some("main")));
-        assert!(!side.only_clears_waiting(None));
+        assert!(side.is_muse_side_session(Some("main"), Some("main")));
+        assert!(side.is_muse_side_session(Some("main"), None));
+        assert!(!side.is_muse_side_session(None, Some("main")));
         let agent = parse_hook_input(
             r#"{"hook_event_name":"PostToolUse","tool_name":"edit_file","session_id":"main"}"#,
         )
         .unwrap();
-        assert!(!agent.only_clears_waiting(Some("main")));
+        assert!(!agent.is_muse_side_session(Some("main"), None));
+        // After /clear the process keeps MUSE_SESSION_ID, and the new session
+        // registers at its SessionStart.
+        let cleared = parse_hook_input(
+            r#"{"hook_event_name":"PostToolUse","tool_name":"edit_file","session_id":"next"}"#,
+        )
+        .unwrap();
+        assert!(!cleared.is_muse_side_session(Some("main"), Some("next")));
         let no_session = parse_hook_input(r#"{"hook_event_name":"PostToolUse"}"#).unwrap();
-        assert!(!no_session.only_clears_waiting(Some("main")));
+        assert!(!no_session.is_muse_side_session(Some("main"), None));
     }
 
     #[test]
