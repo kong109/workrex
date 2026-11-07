@@ -1292,6 +1292,79 @@ mod tests {
         );
     }
 
+    /// An agent that prints the status identity it inherited and its args.
+    fn identity_echo_agent(dir: &Path) -> String {
+        crate::test_support::write_script(
+            &dir.join("workrex-test-agent"),
+            "#!/bin/sh\nprintf '%s\\n' \"$WORKREX_STATUS_INSTANCE\" \"$WORKREX_STATUS_PANE_ID\" \"$@\"\n",
+        );
+        format!(
+            "{}:{}",
+            dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
+    }
+
+    #[test]
+    fn status_target_reaches_the_agent_in_csh_family_shells() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = identity_echo_agent(dir.path());
+        for shell in ["/bin/tcsh", "/bin/csh"] {
+            if !Path::new(shell).exists() {
+                continue;
+            }
+            let launch = command_with_status_target(
+                "workrex-test-agent prompt",
+                shell,
+                "rex",
+                "unix:///tmp/a b's.sock",
+                "block:test",
+            );
+            let script =
+                format!("alias workrex-test-agent 'workrex-test-agent aliased'\n{launch}\n");
+            let output = std::process::Command::new(shell)
+                .args(["-f", "-c", &script])
+                .env("PATH", &path)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "unix:///tmp/a b's.sock\nblock:test\naliased\nprompt\n",
+                "{shell}: {launch}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn status_target_for_an_unknown_shell_is_an_env_prefix_any_shell_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = identity_echo_agent(dir.path());
+        let launch = command_with_status_target(
+            "workrex-test-agent prompt",
+            "/usr/local/bin/pwsh",
+            "rex",
+            "unix:///tmp/a b.sock",
+            "block:test",
+        );
+        for shell in ["/bin/sh", "/bin/tcsh"] {
+            if !Path::new(shell).exists() {
+                continue;
+            }
+            let output = std::process::Command::new(shell)
+                .args(["-c", &launch])
+                .env("PATH", &path)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "unix:///tmp/a b.sock\nblock:test\nprompt\n",
+                "{shell}: {launch}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     fn pane_with(pid: Option<u32>, command: Option<&str>) -> Option<LivePaneInfo> {
         Some(util::build_live_pane_info(
             pid,
