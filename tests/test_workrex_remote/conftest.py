@@ -328,10 +328,19 @@ def commit_project(repo: Path, project: Dict[str, Any]) -> None:
 
 
 def local_records(env: RexEnvironment) -> List[dict]:
+    """The local workspace records. Workrex writes them atomically, so the
+    only partial view is a record removed between the listing and its read,
+    and that record is gone, as it is to Workrex's own reader."""
     directory = env.home_path / ".local/state/workrex/remote/lo/workspaces"
     if not directory.is_dir():
         return []
-    return [json.loads(p.read_text()) for p in sorted(directory.glob("*.json"))]
+    records = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            records.append(json.loads(path.read_text()))
+        except FileNotFoundError:
+            continue
+    return records
 
 
 def observer_owner_running(env: RexEnvironment) -> bool:
