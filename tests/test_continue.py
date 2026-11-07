@@ -14,13 +14,25 @@ from .conftest import (
 )
 
 
+# Per agent: arguments before the configured ones, the continue arguments,
+# and the arguments before the prompt.
+AGENT_LAUNCHES = [
+    ("claude", [], ["--continue"], ["--"]),
+    # Codex runs without its shared server, so hooks see this pane's environment.
+    ("codex", ["--no-daemon"], ["resume", "--last"], ["--"]),
+    ("pi", [], ["--continue"], []),
+    ("agy", [], ["--continue"], ["-i"]),
+    ("grok", [], ["--continue"], []),
+    # Kiro's interactive mode is its `chat` subcommand.
+    ("kiro-cli", ["chat"], ["--resume"], []),
+    ("vibe", [], ["--continue"], []),
+]
+
+
 @pytest.mark.parametrize(
-    ("agent", "resume_args"),
-    [
-        ("claude", ["--continue"]),
-        ("codex", ["resume", "--last"]),
-        ("pi", ["--continue"]),
-    ],
+    ("agent", "launch_args", "resume_args", "prompt_args"),
+    AGENT_LAUNCHES,
+    ids=[launch[0] for launch in AGENT_LAUNCHES],
 )
 @pytest.mark.parametrize("prompt_flag", [None, "-p", "-P"])
 def test_continue_at_recreated_path(
@@ -30,7 +42,9 @@ def test_continue_at_recreated_path(
     fake_agent_installer,
     tmp_path,
     agent,
+    launch_args,
     resume_args,
+    prompt_args,
     prompt_flag,
 ):
     """Continuation and optional prompts reach the agent at the original path."""
@@ -68,11 +82,7 @@ def test_continue_at_recreated_path(
     assert poll_until(lambda: output.exists() and output.stat().st_size > 0)
     launch = json.loads(output.read_text())
     assert launch["cwd"] == str(original_path.resolve())
-    # Codex runs without its shared server, so hooks see this pane's environment.
-    launch_args = ["--no-daemon"] if agent == "codex" else []
     expected = [*launch_args, "--model", "test", *resume_args]
     if prompt_flag:
-        if agent != "pi":
-            expected.append("--")
-        expected.append(prompt)
+        expected += [*prompt_args, prompt]
     assert launch["args"] == expected

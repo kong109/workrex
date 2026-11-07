@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ..conftest import (
     get_scripts_dir,
+    poll_until,
     make_env_script,
     poll_until_file_has_content,
     wait_for_pane_output,
@@ -28,7 +29,9 @@ def install_opencode_version(env: RexEnvironment, version: str) -> None:
     )
 
 
-def run_setup_interactive(env: RexEnvironment, workrex_exe_path: Path) -> Path:
+def run_setup_interactive(
+    env: RexEnvironment, workrex_exe_path: Path, *args: str
+) -> Path:
     scripts_dir = get_scripts_dir(env)
     exit_code_file = scripts_dir / "setup_exit_code.txt"
     if exit_code_file.exists():
@@ -37,7 +40,7 @@ def run_setup_interactive(env: RexEnvironment, workrex_exe_path: Path) -> Path:
     script = make_env_script(
         env,
         (
-            f"{shlex.quote(str(workrex_exe_path))} setup; "
+            f"{shlex.quote(str(workrex_exe_path))} setup {shlex.join(args)}; "
             f"echo $? > {shlex.quote(str(exit_code_file))}"
         ),
         {
@@ -74,3 +77,36 @@ def run_setup_with_answers(
     assert poll_until_file_has_content(exit_code_file, timeout=timeout)
     assert exit_code_file.read_text().strip() == "0"
     return exit_code_file
+
+
+def update_status_hooks(env, workrex_exe_path, *expected: str, timeout=10.0) -> str:
+    """Run `workrex setup --hooks` on outdated hooks, check it reports
+    `expected`, accept the update, and return what setup showed."""
+    prompt = "Install or update status tracking hooks?"
+    before = (env.capture_pane("test") or "").count(prompt)
+    exit_code_file = run_setup_interactive(env, workrex_exe_path, "--hooks")
+    assert poll_until(
+        lambda: (env.capture_pane("test") or "").count(prompt) > before,
+        timeout=timeout,
+    ), env.capture_pane("test")
+    pane = env.capture_pane("test") or ""
+    shown = pane[pane.rindex("Status Tracking") :]
+    for text in expected:
+        assert text in shown, shown
+    env.send_keys("test:", "y")
+    assert poll_until_file_has_content(exit_code_file, timeout=timeout)
+    assert exit_code_file.read_text().strip() == "0", env.capture_pane("test")
+    return shown
+
+
+def install_status_hooks(
+    env: RexEnvironment, workrex_exe_path: Path, *, timeout: float = 10.0
+) -> None:
+    """Accept `workrex setup --hooks` for every agent it detects."""
+    exit_code_file = run_setup_interactive(env, workrex_exe_path, "--hooks")
+    wait_for_pane_output(
+        env, "test", "Install or update status tracking hooks?", timeout=timeout
+    )
+    env.send_keys("test:", "y")
+    assert poll_until_file_has_content(exit_code_file, timeout=timeout)
+    assert exit_code_file.read_text().strip() == "0", env.capture_pane("test")

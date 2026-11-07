@@ -1,7 +1,11 @@
 """Tests for agent configuration, prompts, and multi-agent scenarios."""
 
+import json
 import shlex
+import sys
 from pathlib import Path
+
+import pytest
 
 from ..conftest import (
     FakeAgentInstaller,
@@ -85,6 +89,42 @@ printf '%s' "$2" > "{output_filename}"
         )
 
         assert agent_output.read_text() == prompt_text
+
+    @pytest.mark.parametrize(
+        ("agent", "launch_args", "prompt_args"),
+        [("muse", [], []), ("kiro-cli", ["chat"], []), ("agy", [], ["-i"])],
+        ids=["muse", "kiro-cli", "agy"],
+    )
+    def test_add_inline_prompt_reaches_the_agent_in_its_syntax(
+        self,
+        mux_server: RexEnvironment,
+        workrex_exe_path: Path,
+        mux_repo_path: Path,
+        fake_agent_installer: FakeAgentInstaller,
+        tmp_path: Path,
+        agent: str,
+        launch_args: list[str],
+        prompt_args: list[str],
+    ):
+        output = tmp_path / "launch.json"
+        fake_agent_installer.install(
+            agent,
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            f"with open({str(output)!r}, 'w') as f:\n"
+            "    json.dump(sys.argv[1:], f)\n",
+        )
+        write_workrex_config(mux_repo_path, agent=agent, panes=[{"command": "<agent>"}])
+        prompt = "Implement inline prompt"
+        add_branch_and_get_worktree(
+            mux_server,
+            workrex_exe_path,
+            mux_repo_path,
+            f"prompt-{agent}",
+            extra_args=f"--prompt {shlex.quote(prompt)}",
+        )
+        assert poll_until(lambda: output.exists() and output.stat().st_size > 0)
+        assert json.loads(output.read_text()) == [*launch_args, *prompt_args, prompt]
 
 
 class TestPromptFile:
