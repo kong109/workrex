@@ -138,6 +138,27 @@ def get_shells_to_test() -> list[str]:
 # =============================================================================
 
 
+# Variables an agent sets that workrex reads: where the agent keeps its
+# config, and the session it runs.
+AGENT_VARIABLES = (
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_JOB_DIR",
+    "CODEX_HOME",
+    "CODEX_CONFIG_DIR",
+    "CODEX_THREAD_ID",
+    "COPILOT_HOME",
+    "COPILOT_CONFIG_DIR",
+    "GEMINI_CLI_HOME",
+    "GEMINI_CONFIG_DIR",
+    "GROK_HOME",
+    "MUSE_SESSION_ID",
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_DIR",
+    "PI_CODING_AGENT_DIR",
+    "PI_CONFIG_DIR",
+)
+
+
 class MuxEnvironment(ABC):
     """
     Shared environment and process helpers for isolated Rex tests.
@@ -176,6 +197,12 @@ class MuxEnvironment(ABC):
         # (config uses $HOME/.config/ directly, so HOME isolation handles that)
         self.env["XDG_STATE_HOME"] = str(self.home_path / ".local" / "state")
         self.env["XDG_CONFIG_HOME"] = str(self.home_path / ".config")
+        self.env["XDG_CACHE_HOME"] = str(self.home_path / ".cache")
+        self.env["XDG_DATA_HOME"] = str(self.home_path / ".local" / "share")
+        # An agent's own directory variable would send setup outside HOME,
+        # and the agent's session variables would change how hooks behave.
+        for name in AGENT_VARIABLES:
+            self.env.pop(name, None)
 
         # Create fake git editor
         fake_editor_script = self.home_path / "fake_git_editor.sh"

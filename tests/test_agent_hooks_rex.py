@@ -7,6 +7,7 @@ then fires the installed commands with the payload that agent sends.
 
 import json
 import os
+import re
 import signal
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pytest
 import yaml
 
 from .conftest import (
+    AGENT_VARIABLES,
     get_window_name,
     get_worktree_path,
     poll_until,
@@ -339,3 +341,54 @@ def test_setup_updates_hooks_an_older_build_installed(
     update_status_hooks(rex, workrex_exe_path, "update available", "register-agent")
     commands = agent.commands(rex.home_path)
     assert any("register-agent" in c for c in commands[agent.register]), commands
+
+
+AGENT_DIR = re.compile(r"[A-Z][A-Z0-9_]*_(?:HOME|DIR|CONFIG)")
+# Directories that aren't an agent's: the test environment points these
+# into HOME or doesn't use them.
+NOT_AGENT_DIRS = {
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+}
+NOT_AGENT_DIRS |= {"XDG_RUNTIME_DIR", "REX_BIN_DIR", "WORKREX_FROZEN_CONFIG"}
+
+
+def test_the_test_environment_drops_every_agent_directory_variable():
+    # A variable the product reads to find a directory, as `env::var("X")`,
+    # `get_env("X")`, or a `const` holding the name.
+    read = re.compile(
+        r'(?:var(?:_os)?|get_env)\(\s*"([A-Z0-9_]+)"\s*\)|const [A-Z0-9_]+: &str = "([A-Z0-9_]+)"'
+    )
+    source = Path(__file__).parent.parent / "src"
+    names = {
+        name
+        for path in source.rglob("*.rs")
+        for match in read.finditer(path.read_text())
+        for name in match.groups()
+        if name and AGENT_DIR.fullmatch(name)
+    }
+    assert names - NOT_AGENT_DIRS - set(AGENT_VARIABLES) == set()
+
+
+def test_setup_in_a_test_writes_only_under_its_home(
+    tmp_path, monkeypatch, workrex_exe_path
+):
+    outside = tmp_path / "outside"
+    for name in AGENT_VARIABLES:
+        (outside / name).mkdir(parents=True)
+        monkeypatch.setenv(name, str(outside / name))
+    (tmp_path / "env").mkdir()
+    env = RexEnvironment(tmp_path / "env")
+    env.start_server()
+    try:
+        for agent in AGENTS:
+            (env.home_path / agent.config_dir).mkdir(parents=True, exist_ok=True)
+        install_status_hooks(env, workrex_exe_path)
+    finally:
+        env.stop_server()
+    leaked = [p.relative_to(outside) for p in outside.rglob("*") if p.is_file()]
+    assert sorted(map(str, leaked)) == []
+    for agent in AGENTS:
+        assert (env.home_path / agent.hooks_file).exists(), agent.kind
