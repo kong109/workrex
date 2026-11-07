@@ -9,6 +9,7 @@ use std::path::Path;
 use tracing::warn;
 
 use crate::config::Config;
+use crate::multiplexer::rex;
 use crate::multiplexer::{
     AgentStatus, BackendType, LivePaneInfo, Multiplexer, STATUS_TARGET_BACKEND_ENV,
     STATUS_TARGET_INSTANCE_ENV, STATUS_TARGET_PANE_ENV, create_backend,
@@ -177,17 +178,34 @@ fn run_for_status_target(
     // The caller's own live pane comes first: the exported target also
     // reaches panes that recall the agent line from history or a copy, and
     // the agent there runs in the caller's pane. The target is for hooks
-    // that lost the pane's variables, or whose pane is gone.
-    let own_mux = create_backend(target.backend);
-    let own = own_mux.current_pane_id().filter(|own| !own.is_empty());
-    if let Some(own) = &own
-        && live_or_warn(&*own_mux, own, "caller pane")
-    {
-        return update(&*own_mux, own);
+    // that lost the pane's variables, or whose pane is gone. Rex block ids
+    // are unique across servers, so the caller's block is looked up on the
+    // target's server first. REX_SERVER can name another server than the
+    // caller's pane, as panes of a `--listen` server inherit it, and asking
+    // it first would wait on it even when it hangs.
+    let target_mux = create_backend_for_instance(target.backend, &target.instance);
+    let own = target_mux.current_pane_id().filter(|own| !own.is_empty());
+    if let Some(own) = &own {
+        if live_or_warn(&*target_mux, own, "caller pane") {
+            return update(&*target_mux, own);
+        }
+        let own_server = std::env::var("REX_SERVER")
+            .ok()
+            .filter(|server| !server.trim().is_empty());
+        if own_server
+            .as_deref()
+            .is_none_or(|server| !rex::same_server(server, &target.instance))
+        {
+            let own_mux = create_backend(target.backend);
+            if live_or_warn(&*own_mux, own, "caller pane") {
+                return update(&*own_mux, own);
+            }
+        }
     }
 
-    let target_mux = create_backend_for_instance(target.backend, &target.instance);
-    if live_or_warn(&*target_mux, &target.pane_id, "status target pane") {
+    if own.as_deref() != Some(target.pane_id.as_str())
+        && live_or_warn(&*target_mux, &target.pane_id, "status target pane")
+    {
         return update(&*target_mux, &target.pane_id);
     }
 

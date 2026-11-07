@@ -223,9 +223,26 @@ type Verdict = std::result::Result<(), String>;
 static SERVER_VERDICTS: LazyLock<Mutex<HashMap<Option<String>, VerdictSlot>>> =
     LazyLock::new(Default::default);
 
-/// `None` until a version check answers. A check that fails stores nothing,
-/// so the next call checks again.
-type VerdictSlot = Arc<Mutex<Option<Verdict>>>;
+/// `None` until a version check runs.
+type VerdictSlot = Arc<Mutex<Option<Checked>>>;
+
+/// What a version check found.
+#[derive(Clone)]
+enum Checked {
+    Answered(Verdict),
+    /// The check itself failed, as on a server that never answers. Calls in
+    /// the backend's retry window fail without checking again, so one
+    /// hung server costs a command one timeout, not one per call.
+    Failed {
+        error: String,
+        at: Instant,
+    },
+}
+
+/// How long a failed version check stands before a call checks again. A
+/// long-lived process such as the sidebar daemon still recovers once the
+/// server answers.
+const VERSION_CHECK_RETRY: Duration = Duration::from_secs(5);
 
 /// Longer than rex's own 10 s request limit, so a server that never answers
 /// fails with rex's error. This bounds a `rex` process that never finishes.
@@ -746,6 +763,13 @@ const UNRESOLVED_INSTANCE: &str = "unresolved";
 
 /// `unix://` addresses with the path percent-decoded and symlinks, `.` and
 /// repeated slashes resolved, so every spelling of one socket compares equal.
+/// Whether two server addresses name one server, comparing Unix sockets by
+/// their canonical path.
+pub fn same_server(a: &str, b: &str) -> bool {
+    let canonical = |address: &str| canonical_unix_endpoint(address).unwrap_or(address.into());
+    canonical(a) == canonical(b)
+}
+
 fn canonical_unix_endpoint(address: &str) -> Option<String> {
     let path = address.strip_prefix("unix://")?;
     let path = PathBuf::from(
@@ -844,6 +868,7 @@ pub struct RexBackend {
     reads: Mutex<Reads>,
     reuse: Duration,
     version_timeout: Duration,
+    version_retry: Duration,
     server: Option<String>,
     caller: Caller,
     endpoint: OnceLock<String>,
@@ -883,6 +908,7 @@ impl RexBackend {
                 .and_then(|ms| ms.parse().ok())
                 .map_or(READ_REUSE, Duration::from_millis),
             version_timeout: VERSION_CHECK_TIMEOUT,
+            version_retry: VERSION_CHECK_RETRY,
             server,
             caller: Caller::from_env(),
             endpoint: OnceLock::new(),
@@ -945,12 +971,29 @@ impl RexBackend {
         // Concurrent first calls to one server wait here for one check.
         let mut known = slot.lock().unwrap();
         let verdict = match known.as_ref() {
-            Some(verdict) => verdict.clone(),
-            None => {
+            Some(Checked::Answered(verdict)) => verdict.clone(),
+            Some(Checked::Failed { error, at }) if at.elapsed() < self.version_retry => {
+                return Err(CallError::Failed(anyhow!("{error}")));
+            }
+            _ => {
                 let check = ["api", "call", "server.version"];
-                let output = self.exec_within(&check, None, Some(self.version_timeout), &check)?;
-                let verdict = Self::parse::<ServerVersion>("server.version", &output)?.check();
-                known.insert(verdict).clone()
+                let version = self
+                    .exec_within(&check, None, Some(self.version_timeout), &check)
+                    .and_then(|output| Self::parse::<ServerVersion>("server.version", &output));
+                match version {
+                    Ok(version) => {
+                        let verdict = version.check();
+                        *known = Some(Checked::Answered(verdict.clone()));
+                        verdict
+                    }
+                    Err(error) => {
+                        *known = Some(Checked::Failed {
+                            error: error.to_string(),
+                            at: Instant::now(),
+                        });
+                        return Err(error);
+                    }
+                }
             }
         };
         verdict.map_err(CallError::Unsupported)
@@ -958,11 +1001,10 @@ impl RexBackend {
 
     /// Why this server's API is unsupported, once a call has found it so.
     pub fn unsupported(&self) -> Option<String> {
-        self.verdict_slot()
-            .lock()
-            .unwrap()
-            .clone()
-            .and_then(Result::err)
+        match self.verdict_slot().lock().unwrap().clone() {
+            Some(Checked::Answered(Err(reason))) => Some(reason),
+            _ => None,
+        }
     }
 
     fn verdict_slot(&self) -> VerdictSlot {
@@ -985,7 +1027,7 @@ impl RexBackend {
     /// so later calls skip their own check.
     fn record_verdict(&self, version: &ServerVersion) -> CallResult<()> {
         let verdict = version.check();
-        *self.verdict_slot().lock().unwrap() = Some(verdict.clone());
+        *self.verdict_slot().lock().unwrap() = Some(Checked::Answered(verdict.clone()));
         verdict.map_err(CallError::Unsupported)
     }
 
@@ -3779,12 +3821,13 @@ mod tests {
     }
 
     #[test]
-    fn a_version_check_that_times_out_is_made_again() {
+    fn a_version_check_that_times_out_is_made_again_after_its_retry_window() {
         let mut fake = FakeRex::new(&[
             ("server.version", STALLED_VERSION),
             ("session.list", &session_list(&[])),
         ]);
         fake.rex.version_timeout = Duration::from_millis(200);
+        fake.rex.version_retry = Duration::from_millis(500);
         let rex = &fake.rex;
         let first = thread::scope(|scope| {
             let (answered, answer) = mpsc::channel();
@@ -3798,8 +3841,20 @@ mod tests {
             format!("{error:#}").contains("server.version gave no answer within"),
             "{error:#}"
         );
+        let started = fake.dir.path().join("started");
+        std::fs::remove_file(&started).unwrap();
+
+        // Within the window a call fails at once, without a second check.
+        let error = fake.rex.sessions().unwrap_err();
+        assert!(
+            format!("{error:#}").contains("server.version gave no answer within"),
+            "{error:#}"
+        );
+        assert!(!started.exists(), "the failed check was made again at once");
+
+        thread::sleep(Duration::from_millis(600));
         fake.rex.sessions().unwrap();
-        assert!(fake.dir.path().join("answered").exists());
+        assert!(started.exists(), "the check was not made again");
     }
 
     #[test]
