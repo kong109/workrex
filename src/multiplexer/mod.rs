@@ -22,22 +22,37 @@ pub(crate) use sidebar_host::*;
 pub use types::*;
 
 use crate::config::{Config, PaneConfig, SplitDirection, WindowPlacement};
+use util::EnvSyntax;
 
 pub const STATUS_TARGET_BACKEND_ENV: &str = "WORKREX_STATUS_BACKEND";
 pub const STATUS_TARGET_INSTANCE_ENV: &str = "WORKREX_STATUS_INSTANCE";
 pub const STATUS_TARGET_PANE_ENV: &str = "WORKREX_STATUS_PANE_ID";
 
-/// A shell statement that puts `dir` first on the pane shell's `PATH`.
-fn export_path_prefix(dir: &Path) -> String {
-    format!(
-        "export PATH={}:\"$PATH\"",
-        agent::shell_quote(&dir.to_string_lossy())
-    )
+/// The line typed into a pane's `shell` to run `command`. A node's pane
+/// first puts `path_prefix` first on `PATH`, and with `clear_screen` clears
+/// the screen and scrollback the line was typed into. The leading space
+/// keeps that line out of shell history where the shell honors it.
+fn pane_line(
+    shell: &str,
+    command: String,
+    path_prefix: Option<&Path>,
+    clear_screen: bool,
+) -> String {
+    let command = match path_prefix {
+        Some(dir) => format!("{}; {command}", EnvSyntax::of(shell).prepend_path(dir)),
+        None => command,
+    };
+    if clear_screen {
+        format!(" printf '\\033[H\\033[2J\\033[3J'; {command}")
+    } else {
+        command
+    }
 }
 
-/// Prefix `command` with statements that export the status target in the
-/// pane's `shell`. Exporting, rather than an `env` prefix, keeps the
-/// command's first word subject to the shell's aliases.
+/// Prefix `command` with statements that set the status target in the
+/// pane's `shell`. A statement, rather than an `env` prefix, keeps the
+/// command's first word subject to the shell's aliases. A shell with no
+/// known statement gets the `env` prefix.
 fn command_with_status_target(
     command: &str,
     shell: &str,
@@ -50,18 +65,21 @@ fn command_with_status_target(
         (STATUS_TARGET_INSTANCE_ENV, instance),
         (STATUS_TARGET_PANE_ENV, pane_id),
     ];
-    if util::is_nushell(shell) {
-        let assignments: String = vars
-            .iter()
-            .map(|(name, value)| format!("$env.{name} = {}; ", util::nu_quote(value)))
-            .collect();
-        return format!("{assignments}{command}");
-    }
-    let assignments: Vec<String> = vars
+    let syntax = EnvSyntax::of(shell);
+    let statements: Option<Vec<String>> = vars
         .iter()
-        .map(|(name, value)| format!("{name}={}", agent::shell_quote(value)))
+        .map(|(name, value)| syntax.set(name, value))
         .collect();
-    format!("export {}; {command}", assignments.join(" "))
+    match statements {
+        Some(statements) => format!("{}; {command}", statements.join("; ")),
+        None => {
+            let assignments: Vec<String> = vars
+                .iter()
+                .map(|(name, value)| format!("{name}={}", crate::shell::shell_quote(value)))
+                .collect();
+            format!("env {} {command}", assignments.join(" "))
+        }
+    }
 }
 
 fn adoption_targets(
@@ -877,22 +895,6 @@ pub trait Multiplexer: Send + Sync {
                     resolved.render_command()
                 };
 
-                let final_command = match options.path_prefix {
-                    Some(dir) => format!("{}; {final_command}", export_path_prefix(dir)),
-                    None => final_command,
-                };
-
-                // Only a node passes a supervisor. Its command lines name
-                // pinned binaries and supervisor arguments; clear the screen
-                // and scrollback they were typed into so the pane starts
-                // clean. The leading space keeps the line out of shell
-                // history where the shell honors that.
-                let final_command = if options.sandbox_supervisor.is_some() {
-                    format!(" printf '\\033[H\\033[2J\\033[3J'; {final_command}")
-                } else {
-                    final_command
-                };
-
                 let final_command = if is_agent_pane {
                     command_with_status_target(
                         &final_command,
@@ -904,6 +906,16 @@ pub trait Multiplexer: Send + Sync {
                 } else {
                     final_command
                 };
+
+                // Only a node passes a supervisor. Its command lines name
+                // pinned binaries and supervisor arguments, so the pane
+                // starts clean.
+                let final_command = pane_line(
+                    &shell,
+                    final_command,
+                    options.path_prefix,
+                    options.sandbox_supervisor.is_some(),
+                );
 
                 let _ = self.clear_pane(&spawned_id);
                 self.run_in_shell(&spawned_id, &final_command)?;
@@ -951,7 +963,7 @@ pub trait Multiplexer: Send + Sync {
                     &pane_id,
                     &format!(
                         " {}; printf '\\033[H\\033[2J\\033[3J'",
-                        export_path_prefix(dir)
+                        EnvSyntax::of(&shell).prepend_path(dir)
                     ),
                 )?;
             }
@@ -1360,6 +1372,43 @@ mod tests {
                 String::from_utf8_lossy(&output.stdout),
                 "unix:///tmp/a b.sock\nblock:test\nprompt\n",
                 "{shell}: {launch}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn a_node_agent_line_runs_in_every_shell_it_names() {
+        let bin = tempfile::tempdir().unwrap();
+        crate::test_support::write_script(
+            &bin.path().join("workrex-test-agent"),
+            "#!/bin/sh\necho \"started $WORKREX_STATUS_PANE_ID $*\"\n",
+        );
+        let shells = ["sh", "bash", "zsh", "fish", "nu", "tcsh", "csh"];
+        for shell in shells.iter().filter_map(|shell| which::which(shell).ok()) {
+            let shell = shell.to_string_lossy();
+            let command = command_with_status_target(
+                "workrex-test-agent prompt",
+                &shell,
+                "rex",
+                "unix:///tmp/s.sock",
+                "block:test",
+            );
+            let line = pane_line(&shell, command, Some(bin.path()), true);
+            let mut run = std::process::Command::new(&*shell);
+            if EnvSyntax::of(&shell) == EnvSyntax::Nu {
+                run.arg("--no-config-file");
+            }
+            // The agent is found only through the line's own PATH entry.
+            let output = run
+                .args(["-c", &line])
+                .env("PATH", "/usr/bin:/bin")
+                .output()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&output.stdout).ends_with("started block:test prompt\n"),
+                "{shell}: {line}\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
         }

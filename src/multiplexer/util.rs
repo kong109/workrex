@@ -59,8 +59,53 @@ pub fn is_posix_shell(shell: &str) -> bool {
     matches!(shell_name, "bash" | "zsh" | "sh" | "dash" | "ksh" | "ash")
 }
 
-pub fn is_nushell(shell: &str) -> bool {
-    Path::new(shell).file_name().and_then(|s| s.to_str()) == Some("nu")
+/// How a line typed into a pane's shell sets an environment variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvSyntax {
+    /// POSIX shells and fish: `export NAME=value`.
+    Export,
+    /// Nushell: `$env.NAME = "value"`.
+    Nu,
+    /// csh and tcsh: `setenv NAME value`.
+    Csh,
+    /// Any other shell. Only an `env NAME=value command` prefix is portable.
+    EnvPrefix,
+}
+
+impl EnvSyntax {
+    pub fn of(shell: &str) -> Self {
+        match Path::new(shell).file_name().and_then(|s| s.to_str()) {
+            Some("nu") => Self::Nu,
+            Some("csh" | "tcsh") => Self::Csh,
+            Some("fish") => Self::Export,
+            _ if is_posix_shell(shell) => Self::Export,
+            _ => Self::EnvPrefix,
+        }
+    }
+
+    /// A statement that sets `name` for the rest of the line, or `None` for
+    /// a shell with no known statement.
+    pub fn set(self, name: &str, value: &str) -> Option<String> {
+        let quoted = crate::shell::shell_quote(value);
+        match self {
+            Self::Export => Some(format!("export {name}={quoted}")),
+            Self::Nu => Some(format!("$env.{name} = {}", nu_quote(value))),
+            Self::Csh => Some(format!("setenv {name} {quoted}")),
+            Self::EnvPrefix => None,
+        }
+    }
+
+    /// A statement that puts `dir` first on `PATH`. A shell with no known
+    /// statement gets the POSIX one.
+    pub fn prepend_path(self, dir: &Path) -> String {
+        let dir = dir.to_string_lossy();
+        let quoted = crate::shell::shell_quote(&dir);
+        match self {
+            Self::Export | Self::EnvPrefix => format!("export PATH={quoted}:\"$PATH\""),
+            Self::Nu => format!("$env.PATH = ($env.PATH | prepend {})", nu_quote(&dir)),
+            Self::Csh => format!("setenv PATH {quoted}:\"$PATH\""),
+        }
+    }
 }
 
 /// Quote `s` as a Nushell double-quoted string, which takes it literally
