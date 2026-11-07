@@ -530,22 +530,23 @@ def test_an_unset_rex_server_reports_the_callers_pane_on_rexs_default_server(
         serve_at(own, rex_default_socket(own))
         try:
             assert own.server_url != target.server_url
-            caller = own.runner_block_id
+            caller, agent = own.runner_block_id, target.runner_block_id
+            assert caller is not None and agent is not None
             caller_window = window_label(own, caller)
-            target_window = window_label(target, target.runner_block_id)
+            target_window = window_label(target, agent)
 
             report_waiting(
                 target,
                 workrex_exe_path,
                 repo_path,
-                target.runner_block_id,
+                agent,
                 REX_SERVER=None,
                 REX_BLOCK=caller,
                 **runtime,
             )
 
             assert window_label(own, caller) == f"💬\u2002{caller_window}"
-            assert window_label(target, target.runner_block_id) == target_window
+            assert window_label(target, agent) == target_window
         finally:
             own.stop_server()
     finally:
