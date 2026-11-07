@@ -54,6 +54,7 @@ class RexEnvironment(MuxEnvironment):
             "REX_BLOCK",
             "REX_SESSION",
             "REX_SERVER",
+            "REX_RUNTIME_DIR",
         ):
             self.env.pop(name, None)
         self.env["PATH"] = f"{Path(self.rex).parent}:{self.env['PATH']}"
