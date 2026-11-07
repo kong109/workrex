@@ -624,6 +624,40 @@ def test_a_dotdot_after_a_symlink_names_the_server_rex_reaches(
         target.stop_server()
 
 
+def test_a_relative_rex_runtime_dir_never_names_the_target_server(
+    tmp_path, workrex_exe_path
+):
+    # Rex takes a relative REX_RUNTIME_DIR from the logical $PWD, which can
+    # differ from the physical working directory. From caller/L, with
+    # L -> target/sub, `..` is the caller's directory to rex, but target's
+    # directory once L is resolved.
+    (tmp_path / "target").mkdir()
+    (tmp_path / "caller").mkdir()
+    target = RexEnvironment(tmp_path / "target")
+    caller = RexEnvironment(tmp_path / "caller")
+    serve_at(target, target.socket_dir / "server.sock")
+    try:
+        serve_at(caller, caller.socket_dir / "server.sock")
+        try:
+            (target.socket_dir / "sub").mkdir()
+            cwd = caller.socket_dir.resolve() / "L"
+            cwd.symlink_to(target.socket_dir.resolve() / "sub")
+            report_from_another_servers_pane(
+                target,
+                caller,
+                workrex_exe_path,
+                cwd,
+                REX_SERVER=None,
+                REX_RUNTIME_DIR="..",
+                XDG_RUNTIME_DIR=None,
+                PWD=str(cwd),
+            )
+        finally:
+            caller.stop_server()
+    finally:
+        target.stop_server()
+
+
 def test_a_trailing_space_in_rex_server_names_another_socket(
     tmp_path, workrex_exe_path, repo_path
 ):
