@@ -3912,23 +3912,18 @@ mod tests {
             ("server.version", STALLED_VERSION),
             ("session.list", &session_list(&[])),
         ]);
-        fake.rex.version_timeout = Duration::from_millis(200);
-        fake.rex.version_retry = Duration::from_millis(500);
-        let rex = &fake.rex;
-        let first = thread::scope(|scope| {
-            let (answered, answer) = mpsc::channel();
-            scope.spawn(move || answered.send(rex.sessions().map(|_| ())));
-            let answer = answer.recv_timeout(Duration::from_secs(20));
-            fake.write("release", "");
-            answer
-        });
-        let error = first.expect("the check outlived its timeout").unwrap_err();
+        fake.rex.version_timeout = Duration::from_millis(1);
+        // The window ends only when the test ends it below.
+        fake.rex.version_retry = Duration::from_secs(3600);
+        let error = fake.rex.sessions().unwrap_err();
         assert!(
             format!("{error:#}").contains("server.version gave no answer within"),
             "{error:#}"
         );
+        // The timeout can stop the fake before or after it marks `started`.
         let started = fake.dir.path().join("started");
-        std::fs::remove_file(&started).unwrap();
+        let _ = std::fs::remove_file(&started);
+        fake.write("release", "");
 
         // Within the window a call fails at once, without a second check.
         let error = fake.rex.sessions().unwrap_err();
@@ -3938,7 +3933,8 @@ mod tests {
         );
         assert!(!started.exists(), "the failed check was made again at once");
 
-        thread::sleep(Duration::from_millis(600));
+        fake.rex.version_retry = Duration::ZERO;
+        fake.rex.version_timeout = Duration::from_secs(10);
         fake.rex.sessions().unwrap();
         assert!(started.exists(), "the check was not made again");
     }
