@@ -562,6 +562,95 @@ def test_an_unset_rex_server_reports_the_callers_pane_on_rexs_default_server(
         target.stop_server()
 
 
+def report_from_another_servers_pane(
+    target: RexEnvironment,
+    caller_server: RexEnvironment,
+    exe: Path,
+    cwd: Path,
+    **overrides,
+) -> None:
+    """Report `target`'s runner pane waiting from a hook whose REX_BLOCK is
+    `caller_server`'s runner pane, which `overrides` say how to reach. The
+    caller's pane shows it, since the target names another server."""
+    caller, agent = caller_server.runner_block_id, target.runner_block_id
+    assert caller is not None and agent is not None
+    caller_window = window_label(caller_server, caller)
+    target_window = window_label(target, agent)
+
+    report_waiting(target, exe, cwd, agent, REX_BLOCK=caller, **overrides)
+
+    assert window_label(caller_server, caller) == f"💬\u2002{caller_window}"
+    assert window_label(target, agent) == target_window
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    ["rex-server-path", "rex-server-url", "rex-runtime-dir", "xdg-runtime-dir"],
+)
+def test_a_dotdot_after_a_symlink_names_the_server_rex_reaches(
+    tmp_path, workrex_exe_path, repo_path, spelling
+):
+    # Rex drops `L/..` from a socket path before it connects, so the caller
+    # reaches its own server even though L links into the target's
+    # directory.
+    sub = "rex/server.sock" if spelling == "xdg-runtime-dir" else "server.sock"
+    (tmp_path / "target").mkdir()
+    (tmp_path / "caller").mkdir()
+    target = RexEnvironment(tmp_path / "target")
+    caller = RexEnvironment(tmp_path / "caller")
+    serve_at(target, target.socket_dir / sub)
+    try:
+        serve_at(caller, caller.socket_dir / sub)
+        try:
+            (target.socket_dir / "sub").mkdir()
+            (caller.socket_dir / "L").symlink_to(target.socket_dir.resolve() / "sub")
+            dotdot = f"{caller.socket_dir.resolve()}/L/.."
+            overrides = {
+                "rex-server-path": {"REX_SERVER": f"{dotdot}/server.sock"},
+                "rex-server-url": {"REX_SERVER": f"unix://{dotdot}/server.sock"},
+                "rex-runtime-dir": {"REX_SERVER": None, "REX_RUNTIME_DIR": dotdot},
+                "xdg-runtime-dir": {
+                    "REX_SERVER": None,
+                    "REX_RUNTIME_DIR": None,
+                    "XDG_RUNTIME_DIR": dotdot,
+                },
+            }[spelling]
+            report_from_another_servers_pane(
+                target, caller, workrex_exe_path, repo_path, **overrides
+            )
+        finally:
+            caller.stop_server()
+    finally:
+        target.stop_server()
+
+
+def test_a_trailing_space_in_rex_server_names_another_socket(
+    tmp_path, workrex_exe_path, repo_path
+):
+    # Rex takes REX_SERVER as it is, so `s.sock ` is a socket of its own.
+    (tmp_path / "target").mkdir()
+    (tmp_path / "caller").mkdir()
+    target = RexEnvironment(tmp_path / "target")
+    caller = RexEnvironment(tmp_path / "caller")
+    socket = target.socket_dir.resolve() / "s.sock"
+    serve_at(target, socket)
+    try:
+        caller.server_url = f"{socket} "
+        caller.start_server()
+        try:
+            report_from_another_servers_pane(
+                target,
+                caller,
+                workrex_exe_path,
+                repo_path,
+                REX_SERVER=caller.server_url,
+            )
+        finally:
+            caller.stop_server()
+    finally:
+        target.stop_server()
+
+
 def test_a_window_prefix_ending_in_a_space_keeps_its_window(
     rex, workrex_exe_path, repo_path
 ):
