@@ -25,6 +25,12 @@ from .conftest import (
 )
 from .rex_env import RexEnvironment
 from .support.agent_hooks import (
+    CODEX_RULES,
+    COPILOT_RULES,
+    GEMINI_RULES,
+    GROK_RULES,
+    MUSE_RULES,
+    Hook,
     HookedAgent,
     agy_format,
     build_native_agent,
@@ -47,6 +53,7 @@ MUSE = HookedAgent(
     config_dir=".config/muse",
     hooks_file=".config/muse/workrex-status.json",
     read=claude_format,
+    matching=MUSE_RULES,
     register="SessionStart",
     events={"working": "UserPromptSubmit", "waiting": "Notification", "done": "Stop"},
     env={"MUSE_SESSION_ID": SESSION},
@@ -57,6 +64,10 @@ MUSE = HookedAgent(
             for event in ["ToolUseStart", "PostToolUse", "PostToolUseFailure"]
         },
     },
+    occasions={
+        event: [{"tool_name": "Bash"}, {"tool_name": "Edit"}]
+        for event in ["ToolUseStart", "PostToolUse", "PostToolUseFailure"]
+    },
     tool_events=["ToolUseStart", "PostToolUse", "PostToolUseFailure"],
     ending_events=["Interrupt", "SessionEnd"],
 )
@@ -66,12 +77,20 @@ GROK = HookedAgent(
     config_dir=".grok",
     hooks_file=".grok/hooks/workrex-status.json",
     read=claude_format,
+    matching=GROK_RULES,
     register="SessionStart",
     events={"working": "UserPromptSubmit", "waiting": "Notification", "done": "Stop"},
     payloads={
-        "SessionStart": {"source": "startup"},
+        "SessionStart": {"source": "new"},
         "PostToolUse": {"tool_name": "run_terminal_cmd"},
         "SessionEnd": {"reason": "exit"},
+    },
+    occasions={
+        "SessionStart": [{"source": "new"}, {"source": "load"}],
+        "PostToolUse": [
+            {"tool_name": "run_terminal_cmd"},
+            {"tool_name": "search_replace"},
+        ],
     },
     tool_events=["PostToolUse"],
     ending_events=["SessionEnd"],
@@ -82,12 +101,17 @@ COPILOT = HookedAgent(
     config_dir=".copilot",
     hooks_file=".copilot/hooks/workrex-status.json",
     read=copilot_format,
+    matching=COPILOT_RULES,
     register="sessionStart",
     # Copilot's hooks have no permission event, so it never waits.
     events={"working": "userPromptSubmitted", "done": "agentStop"},
     payloads={
         "sessionStart": {"source": "new"},
         "postToolUse": {"toolName": "bash", "toolArgs": "{}"},
+    },
+    occasions={
+        "sessionStart": [{"source": s} for s in ["startup", "resume", "new"]],
+        "postToolUse": [{"toolName": "bash"}, {"toolName": "edit"}],
     },
     tool_events=["postToolUse"],
 )
@@ -97,6 +121,8 @@ AGY = HookedAgent(
     config_dir=".gemini/antigravity-cli",
     hooks_file=".gemini/config/hooks.json",
     read=agy_format,
+    # Antigravity's matcher rules aren't published.
+    matching=None,
     # Antigravity registers and reports working from one invocation hook.
     register="PreInvocation",
     events={"working": "PreInvocation", "done": "Stop"},
@@ -107,6 +133,7 @@ GEMINI = HookedAgent(
     config_dir=".gemini",
     hooks_file=".gemini/settings.json",
     read=claude_format,
+    matching=GEMINI_RULES,
     register="SessionStart",
     events={"working": "BeforeAgent", "waiting": "Notification", "done": "AfterAgent"},
     payloads={
@@ -118,6 +145,14 @@ GEMINI = HookedAgent(
         "AfterTool": {"tool_name": "run_shell_command"},
         "SessionEnd": {"reason": "exit"},
     },
+    occasions={
+        "SessionStart": [{"source": s} for s in ["startup", "resume", "clear"]],
+        "AfterTool": [{"tool_name": "run_shell_command"}, {"tool_name": "write_file"}],
+        "SessionEnd": [
+            {"reason": r}
+            for r in ["exit", "clear", "logout", "prompt_input_exit", "other"]
+        ],
+    },
     tool_events=["AfterTool"],
     ending_events=["SessionEnd"],
 )
@@ -127,6 +162,7 @@ CODEX = HookedAgent(
     config_dir=".codex",
     hooks_file=".codex/hooks.json",
     read=claude_format,
+    matching=CODEX_RULES,
     register="SessionStart",
     events={
         "working": "UserPromptSubmit",
@@ -139,6 +175,13 @@ CODEX = HookedAgent(
         "PostToolUse": {"tool_name": "Bash"},
         "SubagentStart": {"agent_id": "a1", "agent_type": "worker"},
         "SubagentStop": {"agent_id": "a1", "agent_type": "worker"},
+    },
+    occasions={
+        "SessionStart": [{"source": s} for s in ["startup", "resume", "clear"]],
+        **{
+            event: [{"tool_name": "Bash"}, {"tool_name": "apply_patch"}]
+            for event in ["PermissionRequest", "PostToolUse"]
+        },
     },
     tool_events=["PostToolUse", "SubagentStart", "SubagentStop"],
 )
@@ -183,7 +226,11 @@ class Running:
         }
         hooks = self.hooks.get(event)
         assert hooks, f"setup installed no {event} hook: {self.hooks}"
-        runs = [hook for hook in hooks if runs_for(hook, event, payload)]
+        runs = [
+            hook
+            for hook in hooks
+            if runs_for(self.agent.matching, hook, event, payload)
+        ]
         assert runs, f"no installed {event} hook matches {payload}: {hooks}"
         for hook in runs:
             fire(
@@ -238,7 +285,8 @@ def test_installed_hooks_drive_the_agents_status(
 ):
     running = Running(rex, workrex_exe_path, repo_path, agent, f"hooks-{agent.kind}")
 
-    running.fire(agent.register, source="startup")
+    for occasion in agent.occasions_of(agent.register):
+        running.fire(agent.register, **occasion)
     record = running.agent_record()
     assert record["agent_kind"] == agent.kind
     assert Path(record["workdir"]).resolve() == running.worktree.resolve()
@@ -269,14 +317,18 @@ def test_a_tool_call_mid_turn_keeps_the_agent_working(
     running = Running(rex, workrex_exe_path, repo_path, agent, f"tool-{agent.kind}")
     running.fire(agent.register)
     running.fire(agent.events["working"], prompt="fix the bug")
-    running.fire(event)
-    assert running.status() == "working"
-    if "waiting" in agent.events:
+    for occasion in agent.occasions_of(event):
+        running.fire(event, **occasion)
+        assert running.status() == "working", occasion
+        if "waiting" not in agent.events:
+            continue
         # A tool call after a permission prompt means the user answered it.
-        running.fire(agent.events["waiting"])
-        assert running.status() == "waiting"
-        running.fire(event)
-        assert running.status() == "working"
+        waiting = agent.events["waiting"]
+        for asked in agent.occasions_of(waiting):
+            running.fire(waiting, **asked)
+            assert running.status() == "waiting", asked
+            running.fire(event, **occasion)
+            assert running.status() == "working", (asked, occasion)
 
 
 ENDING_EVENTS = [(agent, event) for agent in AGENTS for event in agent.ending_events]
@@ -292,10 +344,11 @@ def test_the_end_of_a_turn_or_session_leaves_the_agent_done(
 ):
     running = Running(rex, workrex_exe_path, repo_path, agent, f"end-{agent.kind}")
     running.fire(agent.register)
-    running.fire(agent.events["working"], prompt="fix the bug")
-    running.fire(event)
-    assert running.status() == "done"
-    assert running.label() == f"✅{SEPARATOR}{running.window}"
+    for occasion in agent.occasions_of(event):
+        running.fire(agent.events["working"], prompt="fix the bug")
+        running.fire(event, **occasion)
+        assert running.status() == "done", occasion
+        assert running.label() == f"✅{SEPARATOR}{running.window}"
 
 
 @pytest.fixture
@@ -357,7 +410,7 @@ def test_a_subagents_prompt_does_not_replace_the_users(
 ):
     show_prompts(rex)
     running = Running(rex, workrex_exe_path, repo_path, agent, f"sub-{agent.kind}")
-    running.fire(agent.register, source="startup")
+    running.fire(agent.register)
     running.fire(agent.events["working"], prompt="fix the bug")
     running.fire(agent.events["working"], prompt="search the repo", **delegated)
     assert running.prompt() == "fix the bug"
@@ -435,6 +488,51 @@ def test_setup_updates_hooks_an_older_build_installed(
     update_status_hooks(rex, workrex_exe_path, "update available", "register-agent")
     hooks = agent.hooks(rex.home_path)
     assert any("register-agent" in h.command for h in hooks[agent.register]), hooks
+
+
+# (rules, event, matcher, payload, whether the agent runs the hook), from
+# each agent's matcher code or docs.
+MATCHER_CASES = [
+    # Gemini CLI 0.54.4 HookPlanner, run on these cases.
+    (GEMINI_RULES, "SessionEnd", "exit|logout", {"reason": "exit"}, False),
+    (GEMINI_RULES, "SessionEnd", "exit", {"reason": "exit"}, True),
+    (GEMINI_RULES, "SessionStart", "start.*", {"source": "startup"}, False),
+    (GEMINI_RULES, "AfterTool", "shell", {"tool_name": "run_shell_command"}, True),
+    (GEMINI_RULES, "Notification", "NeverMatches", {}, True),
+    # codex-rs HookMatcher.
+    (CODEX_RULES, "PostToolUse", "Bash", {"tool_name": "Bash"}, True),
+    (CODEX_RULES, "PostToolUse", "Bash", {"tool_name": "BashOutput"}, False),
+    (
+        CODEX_RULES,
+        "PostToolUse",
+        "Bash|apply_patch",
+        {"tool_name": "apply_patch"},
+        True,
+    ),
+    (CODEX_RULES, "PostToolUse", "^Ba", {"tool_name": "Bash"}, True),
+    (CODEX_RULES, "SessionStart", "startup", {"source": "resume"}, False),
+    (CODEX_RULES, "UserPromptSubmit", "NeverMatches", {}, True),
+    # Claude Code's Hte, which Grok's docs say it shares.
+    (GROK_RULES, "PostToolUse", "Edit, Write", {"tool_name": "Write"}, True),
+    (GROK_RULES, "PostToolUse", "Edit", {"tool_name": "NotebookEdit"}, False),
+    (GROK_RULES, "PostToolUse", "Edit.*", {"tool_name": "NotebookEdit"}, True),
+    (GROK_RULES, "Stop", "NeverMatches", {}, True),
+    # GitHub's hooks reference: the pattern must match the whole value.
+    (COPILOT_RULES, "postToolUse", "bash", {"toolName": "bash"}, True),
+    (COPILOT_RULES, "postToolUse", "bas", {"toolName": "bash"}, False),
+    (COPILOT_RULES, "sessionStart", "NeverMatches", {}, True),
+]
+
+
+@pytest.mark.parametrize(
+    ("rules", "event", "matcher", "payload", "runs"),
+    MATCHER_CASES,
+    ids=[f"{event}-{matcher}-{runs}" for _, event, matcher, _, runs in MATCHER_CASES],
+)
+def test_hooks_are_picked_by_each_agents_matcher_rules(
+    rules, event, matcher, payload, runs
+):
+    assert runs_for(rules, Hook("true", matcher), event, payload) is runs
 
 
 AGENT_DIR = re.compile(r"[A-Z][A-Z0-9_]*_(?:HOME|DIR|CONFIG)")
