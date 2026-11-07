@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -258,17 +259,19 @@ def test_a_status_target_reaches_its_pane_from_a_hook_without_rex_block(
 def report_waiting(env, exe, cwd, block, **overrides):
     """Run a `waiting` hook whose exported status target names `block` on
     `env`'s server, with `overrides` on top of `env`'s variables."""
+    hook_env = {
+        **env.env,
+        "WORKREX_STATUS_BACKEND": "rex",
+        "WORKREX_STATUS_INSTANCE": env.server_url,
+        "WORKREX_STATUS_PANE_ID": block,
+        **overrides,
+    }
     hook = subprocess.run(
         [str(exe), "set-window-status", "waiting"],
         check=False,
         cwd=cwd,
-        env={
-            **env.env,
-            "WORKREX_STATUS_BACKEND": "rex",
-            "WORKREX_STATUS_INSTANCE": env.server_url,
-            "WORKREX_STATUS_PANE_ID": block,
-            **overrides,
-        },
+        # An override of None leaves the variable unset.
+        env={name: value for name, value in hook_env.items() if value is not None},
         capture_output=True,
         text=True,
     )
@@ -416,17 +419,65 @@ def test_a_hook_in_its_own_pane_does_not_wait_on_a_hung_rex_server(
     assert not [c for c in calls if stopped_server.server_url in c], "\n".join(calls)
 
 
+@pytest.fixture
+def stopped_default_server(tmp_path):
+    """A Rex server that never answers, on the socket rex uses when
+    REX_SERVER is unset."""
+    (tmp_path / "default").mkdir()
+    env = RexEnvironment(tmp_path / "default")
+    # A private runtime directory moves rex's default socket off the user's
+    # server, on a path short enough for a Unix socket.
+    env.env["XDG_RUNTIME_DIR"] = str(env.socket_dir)
+    probe = subprocess.run(
+        [
+            env.rex,
+            "--autostart=false",
+            "--timeout",
+            "1s",
+            "api",
+            "call",
+            "server.version",
+        ],
+        env=env.env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    found = re.search(r"no Rex server is running at (.+?), and autostart", probe.stderr)
+    assert found, probe.stderr
+    socket = Path(found[1])
+    socket.parent.mkdir(parents=True, exist_ok=True)
+    env.server_url = f"unix://{socket.resolve()}"
+    env.start_server()
+    assert env.server is not None
+    pid = env.server.pid
+    os.kill(pid, signal.SIGSTOP)
+    yield env
+    os.kill(pid, signal.SIGCONT)
+    env.stop_server()
+
+
+@pytest.mark.parametrize("rex_server", ["unix-url", "unset", "socket-path"])
 def test_a_hung_server_costs_a_hook_one_version_check(
-    stopped_server, workrex_exe_path, repo_path, tmp_path
+    stopped_default_server, workrex_exe_path, repo_path, tmp_path, rex_server
 ):
-    shim_dir, log = counted_rex(stopped_server, tmp_path)
-    block = stopped_server.runner_block_id
+    # The exported target names the server by its canonical endpoint. Every
+    # spelling of the same server shares its failed check.
+    env = stopped_default_server
+    shim_dir, log = counted_rex(env, tmp_path)
+    block = env.runner_block_id
+    spelling = {
+        "unix-url": env.server_url,
+        "unset": None,
+        "socket-path": env.server_url.removeprefix("unix://"),
+    }[rex_server]
 
     report_waiting(
-        stopped_server,
+        env,
         workrex_exe_path,
         repo_path,
         block,
+        REX_SERVER=spelling,
         REX_BLOCK=block,
         REX_BIN_DIR=str(shim_dir),
     )
