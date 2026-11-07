@@ -1,6 +1,6 @@
 [package]
 name = "workrex"
-version = "0.1.278-rex.3"
+version = "0.1.278-rex.4"
 edition = "2024"
 authors = ["Workrex contributors", "Raine Virta"]
 description = "Parallel coding agents in git worktrees and Rex sessions"
