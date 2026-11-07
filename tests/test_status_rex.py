@@ -442,7 +442,16 @@ def rex_default_socket(env: RexEnvironment) -> Path:
     return Path(found[1])
 
 
+def private_dir(path: Path) -> str:
+    """A runtime directory Linux rex uses: it passes over any but 0700."""
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o700)
+    return str(path)
+
+
 def serve_at(env: RexEnvironment, socket: Path) -> None:
+    # Never a real runtime directory's socket, such as the user's server.
+    assert socket.resolve().is_relative_to(env.socket_dir.resolve()), socket
     socket.parent.mkdir(parents=True, exist_ok=True)
     env.server_url = f"unix://{socket.resolve()}"
     env.start_server()
@@ -460,7 +469,7 @@ def stopped_default_server(tmp_path, request):
     # Private runtime directories move rex's default socket off the user's
     # server, on paths short enough for a Unix socket. REX_RUNTIME_DIR, when
     # set, wins over XDG_RUNTIME_DIR.
-    env.env["XDG_RUNTIME_DIR"] = str(env.socket_dir / "xdg")
+    env.env["XDG_RUNTIME_DIR"] = private_dir(env.socket_dir / "xdg")
     env.env.pop("REX_RUNTIME_DIR", None)
     if request.param == "REX_RUNTIME_DIR":
         env.env["REX_RUNTIME_DIR"] = str(env.socket_dir / "rt")
@@ -519,7 +528,7 @@ def test_an_unset_rex_server_reports_the_callers_pane_on_rexs_default_server(
     own = RexEnvironment(tmp_path / "own")
     target = RexEnvironment(tmp_path / "target")
     runtime = {
-        "XDG_RUNTIME_DIR": str(target.socket_dir / "xdg"),
+        "XDG_RUNTIME_DIR": private_dir(target.socket_dir / "xdg"),
         "REX_RUNTIME_DIR": str(own.socket_dir / "rt"),
     }
     target.env["XDG_RUNTIME_DIR"] = runtime["XDG_RUNTIME_DIR"]

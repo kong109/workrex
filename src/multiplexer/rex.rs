@@ -776,9 +776,23 @@ fn canonical_endpoint(server: Option<&str>) -> Option<String> {
         Some(server) => Some(canonical_address(server)),
         None => default_socket(
             std::env::var_os("REX_RUNTIME_DIR").as_deref(),
-            std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
-            home::home_dir().as_deref(),
             std::env::current_dir().ok().as_deref(),
+            || {
+                let xdg_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+                if cfg!(target_os = "macos") {
+                    macos_default_socket(xdg_runtime_dir.as_deref(), home::home_dir().as_deref())
+                } else if cfg!(target_os = "linux") {
+                    // SAFETY: getuid has no preconditions and cannot fail.
+                    let uid = unsafe { libc::getuid() };
+                    linux_default_socket(
+                        xdg_runtime_dir.as_deref(),
+                        &Path::new("/run/user").join(uid.to_string()),
+                        |dir| linux_runtime_dir(dir, uid),
+                    )
+                } else {
+                    None
+                }
+            },
         )
         .map(|socket| unix_endpoint(&socket)),
     }
@@ -808,33 +822,82 @@ fn canonical_address(address: &str) -> String {
 }
 
 /// Where rex looks for the local server when REX_SERVER is unset: in a
-/// nonempty REX_RUNTIME_DIR, taken from the working directory when relative;
-/// else under an absolute XDG_RUNTIME_DIR; else on macOS under Application
-/// Support. Rex's fallback elsewhere isn't known, so it isn't named.
+/// nonempty REX_RUNTIME_DIR, taken from the working directory when relative,
+/// else where the platform puts it.
 fn default_socket(
     rex_runtime_dir: Option<&OsStr>,
-    xdg_runtime_dir: Option<&OsStr>,
-    home: Option<&Path>,
     cwd: Option<&Path>,
+    platform_default: impl FnOnce() -> Option<PathBuf>,
 ) -> Option<PathBuf> {
-    if let Some(dir) = rex_runtime_dir.filter(|dir| !dir.is_empty()).map(Path::new) {
-        let dir = if dir.is_absolute() {
-            dir.to_path_buf()
-        } else {
-            cwd?.join(dir)
-        };
-        return Some(dir.join("server.sock"));
+    let Some(dir) = rex_runtime_dir.filter(|dir| !dir.is_empty()).map(Path::new) else {
+        return platform_default();
+    };
+    let dir = if dir.is_absolute() {
+        dir.to_path_buf()
+    } else {
+        cwd?.join(dir)
+    };
+    Some(dir.join("server.sock"))
+}
+
+/// Under any absolute XDG_RUNTIME_DIR, else under Application Support.
+fn macos_default_socket(xdg_runtime_dir: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
+    match xdg_runtime_dir
+        .map(Path::new)
+        .filter(|dir| dir.is_absolute())
+    {
+        Some(dir) => Some(dir.join("rex").join("server.sock")),
+        None => home.map(|home| home.join("Library/Application Support/rex/server.sock")),
     }
+}
+
+/// How Linux rex judges a runtime directory.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RuntimeDir {
+    Usable,
+    /// Rex passes over it for the next place.
+    Unusable,
+    /// What rex makes of it isn't known.
+    Unknown,
+}
+
+/// Under an absolute XDG_RUNTIME_DIR rex finds usable, else under
+/// `run_user`, the user's `/run/user/<uid>`. Where rex's choice isn't
+/// known, no socket is named.
+fn linux_default_socket(
+    xdg_runtime_dir: Option<&OsStr>,
+    run_user: &Path,
+    judge: impl Fn(&Path) -> RuntimeDir,
+) -> Option<PathBuf> {
+    let socket = |dir: &Path| dir.join("rex").join("server.sock");
     if let Some(dir) = xdg_runtime_dir
         .map(Path::new)
         .filter(|dir| dir.is_absolute())
     {
-        return Some(dir.join("rex").join("server.sock"));
+        match judge(dir) {
+            RuntimeDir::Usable => return Some(socket(dir)),
+            RuntimeDir::Unknown => return None,
+            RuntimeDir::Unusable => {}
+        }
     }
-    if cfg!(target_os = "macos") {
-        return home.map(|home| home.join("Library/Application Support/rex/server.sock"));
+    (judge(run_user) == RuntimeDir::Usable).then(|| socket(run_user))
+}
+
+/// Linux rex uses a runtime directory, through symlinks, whose permission
+/// bits are 0700, and passes over a missing path, a file, or any other
+/// mode. Whether it checks the owner isn't known, so another user's
+/// directory is `Unknown`.
+fn linux_runtime_dir(dir: &Path, uid: u32) -> RuntimeDir {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    match std::fs::metadata(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => RuntimeDir::Unusable,
+        Err(_) => RuntimeDir::Unknown,
+        Ok(meta) if !meta.is_dir() || meta.permissions().mode() & 0o777 != 0o700 => {
+            RuntimeDir::Unusable
+        }
+        Ok(meta) if meta.uid() != uid => RuntimeDir::Unknown,
+        Ok(_) => RuntimeDir::Usable,
     }
-    None
 }
 
 /// `unix://` addresses, in any case, with the path percent-decoded and
@@ -2800,41 +2863,100 @@ mod tests {
     }
 
     #[test]
-    fn an_unset_server_is_the_socket_rex_defaults_to() {
-        let home = Path::new("/Users/u");
+    fn rex_runtime_dir_holds_the_default_socket_on_every_platform() {
         let cwd = Path::new("/work");
-        let xdg = Path::new("/run/user/501");
-        let fallback = cfg!(target_os = "macos")
-            .then(|| home.join("Library/Application Support/rex/server.sock"));
-        let socket = |rex_runtime: Option<&str>, xdg_runtime: Option<&Path>| {
-            default_socket(
-                rex_runtime.map(OsStr::new),
-                xdg_runtime.map(Path::as_os_str),
-                Some(home),
-                Some(cwd),
-            )
-        };
-        // REX_RUNTIME_DIR holds the socket itself, ahead of XDG_RUNTIME_DIR,
-        // and a relative one is taken from the working directory.
+        let platform = || Some(PathBuf::from("/platform/rex/server.sock"));
+        let socket = |dir: Option<&str>, cwd| default_socket(dir.map(OsStr::new), cwd, platform);
         assert_eq!(
-            socket(Some("/rt"), Some(xdg)),
+            socket(Some("/rt"), Some(cwd)),
             Some(PathBuf::from("/rt/server.sock"))
         );
+        // A relative one is taken from the working directory.
         assert_eq!(
-            socket(Some("rt"), Some(xdg)),
+            socket(Some("rt"), Some(cwd)),
             Some(PathBuf::from("/work/rt/server.sock"))
         );
+        assert_eq!(socket(Some("rt"), None), None);
+        assert_eq!(socket(Some(""), Some(cwd)), platform());
+        assert_eq!(socket(None, Some(cwd)), platform());
+    }
+
+    #[test]
+    fn macos_rex_takes_any_absolute_runtime_dir() {
+        let home = Path::new("/Users/u");
+        let fallback = Some(home.join("Library/Application Support/rex/server.sock"));
         assert_eq!(
-            socket(Some(""), Some(xdg)),
-            Some(xdg.join("rex/server.sock"))
+            macos_default_socket(Some(OsStr::new("/nonexistent")), Some(home)),
+            Some(PathBuf::from("/nonexistent/rex/server.sock"))
         );
-        assert_eq!(socket(None, Some(xdg)), Some(xdg.join("rex/server.sock")));
-        // Rex ignores a relative XDG_RUNTIME_DIR.
-        assert_eq!(socket(None, Some(Path::new("run"))), fallback);
-        assert_eq!(socket(None, None), fallback);
         assert_eq!(
-            default_socket(Some(OsStr::new("rt")), None, Some(home), None),
-            None
+            macos_default_socket(Some(OsStr::new("run")), Some(home)),
+            fallback
+        );
+        assert_eq!(macos_default_socket(None, Some(home)), fallback);
+    }
+
+    #[test]
+    fn linux_rex_falls_back_from_a_runtime_dir_it_cant_use() {
+        let run_user = Path::new("/run/user/1001");
+        let xdg = OsStr::new("/xdg");
+        let at = |dir: &str| Some(Path::new(dir).join("rex/server.sock"));
+        let judged = |xdg_dir: RuntimeDir, run_user_dir: RuntimeDir| {
+            move |dir: &Path| {
+                if dir == Path::new("/xdg") {
+                    xdg_dir
+                } else {
+                    run_user_dir
+                }
+            }
+        };
+        use RuntimeDir::*;
+        let socket = |xdg, judge| linux_default_socket(xdg, run_user, judge);
+        assert_eq!(socket(Some(xdg), judged(Usable, Usable)), at("/xdg"));
+        assert_eq!(
+            socket(Some(xdg), judged(Unusable, Usable)),
+            at("/run/user/1001")
+        );
+        assert_eq!(
+            socket(Some(OsStr::new("xdg")), judged(Usable, Usable)),
+            at("/run/user/1001")
+        );
+        assert_eq!(socket(None, judged(Usable, Usable)), at("/run/user/1001"));
+        // Where rex's choice isn't known, no socket is named.
+        assert_eq!(socket(Some(xdg), judged(Unknown, Usable)), None);
+        assert_eq!(socket(Some(xdg), judged(Unusable, Unusable)), None);
+        assert_eq!(socket(None, judged(Usable, Unknown)), None);
+    }
+
+    #[test]
+    fn linux_rex_uses_only_a_private_runtime_dir() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        let dir = |name: &str, mode: u32| {
+            let path = root.path().join(name);
+            std::fs::create_dir(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            path
+        };
+        let judge = |path: &Path| linux_runtime_dir(path, uid);
+        assert_eq!(judge(&dir("private", 0o700)), RuntimeDir::Usable);
+        assert_eq!(judge(&dir("sticky", 0o1700)), RuntimeDir::Usable);
+        for mode in [0o711, 0o755, 0o500, 0o770] {
+            let path = dir(&format!("mode{mode:o}"), mode);
+            assert_eq!(judge(&path), RuntimeDir::Unusable, "{mode:o}");
+        }
+        let link = root.path().join("link");
+        symlink(root.path().join("private"), &link).unwrap();
+        assert_eq!(judge(&link), RuntimeDir::Usable);
+        let file = root.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(judge(&file), RuntimeDir::Unusable);
+        assert_eq!(judge(&root.path().join("missing")), RuntimeDir::Unusable);
+        assert_eq!(
+            linux_runtime_dir(&root.path().join("private"), uid + 1),
+            RuntimeDir::Unknown
         );
     }
 
