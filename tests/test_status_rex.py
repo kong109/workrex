@@ -196,6 +196,62 @@ def test_hook_status_puts_its_icon_in_the_window_label(
     assert window_label(rex, block) == window
 
 
+def test_a_status_target_recalled_into_another_pane_reports_that_pane(
+    rex, workrex_exe_path, repo_path
+):
+    # Workrex types `export WORKREX_STATUS_*=...; <agent>` into an agent
+    # pane, so the line lands in shell history. Rerunning it in another pane
+    # carries the first pane's target into the second pane's agent.
+    write_workrex_config(repo_path, panes=[{"focus": True}])
+    run_workrex_add(rex, workrex_exe_path, repo_path, "second-target", background=True)
+    wait_for_window_ready(rex, get_window_name("second-target"))
+    second = rex._target_block(get_window_name("second-target"))
+    first = start_fake_agent(rex, workrex_exe_path, repo_path, "first-target")
+    hook_env = {
+        "WORKREX_STATUS_BACKEND": "rex",
+        "WORKREX_STATUS_INSTANCE": rex.server_url,
+        "WORKREX_STATUS_PANE_ID": first,
+        "REX_BLOCK": second,
+    }
+    hook = subprocess.run(
+        [str(workrex_exe_path), "set-window-status", "waiting"],
+        check=False,
+        cwd=repo_path,
+        env={**rex.env, **hook_env},
+        capture_output=True,
+        text=True,
+    )
+    assert hook.returncode == 0, hook.stderr
+
+    assert window_label(rex, second) == f"💬\u2002{get_window_name('second-target')}"
+    assert window_label(rex, first) == get_window_name("first-target")
+
+
+def test_a_status_target_reaches_its_pane_from_a_hook_without_rex_block(
+    rex, workrex_exe_path, repo_path
+):
+    block = start_fake_agent(rex, workrex_exe_path, repo_path, "lost-block")
+    hook_env = {
+        "WORKREX_STATUS_BACKEND": "rex",
+        "WORKREX_STATUS_INSTANCE": rex.server_url,
+        "WORKREX_STATUS_PANE_ID": block,
+    }
+    env = {**rex.env, **hook_env}
+    env.pop("REX_BLOCK", None)
+    env.pop("REX_SESSION", None)
+    hook = subprocess.run(
+        [str(workrex_exe_path), "set-window-status", "waiting"],
+        check=False,
+        cwd=repo_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert hook.returncode == 0, hook.stderr
+
+    assert window_label(rex, block) == f"💬\u2002{get_window_name('lost-block')}"
+
+
 def test_a_window_prefix_ending_in_a_space_keeps_its_window(
     rex, workrex_exe_path, repo_path
 ):
