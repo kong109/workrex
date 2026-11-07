@@ -212,6 +212,42 @@ def gets_sidebars(env: SidebarRex, session_id: str) -> bool:
     )
 
 
+def has_one_root_sidebar(window: dict) -> bool:
+    return sidebar_of(window) is not None and sidebar_count(window) == 1
+
+
+def settles_to_one_sidebar_each(env: SidebarRex, session_id: str) -> bool:
+    """Whether every window of the session settles to exactly one sidebar,
+    at its root, within 5 s, and still has exactly one 0.5 s later.
+
+    A split that lands between the daemon's read and its placement nests the
+    sidebar. The next pass places a root sidebar, then closes the nested one,
+    so the window shows two for a moment before it settles."""
+    if not poll_until(
+        lambda: all(has_one_root_sidebar(w) for w in windows(env, session_id).values()),
+        timeout=5.0,
+        poll_interval=0.02,
+    ):
+        return False
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        if not all(has_one_root_sidebar(w) for w in windows(env, session_id).values()):
+            return False
+        time.sleep(0.02)
+    return True
+
+
+def layers(env: SidebarRex, session_id: str) -> dict:
+    """Every layer of every window, tiled and floating, with block labels."""
+    return {
+        window.get("label"): [
+            (layer["kind"], [block.get("label") for block in layer["blocks"]])
+            for layer in window["layers"]
+        ]
+        for window in windows(env, session_id).values()
+    }
+
+
 def shape(window: dict) -> object:
     """The tiled layout as nested [before, after] lists of block labels."""
     labels = {
@@ -273,9 +309,10 @@ def test_add_gets_a_sidebar_in_either_mode(rex, _template_git_repo, mode):
             for w in windows(env, session_id).values()
             if w.get("label") == get_window_name(branch)
         ]
-    assert gets_sidebars(env, session_id), layouts(env, session_id)
-    for window in windows(env, session_id).values():
-        assert sidebar_count(window) == 1, layouts(env, session_id)
+    assert settles_to_one_sidebar_each(env, session_id), (
+        layouts(env, session_id),
+        layers(env, session_id),
+    )
     assert len(tiled(windows(env, session_id)[added["window_id"]])["blocks"]) == 3
 
 
