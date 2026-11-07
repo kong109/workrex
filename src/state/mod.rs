@@ -141,14 +141,14 @@ pub fn clear_agent_status(mux: &dyn Multiplexer, pane_id: &str, clear_prompt: bo
     }
 }
 
-/// The stored status of the agent in `pane_id`, if there is one.
-pub fn agent_status(mux: &dyn Multiplexer, pane_id: &str) -> Option<AgentStatus> {
+/// The stored record of the agent in `pane_id`, if there is one.
+pub fn stored_agent(mux: &dyn Multiplexer, pane_id: &str) -> Option<AgentState> {
     let pane_key = PaneKey {
         backend: mux.name().to_string(),
         instance: mux.instance_id(),
         pane_id: pane_id.to_string(),
     };
-    StateStore::new().ok()?.get_agent(&pane_key).ok()??.status
+    StateStore::new().ok()?.get_agent(&pane_key).ok()?
 }
 
 #[allow(clippy::too_many_arguments)]

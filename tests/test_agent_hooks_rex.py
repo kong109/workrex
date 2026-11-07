@@ -45,6 +45,8 @@ from .support.setup import install_status_hooks, update_status_hooks
 from .test_status_rex import agent_status, foreground_name, window_label, workrex
 
 SESSION = "01a1a592-c141-7850-a3bc-4ce8f1634b27"
+# Muse runs its reminder check in a side session of its own.
+SIDE_SESSION = "01a1b772-a58a-7692-accf-ae5469993ef4"
 
 MUSE = HookedAgent(
     kind="muse",
@@ -395,6 +397,68 @@ def test_muse_events_after_stop_keep_the_turn_done_but_can_ask(muse):
         assert muse.status() == "done", event
     muse.fire("Notification", post_stop=True, message="Muse needs your input")
     assert muse.status() == "waiting"
+
+
+def test_a_muse_side_session_after_stop_keeps_the_turn_done(muse):
+    # Muse checks reminders in a side session after Stop and marks only the
+    # check's ToolUseStart as post_stop.
+    finished_turn(muse)
+    side = {
+        "session_id": SIDE_SESSION,
+        "tool_use_id": "call_03",
+        "tool_name": "submit_reminder_decision",
+    }
+    muse.fire("ToolUseStart", post_stop=True, **side)
+    muse.fire("PostToolUse", **side)
+    assert muse.status() == "done"
+    assert muse.label() == f"✅{SEPARATOR}{muse.window}"
+
+
+def test_a_muse_side_session_can_ask_for_approval(muse):
+    muse.fire("SessionStart", source="startup")
+    muse.fire("UserPromptSubmit", prompt="fix the bug")
+    muse.fire(
+        "Notification",
+        session_id=SIDE_SESSION,
+        message="Muse needs your permission to use Bash",
+    )
+    assert muse.status() == "waiting"
+
+
+def test_a_cleared_muse_session_keeps_its_status_through_side_sessions(muse):
+    # /clear starts a session the process's MUSE_SESSION_ID does not name.
+    show_prompts(muse.env)
+    finished_turn(muse)
+    cleared = {"session_id": "01a1b780-0000-7000-8000-000000000001"}
+    muse.fire("SessionStart", source="clear", **cleared)
+    muse.fire("UserPromptSubmit", prompt="next bug", **cleared)
+    assert muse.status() == "working"
+    muse.fire(
+        "Notification", message="Muse needs your permission to use Bash", **cleared
+    )
+    assert muse.status() == "waiting"
+    muse.fire(
+        "PostToolUse",
+        session_id=SIDE_SESSION,
+        tool_use_id="call_04",
+        tool_name="submit_reminder_decision",
+    )
+    assert muse.status() == "working"
+    muse.fire("Stop", **cleared)
+    assert muse.status() == "done"
+    assert muse.prompt() == "next bug"
+
+
+def test_grok_idle_pings_after_a_turn_keep_it_done(rex, workrex_exe_path, repo_path):
+    # Grok sends idle_prompt about a minute after every turn ends.
+    grok = Running(rex, workrex_exe_path, repo_path, GROK, "idle-grok")
+    grok.fire("SessionStart", source="new")
+    grok.fire("UserPromptSubmit", prompt="fix the bug")
+    grok.fire("Stop")
+    for kind in ["idle_prompt", "task_complete", "permission_prompt"]:
+        grok.fire("Notification", notification_type=kind, notificationType=kind)
+        expected = "waiting" if kind == "permission_prompt" else "done"
+        assert grok.status() == expected, kind
 
 
 @pytest.mark.parametrize(
