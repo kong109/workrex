@@ -419,15 +419,9 @@ def test_a_hook_in_its_own_pane_does_not_wait_on_a_hung_rex_server(
     assert not [c for c in calls if stopped_server.server_url in c], "\n".join(calls)
 
 
-@pytest.fixture
-def stopped_default_server(tmp_path):
-    """A Rex server that never answers, on the socket rex uses when
-    REX_SERVER is unset."""
-    (tmp_path / "default").mkdir()
-    env = RexEnvironment(tmp_path / "default")
-    # A private runtime directory moves rex's default socket off the user's
-    # server, on a path short enough for a Unix socket.
-    env.env["XDG_RUNTIME_DIR"] = str(env.socket_dir)
+def rex_default_socket(env: RexEnvironment) -> Path:
+    """The socket rex reaches from `env`'s variables with REX_SERVER unset,
+    as rex reports it."""
     probe = subprocess.run(
         [
             env.rex,
@@ -438,17 +432,39 @@ def stopped_default_server(tmp_path):
             "call",
             "server.version",
         ],
-        env=env.env,
+        env={name: value for name, value in env.env.items() if name != "REX_SERVER"},
         capture_output=True,
         text=True,
         check=False,
     )
     found = re.search(r"no Rex server is running at (.+?), and autostart", probe.stderr)
     assert found, probe.stderr
-    socket = Path(found[1])
+    return Path(found[1])
+
+
+def serve_at(env: RexEnvironment, socket: Path) -> None:
     socket.parent.mkdir(parents=True, exist_ok=True)
     env.server_url = f"unix://{socket.resolve()}"
     env.start_server()
+
+
+@pytest.fixture(
+    params=["XDG_RUNTIME_DIR", "REX_RUNTIME_DIR"],
+    ids=["xdg-runtime-dir", "rex-runtime-dir"],
+)
+def stopped_default_server(tmp_path, request):
+    """A Rex server that never answers, on the socket rex uses when
+    REX_SERVER is unset."""
+    (tmp_path / "default").mkdir()
+    env = RexEnvironment(tmp_path / "default")
+    # Private runtime directories move rex's default socket off the user's
+    # server, on paths short enough for a Unix socket. REX_RUNTIME_DIR, when
+    # set, wins over XDG_RUNTIME_DIR.
+    env.env["XDG_RUNTIME_DIR"] = str(env.socket_dir / "xdg")
+    env.env.pop("REX_RUNTIME_DIR", None)
+    if request.param == "REX_RUNTIME_DIR":
+        env.env["REX_RUNTIME_DIR"] = str(env.socket_dir / "rt")
+    serve_at(env, rex_default_socket(env))
     assert env.server is not None
     pid = env.server.pid
     os.kill(pid, signal.SIGSTOP)
@@ -457,19 +473,25 @@ def stopped_default_server(tmp_path):
     env.stop_server()
 
 
-@pytest.mark.parametrize("rex_server", ["unix-url", "unset", "socket-path"])
+@pytest.mark.parametrize(
+    "rex_server",
+    ["unix-url", "unset", "socket-path", "upper-scheme", "trailing-slash"],
+)
 def test_a_hung_server_costs_a_hook_one_version_check(
     stopped_default_server, workrex_exe_path, repo_path, tmp_path, rex_server
 ):
     # The exported target names the server by its canonical endpoint. Every
-    # spelling of the same server shares its failed check.
+    # spelling rex accepts for the same server shares its failed check.
     env = stopped_default_server
     shim_dir, log = counted_rex(env, tmp_path)
     block = env.runner_block_id
+    path = env.server_url.removeprefix("unix://")
     spelling = {
         "unix-url": env.server_url,
         "unset": None,
-        "socket-path": env.server_url.removeprefix("unix://"),
+        "socket-path": path,
+        "upper-scheme": f"UNIX://{path}",
+        "trailing-slash": f"unix://{path}/",
     }[rex_server]
 
     report_waiting(
@@ -484,6 +506,50 @@ def test_a_hung_server_costs_a_hook_one_version_check(
 
     calls = log.read_text().splitlines()
     assert len([c for c in calls if "server.version" in c]) == 1, "\n".join(calls)
+
+
+def test_an_unset_rex_server_reports_the_callers_pane_on_rexs_default_server(
+    tmp_path, workrex_exe_path, repo_path
+):
+    # With REX_SERVER unset, rex reaches $REX_RUNTIME_DIR/server.sock before
+    # the socket under XDG_RUNTIME_DIR, so a target on the latter is on
+    # another server than the caller's pane.
+    (tmp_path / "own").mkdir()
+    (tmp_path / "target").mkdir()
+    own = RexEnvironment(tmp_path / "own")
+    target = RexEnvironment(tmp_path / "target")
+    runtime = {
+        "XDG_RUNTIME_DIR": str(target.socket_dir / "xdg"),
+        "REX_RUNTIME_DIR": str(own.socket_dir / "rt"),
+    }
+    target.env["XDG_RUNTIME_DIR"] = runtime["XDG_RUNTIME_DIR"]
+    target.env.pop("REX_RUNTIME_DIR", None)
+    own.env.update(runtime)
+    serve_at(target, rex_default_socket(target))
+    try:
+        serve_at(own, rex_default_socket(own))
+        try:
+            assert own.server_url != target.server_url
+            caller = own.runner_block_id
+            caller_window = window_label(own, caller)
+            target_window = window_label(target, target.runner_block_id)
+
+            report_waiting(
+                target,
+                workrex_exe_path,
+                repo_path,
+                target.runner_block_id,
+                REX_SERVER=None,
+                REX_BLOCK=caller,
+                **runtime,
+            )
+
+            assert window_label(own, caller) == f"💬\u2002{caller_window}"
+            assert window_label(target, target.runner_block_id) == target_window
+        finally:
+            own.stop_server()
+    finally:
+        target.stop_server()
 
 
 def test_a_window_prefix_ending_in_a_space_keeps_its_window(

@@ -2723,21 +2723,52 @@ mod tests {
         std::fs::write(&socket, "").unwrap();
         let exported = format!("unix://{}", socket.canonicalize().unwrap().display());
         let path = socket.display().to_string();
-        for spelling in [exported.clone(), format!("unix://{path}"), path.clone()] {
+        for spelling in [
+            exported.clone(),
+            format!("unix://{path}"),
+            format!("UNIX://{path}"),
+            format!("Unix://{path}/"),
+            path.clone(),
+            format!("{path}/"),
+        ] {
             assert!(same_server(Some(&spelling), &exported), "{spelling}");
         }
         assert!(!same_server(Some("/tmp/other.sock"), &exported));
 
-        assert!(same_server(Some("127.0.0.1:7600"), "http://127.0.0.1:7600"));
-        assert!(same_server(Some("[::1]:7600"), "http://[::1]:7600"));
+        for spelling in [
+            "http://127.0.0.1:7600",
+            "http://127.0.0.1:7600/",
+            "http://127.0.0.1:7600//",
+            "HTTP://127.0.0.1:7600",
+            "HttP://127.0.0.1:7600/",
+        ] {
+            assert!(
+                same_server(Some(spelling), "http://127.0.0.1:7600"),
+                "{spelling}"
+            );
+        }
+        assert!(same_server(Some("http://h:1/rex/"), "http://h:1/rex"));
+        assert!(!same_server(Some("http://h:1/rex"), "http://h:1"));
+        assert!(!same_server(Some("https://h:1"), "http://h:1"));
         assert!(!same_server(
-            Some("127.0.0.1:7600"),
+            Some("http://127.0.0.1:7600"),
             "http://127.0.0.1:7601"
         ));
         assert!(same_server(
             Some("rex.tail4e96ed.ts.net"),
             "rex.tail4e96ed.ts.net"
         ));
+    }
+
+    #[test]
+    fn a_bare_host_and_port_is_no_url_in_particular() {
+        // Rex probes `host:port` over HTTPS and then HTTP, so it reaches
+        // whichever answers.
+        for url in ["http://127.0.0.1:7600", "https://127.0.0.1:7600"] {
+            assert!(!same_server(Some("127.0.0.1:7600"), url), "{url}");
+        }
+        assert!(!same_server(Some("[::1]:7600"), "http://[::1]:7600"));
+        assert!(same_server(Some("127.0.0.1:7600"), "127.0.0.1:7600"));
     }
 
     #[test]
