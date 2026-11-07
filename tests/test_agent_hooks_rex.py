@@ -397,6 +397,33 @@ def test_muse_events_after_stop_keep_the_turn_done_but_can_ask(muse):
     assert muse.status() == "waiting"
 
 
+def test_a_muse_side_session_after_stop_keeps_the_turn_done(muse):
+    # Muse checks reminders in a side session after Stop and marks only the
+    # check's ToolUseStart as post_stop.
+    finished_turn(muse)
+    side = {
+        "session_id": "01a1b772-a58a-7692-accf-ae5469993ef4",
+        "tool_use_id": "call_03",
+        "tool_name": "submit_reminder_decision",
+    }
+    muse.fire("ToolUseStart", post_stop=True, **side)
+    muse.fire("PostToolUse", **side)
+    assert muse.status() == "done"
+    assert muse.label() == f"✅{SEPARATOR}{muse.window}"
+
+
+def test_grok_idle_pings_after_a_turn_keep_it_done(rex, workrex_exe_path, repo_path):
+    # Grok sends idle_prompt about a minute after every turn ends.
+    grok = Running(rex, workrex_exe_path, repo_path, GROK, "idle-grok")
+    grok.fire("SessionStart", source="new")
+    grok.fire("UserPromptSubmit", prompt="fix the bug")
+    grok.fire("Stop")
+    for kind in ["idle_prompt", "task_complete", "permission_prompt"]:
+        grok.fire("Notification", notification_type=kind, notificationType=kind)
+        expected = "waiting" if kind == "permission_prompt" else "done"
+        assert grok.status() == expected, kind
+
+
 @pytest.mark.parametrize(
     ("agent", "delegated"),
     [

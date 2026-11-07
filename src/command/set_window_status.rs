@@ -965,7 +965,10 @@ mod tests {
         ] {
             let hook = parse_hook_input(payload).unwrap();
             assert!(hook.is_idle_notification(&waiting), "{payload}");
-            assert!(!hook.is_idle_notification(&SetWindowStatusCommand::Done), "{payload}");
+            assert!(
+                !hook.is_idle_notification(&SetWindowStatusCommand::Done),
+                "{payload}"
+            );
         }
         for payload in [
             r#"{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s"}"#,
