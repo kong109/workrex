@@ -27,7 +27,7 @@ fact arch "$(uname -m)"
 fact user "$(id -un)"
 fact hostname "$(uname -n)"
 fact kernel "$(uname -r)"
-fact rex "$(rex --version 2>/dev/null)"
+fact rex "$(rex version 2>/dev/null)"
 fact rex_server "$(rex --autostart=false server status --json 2>/dev/null | tr -d '\n')"
 fact git "$(git --version 2>/dev/null)"
 if command -v loginctl >/dev/null 2>&1; then
@@ -834,7 +834,8 @@ mod tests {
             &dir.path().join("rex"),
             r#"#!/bin/sh
 case "$*" in
-  *--version*) printf 'rex test\n';;
+  version) printf 'rex 0.0.1-gabc\ncommit: abc\n';;
+  *--version*) printf 'Error: unknown flag: --version\n' >&2; exit 1;;
   *) printf '{\n  "tailscale": {\n    "state": "running",\n    "dns_name": "node.example.ts.net"\n  }\n}\n';;
 esac
 "#,
@@ -853,6 +854,9 @@ esac
             .output()
             .unwrap();
         let facts = parse_facts(&String::from_utf8_lossy(&output.stdout));
+        let rex = rex_row(fact(&facts, "rex"));
+        assert_eq!(rex.level, Level::Ok);
+        assert_eq!(rex.detail, "rex 0.0.1-gabc");
         assert_eq!(
             rex_server_row(fact(&facts, "rex_server")).level,
             Level::Ok,
