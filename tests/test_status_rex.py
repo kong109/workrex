@@ -252,6 +252,90 @@ def test_a_status_target_reaches_its_pane_from_a_hook_without_rex_block(
     assert window_label(rex, block) == f"💬\u2002{get_window_name('lost-block')}"
 
 
+def report_waiting(env, exe, cwd, block, **overrides):
+    """Run a `waiting` hook whose exported status target names `block` on
+    `env`'s server, with `overrides` on top of `env`'s variables."""
+    hook = subprocess.run(
+        [str(exe), "set-window-status", "waiting"],
+        check=False,
+        cwd=cwd,
+        env={
+            **env.env,
+            "WORKREX_STATUS_BACKEND": "rex",
+            "WORKREX_STATUS_INSTANCE": env.server_url,
+            "WORKREX_STATUS_PANE_ID": block,
+            **overrides,
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert hook.returncode == 0, hook.stderr
+
+
+@pytest.mark.parametrize("caller", ["closed", "unknown"])
+def test_a_status_target_is_used_when_the_callers_pane_is_gone(
+    rex, workrex_exe_path, repo_path, caller
+):
+    # A hook can outlive the pane named by its REX_BLOCK, or inherit a
+    # REX_BLOCK that never named a pane on this server.
+    write_workrex_config(repo_path, panes=[{"focus": True}])
+    if caller == "closed":
+        run_workrex_add(rex, workrex_exe_path, repo_path, "gone", background=True)
+        wait_for_window_ready(rex, get_window_name("gone"))
+        gone = rex._target_block(get_window_name("gone"))
+        rex.kill_window(get_window_name("gone"))
+    else:
+        gone = "block:01a1b381-0000-7000-8000-000000000000"
+    agent = start_fake_agent(rex, workrex_exe_path, repo_path, "kept-target")
+
+    report_waiting(rex, workrex_exe_path, repo_path, agent, REX_BLOCK=gone)
+
+    assert window_label(rex, agent) == f"💬\u2002{get_window_name('kept-target')}"
+
+
+@pytest.fixture
+def other_server(tmp_path):
+    (tmp_path / "other").mkdir()
+    other = RexEnvironment(tmp_path / "other")
+    other.start_server()
+    yield other
+    other.stop_server()
+
+
+def test_a_status_target_is_used_when_the_callers_pane_is_on_another_server(
+    rex, workrex_exe_path, repo_path, other_server
+):
+    # REX_SERVER names the target's server, but REX_BLOCK is a live pane on
+    # another server, so it names no pane on the server the hook reaches.
+    agent = start_fake_agent(rex, workrex_exe_path, repo_path, "cross-server")
+
+    report_waiting(
+        rex, workrex_exe_path, repo_path, agent, REX_BLOCK=other_server.runner_block_id
+    )
+
+    assert window_label(rex, agent) == f"💬\u2002{get_window_name('cross-server')}"
+
+
+def test_a_status_target_recalled_on_another_server_reports_that_servers_pane(
+    rex, workrex_exe_path, repo_path, other_server
+):
+    agent = start_fake_agent(rex, workrex_exe_path, repo_path, "recalled-away")
+    caller = other_server.runner_block_id
+    caller_window = window_label(other_server, caller)
+
+    report_waiting(
+        rex,
+        workrex_exe_path,
+        repo_path,
+        agent,
+        REX_BLOCK=caller,
+        REX_SERVER=other_server.server_url,
+    )
+
+    assert window_label(rex, agent) == get_window_name("recalled-away")
+    assert window_label(other_server, caller) == f"💬\u2002{caller_window}"
+
+
 def test_a_window_prefix_ending_in_a_space_keeps_its_window(
     rex, workrex_exe_path, repo_path
 ):
