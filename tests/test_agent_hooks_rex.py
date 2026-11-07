@@ -447,21 +447,50 @@ NOT_AGENT_DIRS = {
     "XDG_STATE_HOME",
 }
 NOT_AGENT_DIRS |= {"XDG_RUNTIME_DIR", "REX_BIN_DIR", "WORKREX_FROZEN_CONFIG"}
+# Rex's runtime directory, which RexEnvironment drops; git's own, which
+# workrex scrubs before it runs git; ones workrex only sets for a child;
+# and Cargo's, read at build time.
+NOT_AGENT_DIRS |= {"REX_RUNTIME_DIR", "WORKREX_CONFIG_DIR", "CARGO_MANIFEST_DIR"}
+NOT_AGENT_DIRS |= {"GIT_COMMON_DIR", "GIT_CONFIG", "GIT_DIR", "GIT_TEMPLATE_DIR"}
+
+
+def directory_variables_named_in(source: str) -> set[str]:
+    """Every name shaped like a directory variable that `source` spells as
+    a whole string literal or as `$NAME` or `${NAME}` inside one, so a read
+    through a helper or a `const` counts as well as `env::var("NAME")`."""
+    names = set()
+    for literal in re.finditer(r'"((?:[^"\\]|\\.)*)"', source):
+        text = literal[1]
+        candidates = [text, *re.findall(r"\$\{?([A-Z][A-Z0-9_]*)", text)]
+        names |= {name for name in candidates if AGENT_DIR.fullmatch(name)}
+    return names
+
+
+def test_the_directory_variable_scan_sees_every_way_to_read_one():
+    source = """
+        let a = std::env::var("ALPHA_HOME");
+        let b = env_path("BETA_AGENT_HOME");
+        const GAMMA: &'static str = "GAMMA_DIR";
+        static DELTA: &str = "DELTA_CONFIG";
+        let script = "cd \\"${EPSILON_DIR}/x\\" && ls $ZETA_HOME";
+        let other = "NOT_A_DIRECTORY";
+    """
+    assert directory_variables_named_in(source) == {
+        "ALPHA_HOME",
+        "BETA_AGENT_HOME",
+        "GAMMA_DIR",
+        "DELTA_CONFIG",
+        "EPSILON_DIR",
+        "ZETA_HOME",
+    }
 
 
 def test_the_test_environment_drops_every_agent_directory_variable():
-    # A variable the product reads to find a directory, as `env::var("X")`,
-    # `get_env("X")`, or a `const` holding the name.
-    read = re.compile(
-        r'(?:var(?:_os)?|get_env)\(\s*"([A-Z0-9_]+)"\s*\)|const [A-Z0-9_]+: &str = "([A-Z0-9_]+)"'
-    )
     source = Path(__file__).parent.parent / "src"
     names = {
         name
         for path in source.rglob("*.rs")
-        for match in read.finditer(path.read_text())
-        for name in match.groups()
-        if name and AGENT_DIR.fullmatch(name)
+        for name in directory_variables_named_in(path.read_text())
     }
     assert names - NOT_AGENT_DIRS - set(AGENT_VARIABLES) == set()
 
