@@ -360,9 +360,11 @@ def stopped_server(tmp_path):
     (tmp_path / "stopped").mkdir()
     stopped = RexEnvironment(tmp_path / "stopped")
     stopped.start_server()
-    os.kill(stopped.server.pid, signal.SIGSTOP)
+    assert stopped.server is not None
+    pid = stopped.server.pid
+    os.kill(pid, signal.SIGSTOP)
     yield stopped
-    os.kill(stopped.server.pid, signal.SIGCONT)
+    os.kill(pid, signal.SIGCONT)
     stopped.stop_server()
 
 
