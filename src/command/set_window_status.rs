@@ -153,70 +153,80 @@ fn run_for_status_target(
     hook: Option<&HookInput>,
     update: impl FnOnce(&dyn Multiplexer, &str) -> Result<()>,
 ) -> Result<()> {
-    match StatusTarget::from_env() {
-        Ok(Some(target)) => {
-            let mux = create_backend_for_instance(target.backend, &target.instance);
-            // The exported target is for hooks that lost the pane's own
-            // variables. A caller that still names another pane got the
-            // target from a recalled history line or a copy, so its own
-            // pane wins.
-            if let Some(own) = mux
-                .current_pane_id()
-                .filter(|own| !own.is_empty() && *own != target.pane_id)
-            {
-                if matches!(mux.get_live_pane_info(&own), Ok(Some(_))) {
-                    return update(&*mux, &own);
-                }
-            } else {
-                return update_target_pane(&*mux, &target, update);
-            }
-        }
-        Ok(None) => {}
+    let target = match StatusTarget::from_env() {
+        Ok(target) => target,
         Err(error) => {
             warn!(error = %error, "invalid status target environment");
             return Ok(());
         }
+    };
+    let Some(target) = target else {
+        // A status update requires identity tied to a live pane. Hooks can
+        // lose multiplexer variables, so Rex additionally accepts an exact
+        // agent session binding or process ancestry with agent-specific
+        // ownership checks.
+        for backend in status_backend_candidates() {
+            let mux = create_backend(backend);
+            if let Some(pane_id) = resolve_status_pane_id(&*mux, hook) {
+                return update(&*mux, &pane_id);
+            }
+        }
+        return Ok(());
+    };
+
+    // The caller's own live pane comes first: the exported target also
+    // reaches panes that recall the agent line from history or a copy, and
+    // the agent there runs in the caller's pane. The target is for hooks
+    // that lost the pane's variables, or whose pane is gone.
+    let own_mux = create_backend(target.backend);
+    let own = own_mux.current_pane_id().filter(|own| !own.is_empty());
+    if let Some(own) = &own
+        && live_or_warn(&*own_mux, own, "caller pane")
+    {
+        return update(&*own_mux, own);
     }
 
-    // A status update requires identity tied to a live pane. Hooks can lose
-    // multiplexer variables, so Rex additionally accepts an exact agent
-    // session binding or process ancestry with agent-specific ownership checks.
+    let target_mux = create_backend_for_instance(target.backend, &target.instance);
+    if live_or_warn(&*target_mux, &target.pane_id, "status target pane") {
+        return update(&*target_mux, &target.pane_id);
+    }
+
+    // Neither pane is live. The caller's pane was just found dead, so only
+    // the session binding and process ancestry are left.
     for backend in status_backend_candidates() {
         let mux = create_backend(backend);
-        if let Some(pane_id) = resolve_status_pane_id(&*mux, hook) {
+        if let Some(pane_id) = resolve_status_pane_without_caller(&*mux, hook) {
             return update(&*mux, &pane_id);
         }
     }
-
+    warn!(
+        backend = %target.backend,
+        instance = %target.instance,
+        pane_id = %target.pane_id,
+        caller = ?own,
+        "no live pane for status"
+    );
     Ok(())
 }
 
-fn update_target_pane(
-    mux: &dyn Multiplexer,
-    target: &StatusTarget,
-    update: impl FnOnce(&dyn Multiplexer, &str) -> Result<()>,
-) -> Result<()> {
-    match mux.get_live_pane_info(&target.pane_id) {
-        Ok(Some(_)) => return update(mux, &target.pane_id),
+/// Whether `pane_id` is live on `mux`, warning when it is not.
+fn live_or_warn(mux: &dyn Multiplexer, pane_id: &str, role: &str) -> bool {
+    match mux.get_live_pane_info(pane_id) {
+        Ok(Some(_)) => true,
         Ok(None) => {
-            warn!(
-                backend = %target.backend,
-                instance = %target.instance,
-                pane_id = %target.pane_id,
-                "status target pane is unavailable"
-            );
+            warn!(instance = %mux.instance_id(), pane_id, "{role} is unavailable");
+            false
         }
         Err(error) => {
             warn!(
-                backend = %target.backend,
-                instance = %target.instance,
-                pane_id = %target.pane_id,
-                error = %error,
-                "failed to validate status target pane"
+                instance = %mux.instance_id(),
+                pane_id,
+                error = %format!("{error:#}"),
+                "failed to validate {role}"
             );
+            false
         }
     }
-    Ok(())
 }
 
 fn apply_status_update(
@@ -479,7 +489,15 @@ fn resolve_status_pane_id(mux: &dyn Multiplexer, hook: Option<&HookInput>) -> Op
     if let Some(pane_id) = mux.current_pane_id().filter(|pane_id| !pane_id.is_empty()) {
         return Some(pane_id);
     }
+    resolve_status_pane_without_caller(mux, hook)
+}
 
+/// The pane bound to the hook's agent session, else the pane in this
+/// process's ancestry.
+fn resolve_status_pane_without_caller(
+    mux: &dyn Multiplexer,
+    hook: Option<&HookInput>,
+) -> Option<String> {
     let live_panes = mux.get_all_live_pane_info().ok()?;
     let agents = StateStore::new().ok()?.list_all_agents().ok()?;
     let server_boot_id = mux.server_boot_id().ok().flatten();
