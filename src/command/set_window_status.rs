@@ -156,27 +156,20 @@ fn run_for_status_target(
     match StatusTarget::from_env() {
         Ok(Some(target)) => {
             let mux = create_backend_for_instance(target.backend, &target.instance);
-            match mux.get_live_pane_info(&target.pane_id) {
-                Ok(Some(_)) => return update(&*mux, &target.pane_id),
-                Ok(None) => {
-                    warn!(
-                        backend = %target.backend,
-                        instance = %target.instance,
-                        pane_id = %target.pane_id,
-                        "status target pane is unavailable"
-                    );
+            // The exported target is for hooks that lost the pane's own
+            // variables. A caller that still names another pane got the
+            // target from a recalled history line or a copy, so its own
+            // pane wins.
+            if let Some(own) = mux
+                .current_pane_id()
+                .filter(|own| !own.is_empty() && *own != target.pane_id)
+            {
+                if matches!(mux.get_live_pane_info(&own), Ok(Some(_))) {
+                    return update(&*mux, &own);
                 }
-                Err(error) => {
-                    warn!(
-                        backend = %target.backend,
-                        instance = %target.instance,
-                        pane_id = %target.pane_id,
-                        error = %error,
-                        "failed to validate status target pane"
-                    );
-                }
+            } else {
+                return update_target_pane(&*mux, &target, update);
             }
-            return Ok(());
         }
         Ok(None) => {}
         Err(error) => {
@@ -195,6 +188,34 @@ fn run_for_status_target(
         }
     }
 
+    Ok(())
+}
+
+fn update_target_pane(
+    mux: &dyn Multiplexer,
+    target: &StatusTarget,
+    update: impl FnOnce(&dyn Multiplexer, &str) -> Result<()>,
+) -> Result<()> {
+    match mux.get_live_pane_info(&target.pane_id) {
+        Ok(Some(_)) => return update(mux, &target.pane_id),
+        Ok(None) => {
+            warn!(
+                backend = %target.backend,
+                instance = %target.instance,
+                pane_id = %target.pane_id,
+                "status target pane is unavailable"
+            );
+        }
+        Err(error) => {
+            warn!(
+                backend = %target.backend,
+                instance = %target.instance,
+                pane_id = %target.pane_id,
+                error = %error,
+                "failed to validate status target pane"
+            );
+        }
+    }
     Ok(())
 }
 
