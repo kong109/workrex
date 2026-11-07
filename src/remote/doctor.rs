@@ -1,4 +1,4 @@
-//! `workmux remote doctor <name>`: check that a remote can run agents.
+//! `workrex remote doctor <name>`: check that a remote can run agents.
 
 use crate::bin_name::BIN;
 use std::collections::BTreeMap;
@@ -16,7 +16,6 @@ use crate::config::{Config, RemoteIsolation};
 
 mod wsl;
 
-const MIN_TMUX: (u32, u32) = (3, 3);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Prints one `key=value` line per fact; values are first lines only.
@@ -28,7 +27,8 @@ fact arch "$(uname -m)"
 fact user "$(id -un)"
 fact hostname "$(uname -n)"
 fact kernel "$(uname -r)"
-fact tmux "$(tmux -V 2>/dev/null)"
+fact rex "$(rex --version 2>/dev/null)"
+fact rex_server "$(rex --autostart=false server status --json 2>/dev/null | tr -d '\n')"
 fact git "$(git --version 2>/dev/null)"
 if command -v loginctl >/dev/null 2>&1; then
   fact linger "$(loginctl show-user "$(id -un)" --property=Linger --value 2>/dev/null)"
@@ -170,7 +170,8 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
         version => Row::new("git", Level::Ok, version),
     });
 
-    rows.push(tmux_row(fact(facts, "tmux")));
+    rows.push(rex_row(fact(facts, "rex")));
+    rows.push(rex_server_row(fact(facts, "rex_server")));
 
     let linger = match fact(facts, "linger") {
         "yes" => Row::new("linger", Level::Ok, format!("enabled for {user}")),
@@ -255,31 +256,35 @@ fn runtime_row(facts: &Facts, cx: &Context) -> (Row, Option<&'static str>) {
     (row, None)
 }
 
-fn tmux_row(version: &str) -> Row {
+fn rex_row(version: &str) -> Row {
     if version.is_empty() {
-        return Row::new("tmux", Level::Fail, "tmux not found").fix("install tmux 3.3 or newer");
-    }
-    match parse_tmux_version(version) {
-        Some(found) if found >= MIN_TMUX => Row::new("tmux", Level::Ok, version),
-        Some(_) => Row::new("tmux", Level::Fail, format!("{version} is older than 3.3"))
-            .fix("install tmux 3.3 or newer"),
-        None if version.contains("master") => Row::new("tmux", Level::Ok, version),
-        None => Row::new(
-            "tmux",
-            Level::Warn,
-            format!("cannot parse version {version:?}"),
-        )
-        .fix("make sure tmux is 3.3 or newer"),
+        Row::new("Rex", Level::Fail, "rex CLI not found")
+            .fix("install Rex on the node and start rex server run --tailscale")
+    } else {
+        Row::new("Rex", Level::Ok, version)
     }
 }
 
-/// Parse `tmux -V` output such as `tmux 3.4`, `tmux 3.3a` or `tmux next-3.5`.
-fn parse_tmux_version(output: &str) -> Option<(u32, u32)> {
-    let version = output.trim().strip_prefix("tmux ")?;
-    let version = version.strip_prefix("next-").unwrap_or(version);
-    let (major, rest) = version.split_once('.')?;
-    let minor: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    Some((major.parse().ok()?, minor.parse().ok()?))
+fn rex_server_row(status: &str) -> Row {
+    let fix = "run rex server run --tailscale on the node";
+    let Ok(status) = serde_json::from_str::<serde_json::Value>(status) else {
+        return Row::new(
+            "Rex server",
+            Level::Fail,
+            "server does not answer with valid status",
+        )
+        .fix(fix);
+    };
+    let tailnet = &status["tailscale"];
+    if tailnet["state"] != "running" || tailnet["dns_name"].as_str().is_none_or(str::is_empty) {
+        return Row::new(
+            "Rex server",
+            Level::Fail,
+            "server is not reachable through the tailnet",
+        )
+        .fix(fix);
+    }
+    Row::new("Rex server", Level::Ok, "server answers on the tailnet")
 }
 
 /// Image the remote would run for the configured agent.
@@ -292,7 +297,7 @@ fn agent_image(config: &Config) -> (String, &'static str) {
     let source = if config.sandbox.image.is_some() {
         "sandbox.image"
     } else {
-        "the default workmux image"
+        "the default workrex image"
     };
     (config.sandbox.resolved_image(agent), source)
 }
@@ -558,7 +563,7 @@ mod tests {
         RemoteSpec {
             name: "hetzner".into(),
             host: "wm".into(),
-            path: "~/.workmux-node".into(),
+            path: "~/.workrex-node".into(),
             isolation,
             isolation_explicit: true,
             binary: None,
@@ -567,10 +572,15 @@ mod tests {
     }
 
     fn healthy_facts() -> Facts {
-        parse_facts(
-            "os=Linux\narch=aarch64\nuser=dev\nhostname=box\ntmux=tmux 3.4\n\
+        let mut facts = parse_facts(
+            "os=Linux\narch=aarch64\nuser=dev\nhostname=box\nrex=rex 1\nrex_server={}\n\
              git=git version 2.43.0\nlinger=yes\ndocker_status=0\ndocker_out=29.0.1\n",
-        )
+        );
+        facts.insert(
+            "rex_server".into(),
+            include_str!("../multiplexer/testdata/rex_server_status_tailnet.json").into(),
+        );
+        facts
     }
 
     fn rows_for(
@@ -582,7 +592,7 @@ mod tests {
         let cx = Context {
             spec: &spec,
             node: &node,
-            node_path: "~/.workmux-node/bin/workmux-1",
+            node_path: "~/.workrex-node/bin/workrex-1",
             mismatch_hint: "rebuild",
             disconnect_hint: Some("ssh -O exit -o ControlPath=/s wm"),
         };
@@ -591,6 +601,24 @@ mod tests {
 
     fn row<'a>(rows: &'a [Row], check: &str) -> &'a Row {
         rows.iter().find(|row| row.check == check).unwrap()
+    }
+
+    #[test]
+    fn rex_server_must_answer_on_the_tailnet() {
+        for status in [
+            "",
+            "{}",
+            r#"{"tailscale":{"state":"disabled","dns_name":"node"}}"#,
+        ] {
+            assert_eq!(rex_server_row(status).level, Level::Fail);
+        }
+        assert_eq!(
+            rex_server_row(include_str!(
+                "../multiplexer/testdata/rex_server_status_tailnet.json"
+            ))
+            .level,
+            Level::Ok
+        );
     }
 
     #[test]
@@ -609,7 +637,8 @@ mod tests {
                 "arch",
                 "node",
                 "git",
-                "tmux",
+                "Rex",
+                "Rex server",
                 "linger",
                 "agents",
                 "container"
@@ -628,10 +657,7 @@ mod tests {
         );
         let node = row(&rows, "node");
         assert_eq!(node.level, Level::Fail);
-        assert_eq!(
-            node.fix.as_deref(),
-            Some(crate::rebrand!("workmux remote setup hetzner"))
-        );
+        assert_eq!(node.fix.as_deref(), Some("workrex remote setup hetzner"));
 
         let mut hello = Hello::local();
         hello.protocol = 999;
@@ -643,20 +669,6 @@ mod tests {
         let node = row(&rows, "node");
         assert!(node.detail.contains("protocol 999"), "{node:?}");
         assert_eq!(node.fix.as_deref(), Some("rebuild"));
-    }
-
-    #[test]
-    fn tmux_versions() {
-        assert_eq!(parse_tmux_version("tmux 3.3a"), Some((3, 3)));
-        assert_eq!(parse_tmux_version("tmux next-3.5"), Some((3, 5)));
-        assert_eq!(parse_tmux_version("tmux 3.10"), Some((3, 10)));
-        assert_eq!(parse_tmux_version("tmux master"), None);
-        assert_eq!(tmux_row("tmux 3.3a").level, Level::Ok);
-        assert_eq!(tmux_row("tmux next-3.5").level, Level::Ok);
-        assert_eq!(tmux_row("tmux master").level, Level::Ok);
-        assert_eq!(tmux_row("tmux 3.2a").level, Level::Fail);
-        assert_eq!(tmux_row("").level, Level::Fail);
-        assert_eq!(tmux_row("tmux weird").level, Level::Warn);
     }
 
     #[test]
@@ -816,6 +828,40 @@ mod tests {
     }
 
     #[test]
+    fn facts_probe_keeps_multiline_rex_server_status() {
+        let dir = tempfile::TempDir::new().unwrap();
+        crate::test_support::write_script(
+            &dir.path().join("rex"),
+            r#"#!/bin/sh
+case "$*" in
+  *--version*) printf 'rex test\n';;
+  *) printf '{\n  "tailscale": {\n    "state": "running",\n    "dns_name": "node.example.ts.net"\n  }\n}\n';;
+esac
+"#,
+        );
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(FACTS_SCRIPT)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    dir.path().display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .output()
+            .unwrap();
+        let facts = parse_facts(&String::from_utf8_lossy(&output.stdout));
+        assert_eq!(
+            rex_server_row(fact(&facts, "rex_server")).level,
+            Level::Ok,
+            "{}",
+            fact(&facts, "rex_server")
+        );
+    }
+
+    #[test]
     fn facts_script_runs_locally() {
         let output = std::process::Command::new("sh")
             .arg("-c")
@@ -955,7 +1001,7 @@ mod tests {
         );
         let fix = rows[1].fix.as_deref().unwrap();
         assert!(
-            fix.starts_with(crate::rebrand!("workmux remote login hetzner codex")),
+            fix.starts_with("workrex remote login hetzner codex"),
             "{fix}"
         );
     }

@@ -7,12 +7,12 @@ workrex is designed with AI agent workflows in mind. Run multiple agents in para
 
 ## Agent integration
 
-workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
+Workrex uses `.workrex.yaml`, `~/.config/workrex/config.yaml`, and `WORKREX_*` environment variables. See [Configuration](/guide/configuration/).
 
-When you provide a prompt via `--prompt`, `--prompt-file`, or `--prompt-editor`, workrex automatically injects the prompt into panes running the configured agent command (e.g., `claude`, `codex`, `opencode`, `gemini`, `agy`, `kiro-cli`, `vibe`, `pi`, `omp`, `grok`, `muse`, or whatever you've set via the `agent` config or `--agent` flag) without requiring any `.workmux.yaml` changes:
+When you provide a prompt via `--prompt`, `--prompt-file`, or `--prompt-editor`, workrex automatically injects the prompt into panes running the configured agent command (e.g., `claude`, `codex`, `opencode`, `gemini`, `agy`, `kiro-cli`, `vibe`, `pi`, `omp`, `grok`, `muse`, or whatever you've set via the `agent` config or `--agent` flag) without requiring any `.workrex.yaml` changes:
 
 - Panes with a command matching the configured agent are automatically started with the given prompt.
-- You can keep your `.workmux.yaml` pane configuration simple (e.g., `panes: [{ command: "<agent>" }]`) and let workrex handle prompt injection at runtime.
+- You can keep your `.workrex.yaml` pane configuration simple (e.g., `panes: [{ command: "<agent>" }]`) and let workrex handle prompt injection at runtime.
 
 This means you can launch AI agents with task-specific prompts without modifying your project configuration for each task.
 
@@ -44,20 +44,20 @@ The `-A` (`--auto-name`) flag uses an LLM to [generate a branch name](/reference
 
 ## Embedded agent mode
 
-If your editor has a built-in agent (e.g., neovim with an agent plugin), you can use `--prompt-file-only` to write the prompt to `.workmux/PROMPT-<branch>.md` without requiring an agent pane:
+If your editor has a built-in agent (e.g., neovim with an agent plugin), you can use `--prompt-file-only` to write the prompt to `.workrex/PROMPT-<branch>.md` without requiring an agent pane:
 
 ```bash
 workrex add feature/task -P task.md --prompt-file-only
 ```
 
-Your editor can then detect the prompt file on startup and pass it to its embedded agent. Set `prompt_file_only: true` in `.workmux.yaml` to make this the default.
+Your editor can then detect the prompt file on startup and pass it to its embedded agent. Set `prompt_file_only: true` in `.workrex.yaml` to make this the default.
 
 ## Named agents
 
 Define short names for agent profiles in your global config. This is useful when you have multiple accounts, custom wrapper scripts, extra arguments, or environment variable overrides:
 
 ```yaml
-# ~/.config/workmux/config.yaml
+# ~/.config/workrex/config.yaml
 agents:
   cc-work: "claude"
   cc-personal:
@@ -88,7 +88,7 @@ Use named agents anywhere you'd use an agent name:
 # CLI
 workrex add oauth -a pi-luna-max -p "Implement history/2026-08-29-oauth-plan.md"
 
-# In .workmux.yaml
+# In .workrex.yaml
 agent: pi-luna-max
 ```
 
@@ -138,7 +138,7 @@ Structured profiles support these fields:
 String entries still work for simple aliases, but structured profiles avoid quoting long commands by hand.
 
 :::tip
-Named agents are global-only for security. Define them in `~/.config/workmux/config.yaml`, not in project `.workmux.yaml` files. Project configs can reference them but not define them.
+Named agents are global-only for security. Define them in `~/.config/workrex/config.yaml`, not in project `.workrex.yaml` files. Project configs can reference them but not define them.
 :::
 
 ## Per-pane agents

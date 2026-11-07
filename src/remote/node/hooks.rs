@@ -1,10 +1,10 @@
-//! `status-hooks`: the workmux status hooks of the agents remote executions
+//! `status-hooks`: the workrex status hooks of the agents remote executions
 //! run, in the directories those agents read on the node.
 //!
 //! Containers mount the node user's default agent directories, whatever the
 //! node user's environment selects, plus OpenCode's config directory. With
 //! `isolation: none` agents run as the node user, so their hooks live where
-//! `workmux setup` would put them.
+//! `workrex setup` would put them.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

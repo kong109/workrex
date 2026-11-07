@@ -3,8 +3,8 @@
   --sl-color-accent: #0f7d6f;
   --sl-color-accent-high: #0c675c;
   --sl-color-text-accent: #0c675c;
-  --wm-accent-surface: #16b9a6;
-  --wm-button-bg: #0f7569;
+  --wr-accent-surface: #16b9a6;
+  --wr-button-bg: #0f7569;
 }
 
 :root[data-theme="dark"] {
@@ -17,8 +17,8 @@
   --sl-color-accent: #30e1c8;
   --sl-color-accent-high: #b6f7ec;
   --sl-color-text-accent: #30e1c8;
-  --wm-accent-surface: #30e1c8;
-  --wm-button-bg: #20a995;
+  --wr-accent-surface: #30e1c8;
+  --wr-button-bg: #20a995;
 }
 
 :root[data-theme="light"] .sidebar [aria-current="page"] {

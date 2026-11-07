@@ -26,7 +26,7 @@ if [ "$1" = build ]; then ls "$4" >> "$LOG"; cat "$4/Dockerfile" >> "$LOG"; fi
 """,
     "limactl": """#!/bin/sh
 echo "limactl $*" >> "$LOG"
-[ "$1" = list ] && echo '{"name":"wm-test","status":"Running"}'
+[ "$1" = list ] && echo '{"name":"wr-test","status":"Running"}'
 exit 0
 """,
     "aarch64-unknown-linux-gnu-gcc": "#!/bin/sh\n",
@@ -36,7 +36,7 @@ exit 0
 
 @pytest.mark.parametrize("skip_build", [False, True])
 def test_install_dev_ships_the_built_binary(
-    tmp_path: Path, workmux_exe_path: Path, skip_build: bool
+    tmp_path: Path, workrex_exe_path: Path, skip_build: bool
 ):
     fakebin, ws, home = tmp_path / "bin", tmp_path / "ws", tmp_path / "home"
     for d in (fakebin, ws, home):
@@ -55,11 +55,18 @@ def test_install_dev_ships_the_built_binary(
     }
     if skip_build:
         subprocess.run(
-            [fakebin / "cargo", "build", "--target", _guest_target()], env=env
+            [fakebin / "cargo", "build", "--target", _guest_target()],
+            check=False,
+            env=env,
         )
     args = ["sandbox", "install-dev"] + (["--skip-build"] if skip_build else [])
     result = subprocess.run(
-        [workmux_exe_path, *args], env=env, cwd=ws, capture_output=True, text=True
+        [workrex_exe_path, *args],
+        check=False,
+        env=env,
+        cwd=ws,
+        capture_output=True,
+        text=True,
     )
 
     assert result.returncode == 0, result.stderr + result.stdout
@@ -67,8 +74,8 @@ def test_install_dev_ships_the_built_binary(
     assert f"\nDockerfile\n{BIN}\n" in calls, calls
     assert f"COPY {BIN} /usr/local/bin/{BIN}\n" in calls, calls
     binary = ws / "target" / _guest_target() / "debug" / BIN
-    assert f"limactl cp {binary} wm-test:/tmp/workmux.new" in calls, calls
-    assert f'/tmp/workmux.new "$HOME/.local/bin/{BIN}"' in calls, calls
+    assert f"limactl cp {binary} wr-test:/tmp/workrex.new" in calls, calls
+    assert f'/tmp/workrex.new "$HOME/.local/bin/{BIN}"' in calls, calls
 
 
 def _guest_target() -> str:

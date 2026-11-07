@@ -1,6 +1,5 @@
 //! Application state for the sidebar TUI.
 
-use crate::bin_name::BIN;
 use anyhow::Result;
 use ratatui::layout::Rect;
 use ratatui::widgets::ListState;
@@ -10,7 +9,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::cmd::Cmd;
 use crate::config::{
     AgentIcons, Config, SidebarEnterAction, SidebarGroupBy, SidebarPosition, SidebarWidth,
     StatusIcons, TemplatesConfig, ThemeConfig, ThemeMode,
@@ -48,7 +46,7 @@ impl SidebarLayoutMode {
     }
 }
 
-/// Sidebar filter mode: show all agents or only those in the host tmux session.
+/// Sidebar filter mode: show all agents or only those in the host rex session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarFilterMode {
@@ -290,14 +288,14 @@ pub struct SidebarApp {
     pub group_by: Option<SidebarGroupBy>,
     /// Grouping the config asks for, which the runtime toggle restores.
     pub configured_group_by: Option<SidebarGroupBy>,
-    /// Groups whose stale agents are currently shown. Shared through tmux, so
+    /// Groups whose stale agents are currently shown. Shared through Workrex preferences, so
     /// every sidebar pane expands and collapses together.
     pub expanded_groups: std::collections::HashSet<String>,
     /// Pane IDs the daemon judged stale, so clients and the published pane
     /// list fold the same agents.
     pub stale_pane_ids: std::collections::HashSet<String>,
     /// Number each agent answers to for `{idx}`, `{jump_key}` and
-    /// `workmux sidebar jump`, or `None` for an agent this pane shows but the
+    /// `workrex sidebar jump`, or `None` for an agent this pane shows but the
     /// published list does not. Indexed by agent.
     pub jump_numbers: Vec<Option<usize>>,
     pub has_loaded_snapshot: bool,
@@ -374,21 +372,9 @@ pub struct SidebarApp {
     /// Templates as configured, kept so switching presentation can re-resolve
     /// them without re-reading config from disk.
     template_config: Option<TemplatesConfig>,
-    /// Live sidebar width as last loaded from config. Stored for parity with
-    /// other live keys; tmux pane resize is not driven from here.
+    /// Live sidebar width as last loaded from config. Rex events drive resizing.
     pub current_width: Option<SidebarWidth>,
-    /// Last known window width (for detecting manual pane resizes).
-    last_window_width: Option<u16>,
-    /// Last known window height (for detecting manual top bar resizes).
-    last_window_height: Option<u16>,
-    /// Pending resize columns to process after debounce.
-    pending_resize_cols: Option<u16>,
-    /// Pending resize rows to process after debounce.
-    pending_resize_rows: Option<u16>,
-    /// Deadline after which pending resize should be processed.
-    pub(super) resize_deadline: Option<Instant>,
-    suppress_resize_once: bool,
-    /// Filter mode: show all agents or only those in the host tmux session.
+    /// Filter mode: show all agents or only those in the host rex session.
     pub filter_mode: SidebarFilterMode,
     pub view_name: Option<String>,
 }
@@ -404,7 +390,9 @@ impl SidebarApp {
     #[cfg(test)]
     pub(crate) fn test_with_template_error(template_error: TemplateError) -> Self {
         Self {
-            mux: Arc::new(crate::multiplexer::TmuxBackend::new()),
+            mux: Arc::new(crate::multiplexer::rex::RexBackend::for_server(
+                "unix:///nonexistent/workrex-sidebar-unit-test.sock",
+            )),
             agents: Vec::new(),
             has_loaded_snapshot: true,
             rows: Vec::new(),
@@ -431,7 +419,7 @@ impl SidebarApp {
             layout_mode: SidebarLayoutMode::Compact,
             enter_action: SidebarEnterAction::Focus,
             list_area: Rect::default(),
-            window_prefix: "wm-".to_string(),
+            window_prefix: "wr-".to_string(),
             host_identity: None,
             host_agent_idx: None,
             host_window_active: true,
@@ -464,18 +452,12 @@ impl SidebarApp {
             },
             template_config: None,
             current_width: None,
-            last_window_width: None,
-            last_window_height: None,
-            pending_resize_cols: None,
-            pending_resize_rows: None,
-            resize_deadline: None,
-            suppress_resize_once: false,
             view_name: None,
             filter_mode: SidebarFilterMode::default(),
         }
     }
 
-    /// Create a new sidebar client. Does config + host detection only, no tmux polling.
+    /// Create a new sidebar client. Does config + host detection only, no rex polling.
     pub fn new_client(mux: Arc<dyn Multiplexer>) -> Result<Self> {
         let config = Config::load(None)?;
 
@@ -487,8 +469,7 @@ impl SidebarApp {
         let window_prefix = config.window_prefix().to_string();
         let status_icons = config.status_icons.clone();
 
-        let host_identity =
-            super::host::identity(mux.as_ref()).unwrap_or_else(detect_host_identity);
+        let host_identity = super::host::identity(mux.as_ref()).flatten();
 
         let template_config = config.sidebar.templates.clone();
         let current_templates = resolved_template_strings(
@@ -500,11 +481,6 @@ impl SidebarApp {
         let current_width = config.sidebar.width.clone();
         let horizontal_item_width = config.sidebar.horizontal.item_width();
         let position = super::read_sidebar_position(&config);
-
-        // Seed last_window_width so the first resize event after startup grace
-        // can be compared against a baseline (fixes first-resize-dropped bug).
-        let initial_window_width = query_window_width_for_pane();
-        let initial_window_height = query_window_height_for_pane();
 
         Ok(Self {
             mux,
@@ -558,12 +534,6 @@ impl SidebarApp {
             current_templates,
             template_config,
             current_width,
-            last_window_width: initial_window_width,
-            last_window_height: initial_window_height,
-            pending_resize_cols: None,
-            pending_resize_rows: None,
-            resize_deadline: None,
-            suppress_resize_once: false,
             view_name: None,
             filter_mode: SidebarFilterMode::default(),
         })
@@ -647,7 +617,8 @@ impl SidebarApp {
         if self.filter_mode == SidebarFilterMode::Session
             && let Some(host_session) = self.host_session().map(str::to_owned)
         {
-            self.agents.retain(|a| a.session == host_session);
+            self.agents
+                .retain(|a| a.remote.is_none() && a.session == host_session);
         }
         self.host_agent_idx = host_agent_index(
             &self.agents,
@@ -664,9 +635,9 @@ impl SidebarApp {
         // sidebar gains focus so navigation continues from the selected agent.
         let handed_off_agent = sidebar_became_active
             .then(|| {
-                self.host_identity
-                    .as_ref()
-                    .and_then(|identity| super::panes::take_pending_selection(&identity.pane_id))
+                self.host_identity.as_ref().and_then(|identity| {
+                    super::host::take_pending_selection(self.mux.as_ref(), &identity.window_id)
+                })
             })
             .flatten()
             .and_then(|pane_id| {
@@ -729,7 +700,7 @@ impl SidebarApp {
 
     /// Re-read the merged config from disk and apply live presentation fields.
     /// Templates are anchored at the host agent's worktree path so per-project
-    /// `.workmux.yaml` overrides are honored. On any parse error, keep the
+    /// `.workrex.yaml` overrides are honored. On any parse error, keep the
     /// previously valid templates.
     fn reload_config_from_disk(&mut self, snapshot: &SidebarSnapshot) {
         let host_path = self
@@ -1048,29 +1019,17 @@ impl SidebarApp {
         self.publish_expanded_groups();
     }
 
-    /// Persist the expanded set to tmux and rebuild immediately, so the pane
+    /// Persist the expanded set to shared preferences and rebuild immediately, so the pane
     /// that was clicked responds before the next snapshot arrives.
     fn publish_expanded_groups(&mut self) {
         let mut labels: Vec<&str> = self.expanded_groups.iter().map(String::as_str).collect();
         labels.sort_unstable();
-        let value = labels.join("\t");
-        let result = if let Some(host) = self.mux.sidebar() {
-            host.handle(SidebarRequest::ExpandedGroups(
+        if let Some(host) = self.mux.sidebar()
+            && let Err(error) = host.handle(SidebarRequest::ExpandedGroups(
                 labels.iter().map(|label| label.to_string()).collect(),
             ))
-        } else if value.is_empty() {
-            Cmd::new("tmux")
-                .args(&["set-option", "-gu", "@workmux_sidebar_expanded"])
-                .run()
-                .map(drop)
-        } else {
-            Cmd::new("tmux")
-                .args(&["set-option", "-g", "@workmux_sidebar_expanded", &value])
-                .run()
-                .map(drop)
-        };
-        if let Err(error) = result {
-            warn!(%error, "failed to persist expanded sidebar groups to tmux");
+        {
+            warn!(%error, "failed to persist expanded sidebar groups");
         }
         let selected_agent = self.selected_agent_idx();
         let selected_toggle = self.selected_toggle();
@@ -1412,29 +1371,20 @@ impl SidebarApp {
         else {
             return;
         };
-        if let Some(remote) = agent.remote.as_ref().filter(|remote| !remote.attached) {
-            self.open_detached(remote.clone());
+        if let Some(remote) = agent.remote.as_ref() {
+            self.open_remote(remote.clone());
             return;
         }
         let pane_id = agent.pane_id.clone();
         self.focus_pane(&pane_id);
     }
 
-    /// Open a window relaying a remote agent that no local pane relays.
-    fn open_detached(&self, remote: crate::multiplexer::RemoteAgent) {
-        // `workmux open` contacts the node; the sidebar keeps drawing.
-        std::thread::spawn(move || {
-            if let Err(err) = crate::remote::agents::open_window(&remote) {
-                tracing::warn!(handle = remote.handle, "sidebar open: {err:#}");
-                let _ = Cmd::new("tmux")
-                    .args(&[
-                        "display-message",
-                        &format!("{BIN}: open {}: {err:#}", remote.handle),
-                    ])
-                    .run();
-            }
-            super::daemon_ctrl::signal_daemon();
-        });
+    /// Show the recorded remote Rex block; report errors in the sidebar's notice.
+    fn open_remote(&mut self, remote: crate::multiplexer::RemoteAgent) {
+        if let Err(err) = crate::remote::agents::open_window(&remote) {
+            self.hold_notice(format!("open {}: {err:#}", remote.handle));
+        }
+        super::daemon_ctrl::signal_daemon_for(self.mux.as_ref());
     }
 
     fn focus_pane(&mut self, pane_id: &str) {
@@ -1444,7 +1394,7 @@ impl SidebarApp {
         {
             self.hold_notice(error.to_string());
         }
-        // Signal daemon directly to bypass tmux hook round-trip latency.
+        // Signal the daemon for a fresh Rex observation.
         super::daemon_ctrl::signal_daemon_for(self.mux.as_ref());
     }
 
@@ -1452,7 +1402,7 @@ impl SidebarApp {
         if self
             .selected_agent_idx()
             .and_then(|idx| self.agents.get(idx))
-            .is_some_and(crate::remote::agents::is_detached)
+            .is_some_and(|agent| agent.remote.is_some())
         {
             self.focus_selected();
             return;
@@ -1471,21 +1421,11 @@ impl SidebarApp {
             return;
         }
 
-        let target_sidebar = (!window_id.is_empty())
-            .then(|| {
-                super::panes::find_sidebar_pane_in_window(&window_id)
-                    .ok()
-                    .flatten()
-            })
-            .flatten();
-        if let Some(sidebar_pane_id) = target_sidebar
-            && super::panes::set_pending_selection(&sidebar_pane_id, &agent_pane_id).is_ok()
+        if super::host::select_sidebar(self.mux.as_ref(), &window_id, &agent_pane_id)
+            .unwrap_or(false)
         {
-            if self.mux.switch_to_pane(&sidebar_pane_id, None).is_ok() {
-                super::daemon_ctrl::signal_daemon_for(self.mux.as_ref());
-                return;
-            }
-            super::panes::clear_pending_selection(&sidebar_pane_id);
+            super::daemon_ctrl::signal_daemon_for(self.mux.as_ref());
+            return;
         }
 
         // Session-scoped sidebars may show agents in sessions where no sidebar
@@ -1501,27 +1441,13 @@ impl SidebarApp {
             SidebarLayoutMode::Compact => SidebarLayoutMode::Tiles,
             SidebarLayoutMode::Tiles => SidebarLayoutMode::Compact,
         };
-        // Persist to tmux so all sidebar instances pick it up immediately
-        let _ = Cmd::new("tmux")
-            .args(&[
-                "set-option",
-                "-g",
-                "@workmux_sidebar_layout",
-                self.layout_mode.as_str(),
-            ])
-            .run();
-        // Persist to settings.json so it survives tmux restarts
-        if let Ok(store) = crate::state::StateStore::new()
-            && let Ok(mut settings) = store.load_settings()
-        {
-            settings.sidebar_layout = Some(self.layout_mode.as_str().to_string());
-            let _ = store.save_settings(&settings);
-        }
-        super::daemon_ctrl::signal_daemon_for(self.mux.as_ref());
+        super::host::forward(self.mux.as_ref(), || {
+            SidebarRequest::Layout(self.layout_mode.as_str().to_string())
+        });
     }
 
     /// Toggle the sleeping state of the selected agent.
-    /// Does a read-modify-write on the tmux global option so concurrent
+    /// Does a read-modify-write on the shared Workrex preference so concurrent
     /// toggles from different sidebar clients don't clobber each other.
     pub fn toggle_sleeping(&mut self) {
         let Some(pane_id) = self
@@ -1531,254 +1457,34 @@ impl SidebarApp {
         else {
             return;
         };
-        if super::host::forward(self.mux.as_ref(), || SidebarRequest::ToggleSleeping {
-            pane_id: pane_id.clone(),
-        }) {
-            return;
-        }
-
-        // Read current set from tmux (source of truth) to avoid losing
-        // toggles made by other sidebar clients since our last snapshot.
-        let mut current: std::collections::HashSet<String> = Cmd::new("tmux")
-            .args(&["show-option", "-gqv", "@workmux_sleeping_panes"])
-            .run_and_capture_stdout()
-            .ok()
-            .map(|s| s.split_whitespace().map(String::from).collect())
-            .unwrap_or_default();
-
-        if !current.insert(pane_id.clone()) {
-            current.remove(&pane_id);
-        }
-
-        // Update local state for immediate rendering
-        self.sleeping_pane_ids = current.clone();
-
-        // Write back to tmux
-        let panes: String = current.into_iter().collect::<Vec<_>>().join(" ");
-        if panes.is_empty() {
-            let _ = Cmd::new("tmux")
-                .args(&["set-option", "-gu", "@workmux_sleeping_panes"])
-                .run();
-        } else {
-            let _ = Cmd::new("tmux")
-                .args(&["set-option", "-g", "@workmux_sleeping_panes", &panes])
-                .run();
-        }
-
-        // Signal daemon for immediate refresh (re-sort + broadcast)
-        super::daemon_ctrl::signal_daemon_for(self.mux.as_ref());
+        super::host::forward(self.mux.as_ref(), || SidebarRequest::ToggleSleeping {
+            pane_id,
+        });
     }
 
     pub fn toggle_filter_mode(&mut self) {
         self.filter_mode = self.filter_mode.toggle();
-        // Persist to tmux so all sidebar instances pick it up immediately
-        if let Err(error) = Cmd::new("tmux")
-            .args(&[
-                "set-option",
-                "-g",
-                "@workmux_sidebar_filter",
-                self.filter_mode.as_str(),
-            ])
-            .run()
-        {
-            warn!(%error, "failed to persist sidebar filter mode to tmux");
-        }
-        // Persist to settings.json so it survives tmux restarts
-        match crate::state::StateStore::new().and_then(|store| {
-            let mut settings = store.load_settings()?;
-            settings.sidebar_filter = Some(self.filter_mode.as_str().to_string());
-            store.save_settings(&settings)
-        }) {
-            Ok(()) => {}
-            Err(error) => warn!(%error, "failed to persist sidebar filter mode to settings"),
-        }
-        // Signal daemon for immediate refresh
-        super::daemon_ctrl::signal_daemon_for(self.mux.as_ref());
+        super::host::forward(self.mux.as_ref(), || {
+            SidebarRequest::Filter(Some(self.filter_mode.as_str().to_string()))
+        });
     }
 
     /// Switch between the configured grouping and one ungrouped list. The
-    /// choice is a tmux global, so every sidebar and the agent navigation
+    /// choice is a rex global, so every sidebar and the agent navigation
     /// commands move together.
     pub fn toggle_grouping(&mut self) {
         let next = match self.group_by {
             Some(_) => None,
             None => self.configured_group_by.or(Some(SidebarGroupBy::Project)),
         };
-        if let Err(error) = Cmd::new("tmux")
-            .args(&[
-                "set-option",
-                "-g",
-                "@workmux_sidebar_group_by",
-                super::group_by_option_value(next),
-            ])
-            .run()
-        {
-            warn!(%error, "failed to persist sidebar grouping to tmux");
-        }
-        match crate::state::StateStore::new().and_then(|store| {
-            let mut settings = store.load_settings()?;
-            settings.sidebar_group_by = Some(super::group_by_option_value(next).to_string());
-            store.save_settings(&settings)
-        }) {
-            Ok(()) => {}
-            Err(error) => warn!(%error, "failed to persist sidebar grouping to settings"),
-        }
-        super::daemon_ctrl::signal_daemon_for(self.mux.as_ref());
+        super::host::forward(self.mux.as_ref(), || SidebarRequest::Group {
+            mode: Some(super::group_by_option_value(next).to_string()),
+            clear: false,
+        });
     }
 
     pub fn window_prefix(&self) -> &str {
         &self.window_prefix
-    }
-
-    /// Record a resize event for debounced manual pane resize processing.
-    pub fn on_resize_event(&mut self, cols: u16, rows: u16) {
-        if self.mux.sidebar().is_some() {
-            return;
-        }
-        if self.suppress_resize_once {
-            self.suppress_resize_once = false;
-            self.pending_resize_cols = None;
-            self.pending_resize_rows = None;
-            self.resize_deadline = None;
-            return;
-        }
-
-        match self.position {
-            SidebarPosition::Left => {
-                let window_w = self.query_host_window_width();
-                if self.last_window_width.is_some_and(|prev| prev != window_w) {
-                    self.last_window_width = Some(window_w);
-                    self.pending_resize_cols = None;
-                    self.pending_resize_rows = None;
-                    self.resize_deadline = None;
-                    return;
-                }
-                self.pending_resize_cols = Some(cols);
-            }
-            SidebarPosition::Top => {
-                let window_h = self.query_host_window_height();
-                if self.last_window_height.is_some_and(|prev| prev != window_h) {
-                    self.last_window_height = Some(window_h);
-                    self.pending_resize_cols = None;
-                    self.pending_resize_rows = None;
-                    self.resize_deadline = None;
-                    return;
-                }
-                self.pending_resize_rows = Some(rows);
-            }
-        }
-
-        self.resize_deadline = Some(Instant::now() + Duration::from_millis(500));
-    }
-
-    /// Process any pending resize after the debounce period has elapsed.
-    /// Skips detection during startup grace period.
-    pub fn process_pending_resize(&mut self, startup: &Instant, startup_grace: Duration) {
-        if startup.elapsed() < startup_grace {
-            // Suppress detection during startup to avoid false positives from
-            // initial pane creation layout divergence.
-            self.pending_resize_cols = None;
-            self.pending_resize_rows = None;
-            self.resize_deadline = None;
-            return;
-        }
-
-        let Some(deadline) = self.resize_deadline else {
-            return;
-        };
-        if Instant::now() < deadline {
-            return;
-        }
-
-        let config = Config::load(None).unwrap_or_default();
-        match self.position {
-            SidebarPosition::Left => {
-                let Some(pane_width) = self.pending_resize_cols else {
-                    self.resize_deadline = None;
-                    return;
-                };
-                let window_w = self.query_host_window_width();
-                let prev_window_w = self.last_window_width;
-                self.last_window_width = Some(window_w);
-                self.pending_resize_cols = None;
-                self.pending_resize_rows = None;
-                self.resize_deadline = None;
-                let Some(prev_ww) = prev_window_w else { return };
-                if prev_ww != window_w {
-                    return;
-                }
-                let actual_width = query_pane_width_for_pane().unwrap_or(pane_width);
-                let expected = super::effective_width_for(&config, window_w);
-                let delta = (actual_width as i16 - expected as i16).abs();
-                if delta > 0 {
-                    if resize_was_applied_by_reflow(actual_width) {
-                        // A reflow raced with a newer synced width. Catch up
-                        // locally without publishing a size the user never chose.
-                        if let Some(wid) = self.host_window_id() {
-                            let _ = super::reflow(Some(wid));
-                        }
-                    } else if super::width_exceeds_defensive_max(actual_width) {
-                        if let Some(wid) = self.host_window_id().map(str::to_string) {
-                            super::set_sidebar_width(expected);
-                            self.suppress_resize_once = true;
-                            let _ = super::reflow(Some(&wid));
-                        }
-                    } else if config.sidebar.width.is_none() {
-                        super::set_sidebar_width(actual_width);
-                        record_applied_size(actual_width);
-                        if let Some(wid) = self.host_window_id() {
-                            super::reflow_all_sidebars_except(wid);
-                        }
-                    } else if let Some(wid) = self.host_window_id().map(str::to_string) {
-                        self.suppress_resize_once = true;
-                        let _ = super::reflow(Some(&wid));
-                    }
-                }
-            }
-            SidebarPosition::Top => {
-                let Some(pane_height) = self.pending_resize_rows else {
-                    self.resize_deadline = None;
-                    return;
-                };
-                let window_h = self.query_host_window_height();
-                let prev_window_h = self.last_window_height;
-                self.last_window_height = Some(window_h);
-                self.pending_resize_cols = None;
-                self.pending_resize_rows = None;
-                self.resize_deadline = None;
-                let Some(prev_wh) = prev_window_h else { return };
-                if prev_wh != window_h {
-                    return;
-                }
-                let actual_height = query_pane_height_for_pane().unwrap_or(pane_height);
-                let expected = super::effective_height_for(&config, window_h);
-                let delta = (actual_height as i16 - expected as i16).abs();
-                if delta > 0 {
-                    if resize_was_applied_by_reflow(actual_height) {
-                        if let Some(wid) = self.host_window_id() {
-                            let _ = super::reflow(Some(wid));
-                        }
-                    } else if config.sidebar.height.is_none() {
-                        super::set_sidebar_height(actual_height);
-                        record_applied_size(actual_height);
-                        if let Some(wid) = self.host_window_id() {
-                            super::reflow_all_sidebars_except(wid);
-                        }
-                    } else if let Some(wid) = self.host_window_id().map(str::to_string) {
-                        self.suppress_resize_once = true;
-                        let _ = super::reflow(Some(&wid));
-                    }
-                }
-            }
-        }
-    }
-
-    fn query_host_window_width(&self) -> u16 {
-        query_window_width_for_pane().unwrap_or(0)
-    }
-
-    fn query_host_window_height(&self) -> u16 {
-        query_window_height_for_pane().unwrap_or(0)
     }
 }
 
@@ -1791,7 +1497,7 @@ const HINT_LIFETIME_SECS: u64 = 14 * 24 * 60 * 60;
 /// The hint belongs to a version, not to a sidebar: a new release offers it
 /// once, and answering it, or simply leaving it alone for a fortnight, retires
 /// it. State is shared by every pane, so the answer holds across windows and
-/// tmux restarts.
+/// rex restarts.
 fn claim_hint_for_this_version() -> bool {
     let Ok(store) = crate::state::StateStore::new() else {
         return false;
@@ -1941,83 +1647,6 @@ fn parse_templates(strings: &TemplateStrings) -> (ParsedTemplates, Option<Templa
     )
 }
 
-fn query_tmux_format_for_current_pane(format: &str) -> Option<String> {
-    let pane_id = std::env::var("TMUX_PANE").unwrap_or_default();
-    let mut args = vec!["display-message", "-p"];
-    if !pane_id.is_empty() {
-        args.extend_from_slice(&["-t", &pane_id]);
-    }
-    args.push(format);
-    Cmd::new("tmux")
-        .args(&args)
-        .run_and_capture_stdout()
-        .ok()
-        .map(|s| s.trim().to_string())
-}
-
-fn query_tmux_u16_for_current_pane(format: &str) -> Option<u16> {
-    query_tmux_format_for_current_pane(format).and_then(|s| s.parse().ok())
-}
-
-fn query_tmux_positive_u16_for_current_pane(format: &str) -> Option<u16> {
-    query_tmux_u16_for_current_pane(format).filter(|&extent| extent > 0)
-}
-
-/// Query the window width for the current tmux pane (standalone for use before
-/// `Self` exists).
-fn query_window_width_for_pane() -> Option<u16> {
-    query_tmux_u16_for_current_pane("#{window_width}")
-}
-
-fn query_window_height_for_pane() -> Option<u16> {
-    query_tmux_u16_for_current_pane("#{window_height}")
-}
-
-/// Query the actual pane width from tmux. Used to verify the sidebar pane
-/// size after a manual resize, since crossterm's SIGWINCH-derived cols may
-/// differ from what tmux reports via #{pane_width}.
-fn query_pane_width_for_pane() -> Option<u16> {
-    query_pane_extent_for_pane("#{pane_width}")
-}
-
-fn query_pane_height_for_pane() -> Option<u16> {
-    query_pane_extent_for_pane("#{pane_height}")
-}
-
-fn query_pane_extent_for_pane(format: &str) -> Option<u16> {
-    query_tmux_positive_u16_for_current_pane(format)
-}
-
-/// Whether the sidebar's current extent is the one a layout reflow gave it.
-///
-/// Every sidebar sees the resizes that propagate a new size to it. Treating
-/// those as user resizes would make each sidebar publish its own size and
-/// reflow the others, which keeps sidebars resizing each other indefinitely
-/// when their checks overlap.
-fn resize_was_applied_by_reflow(extent: u16) -> bool {
-    let format = format!("#{{{}}}", super::SIDEBAR_APPLIED_SIZE_OPTION);
-    query_tmux_u16_for_current_pane(&format) == Some(extent)
-}
-
-/// Record a user-chosen extent as applied, so a later resize back to the
-/// previous size still counts as a user resize.
-fn record_applied_size(extent: u16) {
-    let pane_id = std::env::var("TMUX_PANE").unwrap_or_default();
-    if pane_id.is_empty() {
-        return;
-    }
-    let _ = Cmd::new("tmux")
-        .args(&[
-            "set-option",
-            "-p",
-            "-t",
-            &pane_id,
-            super::SIDEBAR_APPLIED_SIZE_OPTION,
-            &extent.to_string(),
-        ])
-        .run();
-}
-
 /// Reject agent tokens in a group header template. A header does not
 /// represent one agent, so only group tokens, `{fill}`, literals and style
 /// directives are meaningful there.
@@ -2103,46 +1732,6 @@ fn try_reparse_templates(
     first_error
 }
 
-/// Detect the sidebar's stable host identity from its tmux pane.
-fn detect_host_identity() -> Option<HostIdentity> {
-    let pane_id = std::env::var("TMUX_PANE")
-        .ok()
-        .filter(|pane_id| !pane_id.is_empty())?;
-    let output = Cmd::new("tmux")
-        .args(&[
-            "display-message",
-            "-p",
-            "-t",
-            &pane_id,
-            "#{session_name}\t#{session_id}\t#{window_id}\t#{pane_id}",
-        ])
-        .run_and_capture_stdout()
-        .ok()?;
-
-    let identity = parse_host_identity(&output)?;
-    (identity.pane_id == pane_id).then_some(identity)
-}
-
-fn parse_host_identity(output: &str) -> Option<HostIdentity> {
-    let mut parts = output.trim().split('\t');
-    let identity = HostIdentity {
-        session_name: parts.next()?.to_string(),
-        session_id: parts.next()?.to_string(),
-        window_id: parts.next()?.to_string(),
-        pane_id: parts.next()?.to_string(),
-    };
-    if parts.next().is_some()
-        || identity.session_name.is_empty()
-        || identity.session_id.is_empty()
-        || identity.window_id.is_empty()
-        || identity.pane_id.is_empty()
-    {
-        return None;
-    }
-
-    Some(identity)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2218,22 +1807,6 @@ mod tests {
         theme.custom = None;
         app.apply_theme_config(&theme);
         assert_eq!(app.palette.accent, Color::Rgb(203, 166, 247));
-    }
-
-    #[test]
-    fn parses_complete_host_identity() {
-        let identity = parse_host_identity("main\t$1\t@42\t%94").unwrap();
-
-        assert_eq!(identity.session_name, "main");
-        assert_eq!(identity.session_id, "$1");
-        assert_eq!(identity.window_id, "@42");
-        assert_eq!(identity.pane_id, "%94");
-    }
-
-    #[test]
-    fn rejects_incomplete_host_identity() {
-        assert!(parse_host_identity("main\t$1\t@42").is_none());
-        assert!(parse_host_identity("main\t\t@42\t%94").is_none());
     }
 
     #[test]
@@ -2818,6 +2391,31 @@ mod grouping_tests {
         assert!(app.agents.is_empty());
         assert!(app.rows.is_empty());
         assert_eq!(app.selected_agent_idx(), None);
+    }
+
+    #[test]
+    fn session_filter_excludes_remote_rows_with_a_matching_label() {
+        let mut app = app();
+        app.host_identity = Some(HostIdentity {
+            session_name: "alpha".into(),
+            session_id: "session:local".into(),
+            window_id: "window:local".into(),
+            pane_id: "block:sidebar".into(),
+        });
+        let local = agent("block:local", "api", "alpha");
+        let mut remote = agent("%remote-ws-1", "api", "alpha");
+        let mut metadata = crate::multiplexer::RemoteAgent::new(crate::multiplexer::RemoteRef {
+            remote: "build".into(),
+            ws_id: "ws".into(),
+            ex_id: "ex".into(),
+            pane: 1,
+        });
+        metadata.attached = false;
+        remote.remote = Some(metadata);
+        let mut snap = snapshot(None, vec![local.clone(), remote]);
+        snap.filter_mode = SidebarFilterMode::Session;
+        app.apply_snapshot(snap);
+        assert_eq!(app.agents, vec![local]);
     }
 
     #[test]

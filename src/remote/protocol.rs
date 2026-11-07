@@ -1,4 +1,4 @@
-//! Wire contract between the laptop and `workmux node <verb> --json`.
+//! Wire contract between the laptop and `workrex node <verb> --json`.
 //!
 //! Provisioning reads a compressed binary stream; other verbs read JSON on
 //! stdin. Each verb writes one JSON document on
@@ -38,6 +38,7 @@ pub const CAPABILITIES: &[&str] = &[
     GC,
     SHELL,
     TERMINAL_REX,
+    SHELL_REX,
     PATH_SHIM,
 ];
 
@@ -64,6 +65,8 @@ pub const GC: &str = "gc";
 pub const SHELL: &str = "shell";
 /// `start-execution` honors [`StartRequest::terminal`] `rex`.
 pub const TERMINAL_REX: &str = "terminal-rex";
+/// Native shell sessions with explicit server and session identity.
+pub const SHELL_REX: &str = "shell-rex";
 /// Wire types in `remote::node::path_shim`.
 pub const PATH_SHIM: &str = "path-shim";
 
@@ -194,7 +197,7 @@ pub struct ProvisionResponse {
     pub repo_path: String,
     /// Absolute path of the workspace worktree on the node.
     pub worktree_path: String,
-    /// Whether `refs/workmux/base/<ws_id>` already holds `base_sha`.
+    /// Whether `refs/workrex/base/<ws_id>` already holds `base_sha`.
     pub has_base: bool,
     /// Existing seed paths from the request.
     #[serde(default)]
@@ -212,12 +215,8 @@ pub struct StartRequest {
     pub run_commands: bool,
     /// Where a new execution's terminals live. A live execution keeps its
     /// own host whatever this says.
-    #[serde(default, skip_serializing_if = "is_tmux")]
+    #[serde(default)]
     pub terminal: RemoteTerminal,
-}
-
-fn is_tmux(terminal: &RemoteTerminal) -> bool {
-    *terminal == RemoteTerminal::Tmux
 }
 
 /// Where a Rex-hosted execution's sessions are, on the node's own Rex
@@ -231,6 +230,12 @@ pub struct RexPlacement {
     /// Session of each configured pane.
     #[serde(default, with = "pane_keys")]
     pub sessions: BTreeMap<usize, String>,
+    /// Final block ID of each configured pane.
+    #[serde(default, with = "pane_keys")]
+    pub blocks: BTreeMap<usize, String>,
+    /// Additional interactive shells keyed by their request identity.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub shells: BTreeMap<String, String>,
 }
 
 /// Pane-indexed maps with the indices as JSON object keys, read through
@@ -297,7 +302,7 @@ pub struct RemoveResponse {
 }
 
 /// `export`: the workspace's [`Snapshot`], stored as commits under
-/// `refs/workmux/export/<ws_id>/{index,worktree}` for the laptop to fetch.
+/// `refs/workrex/export/<ws_id>/{index,worktree}` for the laptop to fetch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportRequest {
     pub ws_id: String,
@@ -321,7 +326,7 @@ pub struct ExportResponse {
 pub const MAX_EXPORT_PATHS: usize = 1000;
 
 /// `checkout`: move the workspace branch to `head` (pushed to
-/// `refs/workmux/kept/<ws_id>`) the way `git checkout -B` does, keeping
+/// `refs/workrex/kept/<ws_id>`) the way `git checkout -B` does, keeping
 /// uncommitted work, if the workspace still matches `expect`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckoutRequest {
@@ -334,7 +339,7 @@ pub struct CheckoutRequest {
 pub struct CheckoutResponse {}
 
 /// `rebase`: rebase the workspace branch onto `onto` (pushed to
-/// `refs/workmux/onto/<ws_id>`); success makes `onto` the new base. A
+/// `refs/workrex/onto/<ws_id>`); success makes `onto` the new base. A
 /// conflict leaves the rebase in progress and replies [`code::CONFLICT`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebaseRequest {
@@ -428,12 +433,12 @@ pub struct PutCredentialsResponse {
     pub notes: Vec<String>,
 }
 
-/// tmux session of pane `index` of execution `ex_id`.
+/// Rex session of pane `index` of execution `ex_id`.
 pub fn session_name(ex_id: &str, index: usize) -> String {
     format!("{ex_id}-{index}")
 }
 
-/// Response of `workmux node hello --json`.
+/// Response of `workrex node hello --json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Hello {
     pub protocol: u32,
@@ -491,7 +496,7 @@ impl ErrorEnvelope {
 /// Why a binary did not answer `node hello` with a usable response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HelloFailure {
-    /// A workmux build without the `node` command.
+    /// A workrex build without the `node` command.
     PredatesNodes,
     /// Exited non-zero or printed something other than a hello document.
     NotANode { detail: String },
@@ -549,24 +554,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requests_without_a_terminal_are_tmux_and_old_nodes_see_the_same_bytes() {
-        let old = r#"{"ws_id":"w1","ex_id":"x1","use_prompt":true,"run_commands":true}"#;
-        let request: StartRequest = serde_json::from_str(old).unwrap();
-        assert_eq!(request.terminal, RemoteTerminal::Tmux);
-        assert_eq!(serde_json::to_string(&request).unwrap(), old);
-        let rex = StartRequest {
-            terminal: RemoteTerminal::Rex,
-            ..request
-        };
-        assert!(
-            serde_json::to_string(&rex)
-                .unwrap()
-                .contains(r#""terminal":"rex""#)
-        );
-    }
-
-    #[test]
-    fn rex_placements_round_trip_and_tmux_responses_omit_them() {
+    fn rex_placements_round_trip_and_empty_responses_omit_them() {
         let old = r#"{"ex_id":"x1","panes":[0],"reused":false}"#;
         let response: StartResponse = serde_json::from_str(old).unwrap();
         assert_eq!(response.rex, None);
@@ -575,6 +563,8 @@ mod tests {
             host_label: "rex.example.ts.net".into(),
             instance_id: "i".into(),
             sessions: BTreeMap::from([(0, "session:a".into()), (2, "session:b".into())]),
+            shells: BTreeMap::new(),
+            blocks: BTreeMap::new(),
         };
         let text = serde_json::to_string(&placement).unwrap();
         assert_eq!(
@@ -609,8 +599,8 @@ mod tests {
     }
 
     #[test]
-    fn old_workmux_predates_nodes() {
-        let stderr = b"error: unrecognized subcommand 'node'\n\nUsage: workmux <COMMAND>\n";
+    fn old_workrex_predates_nodes() {
+        let stderr = b"error: unrecognized subcommand 'node'\n\nUsage: workrex <COMMAND>\n";
         assert_eq!(
             parse_hello(Some(2), b"", stderr),
             Err(HelloFailure::PredatesNodes)
@@ -675,11 +665,11 @@ mod tests {
         let mut hello = Hello::local();
         hello.protocol = 999;
         hello.version = "0.0.1".into();
-        let message = mismatch_message(&hello, "~/.workmux-node/bin/workmux-x");
+        let message = mismatch_message(&hello, "~/.workrex-node/bin/workrex-x");
         assert!(
-            message.starts_with(crate::rebrand!(
-                "node binary ~/.workmux-node/bin/workmux-x speaks protocol 999 (workmux 0.0.1)"
-            )),
+            message.starts_with(
+                "node binary ~/.workrex-node/bin/workrex-x speaks protocol 999 (workrex 0.0.1)"
+            ),
             "{message}"
         );
         assert!(

@@ -15,14 +15,11 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::cmd::Cmd;
 use crate::multiplexer::{create_backend, detect_backend};
-use crate::shell::shell_quote;
 
 use super::app::{HostIdentity, SidebarApp};
 use super::client;
 use super::daemon_ctrl::ensure_daemon_running;
-use super::panes::shutdown_all_sidebars;
 use super::ui::render_sidebar;
 
 /// Drop guard that restores terminal state on panic or early return.
@@ -129,17 +126,9 @@ pub fn run_sidebar() -> Result<()> {
             .host_window_active()
             .then(|| app.refresh_interval())
             .flatten();
-        let resize_timeout = app
-            .resize_deadline
-            .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
-        let timeout = match (resize_timeout, refresh_interval) {
-            (Some(resize), Some(refresh)) => {
-                resize.min(refresh.saturating_sub(last_refresh.elapsed()))
-            }
-            (Some(resize), None) => resize,
-            (None, Some(refresh)) => refresh.saturating_sub(last_refresh.elapsed()),
-            (None, None) => Duration::from_secs(3600),
-        };
+        let timeout = refresh_interval.map_or(Duration::from_secs(3600), |refresh| {
+            refresh.saturating_sub(last_refresh.elapsed())
+        });
 
         let timeout = until_next_deadline(timeout, &app, &last_pane_check, Instant::now());
 
@@ -187,7 +176,6 @@ pub fn run_sidebar() -> Result<()> {
         }
 
         // Process any pending resize whose debounce has elapsed
-        app.process_pending_resize(&startup, startup_grace);
         advance_refresh_if_due(
             &mut app,
             &mut last_refresh,
@@ -207,9 +195,9 @@ pub fn run_sidebar() -> Result<()> {
                     tracing::warn!(%error, "sidebar quit failed");
                 }
             } else if app.quit_silent {
-                schedule_pane_kill(&host_identity.pane_id);
+                let _ = app.mux.kill_pane(&host_identity.pane_id);
             } else {
-                shutdown_all_sidebars(&host_identity);
+                tracing::warn!("Rex sidebar host unavailable during quit");
             }
             break;
         }
@@ -259,36 +247,25 @@ fn handle_resize_event(
     needs_render: &mut bool,
     needs_clear: &mut bool,
 ) {
-    app.on_resize_event(cols, rows);
+    let _ = (app, cols, rows);
     *needs_render = true;
     *needs_clear = true;
 }
 
-fn pane_kill_command(pane_id: &str) -> String {
-    format!(
-        "sleep 0.05; tmux kill-pane -t {} 2>/dev/null || true",
-        shell_quote(pane_id)
-    )
-}
-
-fn schedule_pane_kill(pane_id: &str) {
-    let cmd = pane_kill_command(pane_id);
-    let _ = Cmd::new("tmux").args(&["run-shell", "-b", &cmd]).run();
-}
-
-fn sole_pane_is_sidebar(output: &str, pane_id: &str) -> bool {
-    let mut panes = output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty());
-    panes.next() == Some(pane_id) && panes.next().is_none()
-}
-
 fn sidebar_is_only_pane(window_id: &str, pane_id: &str) -> bool {
-    Cmd::new("tmux")
-        .args(&["list-panes", "-t", window_id, "-F", "#{pane_id}"])
-        .run_and_capture_stdout()
-        .is_ok_and(|output| sole_pane_is_sidebar(&output, pane_id))
+    crate::multiplexer::rex::RexBackend::new()
+        .sidebar_views()
+        .ok()
+        .is_some_and(|views| {
+            views
+                .iter()
+                .flat_map(|view| &view.windows)
+                .find(|window| window.window_id == window_id)
+                .is_some_and(|window| {
+                    let mut blocks = window.block_ids();
+                    blocks.next().is_some_and(|block| block == pane_id) && blocks.next().is_none()
+                })
+        })
 }
 
 struct LastPaneCheck {
@@ -590,22 +567,6 @@ mod tests {
         );
         let sooner = Duration::from_secs(1);
         assert_eq!(until_next_deadline(sooner, &app, &no_recheck, now), sooner);
-    }
-
-    #[test]
-    fn pane_kill_command_targets_captured_sidebar_pane() {
-        assert_eq!(
-            pane_kill_command("%12"),
-            "sleep 0.05; tmux kill-pane -t '%12' 2>/dev/null || true"
-        );
-    }
-
-    #[test]
-    fn sole_pane_confirmation_requires_sidebar_identity() {
-        assert!(sole_pane_is_sidebar("%12\n", "%12"));
-        assert!(!sole_pane_is_sidebar("%12\n%13\n", "%12"));
-        assert!(!sole_pane_is_sidebar("%13\n", "%12"));
-        assert!(!sole_pane_is_sidebar("", "%12"));
     }
 
     #[test]

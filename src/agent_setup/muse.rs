@@ -23,7 +23,7 @@ use crate::agent_setup::json_config::{
 };
 use crate::bin_name::BIN;
 
-const HOOKS_JSON: &str = crate::rebrand_include!("../../resources/muse/workmux-status.json");
+const HOOKS_JSON: &str = include_str!("../../resources/muse/workrex-status.json");
 
 const ENV_VARS_KEY: &str = "managed_hooks_env_vars";
 const HOOKS_PATH_KEY: &str = "managed_hooks_path";
@@ -31,29 +31,19 @@ const HOOKS_PATH_KEY: &str = "managed_hooks_path";
 /// Variables `register-agent` and `set-window-status` read to find the
 /// agent's pane and the state store.
 const HOOK_ENV_VARS: &[&str] = &[
-    "TMUX",
-    "TMUX_PANE",
-    "TMUX_TMPDIR",
     "REX_SERVER",
     "REX_SESSION",
     "REX_BLOCK",
     "REX_BIN_DIR",
-    "WEZTERM_PANE",
-    "WEZTERM_UNIX_SOCKET",
-    "ZELLIJ",
-    "ZELLIJ_PANE_ID",
-    "ZELLIJ_SESSION_NAME",
-    "KITTY_WINDOW_ID",
-    "KITTY_LISTEN_ON",
-    "WORKMUX_BACKEND",
-    "WORKMUX_STATUS_BACKEND",
-    "WORKMUX_STATUS_INSTANCE",
-    "WORKMUX_STATUS_PANE_ID",
-    "WORKMUX_DISABLE_SET_WINDOW_STATUS",
-    "WM_SANDBOX_GUEST",
-    "WM_RPC_HOST",
-    "WM_RPC_PORT",
-    "WM_RPC_TOKEN",
+    "WORKREX_BACKEND",
+    "WORKREX_STATUS_BACKEND",
+    "WORKREX_STATUS_INSTANCE",
+    "WORKREX_STATUS_PANE_ID",
+    "WORKREX_DISABLE_SET_WINDOW_STATUS",
+    "WORKREX_SANDBOX_GUEST",
+    "WORKREX_RPC_HOST",
+    "WORKREX_RPC_PORT",
+    "WORKREX_RPC_TOKEN",
     "XDG_CONFIG_HOME",
     "XDG_STATE_HOME",
     "XDG_CACHE_HOME",
@@ -128,7 +118,7 @@ fn check_dir(dir: &Path) -> Result<StatusCheck> {
 
     if wired && hooks::has_required_hook_commands(&config, &load_hooks()?) {
         Ok(StatusCheck::Installed)
-    } else if hooks::has_workmux_hooks(&config) {
+    } else if hooks::has_workrex_hooks(&config) {
         Ok(StatusCheck::UpdateAvailable)
     } else {
         Ok(StatusCheck::NotInstalled)
@@ -297,8 +287,8 @@ fn uninstall_dir(dir: &Path) -> Result<String> {
         &hooks_path,
         &JsonHookUninstallSpec {
             messages: json_config::JsonHookUninstallMessages {
-                file_missing: crate::rebrand!("No Muse workmux-status.json found"),
-                not_found: crate::rebrand!("No workmux hooks found in Muse hooks file"),
+                file_missing: "No Muse workrex-status.json found",
+                not_found: "No workrex hooks found in Muse hooks file",
                 soft_read_error: None,
                 soft_parse_error: None,
             },
@@ -423,36 +413,15 @@ mod tests {
     fn test_hooks_json_maps_events_to_statuses() {
         let config: Value = serde_json::from_str(HOOKS_JSON).unwrap();
         let expected = [
-            ("SessionStart", crate::rebrand!("workmux register-agent")),
-            (
-                "UserPromptSubmit",
-                crate::rebrand!("workmux set-window-status working"),
-            ),
-            (
-                "Notification",
-                crate::rebrand!("workmux set-window-status waiting"),
-            ),
-            (
-                "ToolUseStart",
-                crate::rebrand!("workmux set-window-status working"),
-            ),
-            (
-                "PostToolUse",
-                crate::rebrand!("workmux set-window-status working"),
-            ),
-            (
-                "PostToolUseFailure",
-                crate::rebrand!("workmux set-window-status working"),
-            ),
-            ("Stop", crate::rebrand!("workmux set-window-status done")),
-            (
-                "Interrupt",
-                crate::rebrand!("workmux set-window-status done"),
-            ),
-            (
-                "SessionEnd",
-                crate::rebrand!("workmux set-window-status done"),
-            ),
+            ("SessionStart", "workrex register-agent"),
+            ("UserPromptSubmit", "workrex set-window-status working"),
+            ("Notification", "workrex set-window-status waiting"),
+            ("ToolUseStart", "workrex set-window-status working"),
+            ("PostToolUse", "workrex set-window-status working"),
+            ("PostToolUseFailure", "workrex set-window-status working"),
+            ("Stop", "workrex set-window-status done"),
+            ("Interrupt", "workrex set-window-status done"),
+            ("SessionEnd", "workrex set-window-status done"),
         ];
         assert_eq!(config["hooks"].as_object().unwrap().len(), expected.len());
         for (event, command) in expected {
@@ -490,34 +459,24 @@ mod tests {
             .map(|n| n.as_str().unwrap())
             .collect();
         assert_eq!(names, HOOK_ENV_VARS);
-        assert!(names.contains(&"REX_BLOCK") && names.contains(&"TMUX_PANE"));
+        assert!(names.contains(&"REX_BLOCK") && names.contains(&"REX_SESSION"));
         assert!(matches!(check_dir(&dir).unwrap(), StatusCheck::Installed));
     }
 
     #[test]
-    fn test_wiring_passes_every_backends_pane_variables() {
+    fn test_wiring_passes_rex_pane_variables() {
         let tmp = tempfile::tempdir().unwrap();
         install_dir(tmp.path()).unwrap();
         let settings = settings_in(tmp.path());
         let names = settings[ENV_VARS_KEY].as_array().unwrap();
         for name in [
-            "TMUX",
-            "TMUX_PANE",
-            "TMUX_TMPDIR",
             "REX_SERVER",
             "REX_SESSION",
             "REX_BLOCK",
             "REX_BIN_DIR",
-            "WEZTERM_PANE",
-            "WEZTERM_UNIX_SOCKET",
-            "ZELLIJ",
-            "ZELLIJ_PANE_ID",
-            "ZELLIJ_SESSION_NAME",
-            "KITTY_WINDOW_ID",
-            "KITTY_LISTEN_ON",
-            "WORKMUX_STATUS_BACKEND",
-            "WORKMUX_STATUS_INSTANCE",
-            "WORKMUX_STATUS_PANE_ID",
+            "WORKREX_STATUS_BACKEND",
+            "WORKREX_STATUS_INSTANCE",
+            "WORKREX_STATUS_PANE_ID",
             "XDG_STATE_HOME",
         ] {
             assert!(
@@ -558,7 +517,7 @@ mod tests {
         let dir = tmp.path();
         fs::write(
             dir.join("settings.json"),
-            r#"{"schema_version":1,"model":"m","managed_hooks_env_vars":["MY_VAR","TMUX"]}"#,
+            r#"{"schema_version":1,"model":"m","managed_hooks_env_vars":["MY_VAR","REX_SERVER"]}"#,
         )
         .unwrap();
 
@@ -575,12 +534,12 @@ mod tests {
         let record = read_record(dir).unwrap().unwrap();
         assert!(!record.created_key);
         assert_eq!(record.added.len(), HOOK_ENV_VARS.len() - 1);
-        assert!(!record.added.iter().any(|n| n == "TMUX"));
+        assert!(!record.added.iter().any(|n| n == "REX_SERVER"));
         let settings = settings_in(dir);
         assert_eq!(settings["model"], "m");
         let names = settings[ENV_VARS_KEY].as_array().unwrap();
         assert_eq!(names[0], "MY_VAR");
-        assert_eq!(names.iter().filter(|n| *n == "TMUX").count(), 1);
+        assert_eq!(names.iter().filter(|n| *n == "REX_SERVER").count(), 1);
         assert_eq!(names.len(), HOOK_ENV_VARS.len() + 1);
     }
 
@@ -664,7 +623,7 @@ mod tests {
     #[test]
     fn test_uninstall_restores_the_users_env_vars_exactly() {
         for original in [
-            r#"{"schema_version":1,"managed_hooks_env_vars":["MY_VAR","TMUX","REX_BLOCK"]}"#,
+            r#"{"schema_version":1,"managed_hooks_env_vars":["MY_VAR","REX_SERVER","REX_BLOCK"]}"#,
             r#"{"schema_version":1,"managed_hooks_env_vars":[]}"#,
             r#"{"schema_version":1}"#,
         ] {
@@ -729,7 +688,7 @@ mod tests {
         install_dir(dir).unwrap();
         // The user removes setup's changes by hand and keeps the record.
         fs::remove_file(hooks_path_in(dir)).unwrap();
-        let own = r#"{"schema_version":1,"managed_hooks_env_vars":["TMUX","MY_VAR"]}"#;
+        let own = r#"{"schema_version":1,"managed_hooks_env_vars":["REX_SERVER","MY_VAR"]}"#;
         fs::write(dir.join("settings.json"), own).unwrap();
         install_dir(dir).unwrap();
 
@@ -747,11 +706,11 @@ mod tests {
         let dir = tmp.path();
         fs::write(
             dir.join("settings.json"),
-            r#"{"schema_version":1,"managed_hooks_env_vars":["TMUX"]}"#,
+            r#"{"schema_version":1,"managed_hooks_env_vars":["REX_SERVER"]}"#,
         )
         .unwrap();
         install_dir(dir).unwrap();
-        // The user drops the list, TMUX included; the next setup recreates it.
+        // The user drops the list, REX_SERVER included; the next setup recreates it.
         let mut settings = settings_in(dir);
         settings.as_object_mut().unwrap().remove(ENV_VARS_KEY);
         write_settings(dir, &settings).unwrap();
@@ -809,7 +768,7 @@ mod tests {
     fn test_unusable_settings_stop_setup_before_it_writes() {
         for original in [
             "[1]",
-            r#"{"schema_version":1,"managed_hooks_env_vars":"TMUX"}"#,
+            r#"{"schema_version":1,"managed_hooks_env_vars":"REX_SERVER"}"#,
         ] {
             let tmp = tempfile::tempdir().unwrap();
             let dir = tmp.path();
@@ -863,10 +822,7 @@ mod tests {
 
         let result = uninstall_dir(dir).unwrap();
 
-        assert!(
-            result.contains(crate::rebrand!("Removed workmux hooks")),
-            "{result}"
-        );
+        assert!(result.contains("Removed workrex hooks"), "{result}");
         let config: Value =
             serde_json::from_str(&fs::read_to_string(hooks_path_in(dir)).unwrap()).unwrap();
         assert_eq!(config["hooks"].as_object().unwrap().len(), 1);

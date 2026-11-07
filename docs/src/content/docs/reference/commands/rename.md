@@ -1,9 +1,9 @@
 ---
 title: "rename"
-description: Rename a worktree, its tmux window/session, and optionally the branch
+description: Rename a worktree, its Rex session or window, and optionally the branch
 ---
 
-Renames a worktree's directory, its tmux window or session, and the per-worktree
+Renames a worktree's directory, its Rex session or window, and the per-worktree
 workrex metadata stored in git config. Optionally also renames the underlying
 git branch.
 
@@ -14,7 +14,7 @@ workrex rename [old-name] <new-name> [--branch]
 ## Arguments
 
 - `[old-name]`: Optional current worktree name (the directory name). Defaults to the current worktree when run from inside one.
-- `<new-name>`: The new handle. This becomes the worktree directory name and the tmux window/session base name.
+- `<new-name>`: The new handle. This becomes the worktree directory name and the Rex session or window base name.
 
 ## Options
 
@@ -25,13 +25,13 @@ workrex rename [old-name] <new-name> [--branch]
 ## What gets renamed
 
 1. The worktree directory (`git worktree move`)
-2. The tmux window or session (matching duplicates like `wm-feature-2` are renamed preserving their `-N` suffix)
-3. `workmux.worktree.<handle>.*` git config entries (e.g. the stored window/session mode)
-4. Agent state files in `$XDG_STATE_HOME/workmux/agents/*.json` (updates `workdir`, `window_name`, `session_name`)
+2. The Rex session or window (matching duplicates like `wr-feature-2` are renamed preserving their `-N` suffix)
+3. `workrex.worktree.<handle>.*` git config entries (e.g. the stored window/session mode)
+4. Agent state files in `$XDG_STATE_HOME/workrex/agents/*.json` (updates `workdir`, `window_name`, `session_name`)
 5. Sandbox container marker directory, if present
 6. The local git branch, only when `--branch` is passed
 
-Config and state paths keep their workmux names so existing workmux configs work. See [Configuration](/guide/configuration/).
+Configuration and state live under Workrex-owned paths. See [Configuration](/guide/configuration/).
 
 ## Examples
 
@@ -52,4 +52,4 @@ workrex rename feature-old feature-new --branch
 - Rename is non-destructive: uncommitted changes and untracked files survive.
 - Submodules are not handled specially; `git worktree move` will error out if the worktree contains submodules.
 - Any shell already running inside the old directory will have a stale `$PWD` after the rename. Run `cd` (or `cd <new-path>`) to refresh.
-- Collisions are rejected up front: if the new path, tmux target, or branch already exists, the command aborts before making any changes.
+- Collisions are rejected up front: if the new path, Rex target, or branch already exists, the command aborts before making any changes.

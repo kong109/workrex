@@ -11,7 +11,7 @@ use crate::multiplexer::rex::{AppRefused, RexBackend};
 use crate::test_support;
 use crate::workflow::types::WorktreeInfo;
 
-/// The caller's pane is `block:caller` in `session:b`, labeled `wm-feat`,
+/// The caller's pane is `block:caller` in `session:b`, labeled `wr-feat`,
 /// whose active window focuses `block:agent`; `client:app-1` owns the
 /// caller's pane. The app refuses `client.perform` while `refuse` exists,
 /// with Rex.app's own refusal text.
@@ -29,8 +29,8 @@ case "$call" in
     fi
     echo '{"performed_by":"client:app-1"}';;
   *target.resolve*) echo '{"results":[{"status":"resolved","target":{"session_id":"session:b","window_id":"window:w"}}]}';;
-  *session.view*) echo '{"session_id":"session:b","label":"wm-feat","active_window_id":"window:w","windows":[{"window_id":"window:w","label":"wm-feat","focused_block_id":"block:agent","layers":[]}]}';;
-  *session.list*) echo '{"sessions":[{"session_id":"session:b","label":"wm-feat"}]}';;
+  *session.view*) echo '{"session_id":"session:b","label":"wr-feat","active_window_id":"window:w","windows":[{"window_id":"window:w","label":"wr-feat","focused_block_id":"block:agent","layers":[]}]}';;
+  *session.list*) echo '{"sessions":[{"session_id":"session:b","label":"wr-feat"}]}';;
   *) echo '{}';;
 esac
 "#;
@@ -259,6 +259,214 @@ fn enter_on_a_session_worktree_without_an_agent_moves_the_app_there() {
                 "{selects:#?}"
             );
             assert!(app.status_message.is_none(), "{:?}", app.status_message);
+        },
+    );
+}
+
+fn native_agent() -> crate::multiplexer::AgentPane {
+    serde_json::from_value(serde_json::json!({
+        "session": "", "window_name": "wr-feat", "pane_id": "%remote-ws-1",
+        "path": "/nonexistent/remote", "status": "working",
+        "remote": {"remote":"build", "ws_id":"ws", "ex_id":"ex-current", "pane":1,
+            "handle":"feat", "attached":false, "connected":true}
+    }))
+    .unwrap()
+}
+
+#[test]
+fn native_remote_input_and_failed_kill_never_use_the_local_row_id() {
+    use crate::command::dashboard::actions::{Action, apply_action};
+    with_rex_app(
+        "command::dashboard::app::rex_jump_tests::native_remote_input_and_failed_kill_never_use_the_local_row_id",
+        false,
+        |app, calls| {
+            let row = native_agent();
+            app.agents = vec![row.clone()];
+            app.all_agents = app.agents.clone();
+            app.table_state.select(Some(0));
+            apply_action(app, Action::EnterInputMode);
+            assert!(app.input_mode, "native remote rows accept input mode");
+            app.send_key_to_selected("a");
+            assert!(app.status_message.as_ref().unwrap().0.contains("send key:"));
+            app.paste_text_to_selected("message");
+            assert!(
+                app.status_message
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .contains("paste text:")
+            );
+            app.send_keys_to_selected_agent("/commit");
+            assert!(
+                app.status_message
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .contains("send command:")
+            );
+            app.kill_selected();
+            assert!(app.pending_kill_target.is_some());
+            // An intervening refresh must not retarget a pending confirmation.
+            app.agents[0].remote.as_mut().unwrap().at.ex_id = "ex-new".into();
+            app.confirm_kill();
+            assert!(
+                app.pending_kill_target.is_some(),
+                "failed confirmation stays open"
+            );
+            assert_eq!(app.agents.len(), 1, "a failed kill retains the row");
+            assert_eq!(
+                app.pending_kill_target
+                    .as_ref()
+                    .unwrap()
+                    .remote
+                    .as_ref()
+                    .unwrap()
+                    .at
+                    .ex_id,
+                "ex-current"
+            );
+            assert!(
+                !std::fs::read_to_string(calls)
+                    .unwrap()
+                    .contains(&row.pane_id),
+                "view identities never reach local Rex calls"
+            );
+        },
+    );
+}
+
+#[test]
+fn remote_diff_commands_and_callbacks_keep_the_open_execution() {
+    use super::{AppEvent, ViewMode};
+    use crate::command::dashboard::actions::{Action, apply_action};
+    use crate::command::dashboard::diff_ops::DiffOps;
+    with_rex_app(
+        "command::dashboard::app::rex_jump_tests::remote_diff_commands_and_callbacks_keep_the_open_execution",
+        false,
+        |app, calls| {
+            let row = native_agent();
+            let at = row.remote.as_ref().unwrap().at.clone();
+            app.agents = vec![row.clone()];
+            app.all_agents = app.agents.clone();
+            app.table_state.select(Some(0));
+            apply_action(app, Action::LoadWipDiff);
+            assert!(
+                matches!(app.view_mode, ViewMode::Diff(_)),
+                "native WIP diff opens"
+            );
+            // The command belongs to the open diff, even after the selected row changes.
+            app.agents.clear();
+            app.send_commit_to_agent();
+            assert!(
+                matches!(app.view_mode, ViewMode::Diff(_)),
+                "failed send keeps the diff open"
+            );
+            assert!(
+                app.status_message
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .contains("send command:")
+            );
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 20)).unwrap();
+            terminal
+                .draw(|frame| crate::command::dashboard::ui::ui(frame, app))
+                .unwrap();
+            let footer: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .skip(120 * 19)
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                footer.contains("send command:"),
+                "failure stays visible in the diff: {footer}"
+            );
+            let ViewMode::Diff(diff) = &app.view_mode else {
+                unreachable!()
+            };
+            let original = diff.content.clone();
+            let mut stale = at.clone();
+            stale.ex_id = "ex-old".into();
+            app.apply_event(AppEvent::RemoteDiff(
+                stale,
+                false,
+                Err("old execution".into()),
+            ));
+            let ViewMode::Diff(diff) = &app.view_mode else {
+                unreachable!()
+            };
+            assert_eq!(diff.content, original, "stale diff callback is ignored");
+            app.enter_patch_mode();
+            let ViewMode::Diff(diff) = &app.view_mode else {
+                unreachable!()
+            };
+            assert!(!diff.patch_mode, "remote patch editing remains restricted");
+            assert!(
+                !std::fs::read_to_string(calls)
+                    .unwrap()
+                    .contains(&row.pane_id)
+            );
+        },
+    );
+}
+
+#[test]
+fn remote_preview_callbacks_and_last_visit_require_current_metadata() {
+    use super::AppEvent;
+    with_rex_app(
+        "command::dashboard::app::rex_jump_tests::remote_preview_callbacks_and_last_visit_require_current_metadata",
+        false,
+        |app, calls| {
+            let row = native_agent();
+            let at = row.remote.as_ref().unwrap().at.clone();
+            app.agents = vec![row.clone()];
+            app.all_agents = app.agents.clone();
+            app.table_state.select(Some(0));
+            app.preview_pane_id = Some(row.pane_id.clone());
+            app.preview = Some("current output".into());
+            let mut stale = at.clone();
+            stale.ex_id = "ex-old".into();
+            app.apply_event(AppEvent::RemotePreview(
+                row.pane_id.clone(),
+                stale,
+                Ok("old output".into()),
+            ));
+            assert_eq!(app.preview.as_deref(), Some("current output"));
+            app.apply_event(AppEvent::RemotePreview(
+                row.pane_id.clone(),
+                at,
+                Ok("new output".into()),
+            ));
+            assert_eq!(app.preview.as_deref(), Some("new output"));
+            crate::command::dashboard::settings::save_last_pane_id(&row.pane_id);
+            app.jump_to_last();
+            assert!(
+                app.status_message
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .contains("open feat:"),
+                "remote metadata is resolved"
+            );
+            app.agents.clear();
+            app.all_agents.clear();
+            app.jump_to_last();
+            assert!(
+                app.status_message
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .contains("no longer available")
+            );
+            assert!(
+                !std::fs::read_to_string(calls)
+                    .unwrap()
+                    .contains(&row.pane_id)
+            );
         },
     );
 }

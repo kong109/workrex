@@ -15,7 +15,6 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::execution::{sessions, tmux, tmux_socket};
 use super::host::{RexHost, hosted_marker};
 use super::{Execution, NodeRoot, Workspace, git};
 use crate::multiplexer::rex::HostedSession;
@@ -104,8 +103,6 @@ fn survey(
     root: &NodeRoot,
     request: &GcRequest,
 ) -> Result<(Vec<Finding>, Vec<String>, Vec<String>)> {
-    let socket = tmux_socket(root)?;
-    let sessions = sessions(&socket);
     let workspaces = root.workspaces();
     let rex = rex_sessions(root, &workspaces);
     let containers = containers(root)?;
@@ -117,19 +114,11 @@ fn survey(
         .collect();
     let live = |ws: &Workspace| {
         ws.execution.as_ref().is_some_and(|execution| {
-            execution
-                .panes
-                .iter()
-                .any(|pane| sessions.contains(&session_name(&execution.ex_id, pane.index)))
-                || sessions.iter().any(|session| {
-                    super::shell::shell_session_execution(session) == Some(execution.ex_id.as_str())
+            execution.rex.is_some()
+                && rex.as_ref().is_none_or(|rex| {
+                    rex.iter()
+                        .any(|session| session.label.starts_with(&format!("{}-", execution.ex_id)))
                 })
-                || execution.rex.is_some()
-                    && rex.as_ref().is_none_or(|rex| {
-                        rex.iter().any(|session| {
-                            session.label.starts_with(&format!("{}-", execution.ex_id))
-                        })
-                    })
         })
     };
     let known: HashSet<&str> = request.known.iter().map(String::as_str).collect();
@@ -203,6 +192,13 @@ fn survey(
                 .panes
                 .iter()
                 .map(|pane| session_name(&execution.ex_id, pane.index))
+                .chain(
+                    execution
+                        .rex
+                        .iter()
+                        .flat_map(|placement| placement.sessions.keys())
+                        .map(|index| session_name(&execution.ex_id, *index)),
+                )
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -210,16 +206,6 @@ fn survey(
         .iter()
         .filter_map(|ws| Some(ws.execution.as_ref()?.ex_id.as_str()))
         .collect();
-    for session in &sessions {
-        if is_orphan(session, &executions, &current) {
-            findings.push(Finding {
-                id: format!("session:{session}"),
-                detail: format!("tmux session {session} of no execution"),
-                unsaved: false,
-            });
-        }
-    }
-
     for session in rex.iter().flatten() {
         if is_orphan(&session.label, &executions, &current) {
             findings.push(Finding {
@@ -264,7 +250,7 @@ fn survey(
         });
     }
 
-    for (repo, reference) in workmux_refs(root) {
+    for (repo, reference) in workrex_refs(root) {
         let ws_id = reference.rsplit('/').next().unwrap_or_default();
         if ids.contains(ws_id) {
             continue;
@@ -348,17 +334,6 @@ fn remove(root: &NodeRoot, id: &str) -> Result<()> {
                 let _ = git(&repo, &["worktree", "prune"]);
             }
         }
-        "session" => {
-            let socket = tmux_socket(root)?;
-            let output = tmux(&socket)
-                .args(["kill-session", "-t", &format!("={name}")])
-                .output()
-                .context("Failed to run tmux")?;
-            if !output.status.success() {
-                anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
-            }
-            super::execution::AgentMarker::sweep(root, &socket);
-        }
         "rex-session" => RexHost::open(root, false)?
             .mux
             .destroy_hosted_session(name)?,
@@ -432,7 +407,7 @@ fn rex_sessions(root: &NodeRoot, workspaces: &[Workspace]) -> Option<Vec<HostedS
 
 /// Whether session `name` belongs to no current execution: a shell of
 /// none of `executions`, or an execution pane not in `current`. Names in
-/// neither form are not workmux's and never orphans.
+/// neither form are not workrex's and never orphans.
 fn is_orphan(name: &str, executions: &HashSet<&str>, current: &HashSet<String>) -> bool {
     match super::shell::shell_session_execution(name) {
         Some(ex_id) => !executions.contains(ex_id),
@@ -615,8 +590,8 @@ fn supervisors(root: &NodeRoot) -> Vec<(i32, String)> {
     found
 }
 
-/// Workspace-owned `refs/workmux/**` of every project repository.
-fn workmux_refs(root: &NodeRoot) -> Vec<(PathBuf, String)> {
+/// Workspace-owned `refs/workrex/**` of every project repository.
+fn workrex_refs(root: &NodeRoot) -> Vec<(PathBuf, String)> {
     let mut refs = Vec::new();
     for project in read_dir(&root.path.join("projects")) {
         let repo = project.join("repo");
@@ -625,7 +600,7 @@ fn workmux_refs(root: &NodeRoot) -> Vec<(PathBuf, String)> {
         }
         if let Ok(output) = git(
             &repo,
-            &["for-each-ref", "--format=%(refname)", "refs/workmux/"],
+            &["for-each-ref", "--format=%(refname)", "refs/workrex/"],
         ) {
             refs.extend(
                 output
@@ -668,7 +643,7 @@ fn stale_files(root: &NodeRoot, ids: &HashSet<&str>) -> Vec<PathBuf> {
             continue;
         };
         let orphan = match name.rsplit_once('.') {
-            Some((_, "env" | "tmux")) => true,
+            Some((_, "env")) => true,
             Some((ws_id, "json")) => ws_id.starts_with('w') && !ids.contains(ws_id),
             _ => false,
         };
@@ -703,7 +678,7 @@ fn unused_pins(
             }
             None => {
                 return Err(
-                    "an execution started by an older workmux does not say which it runs".into(),
+                    "an execution started by an older workrex does not say which it runs".into(),
                 );
             }
         }

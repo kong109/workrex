@@ -7,6 +7,8 @@ Switches to the pane you were in before your last jump from `workrex dashboard` 
 
 This is a hidden command (not shown in `--help`), typically bound to a key.
 
+History is scoped to the current Rex server. Use the dashboard to navigate to agents on a remote server.
+
 ```bash
 workrex last-agent
 ```
@@ -19,12 +21,6 @@ workrex last-agent
 4. Switches to the pane, then records the pane you came from, so the next run switches back.
 
 If no earlier agent is recorded, it prints `No previous agent to switch to`.
-
-## Tmux keybinding
-
-```bash
-bind Tab run-shell "workrex last-agent"
-```
 
 ## Under Rex
 

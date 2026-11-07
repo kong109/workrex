@@ -25,7 +25,7 @@ workrex send <name> --file <file>
 
 For a workspace on a [remote server](/guide/remote/), `send` delivers the text to the remote agent. See [commands on remote workspaces](/guide/remote/usage/#commands-on-remote-workspaces).
 
-`send` types single-line text into the pane. Multiline text, and all text for Codex, goes in as a paste. Under [Rex](/guide/rex/), a paste is a Rex paste event, which Rex brackets when the agent turned on bracketed paste. tmux pastes through a paste buffer.
+`send` types single-line text into the pane. Multiline text, and all text for Codex, goes in as a paste. Under [Rex](/guide/rex/), a paste is a Rex paste event, which Rex brackets when the agent turned on bracketed paste.
 
 ## Examples
 

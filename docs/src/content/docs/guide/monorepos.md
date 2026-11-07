@@ -7,36 +7,36 @@ Tips for using workrex with monorepos containing multiple services.
 
 ## Nested configuration
 
-workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
+Workrex uses `.workrex.yaml`, `~/.config/workrex/config.yaml`, and `WORKREX_*` environment variables. See [Configuration](/guide/configuration/).
 
-Place a `.workmux.yaml` in any subdirectory to configure that project independently. When you run workrex from a subdirectory, it walks upward to find the nearest config:
+Place a `.workrex.yaml` in any subdirectory to configure that project independently. When you run workrex from a subdirectory, it walks upward to find the nearest config:
 
 ```
 monorepo/
-├── .workmux.yaml          # Root config (used from monorepo/)
+├── .workrex.yaml          # Root config (used from monorepo/)
 ├── backend/
-│   ├── .workmux.yaml      # Backend config (used from backend/)
+│   ├── .workrex.yaml      # Backend config (used from backend/)
 │   └── src/
 └── frontend/
-    ├── .workmux.yaml      # Frontend config (used from frontend/)
+    ├── .workrex.yaml      # Frontend config (used from frontend/)
     └── src/
 ```
 
 ```bash
 cd monorepo/backend
-workrex add api-feature    # Uses backend/.workmux.yaml
+workrex add api-feature    # Uses backend/.workrex.yaml
 ```
 
 When using a nested config:
 
-- **Working directory**: The tmux window opens in the subdirectory (e.g., `backend/`) within the new worktree, not the worktree root
+- **Working directory**: The Rex window opens in the subdirectory (e.g., `backend/`) within the new worktree, not the worktree root
 - **File operations**: `files.copy` and `files.symlink` paths are relative to the config directory
 - **Hooks**: Run with the subdirectory as the working directory
 
 ### Example nested config
 
 ```yaml
-# backend/.workmux.yaml
+# backend/.workrex.yaml
 agent: claude
 
 files:
@@ -49,19 +49,19 @@ post_create:
 
 ### Environment variables
 
-Hooks receive `WM_CONFIG_DIR` pointing to the config directory in the new worktree:
+Hooks receive `WORKREX_CONFIG_DIR` pointing to the config directory in the new worktree:
 
 ```yaml
-# backend/.workmux.yaml
+# backend/.workrex.yaml
 post_create:
-  - echo "Project root: $WM_PROJECT_ROOT" # /path/to/main-worktree
-  - echo "Config dir: $WM_CONFIG_DIR" # /path/to/worktree/backend
-  - echo "Worktree root: $WM_WORKTREE_PATH" # /path/to/worktree
+  - echo "Project root: $WORKREX_PROJECT_ROOT" # /path/to/main-worktree
+  - echo "Config dir: $WORKREX_CONFIG_DIR" # /path/to/worktree/backend
+  - echo "Worktree root: $WORKREX_WORKTREE_PATH" # /path/to/worktree
 ```
 
 ### No inheritance
 
-Nested configs completely replace the root config - they are not merged. If you need shared settings across projects, use the global config (`~/.config/workmux/config.yaml`) with the `<global>` placeholder.
+Nested configs completely replace the root config - they are not merged. If you need shared settings across projects, use the global config (`~/.config/workrex/config.yaml`) with the `<global>` placeholder.
 
 ## Port isolation
 
@@ -90,7 +90,7 @@ find_port() {
 }
 
 # Hash the handle to get a deterministic port offset (0-99)
-hash=$(echo -n "$WM_HANDLE" | md5 | cut -c1-4)
+hash=$(echo -n "$WORKREX_HANDLE" | md5 | cut -c1-4)
 offset=$((16#$hash % 100))
 
 # Find available ports starting from the hash-based offset
@@ -110,7 +110,7 @@ echo "Created .env.local with ports: API=$api_port, VITE=$vite_port"
 Configure workrex to copy `.env` and generate `.env.local`:
 
 ```yaml
-# .workmux.yaml
+# .workrex.yaml
 files:
   copy:
     - .env # Copy secrets (DATABASE_URL, API keys, etc.)
@@ -145,7 +145,7 @@ dotenv_if_exists .env.local
 Use the same `worktree-env` script to generate `.env.local`. When you enter the directory, direnv automatically loads `.env` and `.env.local`, with the latter taking precedence.
 
 ```yaml
-# .workmux.yaml
+# .workrex.yaml
 files:
   copy:
     - .envrc
@@ -164,5 +164,5 @@ $ workrex add feature-auth
 Running setup commands...
 Created .env.local with ports: API=3471, VITE=3470
 ✓ Setup complete
-✓ Successfully created worktree and tmux window for 'feature-auth'
+✓ Successfully created worktree and Rex window for 'feature-auth'
 ```

@@ -11,7 +11,7 @@ use crate::sandbox::rpc::{RpcClient, RpcRequest, RpcResponse};
 /// Returns exit code (0 = success, 1 = no image).
 pub fn run(mime: &str) -> Result<i32> {
     if !crate::sandbox::guest::is_sandbox_guest() {
-        bail!("clipboard-read only works inside a sandbox guest (WM_SANDBOX_GUEST=1)");
+        bail!("clipboard-read only works inside a sandbox guest (WORKREX_SANDBOX_GUEST=1)");
     }
 
     let mut client = RpcClient::from_env()?;

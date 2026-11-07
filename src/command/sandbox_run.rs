@@ -1,6 +1,6 @@
-//! The `workmux sandbox run` supervisor process.
+//! The `workrex sandbox run` supervisor process.
 //!
-//! Runs inside a tmux pane. Starts a TCP RPC server and executes the agent
+//! Runs inside a Rex pane. Starts a TCP RPC server and executes the agent
 //! command inside a sandbox (Lima VM or Docker/Podman container).
 
 use crate::bin_name::BIN;
@@ -307,11 +307,11 @@ fn run_lima(
         .arg(&vm_name);
 
     let mut env_exports = vec![
-        r#"PATH="$HOME/.workmux-state/shims/bin:$HOME/.local/bin:/nix/var/nix/profiles/default/bin:$PATH""#.to_string(),
-        "WM_SANDBOX_GUEST=1".to_string(),
-        "WM_RPC_HOST=host.lima.internal".to_string(),
-        format!("WM_RPC_PORT={}", rpc_port),
-        format!("WM_RPC_TOKEN={}", rpc_token),
+        r#"PATH="$HOME/.workrex-state/shims/bin:$HOME/.local/bin:/nix/var/nix/profiles/default/bin:$PATH""#.to_string(),
+        "WORKREX_SANDBOX_GUEST=1".to_string(),
+        "WORKREX_RPC_HOST=host.lima.internal".to_string(),
+        format!("WORKREX_RPC_PORT={}", rpc_port),
+        format!("WORKREX_RPC_TOKEN={}", rpc_token),
     ];
 
     for term_var in ["TERM", "COLORTERM"] {
@@ -430,7 +430,7 @@ fn run_container(
     }
 
     // Create shims directory for host-exec (on host, will be bind-mounted into container).
-    // Use $XDG_CACHE_HOME/workmux/shims/ instead of system temp (/var/folders/... on macOS)
+    // Use $XDG_CACHE_HOME/workrex/shims/ instead of system temp (/var/folders/... on macOS)
     // so the path is inside ~ and accessible to VM-based runtimes like Colima.
     let _shim_dir = if on_node {
         None
@@ -497,7 +497,7 @@ fn run_container(
     // Slugify only the container name; the raw handle is used as the state store key
     // so cleanup (which derives the handle from the directory name without slugifying)
     // can find it.
-    let container_name = format!("wm-{}-{}", slug::slugify(&handle), std::process::id());
+    let container_name = format!("wr-{}-{}", slug::slugify(&handle), std::process::id());
 
     // Register container in state store so cleanup can find it without docker ps
     if let Ok(store) = StateStore::new()
@@ -510,10 +510,10 @@ fn run_container(
     // Proxy URL is a local String so we can't use &str slices directly.
     let rpc_port_str = rpc_port.to_string();
     let mut owned_envs: Vec<(String, String)> = vec![
-        ("WM_SANDBOX_GUEST".into(), "1".into()),
-        ("WM_RPC_HOST".into(), rpc_host.clone()),
-        ("WM_RPC_PORT".into(), rpc_port_str.clone()),
-        ("WM_RPC_TOKEN".into(), rpc_token.clone()),
+        ("WORKREX_SANDBOX_GUEST".into(), "1".into()),
+        ("WORKREX_RPC_HOST".into(), rpc_host.clone()),
+        ("WORKREX_RPC_PORT".into(), rpc_port_str.clone()),
+        ("WORKREX_RPC_TOKEN".into(), rpc_token.clone()),
     ];
 
     if let Some((proxy_port, ref proxy_token, _)) = proxy {
@@ -599,7 +599,7 @@ fn run_container(
 /// and explicit sandbox.env values (which may contain secrets).
 pub(super) fn redact_env_arg(arg: &str, extra_redact_keys: &[&str]) -> String {
     if let Some((key, _)) = arg.split_once('=')
-        && (key == "WM_RPC_TOKEN"
+        && (key == "WORKREX_RPC_TOKEN"
             || key.to_uppercase().contains("PROXY")
             || extra_redact_keys.contains(&key))
     {
@@ -630,18 +630,18 @@ mod tests {
     #[test]
     fn redact_rpc_token() {
         assert_eq!(
-            redact_env_arg("WM_RPC_TOKEN=abc123", &[]),
-            "WM_RPC_TOKEN=<redacted>"
+            redact_env_arg("WORKREX_RPC_TOKEN=abc123", &[]),
+            "WORKREX_RPC_TOKEN=<redacted>"
         );
     }
 
     #[test]
     fn redact_proxy_env_vars() {
         let cases = [
-            "HTTPS_PROXY=http://workmux:secret@host:1234",
-            "HTTP_PROXY=http://workmux:secret@host:1234",
-            "https_proxy=http://workmux:secret@host:1234",
-            "http_proxy=http://workmux:secret@host:1234",
+            "HTTPS_PROXY=http://workrex:secret@host:1234",
+            "HTTP_PROXY=http://workrex:secret@host:1234",
+            "https_proxy=http://workrex:secret@host:1234",
+            "http_proxy=http://workrex:secret@host:1234",
         ];
         for arg in &cases {
             let redacted = redact_env_arg(arg, &[]);
@@ -667,8 +667,8 @@ mod tests {
         assert_eq!(redact_env_arg("HOME=/tmp", &[]), "HOME=/tmp");
         assert_eq!(redact_env_arg("--rm", &[]), "--rm");
         assert_eq!(
-            redact_env_arg("WM_SANDBOX_GUEST=1", &[]),
-            "WM_SANDBOX_GUEST=1"
+            redact_env_arg("WORKREX_SANDBOX_GUEST=1", &[]),
+            "WORKREX_SANDBOX_GUEST=1"
         );
     }
 

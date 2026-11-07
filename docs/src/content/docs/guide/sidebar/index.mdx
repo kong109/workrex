@@ -1,454 +1,144 @@
 ---
 title: "Sidebar"
-description: A persistent agent status sidebar for tmux and Rex windows
+description: Inspect and navigate agents in a persistent Rex sidebar
 ---
 
-import Screenshot from "../../../../components/Screenshot.astro";
-import screenshot from "../../../../assets/screenshots/sidebar.webp";
-import tiles from "../../../../assets/screenshots/sidebar-tiles.webp";
-import grouped from "../../../../assets/screenshots/sidebar-grouped.webp";
-import topBar from "../../../../assets/screenshots/sidebar-top-bar.webp";
+The sidebar is a Rex terminal block placed beside or above each window's content in
+scope. It shows agent status, task identity, Git changes, and pull-request
+checks while you work in another block.
 
-The sidebar is an agent overview pinned to the left edge or top edge of every
-tmux window, or to the left edge of every Rex window. The dashboard is a
-full-screen TUI that you open when you need it. The sidebar stays on screen
-while you work.
-
-<div style="display: flex; justify-content: center; max-width: 45rem; margin: 1.5rem 0;">
-
-<Screenshot
-  src={screenshot}
-  alt="workrex sidebar"
-  caption="The sidebar pinned to the left of a tmux window, beside an agent"
-  framed={false}
-/>
-
-</div>
-
-## Setup
-
-:::caution[Prerequisites]
-The sidebar lists agents that report their status. Configure
-[status tracking hooks](/guide/status-tracking/), and use tmux or
-[Rex](/guide/rex/#sidebar) as the backend. Under Rex, Claude Code reports its
-status without hooks. See
-[Rex program status](/guide/status-tracking/#rex-program-status).
-:::
-
-Toggle the sidebar with:
+## Enable the sidebar
 
 ```bash
-workrex sidebar                 # All sessions (default)
-workrex sidebar --session       # Current session only, or opt out of global mode
-workrex sidebar --position top  # Override configured placement for this toggle
+workrex setup
+workrex sidebar on
 ```
 
-By default, the sidebar appears in all existing and newly created tmux windows
-across all sessions. Use `--session` to scope it to the current session only,
-leaving other sessions untouched. Use `--position left` or `--position top` to
-override the configured placement when enabling the sidebar. Running the command
-again disables it.
+Rex program status supplies activity for agents that report it. Other agents use
+[status hooks](/guide/status-tracking/). `workrex sidebar off` removes the
+sidebar blocks; `workrex sidebar` toggles them.
 
-When the global sidebar is active, `workrex sidebar --session` hides it in the
-current tmux session only. Run it again to show the sidebar in that session
-again without affecting other sessions.
+## Session scope
 
-Optionally, add a tmux binding to toggle it:
+By default, sidebars appear in windows across the selected Rex server. Scope the
+operation to the caller's session with `--session`:
 
 ```bash
-bind C-t run-shell "workrex sidebar"
+workrex sidebar --session on
+workrex sidebar --session off
 ```
 
-### Under Rex
+Workrex uses the caller's Rex session and block identity. A background agent's
+session may differ from the session the user is viewing.
 
-The commands, keys, filters, groups and views on this page work the same under
-Rex. The differences:
+## Position and size
 
-- Each sidebar is a full-height Rex block labeled `workrex-sidebar`, on the left
-  of the window. `--position top`, `--height` and `sidebar.position: top` need
-  tmux, and workrex exits with an error if you use them under Rex.
-- Rex has no hooks, so a daemon follows `rex events` and adds a sidebar to each
-  new window.
-- Jumping to an agent moves Rex.app, which needs Remote Control.
+The sidebar opens on the left. Set `sidebar.width` in configuration or pass a
+width when enabling it:
 
-See [Rex: Sidebar](/guide/rex/#sidebar) for width, state and daemon behavior.
-
-## What it shows
-
-Each agent is displayed as a tile showing:
-
-- Status icon with spinner animation (working/waiting/done)
-- Worktree name and elapsed time since last status change
-- Project name and git diff stats (committed + uncommitted lines)
-- Optional pull request number and check status for the current branch
-- Agent task description
-
-The exact layout, styling, and per-agent icons are fully customizable; see
-[Customization](/guide/sidebar/customization/).
-
-## Configuration
-
-workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
-
-Configure the sidebar in your global `~/.config/workmux/config.yaml` or project
-`.workmux.yaml`:
-
-```yaml
-# Shared by the dashboard and sidebar; defaults to one hour.
-stale_after: 5h # integer seconds or a duration such as 90m or 5h
-
-sidebar:
-  # Position: "left" (default) or "top"
-  position: left
-
-  # Left sidebar width: absolute columns or percentage of terminal width
-  width: 40 # absolute columns
-  # width: "15%"  # percentage of terminal width
-
-  # Layout mode for the left sidebar: "compact" or "tiles" (default)
-  layout: tiles
-
-  # Enter focuses the pane by default. Use "select" to show its window while
-  # keeping focus in the sidebar.
-  enter_action: focus
-
-  # Dim stale agents (default: true; uses the shared stale_after threshold)
-  dim_stale: true
-
-  # Row ordering: "recency" (default), "priority" or "window"
-  sort: recency
-
-  # Group agents into labeled sections: "project" or "session". Unset by
-  # default, which keeps one flat list without headers
-  group_by: project
-
-  # While grouped, fold each group's stale agents behind a toggle
-  # (default: true)
-  collapse_stale: true
+```bash
+workrex sidebar on --width 30
 ```
 
-For a horizontal top bar:
+Without a configured width, dragging a sidebar border saves the width for the
+other sidebars on that Rex server. An explicit command-line width remains in
+effect until the sidebar is turned off.
 
-```yaml
-sidebar:
-  position: top
+For a full-width bar above the content, use Rex's vertical split layout:
 
-  # Top bar height in rows
-  height: 3
-
-  horizontal:
-    item_width: 24 # horizontal chip width in columns
-
-  templates:
-    horizontal:
-      - "{status_icon} {primary} {pane_suffix} {fill} {elapsed}"
-      - "{secondary} {fill} {git_stats}"
-      - "{pane_title}"
+```bash
+workrex sidebar on --position top --height 3
 ```
 
-<Screenshot
-  src={topBar}
-  alt="workrex sidebar as a horizontal top bar"
-  caption="The horizontal top bar, one chip per agent across three rows"
-  framed={false}
-/>
+Set `sidebar.position: top` and `sidebar.height: "10%"` to configure a relative height. Dragged heights are stored separately from left-sidebar widths. Switching positions preserves the content blocks and focus.
 
-Width defaults to 10% of terminal width, clamped between 25 and 50 columns.
-When set explicitly, the clamp is removed (minimum 1 column). Widths above
-80 columns use the default width so tmux pane expansion recovers automatically.
-Height only applies to `position: top`; set it as a row count for the number of
-horizontal lines you want to show. Horizontal item width defaults to 24 columns
-and is clamped between 12 and 80. Position changes take effect the next time you
-toggle the sidebar off and on. Use `workrex sidebar --position top` or
-`--position left` to override the configured placement for that toggle.
+## Layout
 
-## Layout modes
+Use the tile layout for task details or the compact layout for more rows. The
+sidebar's controls and [templates](/guide/sidebar/customization/) determine what
+each row displays. Preferences are stored under
+`~/.local/state/workrex/sidebar/`, separately for each Rex server.
 
-The left sidebar supports two layout modes, toggled with `v` in the sidebar
-pane:
+## Sorting
 
-- **Tiles** (default): variable-height cards with status stripe
-- **Compact**: single line per agent
-
-<Screenshot
-  src={tiles}
-  alt="Tile layout, one flat list"
-  caption="Tile layout, a card per agent, with stale ones dimmed"
-  framed={false}
-/>
-
-Tiles show a muted `↓ N more` footer when agents remain below the visible area.
-The count includes only hidden agents, not agents above the viewport. The footer
-is not selectable and disappears when the final agent is visible. On very short
-sidebars, showing the selected tile takes priority over the footer.
-
-workrex saves your choice, so it survives a tmux restart. The top bar always uses a
-horizontal chip layout, so `v` has no effect there. Horizontal templates render
-as many configured lines as the current height allows.
-
-## Ordering
-
-`sort` decides the order agents appear in:
-
-- `recency` (default): most recent status change first, sleeping agents last.
-- `priority`: agents needing attention first, in the order waiting, done,
-  working, unknown, stale or interrupted, then sleeping. Recent activity breaks
-  ties. Waiting and done agents stay at the top however long they have been
-  waiting, and a working agent drops down only when interruption detection sees
-  it stop progressing.
-- `window`: tmux window order, which keeps rows still while agents work. Pairs
-  well with the `{window_index}` token.
+Sort by recent activity, project, or window order using the sidebar controls.
+Sorting changes display order; Workrex continues addressing agents by their
+recorded Rex block IDs.
 
 ## Grouping
 
-Grouping splits the list into sections with a header above each, one per
-repository or one per tmux session. It is off by default:
+Group agents by project or Rex session:
+
+```bash
+workrex sidebar group project
+workrex sidebar group session
+workrex sidebar group --clear
+```
+
+The grouping preference is shared by sidebars on that server. Expanded groups
+are also shared, so the same group does not unexpectedly reopen in each tab.
+
+## Named views
+
+Configure `sidebar.views` to give sidebars a named scope. A view can match
+session labels or project paths. `sessions` matches exact, case-sensitive Rex
+session labels; a repository directory does not imply a session label.
 
 ```yaml
 sidebar:
-  group_by: project # or session
+  views:
+    - name: api
+      sessions: [api-work]
 ```
 
-<Screenshot
-  src={grouped}
-  alt="Sidebar grouped by project, with stale agents folded"
-  caption="Grouped by project, with each section counting its agents and folding away the stale ones"
-  framed={false}
-/>
-
-Sections are alphabetical and keep their place while agents change status, so a
-row only ever moves within its own group. `sort` decides the order inside a
-section.
-
-Headers are labels, not agents: `j`/`k` and `g`/`G` skip them, they cannot be
-selected or clicked, and they are not counted by `{idx}`, `{jump_key}` or
-`workrex sidebar next|prev|jump <N>`. A header counts the agents that sidebar
-shows, sleeping ones included. Scrolling into a group pins its header to the top
-until the next group's header replaces it.
-
-Headers are drawn in the left sidebar only. With `position: top`, `group_by`
-still orders the chips.
-
-With the sidebar pane focused, press `t` to switch between grouped and flat.
-From anywhere, use the command line:
+Toggle configured views with `V` in the sidebar or:
 
 ```bash
-workrex sidebar group          # Toggle between grouped and flat
-workrex sidebar group project  # One section per repository
-workrex sidebar group session  # One section per tmux session
-workrex sidebar group none     # One flat list, no headers
-workrex sidebar group --clear  # Follow the config file again
+workrex sidebar view on
+workrex sidebar view off
 ```
 
-Every sidebar switches together, the agent navigation commands follow the same
-order, and the choice survives a tmux restart. It also overrides `group_by`
-until you clear it, so run `workrex sidebar group --clear` once you have settled
-on a value in config.
+See [the command reference](/reference/commands/sidebar/#named-views) for view
+selection rules.
 
-### Grouped templates
+## Mouse and keyboard
 
-A header already names the project or session, so the rows under it can leave
-that out. Templates under `templates.grouped` apply while grouping is on:
+Click an agent row to show its session and focus its block. The sidebar handles
+its own terminal mouse events. Use the displayed key hints for filtering,
+grouping, sorting, and layout changes.
 
-```yaml
-sidebar:
-  templates:
-    grouped:
-      header: "{group} {fill} {group_count}"
-      tiles:
-        - "{primary} {pane_suffix} {fill} {pr_number} {elapsed}"
-        - "{pane_title} {fill} {pr_checks} {git_stats}"
-```
-
-`grouped` accepts `compact`, `tiles` and `header`. A field you leave out falls
-back to your ungrouped template of the same name, then to the grouped default,
-so a sidebar you have already customized keeps its rows when you group it. See
-[Customization](/guide/sidebar/customization/) for the available tokens.
-
-## Folding stale agents
-
-While grouped, each group's stale agents fold behind one toggle row that says
-how many it stands for, so a project nobody is waiting on costs a line instead
-of a screen. An agent counts as stale once it is sleeping, or once the configured
-`stale_after` period passes with no activity and no working or waiting status:
-the same agents `dim_stale` dims and the dashboard marks or filters out.
-
-Set `collapse_stale: false` to list every agent at full height instead:
-
-```yaml
-sidebar:
-  group_by: project
-  collapse_stale: false
-```
-
-A toggle row is selectable like any other: `Enter` or a click opens the fold the
-selection sits on. From anywhere in a group, `s` folds and unfolds it, and `l`
-and `h` (or the arrow keys) unfold and fold it. `S` opens every group at once,
-or closes them all when any is open. Agents shown from a fold take one line each
-rather than a full tile.
-
-A group whose agents are all stale has no live rows to head, so its header
-becomes its own toggle and the whole group costs one row. Those groups sort
-below every group still holding live work, under a `STALE` rule.
-
-Which groups are open is shared by every sidebar pane, for as long as the tmux
-server runs: closing and reopening the sidebar keeps your folds, restarting
-tmux collapses them again. A collapsed group still lists the agent of the
-window its sidebar sits in, so the sidebar never hides where you are, and the
-toggle counts only what stays folded.
-
-While grouped, stale agents are not jump targets: `{idx}` and `{jump_key}` skip
-them, `workrex sidebar next|prev|jump <N>` passes over them, and the numbers
-close up rather than leaving gaps. That holds whether they are folded away or
-shown, so what `Alt+1` reaches does not change with the number of idle agents
-above it. Select them with `j`/`k` or click them instead. A flat list numbers
-every agent it shows.
-
-## Mouse support
-
-Click an agent tile or top-bar chip to jump to its pane, or scroll to navigate
-the list. Under tmux, this needs `set -g mouse on` in your `~/.tmux.conf`.
-
-## Keybindings
-
-These keys belong to the sidebar pane, so they work while it has focus. Move to
-it the way you move to any pane, or click it.
-
-| Key     | Action                    |
-| ------- | ------------------------- |
-| `j`/`k` | Navigate up/down          |
-| `Enter` | Run the configured action |
-| `o`     | Focus the agent pane      |
-| `g`/`G` | Jump to first/last        |
-| `v`     | Toggle layout mode        |
-| `f`     | Toggle session filter     |
-| `V`     | Toggle rule-based views   |
-| `t`     | Toggle grouping           |
-| `h`/`l` | Unfold/fold current group |
-| `s`     | Toggle the current fold   |
-| `S`     | Fold/unfold every group   |
-| `z`     | Toggle sleeping on agent  |
-| `?`     | Show these keys           |
-| `q`     | Open quit confirmation    |
-
-With `enter_action: select`, Enter shows the agent's window and focuses that
-window's sidebar. This keeps `j`/`k` available for scanning; press `o` when you
-want to enter the selected agent pane. If the target window has no sidebar,
-Enter falls back to focusing its agent pane. Mouse clicks always focus the pane.
-
-### Session filter
-
-By default, the sidebar shows agents across all tmux sessions. With the sidebar
-focused, press `f` to show only agents in the same tmux session as the current
-window; press `f` again to include other sessions. If views are enabled,
-the window's matching rules still apply.
-
-The filter also applies to agent navigation hotkeys (`next`/`prev`/`jump`), so
-`Alt+j`/`Alt+k` cycle through the current session when the session filter is
-active.
-
-You can also toggle the filter from the command line:
+You can also navigate from a shell or Rex action:
 
 ```bash
-workrex sidebar filter          # Toggle between none and session
-workrex sidebar filter session  # Filter to current session
-workrex sidebar filter none     # Turn off the session filter
+workrex sidebar next
+workrex sidebar prev
+workrex sidebar jump 3
 ```
 
-### Named views
+A cross-tab jump requires Remote Control in Rex Settings. When the app refuses a
+jump, the sidebar keeps focus and shows the reason. It never sends the keyboard
+to a block the app has not shown.
 
-Configure `sidebar.views` to show agents from selected sessions or project
-directories. Each window automatically shows the view matching its own agent.
-Use `other: true` for a view containing everything that does not match your
-other views.
+## Filtering
 
-Press `V` to turn views off across all sidebars and show all agents. Press it
-again to restore each window's matching view. You can also use
-`workrex sidebar view on` or `workrex sidebar view off`.
-See [Named views](/reference/commands/sidebar/#named-views) for configuration
-and matching rules.
-
-### Sleeping agents
-
-Select an agent in the sidebar and press `z` to mark it as sleeping. Sleeping agents show a 💤 icon
-with dimmed colors and are pushed to the bottom of the list, regardless of their
-actual status. Under `group_by` they sink to the bottom of their own group.
-`sort: window` is the exception: it keeps every agent in window order, sleeping
-ones included. This is useful for temporarily deprioritizing agents you don't
-need to monitor. Press `z` again to wake them up.
-
-## Agent navigation hotkeys
-
-You can switch between agents from any pane with these subcommands. These work
-in the same order shown in the sidebar:
-
-| Command                    | Action                               |
-| -------------------------- | ------------------------------------ |
-| `workrex sidebar next`     | Switch to the next agent (wraps)     |
-| `workrex sidebar prev`     | Switch to the previous agent (wraps) |
-| `workrex sidebar jump <N>` | Jump to the Nth agent (1-indexed)    |
-
-### Example tmux keybindings
+Press `f` to restrict the sidebar to the current Rex session, or use:
 
 ```bash
-# Alt+j / Alt+k to cycle agents (no prefix needed)
-bind -n M-j run-shell "workrex sidebar next"
-bind -n M-k run-shell "workrex sidebar prev"
-
-# Alt+1..9 to jump directly
-bind -n M-1 run-shell "workrex sidebar jump 1"
-bind -n M-2 run-shell "workrex sidebar jump 2"
-bind -n M-3 run-shell "workrex sidebar jump 3"
-# ...
+workrex sidebar filter session
+workrex sidebar filter all
 ```
 
-## How it works under tmux
+Filters affect which rows are visible. Agents and their sessions keep running.
 
-This section describes the tmux sidebar. Under Rex, the daemon follows Rex
-events instead of tmux hooks. See [Rex: Sidebar](/guide/rex/#sidebar).
+## How it works
 
-The tmux sidebar is built on tmux panes. A daemon sends state to one client per
-window:
+A daemon follows Rex events and observes agent state. Each eligible window gets
+its own sidebar block. The daemon adds sidebars to newly created windows without
+moving focus, and maintains the chosen width across layouts.
 
-1. **Toggle on** (`workrex sidebar`): creates a tmux pane on the left or top
-   edge of every window, starts a background daemon, and installs tmux hooks.
+Closing one sidebar block leaves that window without a sidebar until the next
+`workrex sidebar on`. If the daemon exits, a later sidebar command or sidebar
+start launches it again. A busy or slow server is retried; an unavailable server
+is not treated as an empty list of agent terminals.
 
-2. **Daemon**: a single headless process that polls tmux state every 2 seconds
-   (or immediately when signaled via SIGUSR1). It reads agent state from a
-   context-scoped filesystem cache, queries tmux for pane geometry and active
-   windows, then pushes snapshots to all connected sidebar clients over a Unix
-   socket. Unchanged records are reused without loading or parsing their JSON.
-
-3. **Clients**: every tmux window gets its own sidebar pane running a separate
-   `workrex _sidebar-run` process. Each process connects to the shared daemon
-   socket, receives snapshots via a background reader thread, and renders
-   independently. The main thread blocks on a channel, only waking when new
-   data arrives or a spinner tick is needed. Rendering is skipped entirely for
-   inactive windows. This event-driven design keeps CPU usage near zero when
-   idle.
-
-4. **Hooks**: tmux hooks handle lifecycle events:
-   - `after-new-window` / `after-new-session`: automatically adds a sidebar pane
-     to newly created windows
-   - `window-resized`: reflows the layout tree in every sidebar window, keeping
-     all sidebars at the correct width or height regardless of which window was
-     resized
-   - `after-select-window` / `client-session-changed` / `after-kill-pane`:
-     signals the daemon for an immediate refresh
-
-5. **Layout reflow**: when the sidebar is added or the terminal is resized, a
-   layout tree parser reads the tmux `#{window_layout}` string, scales the
-   content subtree proportionally, and applies the result atomically via
-   `select-layout`. This preserves existing pane proportions (e.g. a 70/30 split
-   stays 70/30).
-
-6. **Toggle off**: kills all sidebar panes, reflows content panes to fill the
-   freed space, stops the daemon, and removes hooks.
-
-### Resource usage
-
-Because tmux has no concept of a pane that persists across all windows, each
-window runs its own `_sidebar-run` process. Each one uses roughly 15 MB of
-resident memory, and the shared daemon (`_sidebar-daemon`) uses about 16 MB. With
-five agents running, total memory footprint is around 90 MB. CPU usage is near
-zero when idle because clients render only when new data arrives.
+For the floating alternative, use the [dashboard](/guide/dashboard/).

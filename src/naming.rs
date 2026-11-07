@@ -3,10 +3,10 @@ use slug::slugify;
 
 use crate::config::Config;
 
-/// Derives the "handle" (worktree dir name + tmux window base name)
+/// Derives the "handle" (worktree dir name + Rex target label)
 /// from the branch name, optional explicit override, and config.
 ///
-/// The handle is always slugified to ensure filesystem/tmux compatibility.
+/// The handle is always slugified to ensure filesystem compatibility.
 ///
 /// Priority:
 /// 1. Explicit name (--name flag) - bypasses all config (including prefix)
@@ -44,14 +44,8 @@ pub fn derive_target_name(name: &str) -> Result<String> {
 }
 
 pub fn validate_parent_session(name: &str) -> Result<String> {
-    if name.is_empty() {
+    if name.trim().is_empty() {
         bail!("Parent session cannot be empty");
-    }
-    if name.contains(':') {
-        bail!("Parent session cannot contain ':'");
-    }
-    if name.starts_with('$') || name.starts_with('=') {
-        bail!("Parent session cannot start with '$' or '='");
     }
     if name.chars().any(char::is_control) {
         bail!("Parent session cannot contain control characters");
@@ -60,7 +54,7 @@ pub fn validate_parent_session(name: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
-/// Validates that a handle is safe for filesystem and tmux use.
+/// Validates that a handle is safe for filesystem and Rex target labels.
 fn validate_handle(handle: &str) -> Result<()> {
     if handle.is_empty() {
         bail!("Handle cannot be empty");
@@ -242,9 +236,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_parent_session_rejects_tmux_target_syntax() {
-        for name in ["parent:window", "$1", "=parent"] {
-            assert!(validate_parent_session(name).is_err(), "accepted {name:?}");
+    fn validate_parent_session_accepts_rex_ids_and_labels() {
+        for name in [
+            "session:019abc-def",
+            "project:feature",
+            "$project",
+            "=project",
+        ] {
+            assert_eq!(validate_parent_session(name).unwrap(), name);
         }
     }
 

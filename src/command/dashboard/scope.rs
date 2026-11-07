@@ -83,7 +83,7 @@ mod tests {
     fn agent(pane_id: &str, session: &str, path: &str, status_ts: Option<u64>) -> AgentPane {
         AgentPane {
             session: session.to_string(),
-            window_name: format!("wm-{pane_id}"),
+            window_name: format!("wr-{pane_id}"),
             pane_id: pane_id.to_string(),
             window_id: String::new(),
             window_index: None,
@@ -148,7 +148,7 @@ mod tests {
                 "/code/claude-codex-proxy__worktrees/feature",
                 None,
             ),
-            agent("%3", "workmux", "/code/workmux", None),
+            agent("%3", "workrex", "/code/workrex", None),
             agent("%4", "raine", "/Users/raine", None),
             agent("%5", "aven", "/code/aven", None),
             agent("%6", "WalkingMate", "/code/WalkingMate", None),
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn session_scope_without_session_identity_shows_no_agents() {
         let mut agents = vec![
-            agent("%1", "workmux", "/code/workmux", None),
+            agent("%1", "workrex", "/code/workrex", None),
             agent("%2", "aven", "/code/aven", None),
         ];
 
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn all_scope_ignores_session_identity() {
         let mut agents = vec![
-            agent("%1", "workmux", "/code/workmux", None),
+            agent("%1", "workrex", "/code/workrex", None),
             agent("%2", "aven", "/code/aven", None),
         ];
 
@@ -193,7 +193,7 @@ mod tests {
     fn scope_cycle_restores_all_agents() {
         let all_agents = vec![
             agent("%1", "claude-codex-proxy", "/code/proxy", None),
-            agent("%2", "workmux", "/code/workmux", None),
+            agent("%2", "workrex", "/code/workrex", None),
         ];
         let mut mode = ScopeMode::All.toggle();
         let mut visible = all_agents.clone();

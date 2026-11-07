@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build this workmux tree on a Linux remote and fetch the binary, for use as
+# Build this workrex tree on a Linux remote and fetch the binary, for use as
 # `remotes.<name>.binary` when no release matches the local build.
 #
 # Usage: scripts/remote-dev-binary HOST [HANDLE]
@@ -51,10 +51,10 @@ echo "Building on $host..."
 ssh -- "$host" "cd $remote_dir && ~/.cargo/bin/cargo build --release --locked"
 
 mkdir -p "$out_dir"
-scp -q -- "$host:$remote_dir/target/release/workmux" "$out_dir/workmux.tmp"
-chmod 755 "$out_dir/workmux.tmp"
-mv -f "$out_dir/workmux.tmp" "$out_dir/workmux"
+scp -q -- "$host:$remote_dir/target/release/workrex" "$out_dir/workrex.tmp"
+chmod 755 "$out_dir/workrex.tmp"
+mv -f "$out_dir/workrex.tmp" "$out_dir/workrex"
 
-echo "Built $out_dir/workmux"
+echo "Built $out_dir/workrex"
 echo "Set it on the remote in your global config:"
-echo "    binary: $out_dir/workmux"
+echo "    binary: $out_dir/workrex"

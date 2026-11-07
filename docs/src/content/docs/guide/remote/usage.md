@@ -13,17 +13,17 @@ Remote workspaces use the usual commands. Run them from the project on the local
 
 `remote gc` from a machine with an older workrex can delete the pinned binary that `~/.local/bin/workrex` runs, because that version doesn't know about the file. `workrex` then fails in shells on the server until you run `workrex remote setup <remote>` again from the machine with the newer workrex. `remote doctor` reports a `~/.local/bin/workrex` whose binary is gone.
 
-| Command                                                                        | On a remote workspace                                                                                       |
-| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| [`close`](/reference/commands/close/)                                          | Closes the local window only. The agent keeps running.                                                      |
-| [`open`](/reference/commands/open/)                                            | Reattaches to the running agent, or starts the panes again if they ended.                                   |
-| [`resurrect`](/reference/commands/resurrect/)                                  | Reopens windows of agents still running after the local machine's tmux restarted, without restarting them.  |
-| `status`, `wait`, `send`, `capture`                                            | Work whether or not the window is open. Agents are labelled `handle@remote`.                                |
-| [`shell`](/reference/commands/shell/)                                          | Opens a shell in the workspace on the server, in the current terminal.                                      |
-| [`list`](/reference/commands/list/)                                            | Shows remote workspaces with their server.                                                                  |
-| [`remove`](/reference/commands/remove/)                                        | Stops the agent and removes the remote worktree, branch and window, with the same checks as a local remove. |
-| [`merge`](/guide/remote/git/#merging), [`rebase`](/guide/remote/git/#rebasing) | See [bringing work home](/guide/remote/git/).                                                               |
-| `rename`, `path`, `run`, `sync-files`                                          | Not supported.                                                                                              |
+| Command                                                                        | On a remote workspace                                                                                            |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| [`close`](/reference/commands/close/)                                          | Refused for native remote sessions; switch sessions in Rex.app to leave the agent running.                       |
+| [`open`](/reference/commands/open/)                                            | Shows the recorded session in Rex.app, or restarts the execution if it ended.                                    |
+| [`resurrect`](/reference/commands/resurrect/)                                  | Reopens windows of agents still running after the local machine's Rex server restarted, without restarting them. |
+| `status`, `wait`, `send`, `capture`                                            | Work whether or not the window is open. Agents are labelled `handle@remote`.                                     |
+| [`shell`](/reference/commands/shell/)                                          | Creates and shows a native Rex shell session on the server.                                                      |
+| [`list`](/reference/commands/list/)                                            | Shows remote workspaces with their server.                                                                       |
+| [`remove`](/reference/commands/remove/)                                        | Stops the agent and removes the remote worktree, branch and window, with the same checks as a local remove.      |
+| [`merge`](/guide/remote/git/#merging), [`rebase`](/guide/remote/git/#rebasing) | See [bringing work home](/guide/remote/git/).                                                                    |
+| `rename`, `path`, `run`, `sync-files`                                          | Not supported.                                                                                                   |
 
 `remove --all` and `remove --gone` only remove local worktrees. A remote branch such as `origin/feature` can't be the new workspace's branch: fetch it and pass it with `--base`. Some other `add` options aren't available either; see [`add`](/reference/commands/add/#remote-workspaces).
 
@@ -33,14 +33,18 @@ Remote workspaces use the usual commands. Run them from the project on the local
 
 ## Panes on the server
 
-Every pane in the window is a session on the server. Non-agent panes are shells on the server, or in the container with `sandbox.target: all`.
+The workspace has one native Rex session with its configured split layout. Ad-hoc shells created by `workrex shell` have separate sessions owned by the same execution. Non-agent panes are shells on the server, or in the container with `sandbox.target: all`.
 
 - **On the server directly:** `workrex` works in every pane, including the shell left after the agent exits. It is the server's copy, which knows the pane's workspace.
 - **In Docker:** shell panes on the server have no `workrex`, unless you installed one there yourself. Run workrex commands for the workspace on the local machine. The agent's container has `workrex`, for [`merge` and `rm`](#remove-or-merge-from-a-remote-pane) and [starting agents](#agents-that-start-agents).
 
 ### Opening a shell on the server
 
-A tmux split of the window starts a shell on the local machine, not on the server. Run [`workrex shell`](/reference/commands/shell/) in the split to get a shell in the workspace's working directory on the server. In Docker mode the shell runs in a new container of the workspace; `--host` runs it on the server instead. Exiting the shell leaves the agent running.
+Run [`workrex shell <handle>`](/reference/commands/shell/) from the local
+project to open a separate native Rex session in the workspace's directory. In
+container mode the shell uses the workspace's image and mounts; `--host`
+requests a shell directly on the server. Exiting this shell leaves the agent
+running.
 
 ## Remove or merge from a remote pane
 
@@ -65,7 +69,7 @@ The [log](/guide/remote/git/#operation-logs) holds the full hook output.
 
 - The local machine must be awake and connected. If it doesn't pick the request up within about 15 seconds, the request is withdrawn and the command fails with "the local machine isn't connected".
 - Only the workspace's own handle works: no name, `.`, or the handle itself.
-- Nothing can ask questions, so these are refused with a hint: removing a workspace with unmerged commits without `--force`, merging staged changes that need a commit message (commit them first), squash merges, `rm --all`, `--gone` and `--keep-branch`. `close` is refused too, because the window is on the local machine.
+- Nothing can ask questions, so these are refused with a hint: removing a workspace with unmerged commits without `--force`, merging staged changes that need a commit message (commit them first), squash merges, `rm --all`, `--gone` and `--keep-branch`. `close` is refused because native remote sessions have no local relay to detach.
 - If the merge fails, the workspace stays and the pane prints why.
 - In Docker mode, these requests run no hooks: no `post_create`, `pre_merge` or `pre_remove`, and no Git hooks, as for a [local sandbox](/guide/sandbox/#security-model). Hooks would run outside the container on code the agent wrote. Run `workrex merge <handle>` on the local machine when you want them.
 
@@ -73,14 +77,14 @@ An agent can finish its own task this way, for example with `-p "… when the te
 
 ## When the local machine sleeps or disconnects
 
-The agent, its container and its tmux session run on the server, so they don't depend on the local machine.
+The agent, any container, and the Rex server live on the node. They do not
+depend on the local app's connection.
 
-- The agent keeps working, and its status is recorded on the server.
-- The window shows a status line with the server's name and the reason, reconnects by itself, and offers keys to retry now or close the pane.
-- Keystrokes typed while disconnected are dropped, never delivered late.
-- The dashboard, sidebar and `workrex status` keep showing the agent's last known state, marked disconnected with when it was last seen.
-
-Short interruptions pass without any visible change. After an authentication or host key failure, or when the session was attached from somewhere else, the window doesn't retry by itself: fix the cause and press the retry key.
+- Agents continue working and report their status on the server.
+- Rex.app owns terminal reconnection and display.
+- The dashboard and sidebar preserve the last known remote status while the
+  node is unreachable and label it disconnected.
+- Once connected, `workrex open <handle>` shows the recorded native session.
 
 ## Agents that start agents
 

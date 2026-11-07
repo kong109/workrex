@@ -25,7 +25,7 @@ mock.module('node:child_process', () => ({
   },
 }));
 
-const { default: workmuxStatusExtension } = await import('../resources/pi/extensions/workmux-status');
+const { default: workrexStatusExtension } = await import('../resources/pi/extensions/workrex-status');
 
 type Handler = (event: unknown, context: unknown) => Promise<void> | void;
 type Listener = (data: unknown) => Promise<void> | void;
@@ -96,7 +96,7 @@ async function createHarness(
     },
     on: (name: string, handler: Handler) => handlers.set(name, handler),
   };
-  workmuxStatusExtension(pi as never);
+  workrexStatusExtension(pi as never);
 
   const harness = {
     calls,
@@ -137,7 +137,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-describe('pi workmux status extension', () => {
+describe('pi workrex status extension', () => {
   test('registers without changing status when no publisher is present', async () => {
     const harness = await createHarness();
     expect(harness.calls).toEqual([['register-agent']]);
@@ -311,7 +311,7 @@ describe('pi workmux status extension', () => {
     const harness = await createHarness(stoppedMessage(), {
       async exec(args) {
         if (args[0] === 'set-window-status' && attempts++ === 0) {
-          if (failure === 'reject') throw new Error('workmux unavailable');
+          if (failure === 'reject') throw new Error('workrex unavailable');
           return 1;
         }
         return 0;
@@ -326,7 +326,7 @@ describe('pi workmux status extension', () => {
   test('registration failure does not prevent status updates', async () => {
     const harness = await createHarness(stoppedMessage(), {
       async exec(args) {
-        if (args[0] === 'register-agent') throw new Error('not in tmux');
+        if (args[0] === 'register-agent') throw new Error('not in Rex');
         return 0;
       },
     });

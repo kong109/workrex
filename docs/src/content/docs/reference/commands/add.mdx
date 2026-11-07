@@ -1,11 +1,11 @@
 ---
 title: "add"
-description: Create git worktrees and tmux windows, with support for AI prompts and parallel generation
+description: Create git worktrees and Rex windows, with support for AI prompts and parallel generation
 ---
 
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 
-Creates a new git worktree with a matching multiplexer window and switches you to it. If the branch doesn't exist, `add` creates it. Under Rex, the worktree gets its own Rex session by default, and Rex.app stays where it is (see [Under Rex](#under-rex)).
+Creates a Git worktree and starts its agent in a managed Rex session. If the branch doesn't exist, `add` creates it. Under Rex, the worktree gets its own Rex session by default, and Rex.app stays where it is (see [Under Rex](#under-rex)).
 
 ```bash
 workrex add <branch-name> [flags]
@@ -17,38 +17,38 @@ workrex add <branch-name> [flags]
 
 ## Options
 
-| Flag                           | Description                                                                                                                                                                                                                                                                                                     |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--base <branch\|commit\|tag>` | Specify a base branch, commit, or tag to branch from when creating a new branch. Overrides `base_branch` config. The config value `auto` uses the effective main branch. Without either setting, workrex uses the currently checked out branch.                                                                 |
-| `--pr <number\|url>`           | Checkout a GitHub pull request or GitLab merge request into a worktree. Requires authenticated `gh` (GitHub) or `glab` 1.37.0 or newer (GitLab). Supports full URLs and custom local branch names, e.g., `workrex add review --pr 123`.                                                                         |
-| `--forge <github\|gitlab>`     | Select the provider for `--pr`. Numeric references use GitLab when origin is on gitlab.com, otherwise GitHub. Use `--forge gitlab` for numeric references on self-hosted GitLab. Full URLs identify the provider.                                                                                               |
-| `-A, --auto-name`              | Generate branch name from prompt using LLM. See [Automatic branch name generation](#automatic-branch-name-generation).                                                                                                                                                                                          |
-| `--name <name>`                | Override the worktree directory and default tmux target name. By default, these are derived from the branch name (slugified). Cannot be used with multi-worktree generation (`--count`, `--foreach`, or multiple `--agent`).                                                                                    |
-| `--target-name <name>`         | Override the workrex-managed tmux target name for this command. In window mode, creates or selects window `<window_prefix><name>`. In session mode, creates or selects session `<window_prefix><name>`. Cannot be used with multi-worktree generation.                                                          |
-| `--parent-session <name>`      | Window mode only. Creates the workrex-managed window inside the named tmux session without applying `window_prefix` to that parent session. Cannot be used with session mode or multi-worktree generation.                                                                                                      |
-| `-b, --background`             | Create the tmux window in the background without switching to it. Useful with `--prompt-editor`.                                                                                                                                                                                                                |
-| `-w, --with-changes`           | Move uncommitted changes from the current worktree to the new worktree, then reset the original worktree to a clean state. Useful when you've started working on main and want to move your branches to a new worktree.                                                                                         |
-| `--patch`                      | Interactively select which changes to move (requires `--with-changes`). Opens an interactive prompt for selecting hunks to stash.                                                                                                                                                                               |
-| `-u, --include-untracked`      | Also move untracked files (requires `--with-changes`). By default, only staged and modified tracked files are moved.                                                                                                                                                                                            |
-| `-p, --prompt <text>`          | Provide an inline prompt that will be automatically passed to AI agent panes.                                                                                                                                                                                                                                   |
-| `-P, --prompt-file <path>`     | Provide a path to a file whose contents will be used as the prompt.                                                                                                                                                                                                                                             |
-| `-e, --prompt-editor`          | Open your `$EDITOR` (or `$VISUAL`) to write the prompt interactively.                                                                                                                                                                                                                                           |
-| `--prompt-file-only`           | Write the prompt file to `.workmux/PROMPT-<branch>.md` without injecting it into agent commands. No agent pane is required. Useful when your editor has an embedded agent that reads the prompt file directly. Can also be set in config with `prompt_file_only: true`.                                         |
-| `-l, --layout <name>`          | Use a named pane layout from config instead of the default panes. See [named layouts](/guide/configuration/#named-layouts). Cannot be combined with `--agent`.                                                                                                                                                  |
-| `-a, --agent <name>`           | The agent(s) to use for the worktree(s). Can be specified multiple times to generate a worktree for each agent. Overrides the `agent` from your config file.                                                                                                                                                    |
-| `-W, --wait`                   | Block until the created tmux window is closed. Useful for scripting when you want to wait for an agent to complete its work. The agent can signal completion by running `workrex remove --keep-branch`.                                                                                                         |
-| `-o, --open-if-exists`         | If a worktree for the branch already exists, open it instead of failing. Similar to `tmux new-session -A`. Useful when you don't know or care whether the worktree already exists. Any mode override is forwarded when reopening the existing worktree.                                                         |
-| `--mode <window\|session>`     | Override the multiplexer mode for this command only. Useful for forcing window mode when config defaults to sessions, or creating a one-off session without changing config. Session mode needs tmux or Rex. Under Rex, session mode is the default.                                                            |
-| `-s, --session`                | Shorthand for `--mode session`. Cannot be combined with `--mode`.                                                                                                                                                                                                                                               |
-| `-S, --sandbox`                | Run the agent in a [sandbox](/guide/sandbox/) even when `sandbox.enabled` is off in config.                                                                                                                                                                                                                     |
-| `--dry-run`                    | Print the resolved worktree path, branch, base, multiplexer target, file operations, and post-create hooks without creating or modifying anything.                                                                                                                                                              |
-| `--headless`                   | Create the worktree, run file operations and `post_create` hooks, and open no window or panes. See [Headless worktrees](#headless-worktrees).                                                                                                                                                                   |
-| `--json`                       | With `--headless`, print a JSON receipt instead of progress text. Requires `--headless`.                                                                                                                                                                                                                        |
-| `--config <path>`              | Use an alternate config file for this invocation. Still merges with global config. Useful for per-command config overrides like `workrex add feat/my-branch --config .workmux.window.yaml`. Config files keep their workmux names so existing workmux configs work; see [Configuration](/guide/configuration/). |
-| `-c, --continue`               | Resume the agent's most recent conversation at the destination worktree path. Can be combined with `-p` or `-P`. Cannot be combined with `--fork`.                                                                                                                                                              |
-| `--fork`                       | Fork the last conversation from the current worktree into the new one. The agent resumes with the forked conversation context. Use `--fork=<session-id>` to fork a specific session (prefix matching supported). Supports Claude Code, Codex, and Pi.                                                           |
-| `--remote [<name>]`            | Create the workspace on a [remote server](/guide/remote/). Without a name, uses the `placement` remote, or the only configured remote. Put the branch name first (`workrex add my-branch --remote`), since a bare `--remote` followed by the branch takes the branch as the remote name.                        |
-| `--local`                      | Create the workspace on this machine even when `placement` names a remote.                                                                                                                                                                                                                                      |
+| Flag                           | Description                                                                                                                                                                                                                                                                              |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--base <branch\|commit\|tag>` | Specify a base branch, commit, or tag to branch from when creating a new branch. Overrides `base_branch` config. The config value `auto` uses the effective main branch. Without either setting, workrex uses the currently checked out branch.                                          |
+| `--pr <number\|url>`           | Checkout a GitHub pull request or GitLab merge request into a worktree. Requires authenticated `gh` (GitHub) or `glab` 1.37.0 or newer (GitLab). Supports full URLs and custom local branch names, e.g., `workrex add review --pr 123`.                                                  |
+| `--forge <github\|gitlab>`     | Select the provider for `--pr`. Numeric references use GitLab when origin is on gitlab.com, otherwise GitHub. Use `--forge gitlab` for numeric references on self-hosted GitLab. Full URLs identify the provider.                                                                        |
+| `-A, --auto-name`              | Generate branch name from prompt using LLM. See [Automatic branch name generation](#automatic-branch-name-generation).                                                                                                                                                                   |
+| `--name <name>`                | Override the worktree directory and default Rex target name. By default, these are derived from the branch name (slugified). Cannot be used with multi-worktree generation (`--count`, `--foreach`, or multiple `--agent`).                                                              |
+| `--target-name <name>`         | Override the workrex-managed Rex target name for this command. In window mode, creates or selects window `<window_prefix><name>`. In session mode, creates or selects session `<window_prefix><name>`. Cannot be used with multi-worktree generation.                                    |
+| `--parent-session <name>`      | Window mode only. Creates the workrex-managed window inside the named Rex session without applying `window_prefix` to that parent session. Cannot be used with session mode or multi-worktree generation.                                                                                |
+| `-b, --background`             | Create the Rex window in the background without switching to it. Useful with `--prompt-editor`.                                                                                                                                                                                          |
+| `-w, --with-changes`           | Move uncommitted changes from the current worktree to the new worktree, then reset the original worktree to a clean state. Useful when you've started working on main and want to move your branches to a new worktree.                                                                  |
+| `--patch`                      | Interactively select which changes to move (requires `--with-changes`). Opens an interactive prompt for selecting hunks to stash.                                                                                                                                                        |
+| `-u, --include-untracked`      | Also move untracked files (requires `--with-changes`). By default, only staged and modified tracked files are moved.                                                                                                                                                                     |
+| `-p, --prompt <text>`          | Provide an inline prompt that will be automatically passed to AI agent panes.                                                                                                                                                                                                            |
+| `-P, --prompt-file <path>`     | Provide a path to a file whose contents will be used as the prompt.                                                                                                                                                                                                                      |
+| `-e, --prompt-editor`          | Open your `$EDITOR` (or `$VISUAL`) to write the prompt interactively.                                                                                                                                                                                                                    |
+| `--prompt-file-only`           | Write the prompt file to `.workrex/PROMPT-<branch>.md` without injecting it into agent commands. No agent pane is required. Useful when your editor has an embedded agent that reads the prompt file directly. Can also be set in config with `prompt_file_only: true`.                  |
+| `-l, --layout <name>`          | Use a named pane layout from config instead of the default panes. See [named layouts](/guide/configuration/#named-layouts). Cannot be combined with `--agent`.                                                                                                                           |
+| `-a, --agent <name>`           | The agent(s) to use for the worktree(s). Can be specified multiple times to generate a worktree for each agent. Overrides the `agent` from your config file.                                                                                                                             |
+| `-W, --wait`                   | Block until the created Rex window is closed. Useful for scripting when you want to wait for an agent to complete its work. The agent can signal completion by running `workrex remove --keep-branch`.                                                                                   |
+| `-o, --open-if-exists`         | If a worktree for the branch already exists, open it instead of failing. Useful when you don't know or care whether the worktree already exists. Any mode override is forwarded when reopening the existing worktree.                                                                    |
+| `--mode <window\|session>`     | Override the multiplexer mode for this command only. Useful for forcing window mode when config defaults to sessions, or creating a one-off session without changing config. Session mode is the default.                                                                                |
+| `-s, --session`                | Shorthand for `--mode session`. Cannot be combined with `--mode`.                                                                                                                                                                                                                        |
+| `-S, --sandbox`                | Run the agent in a [sandbox](/guide/sandbox/) even when `sandbox.enabled` is off in config.                                                                                                                                                                                              |
+| `--dry-run`                    | Print the resolved worktree path, branch, base, multiplexer target, file operations, and post-create hooks without creating or modifying anything.                                                                                                                                       |
+| `--headless`                   | Create the worktree, run file operations and `post_create` hooks, and open no window or panes. See [Headless worktrees](#headless-worktrees).                                                                                                                                            |
+| `--json`                       | With `--headless`, print a JSON receipt instead of progress text. Requires `--headless`.                                                                                                                                                                                                 |
+| `--config <path>`              | Use an alternate config file for this invocation. Still merges with global config. Useful for per-command config overrides like `workrex add feat/my-branch --config .workrex.window.yaml`. Use Workrex configuration paths; see [Configuration](/guide/configuration/).                 |
+| `-c, --continue`               | Resume the agent's most recent conversation at the destination worktree path. Can be combined with `-p` or `-P`. Cannot be combined with `--fork`.                                                                                                                                       |
+| `--fork`                       | Fork the last conversation from the current worktree into the new one. The agent resumes with the forked conversation context. Use `--fork=<session-id>` to fork a specific session (prefix matching supported). Supports Claude Code, Codex, and Pi.                                    |
+| `--remote [<name>]`            | Create the workspace on a [remote server](/guide/remote/). Without a name, uses the `placement` remote, or the only configured remote. Put the branch name first (`workrex add my-branch --remote`), since a bare `--remote` followed by the branch takes the branch as the remote name. |
+| `--local`                      | Create the workspace on this machine even when `placement` names a remote.                                                                                                                                                                                                               |
 
 ## Skip options
 
@@ -63,37 +63,44 @@ These options allow you to skip expensive setup steps when they're not needed (e
 ## What happens
 
 1. Determines the **handle** for the worktree by slugifying the branch name (e.g., `feature/auth` becomes `feature-auth`). This can be overridden with the `--name` flag.
-2. Creates a git worktree at `<worktree_dir>/<handle>` (the `worktree_dir` is configurable and defaults to a sibling directory of your project; supports `~` and a `{project}` placeholder, e.g. `~/.workmux/{project}`)
+2. Creates a git worktree at `<worktree_dir>/<handle>` (the `worktree_dir` is configurable and defaults to a sibling directory of your project; supports `~` and a `{project}` placeholder, e.g. `~/.workrex/{project}`)
 3. Runs any configured file operations (copy/symlink)
-4. Executes `post_create` commands if defined (runs before the tmux window/session opens, so keep them fast)
-5. Creates a new tmux window named `<window_prefix><handle>` (e.g., `wm-feature-auth` with `window_prefix: wm-`). In window mode, `window_placement` controls whether the window is created after the calling window or at the right edge. With `--target-name`, the managed tmux target uses that name instead of `<handle>`. With `--parent-session`, a window-mode target is created inside that tmux session. With `--mode session` or `--session`, the worktree is created in its own dedicated tmux session.
-6. Sets up your configured tmux pane layout
-7. Switches your tmux client to the new window. Under Rex, `add` focuses the new pane in its Rex session, and Rex.app does not move.
+4. Executes `post_create` commands if defined (runs before the Rex session or window opens, so keep them fast)
+5. Creates a Rex session named `<window_prefix><handle>` by default. In explicit window mode, it creates a tab in the caller's session or the session selected by `--parent-session`.
+6. Sets up the configured terminal block layout and starts its commands.
+7. Focuses the block within its Rex session. Rex.app keeps showing the current tab; use the dashboard or sidebar to show the new task.
 
-In tmux window mode without `--parent-session`, `$TMUX_PANE` identifies the
-calling pane and its parent session. When `$TMUX_PANE` is absent or stale,
-workrex uses live pane working directories when their closest matches identify
-one session. A tmux server with one session is the final fallback. Remaining
-ambiguity requires `--parent-session <name>`. The working directory selects the
-Git repository and only provides conservative evidence for tmux placement.
+In window mode, Workrex resolves the caller through `REX_SESSION` and
+`REX_BLOCK`. An explicit `--parent-session <label>` chooses a known session.
+The command's working directory selects the Git repository, not a session.
 
 ## Remote workspaces
 
-With `--remote`, or when `placement` names a remote, the worktree, its panes and the agent are created on a [remote server](/guide/remote/). A local window opens and relays to the remote session. Under Rex it opens in a Rex session of its own, unless `mode: window` is set. When the remote sets `terminal: rex`, no local window opens: each pane gets a session on the server's Rex server, which Rex.app shows (see [Agent terminals on the server's Rex](/guide/remote/setup/#agent-terminals-on-the-servers-rex)). The workspace starts from a local commit, so remote branch references aren't accepted: fetch the branch, then pass a new branch name with `--base origin/<branch>`. Unpushed local commits are sent along.
+With `--remote`, or when `placement` names a remote, the workspace and agent run
+on the [configured server](/guide/remote/). Their terminals are native sessions
+on that server's Rex instance and are shown directly by Rex.app. SSH carries
+workspace and Git operations.
 
-File operations and `post_create` hooks run on the remote, and agent isolation follows `sandbox.enabled` unless the remote explicitly overrides it. See [server or Docker](/guide/remote/setup/#server-or-docker). If an add fails part way, run the same command again to resume it.
+The workspace starts from a local commit, including unpushed commits. To start
+from a remote branch reference, fetch it first and pass a new branch name with
+`--base origin/<branch>`.
 
-`--parent-session <name>` places the local relay window in that exact tmux session, creating it if needed. `--background` leaves focus unchanged. The parent is remembered for `open`, `close`, and `list`, including when run from another session.
+File operations and `post_create` hooks run on the server. Isolation follows
+`sandbox.enabled` unless the remote overrides it. See
+[server or Docker](/guide/remote/setup/#server-or-docker). If creation fails part
+way through, retry the same command to resume.
 
-These options aren't available for remote workspaces: `--headless`, `--sandbox`, `--pr`, `--with-changes`, `--fork`, `--continue`, `--open-if-exists`, `--target-name`, `--dry-run`, an explicit session mode (`mode: session` or `--mode session`), and the `windows:` config. Remote workspaces need the tmux or Rex backend.
+Remote options differ from local ones. Run `workrex add --help` and use the
+[remote setup guide](/guide/remote/setup/) before combining placement and
+worktree-generation options.
 
 ## Under Rex
 
-When workrex runs in a [Rex](/guide/rex/) pane, `add` differs from tmux in these ways:
+In a [Rex](/guide/rex/) terminal:
 
 - Each worktree gets its own Rex session unless you set `mode: window` or pass `--mode window`.
 - `add` never moves Rex.app, because it may run in a background agent's pane. In session mode it prints `Rex.app stays put: to see <handle>, press Enter on its row in workrex dashboard.` With `--background`, it prints nothing.
-- `--parent-session` and `--target-name` name Rex sessions and windows instead of tmux ones.
+- `--parent-session` selects a Rex session label in window mode; `--target-name` labels the managed target.
 - workrex records each Rex session it creates by its session ID, so it still finds the session after an agent renames it.
 
 See [Rex session mode](/guide/rex/#session-mode) for the details.
@@ -156,7 +163,7 @@ workrex add feature/parallel-task --dry-run
 # Create a worktree in the background without switching to it
 workrex add feature/parallel-task --background
 
-# Use a custom name for the worktree directory and default tmux target
+# Use a custom name for the worktree directory and default Rex target
 workrex add feature/long-descriptive-branch-name --name short
 
 # Use a custom window name while keeping the branch-derived worktree path
@@ -178,7 +185,7 @@ workrex add my-feature -o
 workrex add --pr 123
 
 # Checkout a pull request from its full GitHub URL with a custom local branch
-workrex add --pr https://github.com/kong109/workrex/pull/456 fix/api-bug
+workrex add --pr https://github.com/owner/repository/pull/456 fix/api-bug
 
 # Checkout a GitLab.com MR by number (origin points to gitlab.com)
 workrex add --pr 123
@@ -277,7 +284,7 @@ done
   <TabItem label="Session mode">
 
 ```bash
-# Create a worktree in its own tmux session (instead of the current session)
+# Create a worktree in its own Rex session (instead of the current session)
 workrex add feature/isolated --mode session
 
 # Create a session-mode worktree with a custom session target
@@ -298,14 +305,14 @@ workrex add feature/ai-session --mode session -p "Implement the new API"
 
 ## AI agent integration
 
-When you provide a prompt via `--prompt`, `--prompt-file`, or `--prompt-editor`, workrex automatically injects the prompt into panes running the configured agent command (e.g., `claude`, `codex`, `opencode`, `gemini`, `agy`, `kiro-cli`, `vibe`, `pi`, `omp`, `grok`, `muse`, or whatever you've set via the `agent` config or `--agent` flag) without requiring any `.workmux.yaml` changes:
+When you provide a prompt via `--prompt`, `--prompt-file`, or `--prompt-editor`, workrex automatically injects the prompt into panes running the configured agent command (e.g., `claude`, `codex`, `opencode`, `gemini`, `agy`, `kiro-cli`, `vibe`, `pi`, `omp`, `grok`, `muse`, or whatever you've set via the `agent` config or `--agent` flag) without requiring any `.workrex.yaml` changes:
 
 - Panes with a command matching the configured agent are automatically started with the given prompt.
-- You can keep your `.workmux.yaml` pane configuration simple (e.g., `panes: [{ command: "<agent>" }]`) and let workrex handle prompt injection at runtime.
+- You can keep your `.workrex.yaml` pane configuration simple (e.g., `panes: [{ command: "<agent>" }]`) and let workrex handle prompt injection at runtime.
 
 This means you can launch AI agents with task-specific prompts without modifying your project configuration for each task.
 
-If your editor has an embedded agent (e.g., neovim with an agent plugin), use `--prompt-file-only` to write the prompt to `.workmux/PROMPT-<branch>.md` without requiring an agent pane. Your editor can then detect and consume the file on startup. This can also be set permanently in config with `prompt_file_only: true`.
+If your editor has an embedded agent (e.g., neovim with an agent plugin), use `--prompt-file-only` to write the prompt to `.workrex/PROMPT-<branch>.md` without requiring an agent pane. Your editor can then detect and consume the file on startup. This can also be set permanently in config with `prompt_file_only: true`.
 
 ## Automatic branch name generation
 
@@ -366,7 +373,7 @@ To override back to `llm` when an agent is configured, set `auto_name.command: "
 
 ### Configuration
 
-Optionally configure auto-name behavior in `.workmux.yaml`:
+Optionally configure auto-name behavior in `.workrex.yaml`:
 
 ```yaml
 auto_name:

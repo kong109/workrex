@@ -69,7 +69,7 @@ pub struct App {
     /// The directory from which the dashboard was launched (used to indicate the active worktree).
     pub current_worktree: Option<PathBuf>,
     pub stale_threshold_secs: u64,
-    /// Pane IDs manually marked as sleeping in the current tmux server.
+    /// Pane IDs manually marked as sleeping in the current Rex server.
     pub sleeping_pane_ids: HashSet<String>,
     pub config: Config,
     pub should_quit: bool,
@@ -81,12 +81,11 @@ pub struct App {
     pub preview: Option<String>,
     /// Track which pane_id the preview was captured from (to detect selection changes)
     preview_pane_id: Option<String>,
-    /// Last capture of each remote agent no local pane relays, fetched from
-    /// its node in the background.
-    remote_previews: HashMap<String, String>,
+    /// Last capture of each native remote agent, fetched in the background.
+    remote_previews: HashMap<crate::multiplexer::RemoteRef, String>,
     /// When the last remote preview fetch started, and whether it is still
     /// running.
-    remote_preview_fetch: Option<(std::time::Instant, bool)>,
+    remote_preview_fetch: Option<(crate::multiplexer::RemoteRef, std::time::Instant, bool)>,
     /// Input mode: keystrokes are sent directly to the selected agent's pane
     pub input_mode: bool,
     /// Manual scroll offset for the preview (None = auto-scroll to bottom)
@@ -142,7 +141,7 @@ pub struct App {
     /// Text filter for filtering agents by name. Empty string means no filter.
     pub filter_text: String,
     /// Pane ID awaiting kill confirmation (set when pressing x on a working agent)
-    pub pending_kill_pane_id: Option<String>,
+    pub(crate) pending_kill_target: Option<agents::PaneTarget>,
     /// Which tab is active (Agents or Worktrees)
     pub active_tab: DashboardTab,
     /// Full worktree list from background fetch (baseline for filtering/sorting)
@@ -186,7 +185,7 @@ pub struct App {
     pub status_message: Option<(String, std::time::Instant)>,
     /// Keeps the status message until a key press and `HELD_STATUS_MIN`
     held_status: Option<HeldStatus>,
-    /// Whether to show the "New: workmux sidebar" tip in the tab header
+    /// Whether to show the "New: workrex sidebar" tip in the tab header
     pub show_sidebar_tip: bool,
     /// Whether the agents footer may show the remote servers tip; it is
     /// drawn only when the footer has room for it.
@@ -218,8 +217,8 @@ impl App {
             .or_else(|_| std::env::current_dir())
             .ok();
 
-        // Preview size: CLI override > tmux saved > config default
-        // Clamp to 10-90 to handle manually corrupted tmux variables
+        // Preview size: CLI override > saved preference > config default
+        // Clamp to 10-90 to handle manually invalid saved preferences
         let preview_size = load_preview_size()
             .unwrap_or_else(|| config.dashboard.preview_size())
             .clamp(10, 90);
@@ -307,7 +306,7 @@ impl App {
             launch_session,
             filter_active: false,
             filter_text: String::new(),
-            pending_kill_pane_id: None,
+            pending_kill_target: None,
             active_tab: DashboardTab::Agents,
             all_worktrees: Vec::new(),
             worktrees: Vec::new(),
@@ -525,26 +524,16 @@ impl App {
     }
 }
 
-/// Remote agents run in tmux windows on the local machine, so the tip only
-/// shows in a local tmux dashboard.
+/// Show remote guidance in the local Rex dashboard.
 fn should_show_remote_tip(mux: &dyn Multiplexer, config: &Config) -> bool {
-    mux.name() == "tmux"
+    mux.name() == "rex"
         && !crate::remote::node::operation::in_session()
         && !crate::sandbox::guest::is_sandbox_guest()
         && crate::tips::remote_tip_due(!config.remotes.is_empty())
 }
 
 fn load_sleeping_pane_ids(mux: &dyn Multiplexer) -> HashSet<String> {
-    if mux.name() != "tmux" {
-        return HashSet::new();
-    }
-
-    crate::multiplexer::TmuxBackend::for_socket(&mux.instance_id())
-        .global_option("@workmux_sleeping_panes")
-        .ok()
-        .flatten()
-        .map(|value| value.split_whitespace().map(str::to_string).collect())
-        .unwrap_or_default()
+    crate::command::sidebar::sleeping_pane_ids(mux)
 }
 
 #[cfg(test)]

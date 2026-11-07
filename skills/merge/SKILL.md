@@ -11,8 +11,8 @@ allowed-tools: Read, Bash, Glob, Grep
 
 Check the arguments for flags:
 
-- `--keep`, `-k` → pass `--keep` to `workmux merge` (keeps the worktree and tmux window after merging)
-- `--no-verify`, `-n` → pass `--no-verify` to `workmux merge`
+- `--keep`, `-k` → pass `--keep` to `workrex merge` (keeps the worktree and managed Rex session or window after merging)
+- `--no-verify`, `-n` → pass `--no-verify` to `workrex merge`
 
 Strip all flags from arguments.
 
@@ -22,7 +22,7 @@ This command finishes work on the current branch by:
 
 1. Committing all uncommitted changes
 2. Rebasing onto the base branch
-3. Running `workmux merge` to merge and clean up
+3. Running `workrex merge` to merge and clean up
 
 ## Step 1: Commit
 
@@ -36,14 +36,14 @@ Skip if the working tree is clean.
 Get the base branch from git config:
 
 ```
-git config --local --get "branch.$(git branch --show-current).workmux-base"
+git config --local --get "branch.$(git branch --show-current).workrex-base"
 ```
 
 If no base branch is configured, default to "main".
 
 If the base branch doesn't exist locally (`git rev-parse --verify --quiet
 <base-branch>` prints nothing), skip this step. This is the case in a workspace
-on a remote server, where `workmux merge --rebase` rebases on the local machine.
+on a remote server, where `workrex merge --rebase` rebases on the local machine.
 
 Rebase onto the local base branch (do NOT fetch from origin first):
 
@@ -67,10 +67,10 @@ If conflicts occur:
 
 ## Step 3: Merge
 
-Run: `workmux merge --rebase --notification [--keep] [--no-verify]`
+Run: `workrex merge --rebase --notification [--keep] [--no-verify]`
 
 Include `--keep` only if the `--keep` flag was passed in arguments.
 Include `--no-verify` only if the `--no-verify` flag was passed in arguments.
 
 This will merge the branch into the base branch and clean up the worktree and
-tmux window (unless `--keep` is used).
+managed Rex session or window (unless `--keep` is used).

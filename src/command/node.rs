@@ -1,4 +1,4 @@
-//! `workmux node <verb> --json`: the entry point the laptop calls on a
+//! `workrex node <verb> --json`: the entry point the laptop calls on a
 //! remote node. Provisioning reads a compressed stream; other verbs read JSON.
 //! Responses are JSON; failures write an error envelope and exit 1.
 
@@ -25,7 +25,7 @@ pub enum NodeVerb {
         #[arg(long, required = true)]
         json: bool,
     },
-    /// Report protocol version, workmux version, platform and capabilities
+    /// Report protocol version, workrex version, platform and capabilities
     Hello {
         /// Write JSON to stdout (required)
         #[arg(long, required = true)]
@@ -37,7 +37,7 @@ pub enum NodeVerb {
         #[arg(long, required = true)]
         json: bool,
     },
-    /// Start a workspace's panes in node tmux sessions
+    /// Start a workspace's panes in node Rex sessions
     StartExecution {
         /// Read JSON from stdin and write JSON to stdout (required)
         #[arg(long, required = true)]
@@ -95,7 +95,7 @@ pub enum NodeVerb {
         #[arg(long, required = true)]
         json: bool,
     },
-    /// Check or install the agents' workmux status hooks on the node
+    /// Check or install the agents' workrex status hooks on the node
     StatusHooks {
         /// Read JSON from stdin and write JSON to stdout (required)
         #[arg(long, required = true)]

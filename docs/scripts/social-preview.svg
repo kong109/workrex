@@ -13,6 +13,6 @@
     <text x="124" y="386" font-size="36">Parallel AI coding agents,</text>
     <text x="124" y="434" font-size="36">each in its own git worktree and Rex session.</text>
     <text x="124" y="540" font-size="28" fill="#30e1c8">kong109.github.io/workrex</text>
-    <text x="1156" y="540" font-size="28" fill="#8aa29d" text-anchor="end">a fork of workmux</text>
+    <text x="1156" y="540" font-size="28" fill="#8aa29d" text-anchor="end">a fork of workrex</text>
   </g>
 </svg>

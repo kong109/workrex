@@ -23,7 +23,7 @@ pub struct CreateArgs<'a> {
     /// True if the handle was explicitly set via --name (skip auto-suffix on collision)
     pub is_explicit_name: bool,
     /// Write prompt file without injecting into agent commands.
-    /// When true, the prompt file is written to .workmux/ but not passed to
+    /// When true, the prompt file is written to .workrex/ but not passed to
     /// setup_environment, so validation and agent injection are skipped.
     pub prompt_file_only: bool,
     /// Fork a conversation from another worktree into this one
@@ -82,8 +82,8 @@ pub struct RenameResult {
     pub old_branch: String,
     /// Set when `--branch` was used and the branch was actually renamed.
     pub new_branch: Option<String>,
-    /// Number of tmux windows/sessions renamed.
-    pub tmux_renamed: usize,
+    /// Number of Rex windows/sessions renamed.
+    pub terminal_targets_renamed: usize,
     /// Number of agent state files updated.
     pub agents_migrated: usize,
 }
@@ -116,7 +116,7 @@ pub enum SourceTarget {
 
 /// Result of cleanup operations
 pub struct CleanupResult {
-    pub tmux_window_killed: bool,
+    pub terminal_target_closed: bool,
     /// True when the source target is focused by the active client.
     pub source_target_is_active: bool,
     pub source_target_to_close: Option<SourceTarget>,
@@ -132,21 +132,21 @@ pub struct SetupOptions {
     pub run_file_ops: bool,
     pub run_pane_commands: bool,
     pub prompt_file_path: Option<PathBuf>,
-    /// If true, switch to the new tmux window when done; if false, leave it in the background.
+    /// If true, switch to the new Rex window when done; if false, leave it in the background.
     pub focus_window: bool,
-    /// Working directory for the tmux window. If None, uses worktree_path.
+    /// Working directory for the Rex window. If None, uses worktree_path.
     pub working_dir: Option<PathBuf>,
     /// Source directory for configured file operations. If None, uses the project root.
     pub config_root: Option<PathBuf>,
     /// If true, open existing worktree instead of failing when it already exists.
     pub open_if_exists: bool,
-    /// Mode for tmux operations: window (default) or session
+    /// Mode for Rex operations: window (default) or session
     pub mode: MuxMode,
     /// Custom window target name for window mode.
     pub target_window_name: Option<String>,
     /// Custom session target name for session mode.
     pub target_session_name: Option<String>,
-    /// Raw tmux parent session for window mode.
+    /// Raw Rex parent session for window mode.
     pub window_session_name: Option<String>,
     /// Stable ownership token attached to windows created for this worktree.
     pub window_token: Option<String>,

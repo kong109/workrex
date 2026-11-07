@@ -46,6 +46,8 @@ workrex list feature-auth feature-api
 
 Workspaces on [remote servers](/guide/remote/) are listed alongside local worktrees. Their path names the remote instead of a local directory, with a note while a workspace is still being set up, has a merge or cleanup in progress, or its remote can't be reached. AGENT and UNMERGED come from the remote's last known state, and AGENT says when the agent's session ended, for example `exited (host rebooted)`. In JSON output, they carry a `remote` field with the remote's name, `path` is the worktree's path on the remote, and `agent_statuses` and `has_uncommitted_changes` describe the remote worktree. Local worktrees have no `remote` field.
 
+Remote `is_open` comes from a bounded read of the recorded Rex server, session, and terminal blocks. It is `true` while a configured block lives and `false` when those targets have closed. If the native target cannot be read, `is_open` is `null` and MUX shows `?`. Agent status and connection notes still come from the node's last observation.
+
 ## Example output
 
 ```
@@ -66,5 +68,6 @@ api-work    1w   -      ✓    -         ~/project__worktrees/api-work
   - When multiple agents run in one worktree, shows a count (e.g., `2🤖 1✅`)
   - When stdout is piped (e.g., by a script or agent), text labels are used instead: `working`, `waiting`, `done`
 - `✓` in MUX column = multiplexer window exists for this worktree
+- `?` in MUX column = the remote's native Rex target could not be checked
 - `●` in UNMERGED column = branch has commits not merged into main
 - `-` = not applicable

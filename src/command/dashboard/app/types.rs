@@ -36,12 +36,15 @@ pub enum AppEvent {
     SweepProgressUpdate(usize, usize, String),
     /// Sweep operation completed
     SweepComplete(Result<SweepOutcome, String>),
-    /// Capture of a remote agent's pane fetched from its node, by row pane id
-    RemotePreview(String, Result<String, String>),
-    /// Diff of a remote workspace fetched from its node: workspace id and
-    /// whether it is the branch diff
-    RemoteDiff(
+    /// Capture for a row and its exact remote execution.
+    RemotePreview(
         String,
+        crate::multiplexer::RemoteRef,
+        Result<String, String>,
+    ),
+    /// Diff for an exact remote execution and the requested diff mode.
+    RemoteDiff(
+        crate::multiplexer::RemoteRef,
         bool,
         Result<crate::remote::agents::CachedDiff, String>,
     ),

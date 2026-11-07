@@ -49,15 +49,15 @@ fi
 if [ "$workrex_path" = "$cargo_bin" ] || [ -f "$cargo_bin" ]; then
     log_info "Detected Cargo installation."
     log_info "Run this command to finish uninstalling:"
-    echo "  cargo uninstall workmux --bin workrex"
+    echo "  cargo uninstall workrex --bin workrex"
     echo ""
     log_info "You can also run the remaining cleanup steps:"
 fi
 
-# WORKMUX_INSTALL_DIR and the PATH lookup cover a custom install directory.
+# WORKREX_INSTALL_DIR and the PATH lookup cover a custom install directory.
 custom_bin=""
-if [ -n "${WORKMUX_INSTALL_DIR:-}" ]; then
-    custom_bin="$WORKMUX_INSTALL_DIR/workrex"
+if [ -n "${WORKREX_INSTALL_DIR:-}" ]; then
+    custom_bin="$WORKREX_INSTALL_DIR/workrex"
 fi
 
 # 2. Run the binary's own uninstall first, also when the binary is off PATH
@@ -100,11 +100,11 @@ echo ""
 log_info "Manual cleanup (check your shell config):"
 echo "  - Remove 'eval \"\$(workrex completions bash)\"' or similar from"
 echo "    ~/.bashrc, ~/.zshrc, ~/.config/fish/config.fish"
-echo "  - Remove 'alias wm=workrex' from your shell config"
+echo "  - Remove 'alias wr=workrex' from your shell config"
 echo ""
 
-log_info "Configuration preserved at ~/.config/workmux/"
-echo "  It is shared with upstream workmux; remove it manually only if you use neither."
+log_info "Configuration preserved at ~/.config/workrex/"
+echo "  Remove it manually if you no longer need your Workrex configuration."
 echo ""
 
 log_info "Worktrees remain on disk:"

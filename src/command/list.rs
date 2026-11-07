@@ -151,7 +151,8 @@ struct JsonWorktree {
     is_main: bool,
     mode: String,
     has_uncommitted_changes: bool,
-    is_open: bool,
+    /// Unknown when the owning native Rex server cannot be read.
+    is_open: Option<bool>,
     agent_statuses: Vec<AgentStatus>,
     created_at: Option<u64>,
     /// The remote a remote workspace lives on.
@@ -160,7 +161,7 @@ struct JsonWorktree {
 }
 
 /// What `list` shows of a remote workspace beyond its record, from the
-/// last observation of its node.
+/// last observation of its node and a direct read of its native Rex target.
 #[derive(Default)]
 struct RemoteRow {
     statuses: Vec<AgentStatus>,
@@ -168,6 +169,39 @@ struct RemoteRow {
     unmerged: bool,
     dirty: bool,
     connected: bool,
+    open: Option<bool>,
+}
+
+fn remote_row(
+    record: &WorkspaceRecord,
+    observation: Option<&crate::remote::observe::Observation>,
+    now: u64,
+) -> RemoteRow {
+    let observed = observation.and_then(|observation| observation.of(record));
+    // Work brought home is not the node's to report any more.
+    let git = observed
+        .and_then(|observed| observed.git.as_ref())
+        .filter(|_| record.homecoming.is_none());
+    let open = match crate::remote::rex_jump::is_open(record) {
+        Ok(open) => Some(open),
+        Err(error) => {
+            tracing::warn!(remote = %record.remote, handle = %record.handle, %error,
+                "list could not read native Rex target");
+            None
+        }
+    };
+    RemoteRow {
+        statuses: observed
+            .into_iter()
+            .flat_map(|observed| &observed.panes)
+            .filter_map(|pane| pane.agent.as_ref()?.status)
+            .collect(),
+        ended: observed.and_then(|observed| observed.ended),
+        unmerged: git.is_some_and(|git| git.ahead > 0),
+        dirty: git.is_some_and(|git| git.is_dirty),
+        connected: observation.is_some_and(|observation| observation.is_connected(now)),
+        open,
+    }
 }
 
 /// Remote workspaces of `project_root` (all without one), after asking
@@ -184,26 +218,6 @@ fn remote_records(
     };
     let observations = crate::remote::agents::observations(config, &records(), true);
     let now = cache::now();
-    let row = |record: &WorkspaceRecord| {
-        let observation = observations.get(&record.remote)?;
-        let observed = observation.of(record)?;
-        // Work brought home is not the node's to report any more.
-        let git = observed
-            .git
-            .as_ref()
-            .filter(|_| record.homecoming.is_none());
-        Some(RemoteRow {
-            statuses: observed
-                .panes
-                .iter()
-                .filter_map(|pane| pane.agent.as_ref()?.status)
-                .collect(),
-            ended: observed.ended,
-            unmerged: git.is_some_and(|git| git.ahead > 0),
-            dirty: git.is_some_and(|git| git.is_dirty),
-            connected: observation.is_connected(now),
-        })
-    };
     records()
         .into_iter()
         .filter(|record| {
@@ -213,7 +227,7 @@ fn remote_records(
                     .any(|token| *token == record.handle || *token == record.branch)
         })
         .map(|record| {
-            let row = row(&record).unwrap_or_default();
+            let row = remote_row(&record, observations.get(&record.remote), now);
             (record, row)
         })
         .collect()
@@ -285,11 +299,6 @@ pub fn run(show_pr: bool, json: bool, all: bool, filter: &[String]) -> Result<()
         );
     }
 
-    let remote_open = |record: &WorkspaceRecord| {
-        crate::remote::lifecycle::window_target(mux.as_ref(), record)
-            .is_ok_and(|target| target.is_some())
-    };
-
     if worktrees.is_empty() && remotes.is_empty() {
         if json {
             println!("[]");
@@ -316,7 +325,7 @@ pub fn run(show_pr: bool, json: bool, all: bool, filter: &[String]) -> Result<()
                         MuxMode::Session => "session".to_string(),
                     },
                     has_uncommitted_changes: git::has_uncommitted_changes(&wt.path).unwrap_or(true),
-                    is_open: wt.has_mux_window,
+                    is_open: Some(wt.has_mux_window),
                     agent_statuses: wt
                         .agent_status
                         .map(|summary| summary.statuses)
@@ -332,9 +341,9 @@ pub fn run(show_pr: bool, json: bool, all: bool, filter: &[String]) -> Result<()
                 branch: record.branch.clone(),
                 path: record.remote_worktree.clone().unwrap_or_default(),
                 is_main: false,
-                mode: "window".to_string(),
+                mode: "session".to_string(),
                 has_uncommitted_changes: row.dirty,
-                is_open: remote_open(record),
+                is_open: row.open,
                 agent_statuses: row.statuses.clone(),
                 created_at: Some(record.created_at),
                 remote: Some(record.remote.clone()),
@@ -423,11 +432,12 @@ pub fn run(show_pr: bool, json: bool, all: bool, filter: &[String]) -> Result<()
                 age: format_compact_age(now.saturating_sub(record.created_at)),
                 pr_status: "-".to_string(),
                 agent_status,
-                mux_status: if remote_open(record) {
-                    "✓".to_string()
-                } else {
-                    "-".to_string()
-                },
+                mux_status: match row.open {
+                    Some(true) => "✓",
+                    Some(false) => "-",
+                    None => "?",
+                }
+                .to_string(),
                 unmerged_status: if row.unmerged { "●" } else { "-" }.to_string(),
                 path_str: if place.is_empty() {
                     format!("remote:{}", record.remote)
@@ -453,4 +463,107 @@ pub fn run(show_pr: bool, json: bool, all: bool, filter: &[String]) -> Result<()
     println!("{table}");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::cache::ExecutionRecord;
+    use crate::remote::observe::Observation;
+    use crate::remote::protocol::RexPlacement;
+    use crate::test_support::{ISOLATED_TEST_CANARY, is_isolated_child, run_isolated_test};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn native_liveness_does_not_depend_on_observer_publication() {
+        const NAME: &str =
+            "command::list::tests::native_liveness_does_not_depend_on_observer_publication";
+        if !is_isolated_child(NAME) {
+            let temp = tempfile::tempdir().unwrap();
+            run_isolated_test(
+                NAME,
+                temp.path(),
+                &[
+                    ("REX_BIN_DIR", temp.path()),
+                    ("XDG_STATE_HOME", temp.path()),
+                ],
+            );
+            return;
+        }
+        let root = std::env::current_dir().unwrap();
+        let mut record = WorkspaceRecord::new(
+            "w-list".into(),
+            "node",
+            "project".into(),
+            root.clone(),
+            "feat",
+            "feat",
+            "base".into(),
+            None,
+            "feat".into(),
+            root.join("feat"),
+        );
+        record.execution = Some(ExecutionRecord {
+            ex_id: "e-list".into(),
+            panes: vec![0],
+            node_bin: "node".into(),
+            rex: Some(RexPlacement {
+                host_label: "native-server".into(),
+                instance_id: "native-instance".into(),
+                sessions: [(0, "session:owned".into())].into(),
+                blocks: [(0, "block:owned".into())].into(),
+                shells: Default::default(),
+            }),
+        });
+        let version: serde_json::Value = serde_json::from_str(include_str!(
+            "../multiplexer/testdata/rex_server_version_mac.json"
+        ))
+        .unwrap();
+        let process: serde_json::Value =
+            serde_json::from_str(include_str!("../multiplexer/testdata/rex_process.json")).unwrap();
+        let mut answer = serde_json::json!({
+            "version": version, "status": {"instance_id": "native-instance"},
+            "reads": {"session:owned": {
+                "session": {"session_id": "session:owned", "label": "renamed"},
+                "blocks": {"block:owned": {
+                    "window": {"window_id": "window:owned", "label": "renamed"}, "process": process
+                }}
+            }}
+        });
+        let program = root.join("rex");
+        let respond = |answer: &serde_json::Value| {
+            std::fs::write(
+                &program,
+                format!("#!/bin/sh\ncat <<'JSON'\n{answer}\nJSON\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        respond(&answer);
+        let missing = remote_row(&record, None, 100);
+        assert_eq!(missing.open, Some(true));
+        assert!(!missing.connected);
+        let empty = Observation {
+            connected: true,
+            last_seen: Some(100),
+            ..Default::default()
+        };
+        let unpublished = remote_row(&record, Some(&empty), 100);
+        assert_eq!(unpublished.open, Some(true));
+        assert!(unpublished.connected);
+        let stale: Observation = serde_json::from_value(serde_json::json!({
+            "connected": true, "last_seen": 1,
+            "workspaces": [{"ws_id": "w-list", "ex_id": "e-list", "panes": [{"index": 0, "alive": false}]}]
+        })).unwrap();
+        let stale_row = remote_row(&record, Some(&stale), 100);
+        assert_eq!(stale_row.open, Some(true));
+        assert!(!stale_row.connected);
+
+        answer["reads"]["session:owned"]["blocks"] = serde_json::json!({});
+        respond(&answer);
+        assert_eq!(remote_row(&record, Some(&empty), 100).open, Some(false));
+        std::fs::write(&program, "#!/bin/sh\necho offline >&2\nexit 1\n").unwrap();
+        assert_eq!(remote_row(&record, Some(&empty), 100).open, None);
+        println!("{ISOLATED_TEST_CANARY}");
+    }
 }

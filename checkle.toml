@@ -43,4 +43,9 @@ command = ["bash", "-lc", "cd docs && bun run format:check && node scripts/check
 
 [[group]]
 name = "all"
-checks = ["format-rust-check", "format-python-check", "clippy", "unit-tests", "status-plugin-tests", "opencode-v2-status-plugin-tests", "ruff-check", "pyright", "docs-check"]
+checks = ["workrex-audit", "format-rust-check", "format-python-check", "clippy", "unit-tests", "status-plugin-tests", "opencode-v2-status-plugin-tests", "ruff-check", "pyright", "docs-check"]
+
+[[check]]
+name = "workrex-audit"
+mode = "auto"
+command = ["python3", "scripts/audit-workrex.py"]

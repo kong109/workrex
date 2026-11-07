@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { applyEvent, isActive, sessionState, windowStatus, type SessionState } from '../resources/opencode/v2/workmux-status/status';
+import { applyEvent, isActive, sessionState, windowStatus, type SessionState } from '../resources/opencode/v2/workrex-status/status';
 
 test('derives working, waiting, resumed, and done from execution and requests', () => {
   const sessions = new Map<string, SessionState>();

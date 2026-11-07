@@ -3,9 +3,9 @@ title: "Configuration"
 description: Customize dashboard commands and layout
 ---
 
-workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
+Workrex uses `.workrex.yaml`, `~/.config/workrex/config.yaml`, and `WORKREX_*` environment variables. See [Configuration](/guide/configuration/).
 
-The dashboard can be customized in your `.workmux.yaml`:
+The dashboard can be customized in your `.workrex.yaml`:
 
 ```yaml
 dashboard:
@@ -57,7 +57,7 @@ dashboard:
   close_on_jump: false
 ```
 
-The jump still updates the pane history used by `Bksp`. The `p` peek action always keeps the dashboard open and does not update pane history. Multiplexers such as Zellij that keep the dashboard open after jumps retain that behavior regardless of this setting.
+The jump still updates the pane history used by `Bksp`. The `p` peek action always keeps the dashboard open and does not update pane history.
 
 ## Columns
 
@@ -79,7 +79,7 @@ dashboard:
 | `pr`        | Pull request number and check status             |
 | `pr_title`  | Pull request title                               |
 | `pr_issues` | Issues closed by the pull request                |
-| `window`    | Multiplexer window index                         |
+| `window`    | Rex window order when available                  |
 | `status`    | Agent status icons                               |
 | `time`      | Time since the last status change                |
 | `title`     | Agent session title                              |
@@ -87,7 +87,7 @@ dashboard:
 
 A column left out of the list is not rendered, so `agent_columns: [worktree, status, title]` gives a table of just those three. Repeating a column has no effect, and an empty list falls back to the default order.
 
-Dropping `number` hides the jump key, and `1`-`9` still jump to the first nine rows. The `pr` column appears only while at least one agent has a pull request or checks to report, wherever it is placed in the list. Likewise, `machine` appears only while the table lists at least one [remote agent](/guide/remote/), showing the remote's name from `remotes:` and `local` for agents on this machine. The opt-in `pr_title` and `pr_issues` columns stay visible and leave the cell blank when the branch has no pull request or closing issues. `pr_issues` uses GitHub's closing issue references, not arbitrary issue mentions in pull request text. Same-repository issues appear as `#123`; cross-repository issues include the repository, such as `owner/repo#123`. The opt-in `window` column shows the tmux window index used by `prefix + <n>`; backends without window indexes leave the cell blank. A trailing `title`, `prompt`, `pr_title`, or `pr_issues` takes the width left over by the other columns; anywhere else it sizes to its content, and the leftover width sits at the right edge of the table.
+Dropping `number` hides the jump key, and `1`-`9` still jump to the first nine rows. The `pr` column appears only while at least one agent has a pull request or checks to report, wherever it is placed in the list. Likewise, `machine` appears only while the table lists at least one [remote agent](/guide/remote/), showing the remote's name from `remotes:` and `local` for agents on this machine. The opt-in `pr_title` and `pr_issues` columns stay visible and leave the cell blank when the branch has no pull request or closing issues. `pr_issues` uses GitHub's closing issue references, not arbitrary issue mentions in pull request text. Same-repository issues appear as `#123`; cross-repository issues include the repository, such as `owner/repo#123`. The opt-in `window` column shows the Rex window order when available; otherwise the cell is blank. A trailing `title`, `prompt`, `pr_title`, or `pr_issues` takes the width left over by the other columns; anywhere else it sizes to its content, and the leftover width sits at the right edge of the table.
 
 #### Prompt column
 
@@ -140,7 +140,7 @@ Side-by-side leaves less width for each pane. On narrow terminals, use the stack
 
 The `preview_size` option controls the preview as a percentage of the content area: height in `stacked` layout, width in `side_by_side` layout. A higher value means more space for the preview and less for the table.
 
-You can also adjust the preview size interactively with `+`/`-` keys. These adjustments persist across dashboard sessions in `~/.local/state/workmux/settings.json`.
+You can also adjust the preview size interactively with `+`/`-` keys. These adjustments persist across dashboard sessions in `~/.local/state/workrex/settings.json`.
 
 The CLI flag `--preview-size` (`-P`) overrides both the config and saved preference for that session.
 

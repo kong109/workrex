@@ -47,10 +47,10 @@ fn run_pre_remove_hooks(
         let worktree_path_str = abs_worktree_path.to_string_lossy();
         let project_root_str = abs_project_root.to_string_lossy();
         let hook_env = [
-            ("WORKMUX_HANDLE", handle),
-            ("WM_HANDLE", handle),
-            ("WM_WORKTREE_PATH", worktree_path_str.as_ref()),
-            ("WM_PROJECT_ROOT", project_root_str.as_ref()),
+            ("WORKREX_HANDLE", handle),
+            ("WORKREX_HANDLE", handle),
+            ("WORKREX_WORKTREE_PATH", worktree_path_str.as_ref()),
+            ("WORKREX_PROJECT_ROOT", project_root_str.as_ref()),
         ];
         for command in pre_remove_hooks {
             // Run the hook with the worktree path as the working directory.
@@ -70,10 +70,10 @@ fn run_pre_remove_hooks(
 
 /// Remove prompt files from temp dir matching the branch name.
 /// Handles both legacy fixed names and timestamped names:
-/// workmux-prompt-{name}.md and workmux-prompt-{name}-{timestamp}.md
+/// workrex-prompt-{name}.md and workrex-prompt-{name}-{timestamp}.md
 fn cleanup_prompt_files(branch_name: &str) {
     let temp_dir = std::env::temp_dir();
-    let prefix = format!("workmux-prompt-{}", branch_name);
+    let prefix = format!("workrex-prompt-{}", branch_name);
     if let Ok(entries) = std::fs::read_dir(&temp_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -333,7 +333,7 @@ fn quarantine_worktree(
         .duration_since(SystemTime::UNIX_EPOCH)?
         .as_nanos();
     let trash_path = parent.join(format!(
-        ".workmux_trash_{}_{}_{}",
+        ".workrex_trash_{}_{}_{}",
         dir_name.to_string_lossy(),
         std::process::id(),
         nonce
@@ -422,16 +422,16 @@ fn perform_destructive_cleanup(
             .context("Failed to delete local branch")?;
     }
     git::remove_worktree_meta_at(handle, git_common_dir)
-        .context("Failed to remove Workmux metadata after Git cleanup")?;
+        .context("Failed to remove Workrex metadata after Git cleanup")?;
     if let Some(pending) = quarantine {
         pending.remove()?;
     }
     Ok(())
 }
 
-/// Centralized function to clean up tmux and git resources.
+/// Centralized function to clean up Rex and git resources.
 /// `branch_name` is used for git operations (branch deletion).
-/// `handle` is used for tmux operations (window/session lookup/kill).
+/// `handle` is used for Rex operations (window/session lookup/kill).
 pub fn cleanup(
     context: &WorkflowContext,
     branch_name: &str,
@@ -520,7 +520,7 @@ fn cleanup_impl(
             &context.git_common_dir,
         )?;
         return Ok(CleanupResult {
-            tmux_window_killed: false,
+            terminal_target_closed: false,
             source_target_is_active: false,
             source_target_to_close: None,
             deferred_cleanup: None,
@@ -625,7 +625,7 @@ fn cleanup_impl(
     );
 
     let mut result = CleanupResult {
-        tmux_window_killed: false,
+        terminal_target_closed: false,
         source_target_is_active,
         source_target_to_close: None,
         deferred_cleanup: None,
@@ -746,7 +746,7 @@ fn cleanup_impl(
                     if let Err(e) = context.mux.kill_session(&session_name) {
                         warn!(session = session_name, error = %e, "cleanup:failed to kill session");
                     } else {
-                        result.tmux_window_killed = true;
+                        result.terminal_target_closed = true;
                         info!(session = session_name, "cleanup:killed session");
 
                         poll_bounded(|| Ok(!context.mux.session_exists(&session_name)?))?;
@@ -772,7 +772,7 @@ fn cleanup_impl(
                     }
                 }
                 if killed_count > 0 {
-                    result.tmux_window_killed = true;
+                    result.terminal_target_closed = true;
                     info!(
                         count = killed_count,
                         handle = handle,
@@ -813,7 +813,7 @@ fn spawn_deferred_cleanup_worker(
     mode: MuxMode,
     source: &SourceTarget,
 ) -> Result<Child> {
-    let executable = std::env::current_exe().context("Failed to locate Workmux executable")?;
+    let executable = std::env::current_exe().context("Failed to locate Workrex executable")?;
     let repository = &cleanup.expected_identity.repository;
     let (source_name, parent_session, source_id) = match source {
         SourceTarget::Window(target) => (
@@ -968,7 +968,7 @@ fn run_deferred_cleanup_worker_inner(
 /// `target_window_name` is the window name of the merge target.
 /// `source_handle` is the window name of the branch being merged/removed.
 /// `default_session` is the configured session to prefer in session mode when
-/// no workmux-managed session exists for the destination branch.
+/// no workrex-managed session exists for the destination branch.
 pub fn navigate_to_target_and_close(
     mux: &dyn Multiplexer,
     prefix: &str,
@@ -1035,7 +1035,7 @@ pub fn navigate_to_target_and_close(
         source_handle,
         source_full,
         source_mode = kind,
-        tmux_window_killed = cleanup_result.tmux_window_killed,
+        terminal_target_closed = cleanup_result.terminal_target_closed,
         source_target_is_active = cleanup_result.source_target_is_active,
         source_target_to_close = ?cleanup_result.source_target_to_close,
         deferred_cleanup = cleanup_result.deferred_cleanup.is_some(),
@@ -1043,7 +1043,7 @@ pub fn navigate_to_target_and_close(
     );
 
     let Some(source) = source else {
-        if !cleanup_result.tmux_window_killed {
+        if !cleanup_result.terminal_target_closed {
             info!(
                 handle = source_handle,
                 target = target_window_name,

@@ -73,7 +73,7 @@ fn write_notice(output: &mut impl Write) -> io::Result<()> {
     writeln!(output, "{border}")?;
     writeln!(
         output,
-        "{border}  Host-side commands from .workmux.yaml and repository code"
+        "{border}  Host-side commands from .workrex.yaml and repository code"
     )?;
     writeln!(
         output,

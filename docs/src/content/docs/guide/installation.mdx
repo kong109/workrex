@@ -9,8 +9,7 @@ workrex ships prebuilt binaries for macOS on Apple Silicon (`darwin-arm64`) and
 Linux on x86_64 (`linux-amd64`). On other platforms,
 [build from source](#build-from-source).
 
-workrex installs as `workrex`, so it does not replace an upstream `workmux`
-binary. To run agents in Rex, you also need Rex. See the
+Workrex needs a running Rex server and the `rex` CLI on your PATH. See the
 [Rex installation docs](https://www.superlogical.com/rex/docs/).
 
 ## Install script
@@ -23,16 +22,15 @@ when `/usr/local/bin` is not writable.
 curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/install-workrex.sh | bash
 ```
 
-To pick the directory, set `WORKMUX_INSTALL_DIR`. To pin a release, set
-`WORKMUX_VERSION`:
+To pick the directory, set `WORKREX_INSTALL_DIR`. To pin a release, set
+`WORKREX_VERSION`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/install-workrex.sh | WORKMUX_VERSION=v0.1.278-rex.1 bash
+curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/install-workrex.sh | WORKREX_VERSION=v0.1.278-rex.1 bash
 ```
 
-workrex keeps the workmux names for its environment variables and
-[configuration](/guide/configuration/) files, so existing workmux setups work
-unchanged.
+Configuration uses `.workrex.yaml`, `~/.config/workrex/`, and `WORKREX_*`
+environment variables. See [Configuration](/guide/configuration/).
 
 ## Release tarball
 
@@ -51,8 +49,7 @@ mv workrex ~/.local/bin/
 ## Build from source
 
 Building needs Rust. Install it with [rustup](https://rustup.rs/) if you don't
-have it. The Cargo package keeps the upstream name `workmux`, so name the
-binary:
+have it, then install the `workrex` package from this repository:
 
 ```bash
 cargo install --git https://github.com/kong109/workrex --bin workrex
@@ -64,13 +61,26 @@ To update a binary from the install script or a tarball, run
 [`workrex update`](/reference/commands/update/). For a source build, run the
 `cargo install` command again.
 
+### Existing installations
+
+This build uses its own configuration, state, cache, and Git metadata namespaces.
+Use `.workrex.yaml` for each project's settings and `WORKREX_*` for environment
+overrides. A copied global profile preserves preferences; it does not import
+earlier workspace ownership, recovery records, remote placements, or agent
+conversation history.
+
+Existing sessions and earlier stored data are left intact. Finish or stop agents
+started by an older build before reopening their worktrees with this build.
+Rex can rediscover some running agents for display, but that does not transfer
+their earlier management records.
+
 ## Shell alias
 
-To type less, alias `workrex` to `wm` in your `.bashrc`, `.zshrc`, or other
+To type less, alias `workrex` to `wr` in your `.bashrc`, `.zshrc`, or other
 shell configuration file:
 
 ```bash
-alias wm='workrex'
+alias wr='workrex'
 ```
 
 ## Shell completions
@@ -117,7 +127,7 @@ run `workrex uninstall --dry-run`.
 curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/uninstall-workrex.sh | bash
 ```
 
-The script keeps `~/.config/workmux/`, because workrex and upstream workmux both
-read it. Delete it yourself only if you use neither. Remove the completion line
+The script preserves your configuration at `~/.config/workrex/`. Delete it
+yourself when you no longer need those settings. Remove the completion line
 and the `wm` alias from your shell configuration. To find worktrees that
 are still on disk, run `git worktree list`.

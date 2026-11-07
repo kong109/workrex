@@ -1,255 +1,123 @@
 # workrex
 
-workrex runs coding agents in parallel, each in its own git worktree, inside
-[Rex](https://www.superlogical.com/rex), the terminal from Superlogical. Each
-agent gets its own Rex session, its status shows in a Rex sidebar and a
-dashboard, and agents can run on a Linux server over SSH. It is for developers
-who use Rex and want several agents working on one repository at the same time
-without the agents touching each other's files.
-
-workrex is a fork of [workmux](https://github.com/raine/workmux) by Raine Virta
-and the workmux contributors. Most of what workrex does is workmux's work. The
-fork adds the Rex support and renames the binary, so `workrex` installs beside
-an upstream `workmux`. See [NOTICE.md](NOTICE.md) for the license and the full
-list of renames.
-
-- [What you get in Rex](#what-you-get-in-rex)
-- [Install](#install)
-- [Quick start](#quick-start)
-- [Set up Rex](#set-up-rex)
-- [Run agents on a remote server](#run-agents-on-a-remote-server)
-- [Commands](#commands)
-- [Configuration keeps the workmux names](#configuration-keeps-the-workmux-names)
-- [How workrex relates to workmux](#how-workrex-relates-to-workmux)
-- [Contributing and credits](#contributing-and-credits)
-
-## What you get in Rex
-
-The Rex backend is experimental. It needs a Rex server that speaks API
-revision 8 or 9.
-
-- **A Rex backend.** workrex detects Rex from `$REX_BLOCK`, which Rex sets in
-  every pane. To force it, set `WORKMUX_BACKEND=rex`. If you run tmux, WezTerm,
-  Zellij or kitty inside a Rex pane, workrex uses that multiplexer instead.
-- **One Rex session per agent.** Under Rex, session mode is the default.
-  `workrex add` creates a Rex session for each worktree, and the worktree's
-  panes are Rex blocks in it.
-- **Agent status in a sidebar.** `workrex sidebar` adds a block labeled
-  `workrex-sidebar` to the left of each window. It lists every agent and its
-  status, and you can jump to an agent from it.
-- **A dashboard in a floating layer.** A Rex Lua file opens `workrex dashboard`
-  in a layer over the current tab. Press `Shift+Cmd+D` to open it.
-- **Status without hooks.** workrex reads the status that programs report to
-  Rex through the
-  [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status)
-  (OSC 7501). Claude Code reports it with no setup.
-- **Remote agents in Rex.** workmux runs agents on a Linux server over SSH,
-  for example a WSL distro on a Windows machine. workrex adds `terminal: rex`,
-  so the agent's terminal runs on the server's own Rex server, and Rex.app shows
-  it.
-
-The [workrex documentation](https://kong109.github.io/workrex/) has the detail:
-
-- [Rex backend](https://kong109.github.io/workrex/guide/rex/)
-- [Session mode](https://kong109.github.io/workrex/guide/session-mode/)
-- [Sidebar](https://kong109.github.io/workrex/guide/sidebar/)
-- [Dashboard](https://kong109.github.io/workrex/guide/dashboard/)
-- [Status tracking](https://kong109.github.io/workrex/guide/status-tracking/)
-- [Remote agents](https://kong109.github.io/workrex/guide/remote/)
+Workrex runs coding agents in parallel inside [Rex](https://www.superlogical.com/rex).
+Each task gets a Git worktree, branch, and Rex session. The dashboard and sidebar
+show agent status, terminal output, and changes across projects. Agents can also
+run on a configured Linux server over SSH and appear in Rex.app.
 
 ## Install
 
-workrex ships prebuilt binaries for macOS on Apple silicon (`darwin-arm64`)
-and Linux on x86-64 (`linux-amd64`) on the
-[kong109/workrex releases page](https://github.com/kong109/workrex/releases).
-Each tarball has a `.sha256` file next to it.
-
-To install the latest release, run the install script:
+Install Rex from [Superlogical](https://www.superlogical.com/rex), then install
+Workrex from its [GitHub releases](https://github.com/kong109/workrex/releases):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/install-workrex.sh | bash
-```
-
-The script checks the checksum and installs `workrex` to `/usr/local/bin`, or
-to `~/.local/bin` when `/usr/local/bin` is not writable. To pin a version, set
-`WORKMUX_VERSION`, for example `WORKMUX_VERSION=v0.1.278-rex.1`. To pick the
-directory, set `WORKMUX_INSTALL_DIR`.
-
-To build from source, install a Rust toolchain and run:
-
-```bash
-git clone https://github.com/kong109/workrex.git
-cd workrex
-cargo install --path .
-```
-
-To update an installed binary from the latest kong109/workrex release, run
-`workrex update`. To remove workrex with its status hooks and skills, run the
-uninstall script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/uninstall-workrex.sh | bash
-```
-
-The script removes `workrex` from `/usr/local/bin`, `~/.local/bin`,
-`~/.cargo/bin` and the `workrex` it finds on `PATH`. If you installed it with
-`WORKMUX_INSTALL_DIR` to a directory that is not on `PATH`, set the same
-`WORKMUX_INSTALL_DIR` for the uninstall script too.
-
-To check the install, print the version:
-
-```bash
 workrex --version
 ```
 
-## Quick start
+Prebuilt Workrex binaries support Apple Silicon macOS and x86-64 Linux. The
+installer checks the release's SHA-256 checksum. `WORKREX_VERSION` selects a
+release and `WORKREX_INSTALL_DIR` selects the installation directory.
 
-These steps start one agent in its own worktree. Run them in a Rex pane, from
-inside a git repository.
-
-1. Install the agent status hooks and the bundled skills:
-
-   ```bash
-   workrex setup
-   ```
-
-2. Optional: write an example project config to `.workmux.yaml`:
-
-   ```bash
-   workrex init
-   ```
-
-3. Create a worktree and start an agent in it with a prompt:
-
-   ```bash
-   workrex add fix-login -p "Fix the redirect loop on the login page"
-   ```
-
-   workrex creates the branch `fix-login`, a worktree for it, and a Rex
-   session that runs the agent.
-
-4. Watch the agents:
-
-   ```bash
-   workrex dashboard
-   workrex status
-   ```
-
-5. Send the agent a follow-up, or wait for it to finish:
-
-   ```bash
-   workrex send fix-login "Also add a test for the redirect"
-   workrex wait fix-login
-   ```
-
-6. Merge the branch into your main branch and remove the worktree and its
-   session:
-
-   ```bash
-   workrex merge fix-login
-   ```
-
-   To drop the work without merging, run `workrex remove fix-login`.
-
-To start several agents at once, use `-n`, for example
-`workrex add review -n 3 -p "Review src/auth for bugs"`. The
-[quick start guide](https://kong109.github.io/workrex/guide/quick-start/) and the
-[workflows guide](https://kong109.github.io/workrex/guide/workflows/) cover more.
-
-## Set up Rex
-
-workrex needs the `rex` CLI on `PATH`. Inside a Rex pane it already is.
-
-### Turn on Remote Control
-
-To jump to an agent in another tab or session, turn on **Remote Control** in
-Rex Settings. Without it, Rex.app refuses the jump, and the dashboard and the
-sidebar show the fix. `workrex add` and closing a session work without Remote
-Control.
-
-### Open the dashboard in a floating layer
-
-1. Copy [`resources/rex/workrex.lua`](resources/rex/workrex.lua) to
-   `~/.config/rex/workrex.lua`.
-2. Add this line to `~/.config/rex/init.lua`:
-
-   ```lua
-   require("workrex")
-   ```
-
-3. Check the file and reload the Rex config:
-
-   ```bash
-   rex config check ~/.config/rex/workrex.lua
-   rex config reload
-   ```
-
-4. Press `Shift+Cmd+D`, or run **workrex: Open Dashboard** from the command
-   palette.
-
-The key replaces Rex's default binding for **Split Pane Down**. To use another
-key, change the `rex.bind` line at the end of `workrex.lua`.
-
-### Show the sidebar
-
-To show the sidebar in every window, run:
+To build from source:
 
 ```bash
-workrex sidebar on
+cargo install --git https://github.com/kong109/workrex --bin workrex
 ```
 
-To show it only in the current session, run `workrex sidebar --session`
-instead, while the sidebar is off. `--session` is a toggle. When the sidebar is
-on in every window, `workrex sidebar --session` hides it in the current
-session.
+Update a release installation with `workrex update`. Source installations can
+rerun the Cargo command.
 
-### Use a second Rex server
+## Quick start
 
-workrex talks to the Rex server named by `REX_SERVER`. When `REX_SERVER` is
-unset, it uses the server that the `rex` CLI finds by default. If you run a
-second Rex server, set `REX_SERVER` in its environment before you start it. Rex
-panes inherit the server's environment, so workrex and the `rex` CLI in those
-panes then reach that server instead of the default one. See
-[Choosing the server](https://kong109.github.io/workrex/guide/rex/#choosing-the-server).
+Run these commands from a Rex terminal inside your Git repository:
+
+```bash
+# Install agent status hooks and bundled skills.
+workrex setup
+
+# Write .workrex.yaml, then select your agent in it.
+workrex init
+
+# Start an agent in its own branch, worktree, and Rex session.
+workrex add fix-login -p "Fix the login redirect and verify it"
+
+# Inspect agents and press Enter to show one in Rex.app.
+workrex dashboard
+
+# Merge the branch and remove the task's worktree and Rex session.
+workrex merge fix-login
+```
+
+Workrex defaults to one Rex session per worktree. A Rex CLI window is a tab in
+a session; each terminal pane is a block. Set `mode: window` when tasks should
+open as tabs inside an existing session. `--parent-session <label>` applies
+only to window mode and identifies an explicitly chosen Rex session.
+
+`add` and `open` create or select their managed target on the server without
+moving Rex.app away from the tab you are viewing. Dashboard and sidebar jumps
+show the target in the app. Jumps across tabs require Remote Control in Rex
+Settings.
+
+## Configure the workspace
+
+Global defaults live in `~/.config/workrex/config.yaml`. Project settings in
+`.workrex.yaml` override them. Configuration, cache, state, and `WORKREX_*`
+environment variables belong to Workrex.
+
+```yaml
+agent: codex
+mode: session
+window_prefix: wr-
+panes:
+  - command: <agent>
+    focus: true
+  - split: horizontal
+files:
+  copy:
+    - .env
+  symlink:
+    - node_modules
+post_create:
+  - npm install
+```
+
+Use `workrex config path` to locate global configuration and
+`workrex config reference` to print the installed version's full reference.
+
+## Dashboard and sidebar
+
+`workrex dashboard` lists managed worktrees and agents. Press Enter to jump to
+a target, inspect its diff, or send a prompt without leaving the dashboard.
+
+For a floating dashboard over the current Rex tab, copy
+[`resources/rex/workrex.lua`](resources/rex/workrex.lua) to
+`~/.config/rex/workrex.lua`, then load it from `~/.config/rex/init.lua`:
+
+```lua
+require("workrex")
+```
+
+Check and reload the configuration:
+
+```bash
+rex config check ~/.config/rex/workrex.lua
+rex config reload
+```
+
+The default shortcut is `Shift+Cmd+D`. `workrex sidebar on` adds a full-height
+sidebar block to the left of windows in scope. The sidebar observes Rex events
+and stores per-server preferences under `~/.local/state/workrex/sidebar/`.
+
+Agents that report Rex program status, including Claude Code, appear without
+status hooks. `workrex setup` installs hooks for supported agents and these
+skills: `workrex`, `merge`, `rebase`, `worktree`, `coordinator`, and `open-pr`.
+Codex discovers them in `~/.agents/skills`; invoke them with `$workrex` and so on.
 
 ## Run agents on a remote server
 
-A remote agent runs on a Linux server that you reach over SSH. It still shows
-in the dashboard, the sidebar, `workrex status` and `workrex list`.
-
-1. Name the server in `~/.config/workmux/config.yaml`. `host` is an
-   `~/.ssh/config` alias or `user@host`:
-
-   ```yaml
-   remotes:
-     devbox:
-       host: dev@devbox.example.com
-   ```
-
-2. Install the workrex node binary and the agent status hooks on the server,
-   then check the server:
-
-   ```bash
-   workrex remote setup devbox
-   workrex remote doctor devbox
-   ```
-
-3. Log an agent in on the server. The agent is one of `claude`, `codex`,
-   `gemini`, `opencode`, `pi` or `omp`:
-
-   ```bash
-   workrex remote login devbox claude
-   ```
-
-4. Start an agent on the server:
-
-   ```bash
-   workrex add fix-login --remote devbox -p "Fix the redirect loop"
-   ```
-
-By default the agent runs in tmux on the server, and a relay window on your
-machine shows it. If the server runs its own Rex server that Rex.app reaches
-over Tailscale, the agent can run there instead:
+Prepare a Linux server with Git, Rex, and noninteractive SSH access. Its Rex
+server must be reachable by Rex.app. Add it to your global configuration:
 
 ```yaml
 remotes:
@@ -259,96 +127,49 @@ remotes:
     terminal: rex
 ```
 
-With `terminal: rex`, `workrex add --remote devbox` creates the agent's Rex
-sessions on the server and opens no relay window. `terminal: rex` needs
-`isolation: none`, and `workrex open` needs Remote Control.
+Then install Workrex on the node, check it, log the agent in, and start a task:
 
-For setup on a WSL distro, logins, git access and fixes, see these pages:
+```bash
+workrex remote setup devbox
+workrex remote doctor devbox
+workrex remote login devbox codex
+workrex add fix-parser --remote devbox -p "Fix the parser and run its tests"
+```
 
-- [Remote setup, including WSL](https://kong109.github.io/workrex/guide/remote/setup/)
-- [Remote usage](https://kong109.github.io/workrex/guide/remote/usage/)
-- [Remote logins](https://kong109.github.io/workrex/guide/remote/logins/)
-- [Remote git](https://kong109.github.io/workrex/guide/remote/git/)
-- [Remote troubleshooting](https://kong109.github.io/workrex/guide/remote/troubleshooting/)
+The remote workspace owns its Rex terminals. Agents keep running when the local
+machine disconnects. Use `workrex open fix-parser` to show the running workspace,
+and `workrex merge fix-parser` to bring its work home and merge locally.
 
-## Commands
+## Main commands
 
-The table lists the main commands. Run `workrex <command> --help` for the
-options of each one, and `workrex --help` for the full list.
+| Command | Purpose |
+| --- | --- |
+| `add <branch>` | Create a worktree and start its agent in Rex |
+| `open <handle>` | Find or recreate the worktree's managed Rex target |
+| `close <handle>` | Close the managed terminal while keeping local files |
+| `merge <handle>` | Merge and clean up the task |
+| `remove <handle>` | Remove the task without merging |
+| `list`, `status` | Inspect worktrees and agents |
+| `send`, `capture`, `wait`, `run` | Communicate with agents and run checks |
+| `dashboard`, `sidebar` | Inspect and navigate agents in Rex |
+| `remote` | Set up and maintain SSH-connected workspaces |
+| `sandbox` | Configure container or VM isolation |
+| `setup` | Install agent hooks and skills |
+| `config`, `init` | Inspect or edit configuration |
+| `resurrect` | Reopen managed targets after a Rex server restart |
 
-| Command                      | What it does                                                   |
-| ---------------------------- | -------------------------------------------------------------- |
-| `workrex add <branch>`       | Create a worktree and start its agent in a window or session   |
-| `workrex open <name>`        | Open a window for an existing worktree                         |
-| `workrex close [name]`       | Close a worktree's window and keep the worktree and branch     |
-| `workrex merge [name]`       | Merge a branch, then remove its worktree and window            |
-| `workrex remove [names]...`  | Remove worktrees, their windows and branches without merging   |
-| `workrex rebase [name]`      | Rebase a worktree branch onto its base branch                  |
-| `workrex rename <names>...`  | Rename a worktree and its window or session, and with `-b` its branch |
-| `workrex resurrect`          | Reopen worktree windows after a crash or a server restart      |
-| `workrex list`               | List all worktrees                                             |
-| `workrex status`             | Show agent status for worktrees                                |
-| `workrex dashboard`          | Open a TUI dashboard of all agents                             |
-| `workrex sidebar`            | Turn the agent status sidebar on or off                        |
-| `workrex send <name> [text]` | Send a prompt to a running agent                               |
-| `workrex capture`            | Print terminal output from a running agent                     |
-| `workrex wait <names>...`    | Wait for agents to reach a status, `done` by default           |
-| `workrex run`                | Run a command in a worktree's window                           |
-| `workrex remote`             | Set up, check and log in to SSH remotes                        |
-| `workrex setup`              | Install status tracking hooks and skills                       |
-| `workrex init`               | Write an example `.workmux.yaml`                               |
-| `workrex config`             | Edit the global config, or print its path or the option reference |
-| `workrex sandbox`            | Manage sandbox settings                                        |
-| `workrex update`             | Update to the latest kong109/workrex release                   |
-| `workrex docs`               | Show this README in the terminal                               |
-
-## Configuration keeps the workmux names
-
-workrex reads the same configuration as workmux:
-
-- Global config: `~/.config/workmux/config.yaml`. Run `workrex config path` to
-  print the path.
-- Project config: `.workmux.yaml` in the repository root.
-- Environment variables: `WORKMUX_*`, for example `WORKMUX_BACKEND`.
-- Cache and state directories named `workmux`.
-
-The names stay the same for two reasons. An existing workmux setup works with
-workrex without changes, and the fork stays easy to rebase on upstream.
-
-A few files that both binaries would write get workrex names, so the two
-installs don't overwrite each other. Examples are the remote node root
-`~/.workrex-node` and the agent hook files named `workrex-status`.
-[NOTICE.md](NOTICE.md) lists every rename.
-
-To print every option with its default, run `workrex config reference`. The
-[configuration guide](https://kong109.github.io/workrex/guide/configuration/) describes the options.
-
-## How workrex relates to workmux
-
-workrex tracks upstream workmux and rebases on it. Everything outside the Rex
-support comes from upstream and works under the `workrex` name. That includes
-the tmux, WezTerm, kitty and Zellij backends, the worktree commands, merge,
-agent support and the sandbox.
-
-The [workrex documentation](https://kong109.github.io/workrex/) covers those features too:
-
-- [Agents](https://kong109.github.io/workrex/guide/agents/)
-- [Workflows](https://kong109.github.io/workrex/guide/workflows/)
-- [Sandbox](https://kong109.github.io/workrex/guide/sandbox/)
-- [Git worktree caveats](https://kong109.github.io/workrex/guide/git-worktree-caveats/)
-
-The kong109/workrex repository has no issue tracker. If a problem also
-happens with upstream `workmux`, report it to
-[raine/workmux](https://github.com/raine/workmux/issues).
+Run `workrex <command> --help` for current options. See the
+[documentation](https://kong109.github.io/workrex/) for
+[configuration](https://kong109.github.io/workrex/guide/configuration/),
+[Rex behavior](https://kong109.github.io/workrex/guide/rex/),
+[agent workflows](https://kong109.github.io/workrex/guide/workflows/),
+[remote workspaces](https://kong109.github.io/workrex/guide/remote/), and
+[sandboxing](https://kong109.github.io/workrex/guide/sandbox/).
 
 ## Contributing and credits
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the build and the checks. It is
-upstream's guide, so its clone URL and binary name are workmux's. To keep the
-fork's README from conflicting on each upstream rebase, see
-[Rebasing on upstream](NOTICE.md#rebasing-on-upstream).
-
-workrex is built on [workmux](https://github.com/raine/workmux) by Raine Virta
-and the workmux contributors, under the MIT License. The upstream copyright and
-license text are in [LICENSE](LICENSE). [NOTICE.md](NOTICE.md) has the credits
-and the list of renames.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and verification, and
+[NOTICE.md](NOTICE.md) for attribution. Workrex builds on the MIT-licensed
+terminal-worktree project originally authored by [Raine Virta](https://github.com/raine)
+and its contributors. The original copyright and license remain in
+[LICENSE](LICENSE).

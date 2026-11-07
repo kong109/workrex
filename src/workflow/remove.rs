@@ -127,7 +127,7 @@ fn remove_with_hook_output(
     // The CLI provides a user-friendly confirmation prompt before calling this function
 
     // Stop any running containers for this worktree before killing the window.
-    // This is necessary because tmux kill-window sends SIGHUP which doesn't allow
+    // This is necessary because closing a Rex window can send SIGHUP which doesn't allow
     // the supervisor's Drop handler to run. We try unconditionally since sandbox
     // may have been enabled via --sandbox flag even if disabled in config.
     sandbox::stop_containers_for_handle(actual_handle);
@@ -227,7 +227,7 @@ mod tests {
                 TEST_NAME,
                 &repo_a,
                 &[
-                    ("WM_TEST_TEMP", temp.path()),
+                    ("WORKREX_TEST_TEMP", temp.path()),
                     ("XDG_STATE_HOME", temp.path()),
                 ],
             );
@@ -235,13 +235,15 @@ mod tests {
         }
 
         println!("{}", test_support::ISOLATED_TEST_CANARY);
-        let temp = std::env::var_os("WM_TEST_TEMP").map(PathBuf::from).unwrap();
+        let temp = std::env::var_os("WORKREX_TEST_TEMP")
+            .map(PathBuf::from)
+            .unwrap();
         let repo_a = temp.join("repo-a");
         let repo_b = temp.join("repo-b");
         let ctx = WorkflowContext::new_in(
             &repo_b,
             Config::default(),
-            create_backend(BackendType::Tmux),
+            create_backend(BackendType::Rex),
             None,
         )
         .unwrap();

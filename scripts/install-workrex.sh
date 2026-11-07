@@ -4,12 +4,12 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/install-workrex.sh | bash
 #
 # Environment variables:
-#   WORKMUX_VERSION      - Pin a specific version (e.g., v0.1.96)
-#   WORKMUX_INSTALL_DIR  - Override install directory (default: /usr/local/bin or ~/.local/bin)
+#   WORKREX_VERSION      - Pin a specific version (e.g., v0.1.96)
+#   WORKREX_INSTALL_DIR  - Override install directory (default: /usr/local/bin or ~/.local/bin)
 #
 # Examples:
-#   WORKMUX_VERSION=v0.1.96 bash install-workrex.sh
-#   WORKMUX_INSTALL_DIR=/opt/bin bash install-workrex.sh
+#   WORKREX_VERSION=v0.1.96 bash install-workrex.sh
+#   WORKREX_INSTALL_DIR=/opt/bin bash install-workrex.sh
 #
 # ⚠️ IMPORTANT: This script must be EXECUTED, never SOURCED
 # ❌ WRONG: source install-workrex.sh (will exit your shell on errors)
@@ -100,17 +100,17 @@ check_dependencies() {
 		missing+=("git")
 	fi
 
-	if ! command -v tmux &>/dev/null; then
-		missing+=("tmux")
+	if ! command -v rex &>/dev/null; then
+		missing+=("rex")
 	fi
 
 	if [ ${#missing[@]} -gt 0 ]; then
 		log_warning "Missing required dependencies: ${missing[*]}"
 		echo ""
-		echo "workrex requires git and tmux to function."
+		echo "workrex requires git and Rex to function."
 		echo "Please install them first:"
-		echo "  - macOS: brew install git tmux"
-		echo "  - Ubuntu/Debian: sudo apt install git tmux"
+		echo "  - macOS: brew install git; install Rex from https://www.superlogical.com/rex"
+		echo "  - Ubuntu/Debian: sudo apt install git; install Rex from https://www.superlogical.com/rex/docs/linux/installation"
 		echo "  - Other Linux: Use your distro's package manager"
 		echo ""
 		echo "Installation will continue, but workrex won't work until dependencies are installed."
@@ -128,7 +128,7 @@ install_from_release() {
 	trap 'rm -rf "$tmp_dir"' EXIT
 
 	# Get latest release version (or use override)
-	local version="${WORKMUX_VERSION:-}"
+	local version="${WORKREX_VERSION:-}"
 
 	if [ -z "$version" ]; then
 		log_info "Fetching latest release..."
@@ -151,7 +151,7 @@ install_from_release() {
 			echo ""
 			echo "This might be due to network issues or GitHub API rate limits."
 			echo "You can specify a version manually:"
-			echo "  WORKMUX_VERSION=v0.1.96 bash install-workrex.sh"
+			echo "  WORKREX_VERSION=v0.1.96 bash install-workrex.sh"
 			echo ""
 			exit 1
 		fi
@@ -244,7 +244,7 @@ install_from_release() {
 	fi
 
 	# Determine install location (with override support)
-	local install_dir="${WORKMUX_INSTALL_DIR:-}"
+	local install_dir="${WORKREX_INSTALL_DIR:-}"
 	if [ -z "$install_dir" ]; then
 		if [[ -w /usr/local/bin ]]; then
 			install_dir="/usr/local/bin"
@@ -333,11 +333,11 @@ verify_installation() {
 
 	echo "Get started:"
 	echo "  cd your-project"
-	echo "  workrex init         # (optional) create .workmux.yaml config"
-	echo "  workrex add feature  # create a worktree and tmux window"
+	echo "  workrex init         # (optional) create .workrex.yaml config"
+	echo "  workrex add feature  # create a worktree and Rex session"
 	echo ""
 	echo "Recommended:"
-	echo "  alias wm='workrex'   # add to your shell profile for faster typing"
+	echo "  alias wr='workrex'   # add to your shell profile for faster typing"
 	echo ""
 	echo "Documentation: https://kong109.github.io/workrex/"
 	echo ""

@@ -12,7 +12,7 @@ pub enum SortMode {
     Project,
     /// Sort by duration since last status change (newest first)
     Recency,
-    /// Natural tmux order (by pane_id)
+    /// Stable block order
     Natural,
 }
 

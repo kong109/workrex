@@ -1,4 +1,4 @@
-"""Tests for `workmux add --fork` conversation forking."""
+"""Tests for `workrex add --fork` conversation forking."""
 
 import json
 import shlex
@@ -7,14 +7,13 @@ from pathlib import Path
 
 import pytest
 
-
 from .conftest import (
-    MuxEnvironment,
     get_worktree_path,
     poll_until,
-    run_workmux_command,
-    write_workmux_config,
+    run_workrex_command,
+    write_workrex_config,
 )
+from .rex_env import RexEnvironment
 
 
 def create_fake_claude_session(
@@ -45,17 +44,17 @@ def create_fake_claude_session(
 
 
 def run_fork_command(
-    env: MuxEnvironment,
-    workmux_exe_path: Path,
+    env: RexEnvironment,
+    workrex_exe_path: Path,
     repo_path: Path,
     command: str,
     claude_dir: Path,
     expect_fail: bool = False,
 ):
-    """Run a workmux add command with CLAUDE_CONFIG_DIR set."""
-    return run_workmux_command(
+    """Run a workrex add command with CLAUDE_CONFIG_DIR set."""
+    return run_workrex_command(
         env,
-        workmux_exe_path,
+        workrex_exe_path,
         repo_path,
         f"add {command}",
         expect_fail=expect_fail,
@@ -64,21 +63,21 @@ def run_fork_command(
 
 
 class TestForkBasic:
-    """Tests for --fork flag with workmux add."""
+    """Tests for --fork flag with workrex add."""
 
     def test_fork_no_conversations_errors(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """--fork with no conversations in current worktree should fail."""
         env = mux_server
-        write_workmux_config(mux_repo_path)
+        write_workrex_config(mux_repo_path)
 
         claude_dir = tmp_path / "claude-empty"
         claude_dir.mkdir()
 
         result = run_fork_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "fork-test --fork",
             claude_dir,
@@ -87,11 +86,11 @@ class TestForkBasic:
         assert "No conversations found" in result.stderr
 
     def test_fork_copies_conversation(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """--fork should copy conversation files into the new worktree's project dir."""
         env = mux_server
-        write_workmux_config(mux_repo_path)
+        write_workrex_config(mux_repo_path)
 
         claude_dir = tmp_path / "claude"
         session_id = "session-fork-test"
@@ -102,7 +101,7 @@ class TestForkBasic:
 
         run_fork_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "fork-branch --fork",
             claude_dir,
@@ -121,11 +120,11 @@ class TestForkBasic:
         assert (target_project_dir / session_id / "data.json").exists()
 
     def test_fork_specific_session(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """--fork=<session-id> should fork a specific conversation."""
         env = mux_server
-        write_workmux_config(mux_repo_path)
+        write_workrex_config(mux_repo_path)
 
         claude_dir = tmp_path / "claude"
 
@@ -138,7 +137,7 @@ class TestForkBasic:
 
         run_fork_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "fork-specific --fork=specific-session",
             claude_dir,
@@ -155,11 +154,11 @@ class TestForkBasic:
         assert not (target_project_dir / "old-session.jsonl").exists()
 
     def test_fork_unknown_session_errors(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """--fork=<nonexistent> should fail with clear error."""
         env = mux_server
-        write_workmux_config(mux_repo_path)
+        write_workrex_config(mux_repo_path)
 
         claude_dir = tmp_path / "claude"
         create_fake_claude_session(
@@ -168,7 +167,7 @@ class TestForkBasic:
 
         result = run_fork_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "fork-missing --fork=nonexistent",
             claude_dir,
@@ -177,11 +176,11 @@ class TestForkBasic:
         assert "No conversation matching 'nonexistent'" in result.stderr
 
     def test_fork_prefix_match(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """--fork=<prefix> should match session by prefix."""
         env = mux_server
-        write_workmux_config(mux_repo_path)
+        write_workrex_config(mux_repo_path)
 
         claude_dir = tmp_path / "claude"
         create_fake_claude_session(
@@ -190,7 +189,7 @@ class TestForkBasic:
 
         run_fork_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "fork-prefix --fork=abc123",
             claude_dir,
@@ -237,7 +236,7 @@ def create_fake_codex_session(
     return rollout_path
 
 
-def write_codex_shim(env: MuxEnvironment, bin_dir: Path) -> tuple[Path, Path]:
+def write_codex_shim(env: RexEnvironment, bin_dir: Path) -> tuple[Path, Path]:
     """Create a `codex` stand-in that records the arguments it was launched with.
 
     Returns the shim path and the file it writes its arguments to.
@@ -261,13 +260,13 @@ class TestForkCodex:
     """Tests for --fork with Codex, which forks conversations natively."""
 
     def test_fork_launches_codex_fork_with_session_id(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """--fork should launch `codex fork` pinned to the new worktree."""
         env = mux_server
         codex_home = tmp_path / "codex"
         shim, argv_file = write_codex_shim(mux_server, tmp_path / "bin")
-        write_workmux_config(
+        write_workrex_config(
             mux_repo_path, panes=[{"command": "<agent>"}], agent=str(shim)
         )
 
@@ -275,9 +274,9 @@ class TestForkCodex:
         rollout = create_fake_codex_session(codex_home, mux_repo_path, session_id)
         original = rollout.read_text()
 
-        run_workmux_command(
+        run_workrex_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "add codex-fork-branch --fork",
             pre_run_env={"CODEX_HOME": str(codex_home)},
@@ -298,13 +297,13 @@ class TestForkCodex:
         assert rollout.read_text() == original
 
     def test_fork_specific_session(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """--fork=<prefix> should select the matching Codex session."""
         env = mux_server
         codex_home = tmp_path / "codex"
         shim, argv_file = write_codex_shim(mux_server, tmp_path / "bin")
-        write_workmux_config(
+        write_workrex_config(
             mux_repo_path, panes=[{"command": "<agent>"}], agent=str(shim)
         )
 
@@ -322,9 +321,9 @@ class TestForkCodex:
             day="2026-08-12",
         )
 
-        run_workmux_command(
+        run_workrex_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "add codex-fork-specific --fork=019ff7c5",
             pre_run_env={"CODEX_HOME": str(codex_home)},
@@ -340,17 +339,17 @@ class TestForkCodex:
         ]
 
     def test_fork_no_conversations_errors(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """--fork with no Codex conversations should fail."""
         env = mux_server
         codex_home = tmp_path / "codex-empty"
         codex_home.mkdir()
-        write_workmux_config(mux_repo_path, agent="codex")
+        write_workrex_config(mux_repo_path, agent="codex")
 
-        result = run_workmux_command(
+        result = run_workrex_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "add codex-fork-empty --fork",
             expect_fail=True,
@@ -359,22 +358,22 @@ class TestForkCodex:
         assert "No conversations found" in result.stderr
 
     def test_fork_ignores_sessions_from_other_directories(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """Codex sessions recorded elsewhere are not fork candidates."""
         env = mux_server
         codex_home = tmp_path / "codex"
         other_worktree = tmp_path / "other-project"
         other_worktree.mkdir()
-        write_workmux_config(mux_repo_path, agent="codex")
+        write_workrex_config(mux_repo_path, agent="codex")
 
         create_fake_codex_session(
             codex_home, other_worktree, "019ff7c5-3333-3333-3333-333333333333"
         )
 
-        result = run_workmux_command(
+        result = run_workrex_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "add codex-fork-other --fork",
             expect_fail=True,
@@ -383,12 +382,12 @@ class TestForkCodex:
         assert "No conversations found" in result.stderr
 
     def test_fork_ignores_non_interactive_sessions(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """`codex exec` sessions cannot be forked, so they are skipped."""
         env = mux_server
         codex_home = tmp_path / "codex"
-        write_workmux_config(mux_repo_path, agent="codex")
+        write_workrex_config(mux_repo_path, agent="codex")
 
         create_fake_codex_session(
             codex_home,
@@ -397,9 +396,9 @@ class TestForkCodex:
             source="exec",
         )
 
-        result = run_workmux_command(
+        result = run_workrex_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "add codex-fork-exec --fork",
             expect_fail=True,
@@ -408,20 +407,20 @@ class TestForkCodex:
         assert "No conversations found" in result.stderr
 
     def test_fork_unknown_session_errors(
-        self, mux_server: MuxEnvironment, workmux_exe_path, mux_repo_path, tmp_path
+        self, mux_server: RexEnvironment, workrex_exe_path, mux_repo_path, tmp_path
     ):
         """--fork=<nonexistent> should fail with a clear error."""
         env = mux_server
         codex_home = tmp_path / "codex"
-        write_workmux_config(mux_repo_path, agent="codex")
+        write_workrex_config(mux_repo_path, agent="codex")
 
         create_fake_codex_session(
             codex_home, mux_repo_path, "019ff7c5-5555-5555-5555-555555555555"
         )
 
-        result = run_workmux_command(
+        result = run_workrex_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             "add codex-fork-missing --fork=deadbeef",
             expect_fail=True,
@@ -452,8 +451,8 @@ class TestForkPi:
     @pytest.mark.parametrize("custom_store", [False, True])
     def test_launches_native_fork(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path,
+        mux_server: RexEnvironment,
+        workrex_exe_path,
         mux_repo_path,
         tmp_path,
         fork_flag,
@@ -483,12 +482,12 @@ class TestForkPi:
             f'printf "%s\\n" "$@" > {shlex.quote(str(argv_file))}\n'
             f"pwd -P > {shlex.quote(str(cwd_file))}\n",
         )
-        write_workmux_config(
+        write_workrex_config(
             mux_repo_path, panes=[{"command": "<agent>"}], agent=str(shim)
         )
-        run_workmux_command(
+        run_workrex_command(
             env,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             f"add pi-fork {fork_flag}",
             pre_run_env={
@@ -506,16 +505,16 @@ class TestForkPi:
     @pytest.mark.parametrize("fork_flag", ["--fork", "--fork=missing"])
     def test_missing_session_errors(
         self,
-        mux_server: MuxEnvironment,
-        workmux_exe_path,
+        mux_server: RexEnvironment,
+        workrex_exe_path,
         mux_repo_path,
         tmp_path,
         fork_flag,
     ):
-        write_workmux_config(mux_repo_path, agent="pi")
-        result = run_workmux_command(
+        write_workrex_config(mux_repo_path, agent="pi")
+        result = run_workrex_command(
             mux_server,
-            workmux_exe_path,
+            workrex_exe_path,
             mux_repo_path,
             f"add pi-missing {fork_flag}",
             expect_fail=True,

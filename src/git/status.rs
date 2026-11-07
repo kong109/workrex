@@ -307,7 +307,7 @@ fn predict_conflict(path: &Path, base: &str, head: &str) -> Result<bool> {
 }
 
 fn discover_base(path: &Path, branch: &str, main: Option<&str>) -> (String, bool) {
-    let key = format!("branch.{branch}.workmux-base");
+    let key = format!("branch.{branch}.workrex-base");
     let local = super::status_cache::output(path, &["config", "--local", &key]);
     let definitive = match local {
         Ok(output) if output.status.success() => {
@@ -720,9 +720,9 @@ mod tests {
         );
         git(path, &["branch", "-f", "main", "HEAD"]);
         assert_eq!(oracle(path, &mut cache).lines_added, 0);
-        git(path, &["config", "branch.topic.workmux-base", "topic"]);
+        git(path, &["config", "branch.topic.workrex-base", "topic"]);
         assert_eq!(oracle(path, &mut cache).base_branch, "topic");
-        git(path, &["config", "--unset", "branch.topic.workmux-base"]);
+        git(path, &["config", "--unset", "branch.topic.workrex-base"]);
         assert_eq!(
             get_git_status_cached(path, Some("topic"), &mut cache).base_branch,
             "topic"
@@ -780,12 +780,12 @@ mod tests {
 
     #[test]
     fn global_and_conditional_includes_are_observed_in_an_isolated_process() {
-        if std::env::var_os("WM_CACHE_CONFIG_CHILD").is_none() {
+        if std::env::var_os("WORKREX_CACHE_CONFIG_CHILD").is_none() {
             let home = tempfile::tempdir().unwrap();
             let output = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "git::status::tests::global_and_conditional_includes_are_observed_in_an_isolated_process"])
                 .env("HOME", home.path()).env("XDG_CONFIG_HOME", home.path().join("config"))
-                .env("WM_CACHE_CONFIG_CHILD", "1").output().unwrap();
+                .env("WORKREX_CACHE_CONFIG_CHILD", "1").output().unwrap();
             assert!(
                 output.status.success(),
                 "{}{}",
@@ -904,7 +904,7 @@ mod tests {
         );
         std::fs::remove_file(path.join(".git/shallow")).unwrap();
         assert_eq!(oracle(path, &mut cache).lines_added, 1);
-        git(path, &["config", "branch.topic.workmux-base", "missing"]);
+        git(path, &["config", "branch.topic.workrex-base", "missing"]);
         oracle(path, &mut cache);
         assert!(cache.entries.is_empty());
         git(path, &["branch", "missing", "main"]);
@@ -1097,7 +1097,7 @@ mod tests {
                 ],
             );
         }
-        let cached = std::env::var_os("WM_BENCH_CACHED").is_some();
+        let cached = std::env::var_os("WORKREX_BENCH_CACHED").is_some();
         let mut cache = GitStatusCache::default();
         for cycle in 0..6 {
             for (i, root) in roots.iter().enumerate() {

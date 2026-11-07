@@ -1,11 +1,6 @@
-//! `workmux shell`: an interactive shell in a remote workspace, relayed into
-//! the calling terminal.
-//!
-//! The node starts the shell as a session of its own (see
-//! `remote::node::shell`) and the relay that carries agent panes carries it,
-//! reconnecting the same way. Exiting the shell ends the session. Leaving
-//! the relay any other way (its close key, or the terminal going away) ends
-//! the session too, since nothing else can return to it.
+//! Open an interactive remote shell and select its native session in Rex.app.
+//! The pre-RPC cleanup guard cancels failed or lost requests. Once the app
+//! has shown the session, the shell belongs to the remote execution.
 
 use std::sync::{
     Arc,
@@ -16,7 +11,6 @@ use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::RemoteSpec;
-use super::attach::{Left, relay_session};
 use super::cache::WorkspaceRecord;
 use super::client::{Node, error_code};
 use super::install::Pin;
@@ -70,6 +64,8 @@ pub fn run(config: &Config, record: &WorkspaceRecord, host: bool) -> Result<()> 
         slot,
         container,
         working_dir,
+        server,
+        session_id,
     } = opened
     else {
         bail!("'{}' answered an open request with {opened:?}", spec.name);
@@ -79,15 +75,14 @@ pub fn run(config: &Config, record: &WorkspaceRecord, host: bool) -> Result<()> 
         ex_id == cleanup.ex_id && slot == cleanup.slot,
         "the node returned a different shell identity"
     );
-    let left = relay_session(node, &ex_id, &slot, signals.canceled.clone());
-    if matches!(left, Ok(Left::SessionEnded)) {
-        cleanup.armed = false;
-    }
-    left.map(|_| ())
+    let client = super::rex_client(config, &record.remote);
+    crate::multiplexer::rex::RexBackend::for_server(&server)
+        .select_on_app(client.as_deref(), &session_id)?;
+    cleanup.armed = false;
+    Ok(())
 }
 
-/// Capture termination before the open RPC can create a session. The relay
-/// installs its own handlers before checking this flag, so the handoff has no gap.
+/// Capture termination while the open RPC may still be creating its session.
 struct ShellSignals {
     canceled: Arc<AtomicBool>,
     handlers: Vec<signal_hook::SigId>,
@@ -140,12 +135,11 @@ impl Drop for ShellCleanup {
     }
 }
 
-/// End a shell its relay left, best effort: a server that cannot be reached
-/// ends it with the execution.
+/// Cancel an unclaimed shell, best effort; execution cleanup remains its owner.
 fn close(spec: &RemoteSpec, pin: String, ws_id: String, ex_id: String, slot: String) {
     // A terminal that went away hangs up its foreground process group, ssh
     // included; ssh keeps an inherited ignored SIGHUP.
-    // SAFETY: plain signal(2); the relay no longer watches SIGHUP.
+    // SAFETY: installs SIG_IGN using plain signal(2) for the cleanup RPC.
     unsafe {
         libc::signal(libc::SIGHUP, libc::SIG_IGN);
     }
@@ -155,11 +149,21 @@ fn close(spec: &RemoteSpec, pin: String, ws_id: String, ex_id: String, slot: Str
             transport,
             pin: Pin::installed(pin),
         };
-        node.call::<_, ShellResponse>(
-            protocol::SHELL,
-            &ShellRequest::Close { ws_id, ex_id, slot },
-            false,
-        )
+        let request = ShellRequest::Close { ws_id, ex_id, slot };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        loop {
+            let result = node.call::<_, ShellResponse>(protocol::SHELL, &request, false);
+            if result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error_code(error) == Some(code::BUSY))
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                continue;
+            }
+            break result;
+        }
     });
     if let Err(err) = result {
         tracing::warn!(remote = %spec.name, "failed to close the remote shell: {err:#}");

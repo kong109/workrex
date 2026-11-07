@@ -51,7 +51,7 @@ Prints one row per check, with a fix for each failing row:
 | `arch`      | The remote runs Linux on a supported architecture                                                         |
 | `node`      | The node binary is installed and speaks this workrex's protocol                                           |
 | `git`       | Git is installed                                                                                          |
-| `tmux`      | tmux 3.3 or newer is installed                                                                            |
+| `rex`       | Rex is installed and its server is reachable                                                              |
 | `linger`    | systemd linger is enabled, so agents survive logout                                                       |
 | `agents`    | Resolved mode and deciding setting; in host mode, default CLI required and other configured CLIs optional |
 | `container` | Docker works for the SSH user (Docker mode only)                                                          |
@@ -122,7 +122,7 @@ workrex remote gc <name> [--dry-run | --force]
 - `--dry-run` - Only list what would be removed
 - `--force` - Remove without asking, including workspaces whose work exists only on the remote. Cannot be combined with `--dry-run`.
 
-Lists workspaces this machine has no record of, stray worktrees, tmux sessions, containers, supervisors, refs and state files, unused node binaries, and local records of workspaces the remote no longer has. Then asks before removing them. Workspaces with uncommitted changes or commits beyond their base are only removed with `--force`. Without a terminal, nothing is removed unless `--force` is given. See [cleaning up a server](/guide/remote/troubleshooting/#cleaning-up-a-server).
+Lists workspaces this machine has no record of, stray worktrees, Rex sessions, containers, supervisors, refs and state files, unused node binaries, and local records of workspaces the remote no longer has. Then asks before removing them. Workspaces with uncommitted changes or commits beyond their base are only removed with `--force`. Without a terminal, nothing is removed unless `--force` is given. See [cleaning up a server](/guide/remote/troubleshooting/#cleaning-up-a-server).
 
 ## remote logs
 

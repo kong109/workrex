@@ -1,6 +1,6 @@
 //! Bringing a remote workspace's work to the laptop.
 //!
-//! `workmux merge <remote-handle>` and `workmux remote pull` export the
+//! `workrex merge <remote-handle>` and `workrex remote pull` export the
 //! workspace on the node, fetch the snapshot and rebuild it as a local
 //! worktree at the handle's usual path (see [`crate::remote::git`]). Merge
 //! then runs the local merge on that copy; pull makes it the agent's new
@@ -9,7 +9,7 @@
 //! removed, so a retry never merges again. The node removes the workspace
 //! only while it still matches the snapshot that was brought home.
 //!
-//! `workmux rebase` goes the other way: the laptop's base branch goes to the
+//! `workrex rebase` goes the other way: the laptop's base branch goes to the
 //! node, which rebases the workspace onto it.
 
 use crate::bin_name::BIN;
@@ -57,7 +57,7 @@ enum Removal {
     Diverged(String),
 }
 
-/// `workmux merge` of a remote workspace.
+/// `workrex merge` of a remote workspace.
 pub fn merge(
     context: &WorkflowContext,
     record: WorkspaceRecord,
@@ -65,7 +65,7 @@ pub fn merge(
 ) -> Result<()> {
     let result = merge_inner(context, record.clone(), options);
     if result.is_ok() && cache::find_here(&record.handle).is_none() {
-        super::lifecycle::close_relay(context.mux.as_ref(), &record);
+        super::lifecycle::forget_agent_state(&record);
     }
     result
 }
@@ -240,7 +240,7 @@ fn merge_inner(
     local.map(|_| ())
 }
 
-/// `workmux remote pull`: make a local worktree the workspace's home. The
+/// `workrex remote pull`: make a local worktree the workspace's home. The
 /// remote agent stops, its work becomes a local worktree with a window,
 /// and the remote workspace goes.
 pub fn pull(context: &WorkflowContext, mut record: WorkspaceRecord, run_hooks: bool) -> Result<()> {
@@ -293,7 +293,7 @@ pub fn pull(context: &WorkflowContext, mut record: WorkspaceRecord, run_hooks: b
         record.local_path.display()
     );
 
-    super::lifecycle::close_relay(context.mux.as_ref(), &record);
+    super::lifecycle::forget_agent_state(&record);
     if let Err(err) = open_local(context, &record) {
         eprintln!(
             "{BIN}: could not open a window for '{}': {err:#}",
@@ -333,7 +333,7 @@ fn report_pull(node: &Node, mut record: WorkspaceRecord, snapshot: &Snapshot) ->
     }
 }
 
-/// `workmux rebase` of a remote workspace: rebase its branch on the node
+/// `workrex rebase` of a remote workspace: rebase its branch on the node
 /// onto the laptop's base branch, as a local rebase would.
 pub fn rebase(config: &crate::config::Config, mut record: WorkspaceRecord) -> Result<()> {
     match record.homecoming {
@@ -442,7 +442,7 @@ pub(super) fn node_message(err: &anyhow::Error) -> String {
         .unwrap_or_else(|| format!("{err:#}"))
 }
 
-/// `workmux remove` of a workspace whose work came home: remove the remote
+/// `workrex remove` of a workspace whose work came home: remove the remote
 /// workspace if it still holds only that work.
 pub(super) fn finish_cleanup(node: &Node, record: WorkspaceRecord) -> Result<()> {
     match record.homecoming.clone() {
@@ -842,7 +842,7 @@ fn discard_copy(
 /// Drop the refs a fetch left in the local repository.
 pub(super) fn forget_fetched(record: &WorkspaceRecord) {
     for part in ["index", "worktree"] {
-        let name = format!("refs/workmux/remote/{}/{part}", record.ws_id);
+        let name = format!("refs/workrex/remote/{}/{part}", record.ws_id);
         let _ = git::run(&record.project_root, &["update-ref", "-d", &name]);
     }
 }

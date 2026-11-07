@@ -3,7 +3,7 @@
 //! A [`Snapshot`] names the state of a worktree with three objects: the HEAD
 //! commit, the tree of its index and the tree of its files (tracked and
 //! untracked, ignored ones excepted). The node stores the two trees as
-//! commits whose parent is HEAD under `refs/workmux/export/<ws-id>/`; the
+//! commits whose parent is HEAD under `refs/workrex/export/<ws-id>/`; the
 //! laptop fetches them and rebuilds the same state in a local worktree, so
 //! staged changes stay staged and unstaged or untracked ones stay that way.
 //!
@@ -18,10 +18,10 @@ use serde::{Deserialize, Serialize};
 
 /// Identity the throwaway snapshot commits are written with.
 const SNAPSHOT_IDENTITY: [(&str, &str); 4] = [
-    ("GIT_AUTHOR_NAME", "workmux"),
-    ("GIT_AUTHOR_EMAIL", "workmux@localhost"),
-    ("GIT_COMMITTER_NAME", "workmux"),
-    ("GIT_COMMITTER_EMAIL", "workmux@localhost"),
+    ("GIT_AUTHOR_NAME", "workrex"),
+    ("GIT_AUTHOR_EMAIL", "workrex@localhost"),
+    ("GIT_COMMITTER_NAME", "workrex"),
+    ("GIT_COMMITTER_EMAIL", "workrex@localhost"),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,7 +127,7 @@ pub fn snapshot(worktree: &Path) -> Result<Snapshot> {
         worktree.join(index_path)
     };
     let scratch = tempfile::Builder::new()
-        .prefix("workmux-snapshot-index")
+        .prefix("workrex-snapshot-index")
         .tempfile_in(index_path.parent().unwrap_or(worktree))
         .context("Failed to create a scratch index")?;
     std::fs::copy(&index_path, scratch.path())
@@ -153,7 +153,7 @@ pub fn commit_tree(dir: &Path, tree: &str, parent: &str) -> Result<String> {
     command.envs(SNAPSHOT_IDENTITY);
     output(
         command,
-        &["commit-tree", tree, "-p", parent, "-m", "workmux snapshot"],
+        &["commit-tree", tree, "-p", parent, "-m", "workrex snapshot"],
     )
 }
 

@@ -167,7 +167,7 @@ pub fn expand_project_placeholder(template: &str, project_root: &Path) -> Result
 /// Any other `{...}` token is rejected as an unknown placeholder.
 /// Relative results are joined to `project_root` and lexically normalized.
 /// Absolute results are returned verbatim (no normalization), matching
-/// the prior behavior of `workmux add` for absolute `worktree_dir` values.
+/// the prior behavior of `workrex add` for absolute `worktree_dir` values.
 pub fn expand_worktree_dir(template: &str, project_root: &Path) -> Result<PathBuf> {
     expand_worktree_dir_with_home(template, project_root, home::home_dir().as_deref())
 }
@@ -358,8 +358,8 @@ mod tests {
     #[test]
     fn expand_project_placeholder_leaves_plain_template_untouched() {
         let project = PathBuf::from("/x/y/myproj");
-        let expanded = expand_project_placeholder("wm-", &project).unwrap();
-        assert_eq!(expanded, "wm-");
+        let expanded = expand_project_placeholder("wr-", &project).unwrap();
+        assert_eq!(expanded, "wr-");
     }
 
     #[test]
@@ -367,8 +367,8 @@ mod tests {
         let home = PathBuf::from("/home/alice");
         let project = PathBuf::from("/Users/alice/code/myproj");
         let expanded =
-            expand_worktree_dir_with_home("~/.workmux/{project}", &project, Some(&home)).unwrap();
-        assert_eq!(expanded, PathBuf::from("/home/alice/.workmux/myproj"));
+            expand_worktree_dir_with_home("~/.workrex/{project}", &project, Some(&home)).unwrap();
+        assert_eq!(expanded, PathBuf::from("/home/alice/.workrex/myproj"));
     }
 
     #[test]
@@ -420,7 +420,7 @@ mod tests {
     fn expand_worktree_dir_unknown_placeholder_errors() {
         let project = PathBuf::from("/x/y/foo");
         let err =
-            expand_worktree_dir_with_home("~/.workmux/{unknown}", &project, None).unwrap_err();
+            expand_worktree_dir_with_home("~/.workrex/{unknown}", &project, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("{unknown}"), "error should name token: {msg}");
     }

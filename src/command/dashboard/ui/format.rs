@@ -107,7 +107,7 @@ pub fn format_agent_status_summary(
     if counts.working > 0 {
         let icon = icons.working();
         let base_style = Style::default().fg(palette.info);
-        parts.extend(ansi::parse_tmux_styles(icon, base_style));
+        parts.extend(ansi::parse_terminal_styles(icon, base_style));
         match mode {
             AgentStatusFormat::TableCell => {
                 parts.push((format!(" {} ", spinner), base_style));
@@ -124,7 +124,7 @@ pub fn format_agent_status_summary(
         }
         let icon = icons.waiting();
         let base_style = Style::default().fg(palette.accent);
-        parts.extend(ansi::parse_tmux_styles(icon, base_style));
+        parts.extend(ansi::parse_terminal_styles(icon, base_style));
         if matches!(mode, AgentStatusFormat::TableCell) {
             parts.push((" ".to_string(), base_style));
         }
@@ -136,7 +136,7 @@ pub fn format_agent_status_summary(
         }
         let icon = icons.done();
         let base_style = Style::default().fg(palette.success);
-        parts.extend(ansi::parse_tmux_styles(icon, base_style));
+        parts.extend(ansi::parse_terminal_styles(icon, base_style));
         if matches!(mode, AgentStatusFormat::TableCell) {
             parts.push((" ".to_string(), base_style));
         }
@@ -521,9 +521,7 @@ pub fn make_row_style(is_current: bool, is_main: bool, palette: &ThemePalette) -
 mod tests {
     #[test]
     fn fit_words_keeps_whole_words() {
-        let msg = crate::rebrand!(
-            "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so workmux can switch the app."
-        );
+        let msg = "Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so workrex can switch the app.";
         assert_eq!(super::fit_words(msg, 200), msg);
         assert_eq!(
             super::fit_words(msg, 78),
@@ -548,11 +546,11 @@ mod tests {
             is_draft: false,
             checks: None,
             check_meta: None,
-            url: Some("https://github.com/raine/workmux/pull/42".into()),
+            url: Some("https://github.com/kong109/workrex/pull/42".into()),
             closing_issues: vec![
                 ClosingIssue {
                     number: 308,
-                    repository: "Raine/Workmux".into(),
+                    repository: "Kong109/Workrex".into(),
                 },
                 ClosingIssue {
                     number: 12,

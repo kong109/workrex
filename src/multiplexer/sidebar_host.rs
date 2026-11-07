@@ -1,15 +1,28 @@
-//! Sidebar hosting for backends that run the sidebar themselves.
-//!
-//! tmux keeps its own sidebar code and returns `None` from
-//! [`Multiplexer::sidebar`](super::Multiplexer::sidebar). A backend that
-//! returns a host takes every sidebar request at the entry points.
+//! Rex sidebar requests and server observations.
 
 use anyhow::Result;
 
 use crate::config::{SidebarHeight, SidebarPosition, SidebarWidth};
 
-use super::TmuxBackend;
-use super::tmux::TmuxSidebarSnapshot;
+use super::LivePaneInfo;
+use std::collections::{HashMap, HashSet};
+pub(crate) struct SidebarHostSnapshot {
+    pub live_panes: HashMap<String, LivePaneInfo>,
+    pub window_statuses: HashMap<String, Option<String>>,
+    pub active_windows: HashSet<(String, String)>,
+    pub pane_window_ids: HashMap<String, String>,
+    pub pane_window_indexes: HashMap<String, u32>,
+    pub active_pane_ids: HashSet<String>,
+    pub window_pane_counts: HashMap<String, usize>,
+    pub server_boot_id: Option<String>,
+    pub position: Option<String>,
+    pub layout: Option<String>,
+    pub filter: Option<String>,
+    pub views_enabled: Option<String>,
+    pub sleeping_panes: Option<String>,
+    pub group_by: Option<String>,
+    pub expanded_groups: Option<String>,
+}
 
 pub(crate) trait SidebarHost: Send + Sync {
     /// Apply one user request end to end. On and Off are idempotent.
@@ -49,7 +62,11 @@ pub(crate) enum SidebarRequest {
         clear: bool,
     },
     Views(Option<String>),
+    Layout(String),
     ExpandedGroups(Vec<String>),
+    Wake {
+        pane_id: String,
+    },
     ToggleSleeping {
         pane_id: String,
     },
@@ -87,31 +104,9 @@ pub(crate) struct Appearance {
 
 /// The server reads and writes of one sidebar daemon tick.
 pub(crate) trait DaemonIo: Send {
-    fn sidebar_snapshot(&self) -> Result<TmuxSidebarSnapshot>;
+    fn sidebar_snapshot(&self) -> Result<SidebarHostSnapshot>;
     fn set_global_option(&self, name: &str, value: &str) -> Result<()>;
     fn unset_global_option(&self, name: &str) -> Result<()>;
     fn set_window_option(&self, window: &str, name: &str, value: &str) -> Result<()>;
     fn unset_window_option(&self, window: &str, name: &str) -> Result<()>;
-}
-
-impl DaemonIo for TmuxBackend {
-    fn sidebar_snapshot(&self) -> Result<TmuxSidebarSnapshot> {
-        TmuxBackend::sidebar_snapshot(self)
-    }
-
-    fn set_global_option(&self, name: &str, value: &str) -> Result<()> {
-        TmuxBackend::set_global_option(self, name, value)
-    }
-
-    fn unset_global_option(&self, name: &str) -> Result<()> {
-        TmuxBackend::unset_global_option(self, name)
-    }
-
-    fn set_window_option(&self, window: &str, name: &str, value: &str) -> Result<()> {
-        TmuxBackend::set_window_option(self, window, name, value)
-    }
-
-    fn unset_window_option(&self, window: &str, name: &str) -> Result<()> {
-        TmuxBackend::unset_window_option(self, window, name)
-    }
 }

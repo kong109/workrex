@@ -1,6 +1,6 @@
-//! The agents' workmux status hooks on a node, without which remote agents
-//! report no status: installed by `workmux remote setup`, reported by
-//! `workmux remote doctor`.
+//! The agents' workrex status hooks on a node, without which remote agents
+//! report no status: installed by `workrex remote setup`, reported by
+//! `workrex remote doctor`.
 
 use crate::bin_name::BIN;
 use anyhow::{Result, bail};
@@ -192,10 +192,7 @@ mod tests {
                 (Level::Warn, "Oh My Pi: why"),
             ]
         );
-        assert_eq!(
-            rows[1].fix.as_deref(),
-            Some(crate::rebrand!("workmux remote setup hz"))
-        );
+        assert_eq!(rows[1].fix.as_deref(), Some("workrex remote setup hz"));
     }
 
     #[test]

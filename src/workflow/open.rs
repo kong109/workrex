@@ -13,7 +13,7 @@ use super::setup;
 use super::types::{CreateResult, SetupOptions};
 use crate::config::MuxMode;
 
-/// Open a tmux window for an existing worktree.
+/// Open a Rex window for an existing worktree.
 ///
 /// The optional agent argument overrides the configured agent for pane setup.
 pub fn open(
@@ -476,8 +476,8 @@ pub fn open(
 /// Find a unique handle by appending a suffix if necessary.
 ///
 /// If `base_handle` is "my-feature" and windows exist for:
-/// - wm-my-feature
-/// - wm-my-feature-2
+/// - wr-my-feature
+/// - wr-my-feature-2
 ///
 /// This returns "my-feature-3".
 ///

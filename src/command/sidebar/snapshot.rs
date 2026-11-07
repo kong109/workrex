@@ -9,7 +9,7 @@ use crate::agent_display::extract_project_name;
 use crate::config::{SidebarGroupBy, SidebarPosition, SidebarSort, StatusIcons};
 use crate::git::GitStatus;
 use crate::github::{CheckSummary, PrSummary};
-use crate::multiplexer::{AgentPane, AgentStatus};
+use crate::multiplexer::{AgentPane, AgentStatus, RemoteAgent};
 
 use super::app::{SidebarFilterMode, SidebarLayoutMode};
 
@@ -23,6 +23,44 @@ pub(crate) struct PrPathEntry {
 pub(crate) struct CheckPathEntry {
     pub branch: String,
     pub summary: CheckSummary,
+}
+
+/// A displayed row's real navigation destination. Remote row IDs are view
+/// identities, so the recorded execution accompanies every published target.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum NavigationTarget {
+    Local {
+        pane_id: String,
+    },
+    Remote {
+        pane_id: String,
+        agent: Box<RemoteAgent>,
+    },
+}
+
+impl NavigationTarget {
+    pub(crate) fn from_agent(agent: &AgentPane) -> Self {
+        match &agent.remote {
+            Some(remote) => Self::Remote {
+                pane_id: agent.pane_id.clone(),
+                agent: Box::new(remote.clone()),
+            },
+            None => Self::Local {
+                pane_id: agent.pane_id.clone(),
+            },
+        }
+    }
+
+    pub(crate) fn pane_id(&self) -> &str {
+        match self {
+            Self::Local { pane_id } | Self::Remote { pane_id, .. } => pane_id,
+        }
+    }
+
+    pub(crate) fn is_local(&self) -> bool {
+        matches!(self, Self::Local { .. })
+    }
 }
 
 /// A complete sidebar state snapshot, pushed from daemon to clients.
@@ -59,7 +97,7 @@ pub struct SidebarSnapshot {
     /// grouping the daemon sorted by rather than re-deriving it from config.
     #[serde(default)]
     pub group_by: Option<SidebarGroupBy>,
-    /// Group labels whose stale agents the user expanded. Shared through tmux
+    /// Group labels whose stale agents the user expanded. Shared through rex
     /// so every sidebar pane shows the same thing.
     #[serde(default)]
     pub expanded_groups: Vec<String>,
@@ -96,7 +134,7 @@ fn default_stale_threshold_secs() -> u64 {
 pub fn group_label(agent: &AgentPane, group_by: SidebarGroupBy) -> String {
     let raw = match group_by {
         SidebarGroupBy::Project => extract_project_name(&agent.path),
-        // A remote agent no local pane relays is in no session.
+        // Native remote agents have no session on this server.
         SidebarGroupBy::Session => match &agent.remote {
             Some(remote) if agent.session.is_empty() => format!("@{}", remote.at.remote),
             _ => agent.session.clone(),
@@ -122,7 +160,7 @@ fn group_sort_key(agent: &AgentPane, group_by: Option<SidebarGroupBy>) -> (Strin
     }
 }
 
-/// Numeric pane id for stable ordering. Handles tmux (`%3`) and numeric ids.
+/// Numeric pane id for stable ordering. Handles rex (`%3`) and numeric ids.
 fn pane_num(agent: &AgentPane) -> u64 {
     agent
         .pane_id
@@ -216,7 +254,7 @@ fn dormant_groups(
 /// Order agents for publication: groups alphabetically, then the configured
 /// ordering within each group. Grouping only prefixes the key, so an agent can
 /// never leave its group. Ordering stays with the daemon so the published pane
-/// list, `{idx}` and `workmux sidebar jump` agree with what clients draw.
+/// list, `{idx}` and `workrex sidebar jump` agree with what clients draw.
 fn order_agents(
     agents: &mut [AgentPane],
     group_by: Option<SidebarGroupBy>,
@@ -268,7 +306,7 @@ fn order_agents(
     }
 }
 
-/// Whether an agent can be reached by `workmux sidebar next|prev|jump <N>`.
+/// Whether an agent can be reached by `workrex sidebar next|prev|jump <N>`.
 ///
 /// A grouped sidebar sorts each group's stale agents into a tail and offers to
 /// fold it away, so it already treats them as work nobody is waiting on:
@@ -279,16 +317,14 @@ fn order_agents(
 /// the same question, or a hotkey lands somewhere other than the row wearing
 /// its number.
 pub fn is_jump_target(snapshot: &SidebarSnapshot, agent: &AgentPane) -> bool {
-    // A remote agent no local pane relays has no pane to switch to.
-    !crate::remote::agents::is_detached(agent)
-        && (snapshot.group_by.is_none() || !snapshot.stale_pane_ids.contains(&agent.pane_id))
+    snapshot.group_by.is_none() || !snapshot.stale_pane_ids.contains(&agent.pane_id)
 }
 
 /// Inputs for one snapshot build.
 #[derive(Default)]
 pub(crate) struct SnapshotInputs {
     pub agents: Vec<AgentPane>,
-    pub tmux_statuses: HashMap<String, Option<String>>,
+    pub server_statuses: HashMap<String, Option<String>>,
     pub pane_window_ids: HashMap<String, String>,
     pub pane_window_indexes: HashMap<String, u32>,
     pub active_windows: HashSet<(String, String)>,
@@ -312,11 +348,11 @@ pub(crate) struct SnapshotInputs {
     pub interrupted_pane_ids: HashSet<String>,
 }
 
-/// Build a snapshot from reconciled agents and tmux state.
+/// Build a snapshot from reconciled agents and rex state.
 pub(crate) fn build_snapshot(input: SnapshotInputs) -> SidebarSnapshot {
     let SnapshotInputs {
         mut agents,
-        tmux_statuses,
+        server_statuses,
         pane_window_ids,
         pane_window_indexes,
         active_windows,
@@ -341,9 +377,9 @@ pub(crate) fn build_snapshot(input: SnapshotInputs) -> SidebarSnapshot {
     let done_icon = status_icons.done();
     let waiting_icon = status_icons.waiting();
 
-    // Suppress Done/Waiting when tmux's auto-clear hook has already cleared
+    // Suppress Done/Waiting when rex's auto-clear hook has already cleared
     for agent in &mut agents {
-        if let Some(observed) = tmux_statuses.get(&agent.pane_id) {
+        if let Some(observed) = server_statuses.get(&agent.pane_id) {
             match agent.status {
                 Some(AgentStatus::Done) if observed.as_deref() != Some(done_icon) => {
                     agent.status = None;
@@ -356,7 +392,7 @@ pub(crate) fn build_snapshot(input: SnapshotInputs) -> SidebarSnapshot {
         }
     }
 
-    // Populate window_id and window_index from the tmux state lookup
+    // Populate window_id and window_index from the rex state lookup
     // (before sorting: window sort reads the freshly stamped index)
     for agent in &mut agents {
         if let Some(wid) = pane_window_ids.get(&agent.pane_id) {
@@ -475,6 +511,38 @@ mod tests {
             prompt: None,
             remote: None,
         }
+    }
+
+    #[test]
+    fn native_remote_rows_publish_exact_navigation_metadata() {
+        let mut row = agent("/remote/repo");
+        let at = crate::multiplexer::RemoteRef {
+            remote: "build".into(),
+            ws_id: "ws".into(),
+            ex_id: "ex".into(),
+            pane: 1,
+        };
+        let mut remote = RemoteAgent::new(at.clone());
+        remote.attached = false;
+        row.remote = Some(remote);
+        row.pane_id = "%remote-ws-1".into();
+        let snapshot = build(vec![row.clone()], HashMap::new(), HashMap::new());
+        assert!(
+            is_jump_target(&snapshot, &row),
+            "native rows carry jump numbers"
+        );
+        let json = serde_json::to_string(&vec![NavigationTarget::from_agent(&row)]).unwrap();
+        let targets: Vec<NavigationTarget> = serde_json::from_str(&json).unwrap();
+        assert_eq!(targets[0].pane_id(), row.pane_id);
+        assert!(!targets[0].is_local());
+        let NavigationTarget::Remote { agent, .. } = &targets[0] else {
+            panic!("remote target")
+        };
+        assert_eq!(agent.at, at);
+        assert!(
+            !agent.attached,
+            "navigation never fabricates a local attachment"
+        );
     }
 
     fn pr(number: u32) -> PrSummary {
@@ -920,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn window_index_stamped_from_tmux_state() {
+    fn window_index_stamped_from_server_state() {
         let agents = vec![agent("/repo")];
         let indexes = HashMap::from([("%1".to_string(), 4u32)]);
         let snapshot = build_snapshot(SnapshotInputs {

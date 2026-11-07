@@ -1,22 +1,22 @@
 import type { Plugin } from '@opencode-ai/plugin';
 
-export const WorkmuxStatusPlugin: Plugin = async ({ $ }) => {
+export const WorkrexStatusPlugin: Plugin = async ({ $ }) => {
   return {
     event: async ({ event }) => {
       switch (event.type) {
         case 'session.status':
           if (event.properties.status.type === 'busy') {
-            await $`workmux set-window-status working`.quiet();
+            await $`workrex set-window-status working`.quiet();
           }
           break;
         case 'permission.updated':
-          await $`workmux set-window-status waiting`.quiet();
+          await $`workrex set-window-status waiting`.quiet();
           break;
         case 'permission.replied':
-          await $`workmux set-window-status working`.quiet();
+          await $`workrex set-window-status working`.quiet();
           break;
         case 'session.idle':
-          await $`workmux set-window-status done`.quiet();
+          await $`workrex set-window-status done`.quiet();
           break;
       }
     },

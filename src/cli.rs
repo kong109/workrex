@@ -185,31 +185,31 @@ impl_passthrough_typed_value_parser!(GitBranchParser);
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 #[command(name = crate::bin_name::BIN)]
-#[command(about = "An opinionated workflow tool that orchestrates git worktrees and tmux")]
-#[command(help_template = crate::rebrand!("\
+#[command(about = "An opinionated workflow tool that orchestrates git worktrees and Rex")]
+#[command(help_template = "\
 {about}
 
 {usage-heading} {usage}
 
 Worktree lifecycle:
-  add          Create a new worktree and tmux window
-  remove       Remove a worktree, tmux window, and branch without merging [rm]
-  rename       Rename a worktree, tmux window/session, and optionally branch
-  merge        Merge a branch, then clean up the worktree and tmux window
+  add          Create a new worktree and Rex window
+  remove       Remove a worktree, Rex window, and branch without merging [rm]
+  rename       Rename a worktree, Rex window/session, and optionally branch
+  merge        Merge a branch, then clean up the worktree and Rex window
   rebase       Rebase a worktree branch onto its base branch
-  open         Open a tmux window for an existing worktree
-  close        Close a worktree's tmux window (keeps the worktree and branch)
-  resurrect    Restore worktree windows after a tmux or computer crash
+  open         Open a Rex window for an existing worktree
+  close        Close a worktree's Rex window (keeps the worktree and branch)
+  resurrect    Restore worktree windows after a Rex or computer crash
 
 Monitoring:
-  dashboard    Show a TUI dashboard of all active workmux agents
-  sidebar      Toggle a live agent status sidebar in tmux
+  dashboard    Show a TUI dashboard of all active workrex agents
+  sidebar      Toggle a live agent status sidebar in Rex
   list         List all worktrees [ls]
   path         Get the filesystem path of a worktree
   status       Query agent status for worktrees
 
 Setup and configuration:
-  init         Generate example .workmux.yaml configuration file
+  init         Generate example .workrex.yaml configuration file
   setup        Set up agent status tracking hooks and install skills
   config       Manage global configuration
   sandbox      Manage sandbox settings
@@ -227,7 +227,7 @@ Agent interaction:
 Help and updates:
   docs         Show detailed documentation (renders README.md)
   changelog    Show the changelog (what's new in each version)
-  update       Update workmux to the latest version
+  update       Update workrex to the latest version
   completions  Generate shell completions
   help         Print help for a command
 
@@ -235,8 +235,8 @@ Options:
   -h, --help     Print help
   -V, --version  Print version
 
-Run 'workmux docs' for detailed documentation.
-"))]
+Run 'workrex docs' for detailed documentation.
+")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -259,6 +259,8 @@ impl From<CliMuxMode> for MuxMode {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(name = "_remote-observer", hide = true)]
+    RemoteObserver { remote: String },
     #[command(name = "_remote-operation", hide = true)]
     RemoteOperation {
         remote: String,
@@ -306,7 +308,7 @@ enum Commands {
         to: Option<String>,
     },
 
-    /// Create a new worktree and tmux window
+    /// Create a new worktree and Rex window
     Add {
         /// Name of the branch (creates if it doesn't exist) or remote ref (e.g., origin/feature).
         /// When used with --pr, this becomes the custom local branch name.
@@ -329,15 +331,15 @@ enum Commands {
         #[arg(long)]
         base: Option<String>,
 
-        /// Explicit name for the worktree directory and tmux window (overrides worktree_naming strategy and worktree_prefix)
+        /// Explicit name for the worktree directory and Rex window (overrides worktree_naming strategy and worktree_prefix)
         #[arg(long)]
         name: Option<String>,
 
-        /// Explicit name for the workmux-managed tmux target
+        /// Explicit name for the workrex-managed Rex target
         #[arg(long = "target-name")]
         target_name: Option<String>,
 
-        /// Parent tmux session for window-mode targets
+        /// Parent Rex session for window-mode targets
         #[arg(long = "parent-session")]
         parent_session: Option<String>,
 
@@ -369,7 +371,7 @@ enum Commands {
         #[arg(long, num_args = 0..=1, default_missing_value = "", require_equals = true)]
         fork: Option<String>,
 
-        /// Block until the created tmux window is closed
+        /// Block until the created Rex window is closed
         #[arg(short = 'W', long)]
         wait: bool,
 
@@ -377,7 +379,7 @@ enum Commands {
         #[arg(long, value_enum)]
         mode: Option<CliMuxMode>,
 
-        /// Create the window in its own tmux session (useful for session-per-project workflows)
+        /// Create the window in its own Rex session (useful for session-per-project workflows)
         #[arg(short = 's', long, conflicts_with = "mode")]
         session: bool,
 
@@ -398,9 +400,9 @@ enum Commands {
         config: Option<PathBuf>,
     },
 
-    /// Open a tmux window for an existing worktree
+    /// Open a Rex window for an existing worktree
     Open {
-        /// Worktree name(s) (directory name, visible in tmux window). Optional with --new.
+        /// Worktree name(s) (directory name, visible in Rex window). Optional with --new.
         #[arg(value_parser = WorktreeHandleParser::new(), required_unless_present = "new")]
         names: Vec<String>,
 
@@ -424,11 +426,11 @@ enum Commands {
         #[arg(short = 's', long, conflicts_with = "mode")]
         session: bool,
 
-        /// Explicit name for the workmux-managed tmux target
+        /// Explicit name for the workrex-managed Rex target
         #[arg(long = "target-name")]
         target_name: Option<String>,
 
-        /// Parent tmux session for window-mode targets
+        /// Parent Rex session for window-mode targets
         #[arg(long = "parent-session")]
         parent_session: Option<String>,
 
@@ -444,14 +446,14 @@ enum Commands {
         config: Option<PathBuf>,
     },
 
-    /// Close a worktree's tmux window (keeps the worktree and branch)
+    /// Close a worktree's Rex window (keeps the worktree and branch)
     Close {
         /// Worktree name (defaults to current directory if omitted)
         #[arg(value_parser = WorktreeHandleParser::new())]
         name: Option<String>,
     },
 
-    /// Restore worktree windows after a tmux or computer crash
+    /// Restore worktree windows after a Rex or computer crash
     ///
     /// Uses persisted agent state files to detect which worktrees had active
     /// agents before the crash.
@@ -461,7 +463,7 @@ enum Commands {
         dry_run: bool,
     },
 
-    /// Merge a branch, then clean up the worktree and tmux window
+    /// Merge a branch, then clean up the worktree and Rex window
     Merge {
         /// Worktree name or branch (defaults to current directory)
         #[arg(value_parser = WorktreeHandleParser::new())]
@@ -511,7 +513,7 @@ enum Commands {
         name: Option<String>,
     },
 
-    /// Rename a worktree, its tmux window/session, and (optionally) its branch
+    /// Rename a worktree, its Rex window/session, and (optionally) its branch
     Rename {
         /// [OLD_NAME] NEW_NAME. If only one argument is given, renames the current worktree.
         #[arg(required = true, num_args = 1..=2, value_parser = WorktreeHandleParser::new())]
@@ -522,7 +524,7 @@ enum Commands {
         branch: bool,
     },
 
-    /// Remove a worktree, tmux window, and branch without merging
+    /// Remove a worktree, Rex window, and branch without merging
     #[command(visible_alias = "rm")]
     Remove {
         /// Worktree names (defaults to current directory name if empty)
@@ -541,7 +543,7 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
 
-        /// Keep the local branch (only remove worktree and tmux window)
+        /// Keep the local branch (only remove worktree and Rex window)
         #[arg(short = 'k', long)]
         keep_branch: bool,
     },
@@ -588,16 +590,15 @@ enum Commands {
         file: Option<String>,
     },
 
-    /// Open a shell in a remote workspace, in this terminal
+    /// Open a native Rex shell session in a remote workspace
     ///
     /// The shell starts in the workspace's working directory on its server,
     /// in a new container when the agent runs in one. Exiting the shell
     /// leaves the agent and its workspace running.
     Shell {
-        /// Remote workspace handle or branch (supports project:handle);
-        /// defaults to the remote workspace of the current window
+        /// Remote workspace handle or branch (supports project:handle)
         #[arg(value_parser = AgentTargetParser::new())]
-        name: Option<String>,
+        name: String,
 
         /// Run on the server itself even when the agent runs in a container
         #[arg(long)]
@@ -696,7 +697,7 @@ enum Commands {
         all: bool,
     },
 
-    /// Generate example .workmux.yaml configuration file
+    /// Generate example .workrex.yaml configuration file
     Init,
 
     /// Set up agent status tracking hooks and install skills
@@ -723,10 +724,10 @@ enum Commands {
     /// Show the changelog (what's new in each version)
     Changelog,
 
-    /// Update workmux to the latest version
+    /// Update workrex to the latest version
     Update,
 
-    /// Control a live agent status sidebar in tmux
+    /// Control a live agent status sidebar in Rex
     Sidebar {
         /// Scope sidebar to this session, or toggle this session off when global sidebar is active
         #[arg(short = 's', long)]
@@ -743,35 +744,11 @@ enum Commands {
     #[command(hide = true, name = "_sidebar-run")]
     SidebarRun,
 
-    /// Sync sidebar into a window (internal use, called by tmux hooks)
-    #[command(hide = true, name = "_sidebar-sync")]
-    SidebarSync {
-        /// Target window ID (from tmux hook context)
-        #[arg(long)]
-        window: Option<String>,
-    },
-
-    /// Reflow sidebar layout after window resize (internal use, called by tmux hooks)
-    #[command(hide = true, name = "_sidebar-reflow")]
-    SidebarReflow {
-        /// Target window ID
-        #[arg(long)]
-        window: Option<String>,
-    },
-
-    /// Reflow sidebar layouts in all windows (internal use)
-    #[command(hide = true, name = "_sidebar-reflow-all")]
-    SidebarReflowAll {
-        /// Exclude this window ID from reflow (e.g. the window that just lost a pane)
-        #[arg(long)]
-        exclude: Option<String>,
-    },
-
     /// Run the sidebar daemon (internal use)
     #[command(hide = true, name = "_sidebar-daemon")]
     SidebarDaemon,
 
-    /// Show a TUI dashboard of all active workmux agents across all sessions
+    /// Show a TUI dashboard of all active workrex agents across all sessions
     Dashboard {
         /// Preview pane size as percentage (10-90). Larger = more preview, less table.
         #[arg(long, short = 'P', value_parser = clap::value_parser!(u8).range(10..=90))]
@@ -809,7 +786,7 @@ enum Commands {
     #[command(hide = true)]
     Node(command::node::NodeArgs),
 
-    /// Set agent status for the current tmux window (used by hooks)
+    /// Set agent status for the current Rex window (used by hooks)
     #[command(hide = true)]
     SetWindowStatus {
         #[arg(value_enum)]
@@ -836,11 +813,11 @@ enum Commands {
         run_dir: std::path::PathBuf,
     },
 
-    /// Switch to the agent that most recently completed or is waiting for input
+    /// Switch to the most recently completed or waiting agent on this Rex server
     #[command(hide = true, name = "last-done")]
     LastDone,
 
-    /// Switch to the last visited agent (toggle between two)
+    /// Switch to the last visited block on this Rex server (toggle between two)
     #[command(hide = true, name = "last-agent")]
     LastAgent,
 
@@ -1031,12 +1008,17 @@ pub fn run() -> Result<()> {
         }
     };
 
-    // Node verbs speak JSON to another workmux; they must not load config,
+    // Node verbs speak JSON to another workrex; they must not load config,
     // prompt, or check for updates.
     let cli = match cli.command {
         Commands::Node(args) => return command::node::run(args),
+        Commands::RemoteObserver { remote } => {
+            return crate::remote::observe::run_background(&remote);
+        }
         command => Cli { command },
     };
+
+    crate::multiplexer::detect_backend_strict()?;
 
     // Extract config override early so the side-effect loads (nerdfont, update
     // check) respect the user's explicit --config choice.
@@ -1068,7 +1050,7 @@ pub fn run() -> Result<()> {
     nerdfont::init(Some(nerdfont_enabled), has_pua);
 
     // Check agent status tracking setup after nerdfont.
-    // Uses a separate gate to avoid double-prompting when running `workmux setup`.
+    // Uses a separate gate to avoid double-prompting when running `workrex setup`.
     if config_ok
         && should_prompt_status_setup(&cli.command)
         && let Err(e) = crate::agent_setup::prompt_wizard()
@@ -1221,6 +1203,7 @@ pub fn run() -> Result<()> {
         Commands::RemoteOperation { remote, ws_id, id } => {
             crate::remote::operation::run(&remote, &ws_id, &id)
         }
+        Commands::RemoteObserver { remote } => crate::remote::observe::run_background(&remote),
         Commands::Close { name } => command::close::run(name.as_deref()),
         Commands::Resurrect { dry_run } => command::resurrect::run(dry_run),
         Commands::Merge {
@@ -1271,7 +1254,7 @@ pub fn run() -> Result<()> {
         Commands::Send { name, text, file } => {
             command::send::run(&name, text.as_deref(), file.as_deref())
         }
-        Commands::Shell { name, host } => command::shell::run(name.as_deref(), host),
+        Commands::Shell { name, host } => command::shell::run(&name, host),
         Commands::Capture { name, lines } => command::capture::run(&name, lines),
         Commands::Status {
             worktrees,
@@ -1310,78 +1293,8 @@ pub fn run() -> Result<()> {
             session,
             appearance,
             action,
-        } if command::sidebar::host::hosted() => {
-            command::sidebar::host::handle_cli(session, appearance, action)
-        }
-        Commands::Sidebar {
-            session,
-            appearance,
-            action,
-        } => match action {
-            Some(SidebarAction::On { appearance }) => {
-                if session {
-                    command::sidebar::on_session(
-                        appearance.position,
-                        appearance.width,
-                        appearance.height,
-                    )
-                } else {
-                    command::sidebar::on(appearance.position, appearance.width, appearance.height)
-                }
-            }
-            Some(SidebarAction::Off) => {
-                if appearance.position.is_some()
-                    || appearance.width.is_some()
-                    || appearance.height.is_some()
-                {
-                    anyhow::bail!(
-                        "--position, --width, and --height only apply when enabling the sidebar"
-                    );
-                }
-                if session {
-                    command::sidebar::off_session()
-                } else {
-                    command::sidebar::off()
-                }
-            }
-            Some(SidebarAction::Next) => {
-                command::sidebar::navigate(command::sidebar::NavAction::Next)
-            }
-            Some(SidebarAction::Prev) => {
-                command::sidebar::navigate(command::sidebar::NavAction::Prev)
-            }
-            Some(SidebarAction::Jump { index }) => {
-                command::sidebar::navigate(command::sidebar::NavAction::Jump(index as usize))
-            }
-            Some(SidebarAction::View { mode }) => {
-                command::sidebar::view::set_enabled(mode.as_deref())
-            }
-            Some(SidebarAction::Filter { mode }) => {
-                command::sidebar::set_filter_mode(mode.as_deref())
-            }
-            Some(SidebarAction::Group { mode, clear }) => {
-                command::sidebar::set_group_by(mode.as_deref(), clear)
-            }
-            None => {
-                if session {
-                    command::sidebar::toggle_session(
-                        appearance.position,
-                        appearance.width,
-                        appearance.height,
-                    )
-                } else {
-                    command::sidebar::toggle(
-                        appearance.position,
-                        appearance.width,
-                        appearance.height,
-                    )
-                }
-            }
-        },
+        } => command::sidebar::host::handle_cli(session, appearance, action),
         Commands::SidebarRun => command::sidebar::run_sidebar(),
-        Commands::SidebarSync { window } => command::sidebar::sync(window.as_deref()),
-        Commands::SidebarReflow { window } => command::sidebar::reflow(window.as_deref()),
-        Commands::SidebarReflowAll { exclude } => command::sidebar::reflow_all(exclude.as_deref()),
         Commands::SidebarDaemon => command::sidebar::run_daemon(),
         Commands::Dashboard {
             preview_size,
@@ -1462,7 +1375,7 @@ fn prune_claude_config() -> Result<()> {
 }
 
 fn generate_completions(shell: Shell) {
-    let mut cmd = crate::bin_name::rebrand_command(Cli::command());
+    let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
 
     // Generate base completions
@@ -1491,10 +1404,10 @@ fn generate_completions(shell: Shell) {
 }
 
 /// Rename the clap-generated zsh completion function so the dynamic wrapper
-/// (in `zsh_dynamic.zsh`) can take the primary `_workmux` name.
+/// (in `zsh_dynamic.zsh`) can take the primary `_workrex` name.
 ///
-/// The dynamic wrapper needs to BE `_workmux` — the function zsh autoloads
-/// from fpath. It delegates flag completion to `_workmux_base` (the renamed
+/// The dynamic wrapper needs to BE `_workrex` — the function zsh autoloads
+/// from fpath. It delegates flag completion to `_workrex_base` (the renamed
 /// clap output) and handles positional args with dynamic helpers.
 ///
 /// The `replace("_{name}", "_{name}_base")` is precise: `_{name}` (with the
@@ -1508,7 +1421,7 @@ fn prepare_zsh_base(script: &str, name: &str) -> String {
     let script = script.replace(&fn_prefix, &base_fn_prefix);
 
     // Strip the autoload/eval detection block clap appends at the end.
-    // After renaming it registers _workmux_base, which conflicts with our
+    // After renaming it registers _workrex_base, which conflicts with our
     // dynamic wrapper's own registration.
     let funcstack_block = format!(
         "\nif [ \"$funcstack[1]\" = \"{base_fn_prefix}\" ]; then\n    \
@@ -1541,27 +1454,27 @@ mod tests {
     fn remote_notice_only_follows_human_facing_commands() {
         let announces =
             |args: &[&str]| should_announce_remotes(&Cli::try_parse_from(args).unwrap().command);
-        assert!(announces(&["workmux", "add", "feat"]));
-        assert!(announces(&["workmux", "list"]));
+        assert!(announces(&["workrex", "add", "feat"]));
+        assert!(announces(&["workrex", "list"]));
         assert!(!announces(&[
-            "workmux",
+            "workrex",
             "add",
             "feat",
             "--headless",
             "--json"
         ]));
-        assert!(!announces(&["workmux", "list", "--json"]));
-        assert!(!announces(&["workmux", "status"]));
-        assert!(!announces(&["workmux", "dashboard"]));
-        assert!(!announces(&["workmux", "set-window-status", "working"]));
-        assert!(!announces(&["workmux", "remote"]));
+        assert!(!announces(&["workrex", "list", "--json"]));
+        assert!(!announces(&["workrex", "status"]));
+        assert!(!announces(&["workrex", "dashboard"]));
+        assert!(!announces(&["workrex", "set-window-status", "working"]));
+        assert!(!announces(&["workrex", "remote"]));
     }
 
     #[test]
     fn add_continue_accepts_prompt() {
         for flag in ["--continue", "-c"] {
             let cli = Cli::try_parse_from([
-                "workmux",
+                "workrex",
                 "add",
                 "followup",
                 flag,
@@ -1631,7 +1544,7 @@ mod tests {
     #[test]
     fn add_continue_conflicts_with_fork() {
         for fork in ["--fork", "--fork=session-id"] {
-            let err = Cli::try_parse_from(["workmux", "add", "followup", "--continue", fork])
+            let err = Cli::try_parse_from(["workrex", "add", "followup", "--continue", fork])
                 .err()
                 .expect("continue and fork must conflict");
             assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
@@ -1642,7 +1555,7 @@ mod tests {
     fn add_pr_parses_number_and_github_url() {
         for (value, expected_branch) in [
             ("190", None),
-            ("https://github.com/raine/workmux/pull/190", Some("main")),
+            ("https://github.com/kong109/workrex/pull/190", Some("main")),
             (
                 "https://github.example.com/owner/repo/pull/190",
                 Some("enterprise"),
@@ -1685,7 +1598,7 @@ mod tests {
             "wm",
             "add",
             "--pr",
-            "https://github.com/raine/workmux/issues/190",
+            "https://github.com/kong109/workrex/issues/190",
         ]) {
             Ok(_) => panic!("expected invalid PR URL"),
             Err(err) => err,
@@ -1697,7 +1610,7 @@ mod tests {
 
     #[test]
     fn sidebar_position_flag_parses_supported_values() {
-        let cli = Cli::try_parse_from(["workmux", "sidebar", "--position", "top"]).unwrap();
+        let cli = Cli::try_parse_from(["workrex", "sidebar", "--position", "top"]).unwrap();
 
         match cli.command {
             Commands::Sidebar {
@@ -1712,7 +1625,7 @@ mod tests {
 
     #[test]
     fn sidebar_dimension_flags_parse_columns_rows_and_percentages() {
-        let cli = Cli::try_parse_from(["workmux", "sidebar", "--width", "40", "--height", "10%"])
+        let cli = Cli::try_parse_from(["workrex", "sidebar", "--width", "40", "--height", "10%"])
             .unwrap();
 
         match cli.command {
@@ -1733,7 +1646,7 @@ mod tests {
     #[test]
     fn sidebar_on_parses_scope_and_appearance() {
         let cli = Cli::try_parse_from([
-            "workmux",
+            "workrex",
             "sidebar",
             "--session",
             "on",
@@ -1763,8 +1676,8 @@ mod tests {
     #[test]
     fn sidebar_off_parses_global_and_session_scopes() {
         for args in [
-            vec!["workmux", "sidebar", "off"],
-            vec!["workmux", "sidebar", "--session", "off"],
+            vec!["workrex", "sidebar", "off"],
+            vec!["workrex", "sidebar", "--session", "off"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
             assert!(matches!(
@@ -1779,7 +1692,7 @@ mod tests {
 
     #[test]
     fn sidebar_without_action_still_parses_as_toggle() {
-        let cli = Cli::try_parse_from(["workmux", "sidebar", "--session"]).unwrap();
+        let cli = Cli::try_parse_from(["workrex", "sidebar", "--session"]).unwrap();
         assert!(matches!(
             cli.command,
             Commands::Sidebar {
@@ -1792,12 +1705,12 @@ mod tests {
 
     #[test]
     fn sidebar_off_rejects_trailing_appearance_flags() {
-        assert!(Cli::try_parse_from(["workmux", "sidebar", "off", "--width", "40"]).is_err());
+        assert!(Cli::try_parse_from(["workrex", "sidebar", "off", "--width", "40"]).is_err());
     }
 
     #[test]
     fn sidebar_position_flag_rejects_unsupported_values() {
-        let err = match Cli::try_parse_from(["workmux", "sidebar", "--position", "right"]) {
+        let err = match Cli::try_parse_from(["workrex", "sidebar", "--position", "right"]) {
             Ok(_) => panic!("expected invalid position"),
             Err(err) => err,
         };
@@ -1810,69 +1723,69 @@ mod tests {
     #[test]
     fn prepare_zsh_base_renames_function_identifiers() {
         let input = concat!(
-            "#compdef workmux\n",
-            "_workmux() {\n",
-            "  \":: :_workmux_commands\"\n",
+            "#compdef workrex\n",
+            "_workrex() {\n",
+            "  \":: :_workrex_commands\"\n",
             "}\n",
-            "(( $+functions[_workmux_commands] )) ||\n",
-            "_workmux_commands() {\n",
-            "  _describe -t commands 'workmux commands' commands\n",
+            "(( $+functions[_workrex_commands] )) ||\n",
+            "_workrex_commands() {\n",
+            "  _describe -t commands 'workrex commands' commands\n",
             "}\n",
-            "\nif [ \"$funcstack[1]\" = \"_workmux\" ]; then\n",
-            "    _workmux \"$@\"\n",
+            "\nif [ \"$funcstack[1]\" = \"_workrex\" ]; then\n",
+            "    _workrex \"$@\"\n",
             "else\n",
-            "    compdef _workmux workmux\n",
+            "    compdef _workrex workrex\n",
             "fi\n",
         );
-        let result = prepare_zsh_base(input, "workmux");
+        let result = prepare_zsh_base(input, "workrex");
 
         // Function identifiers are renamed
-        assert!(result.contains("_workmux_base()"));
-        assert!(result.contains("_workmux_base_commands"));
-        assert!(!result.contains("_workmux()"));
+        assert!(result.contains("_workrex_base()"));
+        assert!(result.contains("_workrex_base_commands"));
+        assert!(!result.contains("_workrex()"));
 
-        // Bare "workmux" in #compdef and _describe strings is preserved
-        assert!(result.contains("#compdef workmux"));
-        assert!(result.contains("'workmux commands'"));
+        // Bare "workrex" in #compdef and _describe strings is preserved
+        assert!(result.contains("#compdef workrex"));
+        assert!(result.contains("'workrex commands'"));
 
         // funcstack block is stripped
         assert!(!result.contains("funcstack"));
-        assert!(!result.contains("compdef _workmux_base"));
+        assert!(!result.contains("compdef _workrex_base"));
     }
 
     #[test]
     fn prepare_zsh_base_preserves_state_and_curcontext() {
         let input = concat!(
-            "#compdef workmux\n",
-            "_workmux() {\n",
-            "  \"*::: :->workmux\"\n",
-            "  curcontext=\"workmux-command-$line[1]:\"\n",
+            "#compdef workrex\n",
+            "_workrex() {\n",
+            "  \"*::: :->workrex\"\n",
+            "  curcontext=\"workrex-command-$line[1]:\"\n",
             "}\n",
-            "\nif [ \"$funcstack[1]\" = \"_workmux\" ]; then\n",
-            "    _workmux \"$@\"\n",
+            "\nif [ \"$funcstack[1]\" = \"_workrex\" ]; then\n",
+            "    _workrex \"$@\"\n",
             "else\n",
-            "    compdef _workmux workmux\n",
+            "    compdef _workrex workrex\n",
             "fi\n",
         );
-        let result = prepare_zsh_base(input, "workmux");
+        let result = prepare_zsh_base(input, "workrex");
 
-        // State names and curcontext use bare "workmux" (no underscore), unchanged
-        assert!(result.contains("->workmux"));
-        assert!(result.contains("workmux-command-"));
+        // State names and curcontext use bare "workrex" (no underscore), unchanged
+        assert!(result.contains("->workrex"));
+        assert!(result.contains("workrex-command-"));
     }
 
     #[test]
     fn prepare_zsh_base_tolerates_missing_funcstack_block() {
-        let input = "_workmux() {\n  echo hello\n}\n";
-        let result = prepare_zsh_base(input, "workmux");
+        let input = "_workrex() {\n  echo hello\n}\n";
+        let result = prepare_zsh_base(input, "workrex");
 
-        assert!(result.contains("_workmux_base()"));
-        assert!(!result.contains("_workmux()"));
+        assert!(result.contains("_workrex_base()"));
+        assert!(!result.contains("_workrex()"));
     }
 
     #[test]
     fn prepare_zsh_base_works_with_real_clap_output() {
-        let mut cmd = Cli::command().name("workmux");
+        let mut cmd = Cli::command().name("workrex");
         let name = cmd.get_name().to_string();
         let mut buf = Vec::new();
         generate(Shell::Zsh, &mut cmd, &name, &mut buf);
@@ -1881,26 +1794,26 @@ mod tests {
         let result = prepare_zsh_base(&base_script, &name);
 
         // Main function is renamed
-        assert!(result.contains("_workmux_base()"));
-        assert!(!result.contains("\n_workmux()"));
+        assert!(result.contains("_workrex_base()"));
+        assert!(!result.contains("\n_workrex()"));
 
         // Helpers are renamed
-        assert!(result.contains("_workmux_base_commands"));
+        assert!(result.contains("_workrex_base_commands"));
 
         // #compdef header preserved
-        assert!(result.starts_with("#compdef workmux\n"));
+        assert!(result.starts_with("#compdef workrex\n"));
 
         // _describe strings preserved
-        assert!(result.contains("'workmux commands'"));
+        assert!(result.contains("'workrex commands'"));
 
         // funcstack block stripped
         assert!(!result.contains("funcstack"));
     }
 
-    /// Helper: produce the full `workmux completions zsh` output
+    /// Helper: produce the full `workrex completions zsh` output
     /// (base post-processed by prepare_zsh_base + dynamic wrapper).
     fn generate_full_zsh_completions() -> String {
-        let mut cmd = Cli::command().name("workmux");
+        let mut cmd = Cli::command().name("workrex");
         let name = cmd.get_name().to_string();
         let mut buf = Vec::new();
         generate(Shell::Zsh, &mut cmd, &name, &mut buf);
@@ -1911,25 +1824,25 @@ mod tests {
     }
 
     #[test]
-    fn zsh_full_output_has_no_stale_workmux_functions() {
+    fn zsh_full_output_has_no_stale_workrex_functions() {
         let output = generate_full_zsh_completions();
 
-        // The only _workmux() definition should be the dynamic wrapper.
-        // There must be no clap-generated _workmux() left (it was renamed).
-        let workmux_fn_count = output.matches("\n_workmux()").count();
+        // The only _workrex() definition should be the dynamic wrapper.
+        // There must be no clap-generated _workrex() left (it was renamed).
+        let workrex_fn_count = output.matches("\n_workrex()").count();
         assert_eq!(
-            workmux_fn_count, 1,
-            "Expected exactly one _workmux() definition (the dynamic wrapper)"
+            workrex_fn_count, 1,
+            "Expected exactly one _workrex() definition (the dynamic wrapper)"
         );
 
-        // The wrapper must call _workmux_base, not itself
+        // The wrapper must call _workrex_base, not itself
         let wrapper_section: &str = output
-            .split("\n_workmux()")
+            .split("\n_workrex()")
             .nth(1)
-            .expect("_workmux() not found");
+            .expect("_workrex() not found");
         assert!(
-            wrapper_section.contains("_workmux_base"),
-            "Dynamic wrapper must delegate to _workmux_base"
+            wrapper_section.contains("_workrex_base"),
+            "Dynamic wrapper must delegate to _workrex_base"
         );
     }
 
@@ -1938,9 +1851,9 @@ mod tests {
         let output = generate_full_zsh_completions();
 
         // The dynamic wrapper's case branches for handle commands should
-        // call _workmux_handles, not _workmux_base (which has _default).
+        // call _workrex_handles, not _workrex_base (which has _default).
         // Extract the case block from the wrapper.
-        let wrapper_start = output.find("\n_workmux()").expect("_workmux() not found");
+        let wrapper_start = output.find("\n_workrex()").expect("_workrex() not found");
         let wrapper = &output[wrapper_start..];
 
         // The handle commands should appear in the case pattern
@@ -1948,12 +1861,12 @@ mod tests {
             assert!(wrapper.contains(cmd), "Wrapper should handle {cmd}");
         }
         assert!(
-            wrapper.contains("_workmux_handles"),
-            "Wrapper should call _workmux_handles for handle commands"
+            wrapper.contains("_workrex_handles"),
+            "Wrapper should call _workrex_handles for handle commands"
         );
         assert!(
-            wrapper.contains("_workmux_git_branches"),
-            "Wrapper should call _workmux_git_branches for add"
+            wrapper.contains("_workrex_git_branches"),
+            "Wrapper should call _workrex_git_branches for add"
         );
     }
 
@@ -1963,32 +1876,32 @@ mod tests {
 
         // Must start with #compdef for fpath autoloading
         assert!(
-            output.starts_with("#compdef workmux\n"),
+            output.starts_with("#compdef workrex\n"),
             "Must start with #compdef for fpath autoloading"
         );
 
         // Must have funcstack detection for autoload/eval compatibility
         assert!(
-            output.contains(r#""$funcstack[1]" = "_workmux""#),
+            output.contains(r#""$funcstack[1]" = "_workrex""#),
             "Must have funcstack check for autoload detection"
         );
 
         // Must have compdef registration for eval case
         assert!(
-            output.contains("compdef _workmux workmux"),
-            "Must register _workmux via compdef for eval case"
+            output.contains("compdef _workrex workrex"),
+            "Must register _workrex via compdef for eval case"
         );
 
-        // Must NOT have compdef for _workmux_base (that was stripped)
+        // Must NOT have compdef for _workrex_base (that was stripped)
         assert!(
-            !output.contains("compdef _workmux_base"),
-            "Must not register _workmux_base directly"
+            !output.contains("compdef _workrex_base"),
+            "Must not register _workrex_base directly"
         );
     }
 
     #[test]
     fn bash_output_unaffected_by_zsh_postprocessing() {
-        let mut cmd = Cli::command().name("workmux");
+        let mut cmd = Cli::command().name("workrex");
         let name = cmd.get_name().to_string();
         let mut buf = Vec::new();
         generate(Shell::Bash, &mut cmd, &name, &mut buf);
@@ -1996,17 +1909,17 @@ mod tests {
         let dynamic = include_str!("scripts/completions/bash_dynamic.bash");
         let output = format!("{base_script}{dynamic}");
 
-        // Bash uses _workmux directly (no _base rename)
-        assert!(output.contains("_workmux()"));
-        assert!(!output.contains("_workmux_base"));
+        // Bash uses _workrex directly (no _base rename)
+        assert!(output.contains("_workrex()"));
+        assert!(!output.contains("_workrex_base"));
 
         // Dynamic wrapper registered
-        assert!(output.contains("complete -F _workmux_dynamic"));
+        assert!(output.contains("complete -F _workrex_dynamic"));
     }
 
     #[test]
     fn fish_output_unaffected_by_zsh_postprocessing() {
-        let mut cmd = Cli::command().name("workmux");
+        let mut cmd = Cli::command().name("workrex");
         let name = cmd.get_name().to_string();
         let mut buf = Vec::new();
         generate(Shell::Fish, &mut cmd, &name, &mut buf);
@@ -2014,12 +1927,12 @@ mod tests {
         let dynamic = include_str!("scripts/completions/fish_dynamic.fish");
         let output = format!("{base_script}{dynamic}");
 
-        // Fish uses workmux directly (no _base rename)
-        assert!(output.contains("__fish_workmux"));
-        assert!(!output.contains("workmux_base"));
+        // Fish uses workrex directly (no _base rename)
+        assert!(output.contains("__fish_workrex"));
+        assert!(!output.contains("workrex_base"));
 
         // Dynamic completions registered
-        assert!(output.contains("__workmux_handles"));
-        assert!(output.contains("__workmux_git_branches"));
+        assert!(output.contains("__workrex_handles"));
+        assert!(output.contains("__workrex_git_branches"));
     }
 }

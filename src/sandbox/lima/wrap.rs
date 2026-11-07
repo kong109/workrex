@@ -9,19 +9,19 @@ use crate::shell::shell_escape;
 
 /// Wrap a command to run inside a Lima VM via the sandbox supervisor.
 ///
-/// Generates a `workmux sandbox run` command that manages the VM lifecycle,
+/// Generates a `workrex sandbox run` command that manages the VM lifecycle,
 /// starts an RPC server, and executes the agent command inside the VM.
 ///
 /// The supervisor handles:
 /// - Ensuring the VM is running
 /// - Starting the TCP RPC server
-/// - Passing sandbox env vars (WM_SANDBOX_GUEST, WM_RPC_HOST, WM_RPC_PORT, WM_RPC_TOKEN)
+/// - Passing sandbox env vars (WORKREX_SANDBOX_GUEST, WORKREX_RPC_HOST, WORKREX_RPC_PORT, WORKREX_RPC_TOKEN)
 /// - Setting the working directory via `limactl shell --workdir`
 /// - Running the command via `limactl shell`
 ///
 /// # Arguments
 /// * `command` - The command string to run (may contain shell operators)
-/// * `_config` - The workmux configuration (env passthrough handled by supervisor)
+/// * `_config` - The workrex configuration (env passthrough handled by supervisor)
 /// * `_vm_name` - The Lima VM instance name (supervisor resolves this itself)
 /// * `working_dir` - Working directory inside the VM
 pub fn wrap_for_lima(
@@ -76,12 +76,12 @@ mod tests {
         let result = wrap_for_lima(
             "claude",
             &config,
-            "wm-abc12345",
+            "wr-abc12345",
             Path::new("/Users/test/project"),
         )
         .unwrap();
 
-        assert!(result.starts_with(crate::rebrand!(" workmux sandbox run")));
+        assert!(result.starts_with(" workrex sandbox run"));
         assert!(result.contains("/Users/test/project"));
         // Command is passed as a single quoted arg (no sh -lc at this level)
         assert!(result.contains("-- 'claude'"));
@@ -94,7 +94,7 @@ mod tests {
         let result = wrap_for_lima(
             " claude -- \"$(cat PROMPT.md)\"",
             &config,
-            "wm-abc12345",
+            "wr-abc12345",
             Path::new("/tmp/wt"),
         )
         .unwrap();
@@ -109,7 +109,7 @@ mod tests {
         let result = wrap_for_lima(
             "claude",
             &config,
-            "wm-abc12345",
+            "wr-abc12345",
             Path::new("/Users/test user/my project"),
         )
         .unwrap();
@@ -123,9 +123,9 @@ mod tests {
     fn test_wrap_with_complex_command() {
         let config = Config::default();
         let result = wrap_for_lima(
-            "claude --dangerously-skip-permissions -- \"$(cat .workmux/prompts/PROMPT.md)\"",
+            "claude --dangerously-skip-permissions -- \"$(cat .workrex/prompts/PROMPT.md)\"",
             &config,
-            "wm-abc",
+            "wr-abc",
             Path::new("/tmp/wt"),
         )
         .unwrap();
@@ -142,7 +142,7 @@ mod tests {
         let result = wrap_for_lima(
             "echo 'hello world'",
             &config,
-            "wm-abc",
+            "wr-abc",
             Path::new("/tmp/wt"),
         )
         .unwrap();

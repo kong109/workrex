@@ -55,15 +55,15 @@ fn save_tips(state: &TipsState) {
 /// Check whether to show the sidebar tip and increment the view counter.
 ///
 /// Returns true when all conditions are met:
-/// - TMUX env var is set (user is inside tmux)
+/// - The current terminal has a Rex block identity
 /// - sidebar has not been used before
 /// - tip has been shown fewer than 5 times
 pub fn should_show_sidebar_tip() -> bool {
-    should_show_sidebar_tip_for_tmux(std::env::var("TMUX").is_ok())
+    should_show_sidebar_tip_in_rex(crate::multiplexer::rex::in_rex_terminal())
 }
 
-fn should_show_sidebar_tip_for_tmux(in_tmux: bool) -> bool {
-    if !in_tmux {
+fn should_show_sidebar_tip_in_rex(in_rex: bool) -> bool {
+    if !in_rex {
         return false;
     }
     let mut state = load_tips();
@@ -169,8 +169,8 @@ mod tests {
     }
 
     #[test]
-    fn should_show_requires_tmux() {
-        assert!(!should_show_sidebar_tip_for_tmux(false));
+    fn should_show_requires_rex() {
+        assert!(!should_show_sidebar_tip_in_rex(false));
     }
 
     #[test]

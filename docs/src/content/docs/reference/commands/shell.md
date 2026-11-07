@@ -1,57 +1,45 @@
 ---
 title: "shell"
-description: Open a shell in a remote workspace from the local terminal
+description: Open a native Rex shell in a remote workspace
 ---
 
-Opens an interactive shell in a workspace on a [remote server](/guide/remote/) and runs it in the current terminal. It starts in the workspace's working directory, and you don't need the server's SSH address or the worktree path.
+Opens a shell in a workspace on a [remote server](/guide/remote/). The shell gets
+its own session on the node's Rex server, and Rex.app shows that session. It
+starts in the workspace directory; callers do not need the SSH address or path.
 
 ```bash
-workrex shell [name] [--host]
+workrex shell <name> [--host]
 ```
 
 ## Arguments
 
-- `[name]`: Remote workspace handle or branch, or `project:handle`, as for [`send`](/guide/remote/usage/#commands-on-remote-workspaces). When omitted, it uses the remote workspace whose window the command runs in.
-
-## Options
-
-| Flag     | Description                                                                           |
-| -------- | ------------------------------------------------------------------------------------- |
-| `--host` | In a workspace whose agent runs in Docker, run the shell on the server, not in Docker |
+`name` is a required remote workspace handle, branch, or `project:handle`.
+The command runs on the local machine and resolves the workspace's recorded Rex
+placement. A local Rex window does not stand in for the remote session.
 
 ## Where the shell runs
 
-- **Agent on the server directly** (`isolation: none`): the shell runs on the server, with the server's `workrex` and the workspace's environment, like the window's other panes.
-- **Agent in Docker:** the shell runs in a new container of the workspace, with the same image, mounts and environment as the agent's. This does not depend on `sandbox.target`. `--host` runs the shell on the server instead. It is the only way to get a server shell, and that shell has no `workrex`.
+- With `isolation: none`, it runs directly on the server with the workspace's
+  environment.
+- With container isolation, it runs in a new container using the workspace's
+  image, mounts, and environment. `--host` explicitly requests a server shell.
 
-The first line in the shell says which of these you got.
-
-## Opening it next to the agent
-
-A tmux split of a remote workspace's window starts a shell on the local machine. Run `workrex shell` in that split to replace it with a shell on the server:
-
-```bash
-# in a new split of the remote window
-workrex shell
-```
-
-You can also bind a key to open a split running the remote shell. Add a binding like this to your tmux config:
-
-```bash
-bind S split-window -h "workrex shell"
-```
-
-The split closes when the shell exits.
+SSH carries workspace operations and status; terminal input and display belong
+to Rex. The shell's native Rex session is independent of the terminal that ran
+`workrex shell`.
 
 ## Ending the shell
 
-- Exiting the shell ends it on the server, and `workrex shell` returns. The agent and its workspace keep running.
-- When the connection drops, the pane shows a status line and reconnects to the same shell, as the window's other panes do.
-- Closing the pane, or pressing `q` while it is disconnected, also ends the shell on the server. If the server can't be reached at that moment, the shell keeps running there until the workspace's agent is restarted or the workspace is removed.
-- Commands that stop the agent, such as `remove` and `merge`, end its shells too. So does `workrex open` when it restarts the agent after a server reboot.
+Exit the shell to end it. The agent and workspace continue running. Closing the
+shell's Rex session also ends the shell. Stopping the execution or removing the
+workspace closes its ad-hoc shells. Disconnecting Rex.app leaves the server's
+sessions running so they can be shown again after reconnecting.
 
 ## Errors
 
-- A local worktree name is refused. Use `cd "$(workrex path <name>)"` for local worktrees.
-- If the server can't be reached, `shell` fails at once and names the server.
-- A workspace that never started on the server is refused with a hint to run `workrex open <name>`.
+- Local worktrees are refused. Use `cd "$(workrex path <name>)"` for a local one.
+- An unreachable node fails with the remote's name.
+- A workspace that has not started is refused with a hint to run
+  `workrex open <name>`.
+- Showing the shell in Rex.app needs the node's Rex server to be reachable and
+  Remote Control enabled.

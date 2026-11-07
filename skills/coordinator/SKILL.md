@@ -4,29 +4,29 @@ description: Orchestrate multiple worktree agents. Spawn, monitor, communicate, 
 allowed-tools: Bash, Write, Read, Task
 ---
 
-# Worktree Agent Coordinator
+# Worktree agent coordinator
 
 You are a coordinator agent. You orchestrate multiple worktree agents using
-`workmux` CLI commands. You do NOT implement tasks yourself. You spawn agents,
+`workrex` CLI commands. You do NOT implement tasks yourself. You spawn agents,
 monitor them, send instructions, and trigger merges.
 
 ## Core Concepts
 
-- **Worktree agent**: a Claude Code session running in its own git
+- **Worktree agent**: a coding agent running in its own git
   worktree/branch
 - **Handle**: the worktree directory name, used to address agents in all
   commands
 - **Cross-project targeting**: agent commands (`send`, `capture`, `status`,
   `wait`, `run`) can target agents in other projects. If a handle is not found
-  locally, workmux searches all active agents globally. Use `project:handle`
+  locally, workrex searches all active agents globally. Use `project:handle`
   syntax to disambiguate when names collide across projects
 - **Statuses**: `working` (processing), `waiting` (needs user input), `done`
   (finished). Set automatically by agent hooks. Agents typically go `working` ->
   `done`; `waiting` only occurs if the agent prompts for input
-- Agents run in background tmux windows; you interact via CLI only
+- Agents run in separate Rex sessions by default; you interact through Workrex handles
 - **Continuous monitoring invariant**: every spawned agent remains your
   responsibility until you have reviewed and merged it, or explicitly removed
-  it. A user message or an interrupted `workmux wait` does not clear that
+  it. A user message or an interrupted `workrex wait` does not clear that
   responsibility
 
 ## Command Reference
@@ -35,7 +35,7 @@ monitor them, send instructions, and trigger merges.
 
 For each task, first check whether an earlier agent handled related work (see
 "Follow-up Work"). Reuse that session when available. For an independent task,
-write a prompt file then run `workmux add`. You are a dispatcher. Do NOT read
+write a prompt file then run `workrex add`. You are a dispatcher. Do NOT read
 source files, edit code, or implement tasks yourself.
 
 **Prompt file rules:**
@@ -64,14 +64,16 @@ Write API tests...
 EOF
 
 # Step 2: Spawn all agents (in parallel, after ALL files exist)
-workmux add auth-module -b -P "$tmpfile_a"
-workmux add api-tests -b -P "$tmpfile_b"
+workrex add auth-module -b -P "$tmpfile_a"
+workrex add api-tests -b -P "$tmpfile_b"
 ```
 
-If `workmux add` reports that it cannot determine the tmux session for window
-placement, retry with `--parent-session <session>`. Use the intended session from
-the task or known coordinator context. If it is unknown, ask instead of using a
-targetless tmux query or inferring it from the repository name.
+Workrex creates a Rex session for each worktree by default. Set the command's
+working directory to the target Git repository. For an explicitly requested tab
+in an existing Rex session, inspect the session first and pass
+`--mode window --parent-session <label>`. Rex session labels and repository
+paths are independent. Use `rex whoami --json` to check inherited IDs and
+`rex ls --json` to resolve a named target; never infer a session from a directory.
 
 Flags:
 
@@ -82,32 +84,32 @@ Flags:
 - `-c, --continue`: resume the agent's most recent session at the destination
   worktree path; can be combined with `-p` or `-P`, but not `--fork`
 - `--base <branch>`: base branch to branch from (default: current)
-- `--parent-session <session>`: tmux session that receives the agent window
+- `--mode window --parent-session <label>`: place the managed tab in a known Rex session
 
 ### Monitor Status
 
 ```bash
 # Table of all active agents
-workmux status
+workrex status
 
 # Specific agents only
-workmux status auth api-tests
+workrex status auth api-tests
 ```
 
 ### Wait for Status
 
 ```bash
 # Block until all agents finish
-workmux wait agent-a agent-b agent-c
+workrex wait agent-a agent-b agent-c
 
 # Wait with timeout (seconds)
-workmux wait agent-a --timeout 3600
+workrex wait agent-a --timeout 3600
 
 # Wait for first to finish
-workmux wait agent-a agent-b --any
+workrex wait agent-a agent-b --any
 
 # Wait for agents to start (confirm launch)
-workmux wait agent-a agent-b --status working --timeout 120
+workrex wait agent-a agent-b --status working --timeout 120
 ```
 
 Exit codes: 0 = reached target, 1 = timeout, 2 = worktree not found, 3 = agent
@@ -121,12 +123,12 @@ Whenever a user message interrupts a wait or adds more work:
 
 1. Handle the user's request, including spawning any additional agents.
 2. Add newly spawned handles to the tracked set.
-3. Run `workmux status` for the entire tracked set.
+3. Run `workrex status` for the entire tracked set.
 4. Process any agents that are `done` or `waiting`.
-5. Re-enter `workmux wait` for every remaining working handle, using `--any`
+5. Re-enter `workrex wait` for every remaining working handle, using `--any`
    when multiple agents remain.
 
-Canceling `workmux wait`, including with Escape, cancels only that invocation.
+Canceling `workrex wait`, including with Escape, cancels only that invocation.
 It does not end the monitoring loop. Do not finish the coordinator turn merely
 because the intervening request is complete while tracked agents are still
 working. Resume waiting in the same turn unless coordinator action requires
@@ -140,10 +142,10 @@ waiting agents, then wait on all handles that remain working.
 
 ```bash
 # Read last 200 lines (default)
-workmux capture agent-a
+workrex capture agent-a
 
 # Read last 50 lines
-workmux capture agent-a -n 50
+workrex capture agent-a -n 50
 ```
 
 Output is ANSI-stripped plain text.
@@ -157,19 +159,19 @@ New phases get separate assignments/worktrees, not additions to active agents.
 
 ```bash
 # Send a short instruction
-workmux send agent-a "fix the failing tests"
+workrex send agent-a "fix the failing tests"
 
-# Send a skill command
-workmux send agent-a "/commit"
+# Ask the target agent to use one of its installed skills
+workrex send agent-a "Use your commit skill to commit the verified changes"
 
 # Send from file (for long prompts)
-workmux send agent-a -f followup.md
+workrex send agent-a -f followup.md
 
 # Send to an agent in another project (global fallback)
-workmux send other-worktree "run the tests"
+workrex send other-worktree "run the tests"
 
 # Disambiguate with project:handle when names collide
-workmux send myproject:docs-update "also add the API reference"
+workrex send myproject:docs-update "also add the API reference"
 ```
 
 ### Run Commands
@@ -179,45 +181,46 @@ code.
 
 ```bash
 # Run a command (waits and streams output by default)
-workmux run agent-a -- pytest tests/
+workrex run agent-a -- pytest tests/
 
 # Run in background (fire and forget)
-workmux run agent-a -b -- npm run build
+workrex run agent-a -b -- npm run build
 
 # With timeout (seconds)
-workmux run agent-a --timeout 300 -- make test
+workrex run agent-a --timeout 300 -- make test
 
 # Keep run artifacts for debugging
-workmux run agent-a --keep -- ./scripts/deploy.sh
+workrex run agent-a --keep -- ./scripts/deploy.sh
 ```
 
 The command runs in a new split pane. Exit code is propagated (exits 124 on timeout).
 
 ### Merge & Cleanup
 
-Tell the agent to merge its own branch via `/merge`. This lets the agent handle
-rebasing and conflict resolution.
+Tell the agent to use its merge skill. In Codex the invocation is `$merge`;
+other agents may use `/merge`. If the agent type is unknown, send the instruction
+"Use the merge skill to commit, rebase, and merge this branch."
 
 ```bash
 # Tell agent to commit, rebase, and merge
-workmux send agent-a "/merge"
+workrex send agent-a 'Use the merge skill to commit, rebase, and merge this branch.'
 
 # Remove a worktree without merging
-workmux remove agent-a
+workrex remove agent-a
 ```
 
 ### Cross-Project Targeting
 
 Agent commands (`send`, `capture`, `status`, `wait`, `run`) automatically
 resolve handles across projects. If the handle is not found in the current repo,
-workmux searches all active agents globally by their worktree directory name.
+workrex searches all active agents globally by their worktree directory name.
 
 ```bash
 # Target an agent in another project (resolved globally)
-workmux send other-worktree "run the tests"
+workrex send other-worktree "run the tests"
 
 # Use project:handle to disambiguate when names collide
-workmux send myproject:feature-auth "check the edge cases"
+workrex send myproject:feature-auth "check the edge cases"
 ```
 
 Lifecycle commands (`add`, `open`, `merge`, `remove`, `close`) remain scoped to
@@ -229,11 +232,11 @@ the current repository.
 
 For improvements or corrections to earlier work, reuse the original agent session:
 
-- **Agent running:** `workmux send auth-module -f followup.md`
+- **Agent running:** `workrex send auth-module -f followup.md`
 - **Worktree exists, window closed:**
-  `workmux open auth-module --continue -P followup.md`
+  `workrex open auth-module --continue -P followup.md`
 - **Worktree removed:**
-  `workmux add auth-module --name auth-module --continue -b -P followup.md`
+  `workrex add auth-module --name auth-module --continue -b -P followup.md`
 
 Use the same worktree name. In the follow-up prompt, state whether the earlier
 work is merged. Resume the normal monitor, review, and merge
@@ -246,36 +249,36 @@ Spawn multiple agents, then review and merge each one as soon as it finishes:
 ```bash
 # 1. Write ALL prompt files first (see "Spawn Agents" above)
 # 2. Spawn agents in background
-workmux add auth-module -b -P "$tmpfile_auth"
-workmux add api-tests -b -P "$tmpfile_tests"
-workmux add docs-update -b -P "$tmpfile_docs"
+workrex add auth-module -b -P "$tmpfile_auth"
+workrex add api-tests -b -P "$tmpfile_tests"
+workrex add docs-update -b -P "$tmpfile_docs"
 
 # 3. Confirm they started
-workmux wait auth-module api-tests docs-update --status working --timeout 120
+workrex wait auth-module api-tests docs-update --status working --timeout 120
 
 # 4. Wait for any agent to finish
-workmux wait auth-module api-tests docs-update --any --timeout 7200
+workrex wait auth-module api-tests docs-update --any --timeout 7200
 
 # 5. Identify the finished agent, review its output, and merge it immediately
-workmux status auth-module api-tests docs-update
-workmux capture auth-module -n 50
-workmux send auth-module "/merge"
-workmux wait auth-module --timeout 120
+workrex status auth-module api-tests docs-update
+workrex capture auth-module -n 50
+workrex send auth-module 'Use the merge skill to commit, rebase, and merge this branch.'
+workrex wait auth-module --timeout 120
 
 # 6. Repeat with the remaining agents so completed work does not wait idle
-workmux wait api-tests docs-update --any --timeout 7200
-workmux status api-tests docs-update
-workmux capture docs-update -n 50
-workmux send docs-update "/merge"
-workmux wait docs-update --timeout 120
+workrex wait api-tests docs-update --any --timeout 7200
+workrex status api-tests docs-update
+workrex capture docs-update -n 50
+workrex send docs-update 'Use the merge skill to commit, rebase, and merge this branch.'
+workrex wait docs-update --timeout 120
 
-workmux wait api-tests --timeout 7200
-workmux capture api-tests -n 50
-workmux send api-tests "/merge"
-workmux wait api-tests --timeout 120
+workrex wait api-tests --timeout 7200
+workrex capture api-tests -n 50
+workrex send api-tests 'Use the merge skill to commit, rebase, and merge this branch.'
+workrex wait api-tests --timeout 120
 ```
 
-After each `--any` wait, use `workmux status` to identify every agent that is
+After each `--any` wait, use `workrex status` to identify every agent that is
 `done`. Review and merge those agents one at a time before waiting on the
 remaining handles. Keep finished handles out of subsequent wait commands.
 
@@ -283,20 +286,20 @@ remaining handles. Keep finished handles out of subsequent wait commands.
 
 1. **Write ALL prompt files before spawning any agents.** Prompts should be
    self-contained with full context. Agents cannot see your conversation.
-2. **Use `-b` (background) for all `workmux add` calls** so you stay in your own
+2. **Use `-b` (background) for all `workrex add` calls** so you stay in your own
    session. If placement is ambiguous, retry with `--parent-session` as described
    above.
-3. **Always confirm agents started** with `workmux wait --status working` before
+3. **Always confirm agents started** with `workrex wait --status working` before
    waiting for completion.
 4. **Keep waiting across interruptions.** Track every unprocessed agent until it
    is merged or removed. After handling any intervening user request, check the
-   full tracked set and resume `workmux wait` for all agents that are still
+   full tracked set and resume `workrex wait` for all agents that are still
    working in the same turn.
 5. **Wait with `--any` when multiple agents are running.** As soon as an agent
-   finishes, identify it with `workmux status`, capture and review its output,
+   finishes, identify it with `workrex status`, capture and review its output,
    and merge it before waiting again on the remaining handles.
 6. **Capture and review output** before merging. Do not blindly merge.
-7. **Merge one at a time** by sending `/merge` to each agent sequentially. Wait
+7. **Merge one at a time** by asking each agent to use its merge skill. Wait
    for each merge to complete before starting the next to avoid conflicts.
 8. **Use `--timeout`** to avoid waiting forever. Handle timeout exits
    gracefully.

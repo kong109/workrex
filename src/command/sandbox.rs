@@ -15,7 +15,7 @@ use crate::sandbox::lima;
 use crate::sandbox::lima::{LimaInstance, parse_lima_instances};
 
 #[derive(Debug, Args)]
-#[command(help_template = crate::rebrand!("\
+#[command(help_template = "\
 {about-with-newline}
 {usage-heading} {usage}
 
@@ -31,10 +31,10 @@ Lima commands:
 General commands:
   agent            Run an agent inside a sandbox with RPC support
   shell            Start an interactive shell in a sandbox
-  install-dev      Cross-compile and install workmux into sandboxes
+  install-dev      Cross-compile and install workrex into sandboxes
   help             Print this message or the help of the given subcommand(s)
 
-{options}"))]
+{options}")]
 pub struct SandboxArgs {
     #[command(subcommand)]
     pub command: SandboxCommand,
@@ -43,7 +43,7 @@ pub struct SandboxArgs {
 #[derive(Debug, Subcommand)]
 pub enum SandboxCommand {
     /// Build the sandbox container image locally.
-    /// Note: a pre-built image is available via `workmux sandbox pull`.
+    /// Note: a pre-built image is available via `workrex sandbox pull`.
     Build,
     /// Pull the latest sandbox image from the container registry.
     Pull,
@@ -55,7 +55,7 @@ pub enum SandboxCommand {
     },
     /// Delete unused Lima VMs to reclaim disk space.
     Prune {
-        /// Skip confirmation and delete all workmux VMs
+        /// Skip confirmation and delete all workrex VMs
         #[arg(short, long)]
         force: bool,
     },
@@ -67,7 +67,7 @@ pub enum SandboxCommand {
         /// Root of the worktree for mounting (defaults to worktree path)
         #[arg(long)]
         worktree_root: Option<PathBuf>,
-        /// Run for a remote node rooted here (set by `workmux node`)
+        /// Run for a remote node rooted here (set by `workrex node`)
         #[arg(long, hide = true, requires = "node_workspace")]
         node_root: Option<PathBuf>,
         /// Workspace id on that node
@@ -77,7 +77,7 @@ pub enum SandboxCommand {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
-    /// Cross-compile and install workmux into containers and running Lima VMs for development.
+    /// Cross-compile and install workrex into containers and running Lima VMs for development.
     InstallDev {
         /// Skip cross-compilation and use existing binary
         #[arg(long)]
@@ -91,7 +91,7 @@ pub enum SandboxCommand {
         /// VM name to stop (if not provided, show interactive list)
         #[arg(conflicts_with = "all")]
         name: Option<String>,
-        /// Stop all workmux VMs (wm-* prefix)
+        /// Stop all workrex VMs (wr-* prefix)
         #[arg(long)]
         all: bool,
         /// Skip confirmation prompt
@@ -100,7 +100,7 @@ pub enum SandboxCommand {
     },
     /// Run the configured agent inside a sandbox with full RPC support.
     /// Unlike `shell`, this starts an RPC server so the agent can call
-    /// workmux commands (e.g., `workmux add` to spawn sub-agents).
+    /// workrex commands (e.g., `workrex add` to spawn sub-agents).
     Agent {
         /// Command to run instead of the configured agent
         #[arg(last = true)]
@@ -136,9 +136,9 @@ fn run_agent(command: Vec<String>) -> Result<()> {
 
     // Validate git repo early -- sandbox needs git dirs for mounts
     let worktree_root = crate::git::get_repo_root()
-        .context(crate::rebrand!(
-            "Not inside a git repository. workmux sandbox agent requires a git repo for mounting."
-        ))?
+        .context(
+            "Not inside a git repository. workrex sandbox agent requires a git repo for mounting.",
+        )?
         .canonicalize()
         .unwrap_or_else(|_| cwd.clone());
 
@@ -199,10 +199,7 @@ fn run_build() -> Result<()> {
         sandbox::DEFAULT_IMAGE_REGISTRY,
         agent
     );
-    println!(
-        "{}",
-        crate::rebrand!("     Use `workmux sandbox pull` to pull it instead of building locally.")
-    );
+    println!("     Use `workrex sandbox pull` to pull it instead of building locally.");
 
     Ok(())
 }
@@ -268,7 +265,7 @@ fn run_init_dockerfile(force: bool) -> Result<()> {
         "  2. Build: {}",
         style("docker build -t my-sandbox -f Dockerfile.sandbox .").dim()
     );
-    println!("  3. Configure {}:", style(".workmux.yaml").bold());
+    println!("  3. Configure {}:", style(".workrex.yaml").bold());
     println!("       {}", style("sandbox:").dim());
     println!("         {}", style("enabled: true").dim());
     println!("         {}", style("image: my-sandbox").dim());
@@ -321,7 +318,7 @@ fn native_build(release: bool) -> Result<PathBuf> {
     let profile = if release { "release" } else { "debug" };
     let profile_dir = if release { "release" } else { "debug" };
 
-    println!("Building workmux ({}, {})...\n", profile, target);
+    println!("Building workrex ({}, {})...\n", profile, target);
 
     let mut cmd = Command::new("cargo");
     cmd.args(["build", "--target", target]);
@@ -380,7 +377,7 @@ fn cross_compile(target: &str, release: bool) -> Result<PathBuf> {
     let profile = if release { "release" } else { "debug" };
     let profile_dir = if release { "release" } else { "debug" };
 
-    println!("Cross-compiling workmux for {} ({})...\n", target, profile);
+    println!("Cross-compiling workrex for {} ({})...\n", target, profile);
 
     let mut cmd = Command::new("cargo");
     cmd.args(["build", "--target", target]);
@@ -428,7 +425,7 @@ fn install_to_vm(binary_path: &Path, vm_name: &str) -> Result<()> {
     }
 
     // Copy to temp location to avoid "text file busy"
-    let tmp_dest = format!("{}:/tmp/workmux.new", vm_name);
+    let tmp_dest = format!("{}:/tmp/workrex.new", vm_name);
     let cp = Command::new("limactl")
         .args(["cp", &binary_path.to_string_lossy(), &tmp_dest])
         .output()
@@ -518,7 +515,7 @@ fn run_install_dev(skip_build: bool, release: bool) -> Result<()> {
 
         if !running.is_empty() {
             println!(
-                "Installing workmux into {} running VM(s)...\n",
+                "Installing workrex into {} running VM(s)...\n",
                 running.len()
             );
             let mut failed: Vec<(String, String)> = Vec::new();
@@ -559,7 +556,7 @@ fn run_install_dev(skip_build: bool, release: bool) -> Result<()> {
     Ok(())
 }
 
-/// Build a thin overlay image to replace workmux in the container image.
+/// Build a thin overlay image to replace workrex in the container image.
 /// Returns Ok(true) if the image was patched, Ok(false) if the base image
 /// doesn't exist.
 fn install_dev_container(binary_path: &Path, image_name: &str, config: &Config) -> Result<bool> {
@@ -580,7 +577,7 @@ fn install_dev_container(binary_path: &Path, image_name: &str, config: &Config) 
     println!("Patching container image '{}'...", image_name);
 
     let temp_dir = tempfile::Builder::new()
-        .prefix("workmux-install-dev-")
+        .prefix("workrex-install-dev-")
         .tempdir()
         .context("Failed to create temp directory")?;
     let context_path = temp_dir.path();
@@ -648,7 +645,7 @@ fn run_prune(force: bool) -> Result<()> {
     let mut vm_infos: Vec<VmInfo> = Vec::new();
 
     for instance in instances {
-        if !instance.name.starts_with("wm-") {
+        if !instance.name.starts_with("wr-") {
             continue;
         }
 
@@ -675,12 +672,12 @@ fn run_prune(force: bool) -> Result<()> {
     }
 
     if vm_infos.is_empty() {
-        println!("No workmux Lima VMs found.");
+        println!("No workrex Lima VMs found.");
         return Ok(());
     }
 
     // Display VM information
-    println!("Found {} workmux Lima VM(s):\n", vm_infos.len());
+    println!("Found {} workrex Lima VM(s):\n", vm_infos.len());
 
     for (i, vm) in vm_infos.iter().enumerate() {
         println!("{}. {} ({})", i + 1, vm.name, vm.status);
@@ -818,27 +815,27 @@ fn run_stop(name: Option<String>, all: bool, skip_confirm: bool) -> Result<()> {
         anyhow::bail!("limactl not found. Please install Lima first.");
     }
 
-    // Get list of all workmux VMs
+    // Get list of all workrex VMs
     let all_vms = LimaInstance::list()?;
-    let workmux_vms: Vec<LimaInstanceInfo> = all_vms
+    let workrex_vms: Vec<LimaInstanceInfo> = all_vms
         .into_iter()
         .filter(|vm| vm.name.starts_with(VM_PREFIX))
         .collect();
 
     // Filter to running VMs for display/selection
     let running_vms: Vec<&LimaInstanceInfo> =
-        workmux_vms.iter().filter(|vm| vm.is_running()).collect();
+        workrex_vms.iter().filter(|vm| vm.is_running()).collect();
 
     let vms_to_stop: Vec<&LimaInstanceInfo> = if all {
         // Stop all running VMs
         if running_vms.is_empty() {
-            println!("No running workmux VMs found.");
+            println!("No running workrex VMs found.");
             return Ok(());
         }
         running_vms
     } else if let Some(ref vm_name) = name {
         // Stop specific VM - check all VMs (not just running) for better error messages
-        let vm = workmux_vms.iter().find(|v| v.name == *vm_name);
+        let vm = workrex_vms.iter().find(|v| v.name == *vm_name);
         match vm {
             Some(v) if v.is_running() => vec![v],
             Some(v) => {
@@ -862,7 +859,7 @@ fn run_stop(name: Option<String>, all: bool, skip_confirm: bool) -> Result<()> {
         }
 
         if running_vms.is_empty() {
-            println!("No running workmux VMs found.");
+            println!("No running workrex VMs found.");
             return Ok(());
         }
 
@@ -1058,7 +1055,7 @@ fn run_shell_container(exec: bool, command: Vec<String>, config: &Config) -> Res
 
         // Add container name for easier identification
         docker_args.insert(1, "--name".to_string());
-        docker_args.insert(2, format!("wm-shell-{}", std::process::id()));
+        docker_args.insert(2, format!("wr-shell-{}", std::process::id()));
 
         let runtime_bin = runtime.binary_name();
         let runtime_display = runtime.display_name();
@@ -1128,7 +1125,7 @@ fn select_vms_interactive<'a>(
 ) -> Result<Vec<&'a crate::sandbox::lima::LimaInstanceInfo>> {
     use std::io::{self, Write};
 
-    println!("Running workmux VMs:");
+    println!("Running workrex VMs:");
     println!();
     for (idx, vm) in vms.iter().enumerate() {
         println!("  {}. {} ({})", idx + 1, vm.name, vm.status);

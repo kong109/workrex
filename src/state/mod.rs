@@ -1,7 +1,6 @@
-//! Filesystem-based state storage for workmux agents.
+//! Filesystem-based state storage for workrex agents.
 //!
-//! This module provides persistent state storage that works across all
-//! terminal multiplexer backends (tmux, WezTerm, Zellij).
+//! State belongs to a Rex server instance and immutable block ID.
 
 pub(crate) mod reported;
 pub mod run;
@@ -46,8 +45,7 @@ pub struct RemoteUpdate {
 
 /// Persist an agent state update to the StateStore.
 ///
-/// For tmux, merges state from the same pane process and server lifecycle so
-/// partial updates don't wipe other fields. Other backends merge by pane key:
+/// Partial updates merge by Rex server instance and immutable block ID:
 /// - If `status` is Some, updates the agent's status. If None, preserves existing.
 /// - If `title_override` is Some, uses it. If None, preserves existing stored title,
 ///   falling back to the live pane title.
@@ -63,11 +61,13 @@ pub fn persist_agent_update(
     agent_session_id: Option<String>,
     prompt: PromptUpdate,
 ) {
-    if status == Some(AgentStatus::Working) && mux.name() == "tmux" {
-        let tmux = crate::multiplexer::TmuxBackend::for_socket(&mux.instance_id());
-        if let Err(error) = tmux.wake_agent(pane_id) {
-            warn!(%pane_id, %error, "failed to clear agent sleep state");
-        }
+    if status == Some(AgentStatus::Working)
+        && let Some(host) = mux.sidebar()
+        && let Err(error) = host.handle(crate::multiplexer::SidebarRequest::Wake {
+            pane_id: pane_id.to_string(),
+        })
+    {
+        warn!(%pane_id, %error, "failed to clear agent sleep state");
     }
     persist_agent_snapshot(
         mux,
@@ -91,20 +91,6 @@ pub fn persist_remote_update(
     prompt: PromptUpdate,
 ) {
     persist_agent_snapshot(mux, pane_id, status, None, None, prompt, true, Some(update));
-}
-
-/// Register a local pane relaying a remote workspace pane, with no status.
-pub fn persist_remote_registration(mux: &dyn Multiplexer, pane_id: &str, update: RemoteUpdate) {
-    persist_agent_snapshot(
-        mux,
-        pane_id,
-        None,
-        None,
-        None,
-        PromptUpdate::Keep,
-        false,
-        Some(update),
-    );
 }
 
 /// Register a live agent pane without assigning it an activity status.
@@ -234,19 +220,7 @@ fn persist_agent_snapshot_locked(
 
     let live_info = snapshot.pane;
     let boot_id = snapshot.boot_id;
-    let live_pid = if mux.name() == "tmux" {
-        let Some(live_pid) = live_info.pid else {
-            warn!(%pane_id, "tmux pane PID unavailable, skipping state persist");
-            return;
-        };
-        if boot_id.is_none() {
-            warn!(%pane_id, "tmux server identity unavailable, skipping state persist");
-            return;
-        }
-        live_pid
-    } else {
-        live_info.pid.unwrap_or(0)
-    };
+    let live_pid = live_info.pid.unwrap_or(0);
 
     if let Some(boot_id) = boot_id.as_deref()
         && let Err(error) = store.compact_context_locked(mux.name(), &mux.instance_id(), boot_id)
@@ -255,20 +229,16 @@ fn persist_agent_snapshot_locked(
         return;
     }
 
-    // tmux pane PIDs and server lifecycles form a stable process identity.
-    // Other backends retain their established pane-key merge behavior.
+    // Rex block IDs are stable for a program's lifetime. A replacement program
+    // gets another block ID, and boot identity separates server lifecycles.
     let existing = preserve_existing
         .then(|| {
             store.get_agent(&pane_key).ok().flatten().filter(|state| {
-                mux.name() != "tmux"
-                    || (state.pane_pid == live_pid
-                        && state
-                            .boot_id
-                            .as_deref()
-                            .zip(boot_id.as_deref())
-                            .is_some_and(|(stored, current)| {
-                                store::same_server_boot("tmux", stored, current)
-                            }))
+                state
+                    .boot_id
+                    .as_deref()
+                    .zip(boot_id.as_deref())
+                    .is_none_or(|(stored, current)| stored == current)
             })
         })
         .flatten();
@@ -475,7 +445,7 @@ mod tests {
 
     fn state_with_prompt(prompt: &str) -> AgentState {
         serde_json::from_value(serde_json::json!({
-            "pane_key": {"backend": "tmux", "instance": "default", "pane_id": "%1"},
+            "pane_key": {"backend": "rex", "instance": "default", "pane_id": "%1"},
             "workdir": "/repo",
             "status": "working",
             "status_ts": 1,

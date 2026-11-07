@@ -33,15 +33,18 @@ pub fn run(dry_run: bool) -> Result<()> {
 
     for candidate in &plan.candidates {
         let status = match &candidate.action {
-            ResurrectAction::Restore => "restoring",
-            ResurrectAction::SkipAlreadyOpen => "skipping (already open)",
-            ResurrectAction::SkipMain => "skipping (main worktree)",
+            ResurrectAction::Restore => "restoring".to_string(),
+            ResurrectAction::SkipAlreadyOpen => "skipping (already open)".to_string(),
+            ResurrectAction::SkipMain => "skipping (main worktree)".to_string(),
+            ResurrectAction::SkipUnavailable(error) => {
+                format!("skipping (Rex unavailable: {error})")
+            }
         };
         println!("  {:<20} -> {}", candidate.handle, status);
     }
 
-    // Remote workspaces come back as windows attached to agents that kept
-    // running; an execution the remote reports ended has nothing to attach.
+    // Native remote executions are checked by their recorded Rex identities.
+    // An execution the node reports ended waits for an explicit open.
     let remote_candidates: Vec<_> = plan
         .remote
         .iter()
@@ -58,11 +61,14 @@ pub fn run(dry_run: bool) -> Result<()> {
     for (candidate, ended) in &remote_candidates {
         let status = match &candidate.action {
             ResurrectAction::Restore if *ended => {
-                crate::rebrand!("skipping (agents exited; `workmux open` starts them)")
+                "skipping (agents exited; `workrex open` starts them)".to_string()
             }
-            ResurrectAction::Restore => "restoring",
-            ResurrectAction::SkipAlreadyOpen => "skipping (already open)",
-            ResurrectAction::SkipMain => "skipping (main worktree)",
+            ResurrectAction::Restore => "restoring".to_string(),
+            ResurrectAction::SkipAlreadyOpen => "skipping (already open)".to_string(),
+            ResurrectAction::SkipMain => "skipping (main worktree)".to_string(),
+            ResurrectAction::SkipUnavailable(error) => {
+                format!("skipping (Rex unavailable: {error})")
+            }
         };
         let name = remote::agents::label(&candidate.record.handle, &candidate.record.remote);
         println!("  {:<20} -> {}", name, status);
@@ -177,7 +183,7 @@ pub fn run(dry_run: bool) -> Result<()> {
 
     for candidate in remote_restore {
         let record = &candidate.record;
-        match remote::lifecycle::open_window(&context, record, false) {
+        match remote::lifecycle::open(&context, record.clone(), false) {
             Ok(()) => {
                 info!(
                     handle = record.handle,

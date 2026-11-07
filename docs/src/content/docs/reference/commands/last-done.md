@@ -5,7 +5,9 @@ description: Switch to the most recently completed or waiting agent
 
 Switches to the agent that most recently completed its task or is waiting for user input. Repeated invocations cycle through all done/waiting agents in reverse chronological order (most recent first). The cycle resets when a new agent finishes, so you always see the latest first.
 
-This is a hidden command (not shown in `--help`), typically invoked via a tmux keybinding.
+This is a hidden command (not shown in `--help`), available from a Rex terminal or action.
+
+It cycles through agents on the current Rex server. Use the dashboard to navigate to completed agents on a remote server.
 
 ```bash
 workrex last-done
@@ -18,16 +20,6 @@ workrex last-done
 3. Switches to the most recent one.
 4. On repeated invocations, advances to the next oldest agent in the list.
 5. When a new agent finishes (the most recent timestamp changes), the cycle resets back to the newest.
-
-## Tmux keybinding
-
-Add to `~/.tmux.conf` for quick access:
-
-```bash
-bind l run-shell "workrex last-done"
-```
-
-Then press `prefix + l` to jump to the last completed or waiting agent. Press again to cycle to the next oldest.
 
 ## Under Rex
 

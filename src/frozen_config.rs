@@ -8,8 +8,8 @@ use tempfile::NamedTempFile;
 
 use crate::config::{Config, ConfigLocation};
 
-/// Private config transport set only on host Workmux child commands created by RPC.
-pub const FROZEN_CONFIG_ENV: &str = "WORKMUX_FROZEN_CONFIG";
+/// Private config transport set only on host Workrex child commands created by RPC.
+pub const FROZEN_CONFIG_ENV: &str = "WORKREX_FROZEN_CONFIG";
 const SNAPSHOT_VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
@@ -30,6 +30,18 @@ impl FrozenConfigFile {
             agent_type: config.agent_type.clone(),
             location: location.cloned(),
         }
+    }
+
+    fn into_config(mut self) -> Result<(Config, Option<ConfigLocation>)> {
+        if self.version != SNAPSHOT_VERSION {
+            bail!(
+                "Unsupported frozen configuration snapshot version {}",
+                self.version
+            );
+        }
+        self.config.selected_agent = self.selected_agent;
+        self.config.agent_type = self.agent_type;
+        Ok((self.config, self.location))
     }
 }
 
@@ -55,7 +67,7 @@ impl FrozenConfigGuard {
     ) -> Result<Self> {
         let snapshot = FrozenConfigFile::new(config, location);
         let mut file = tempfile::Builder::new()
-            .prefix("workmux-frozen-config-")
+            .prefix("workrex-frozen-config-")
             .suffix(".json")
             .tempfile_in(directory)
             .context("Failed to create frozen configuration snapshot")?;
@@ -108,6 +120,14 @@ pub fn snapshot_document(
         .context("Failed to serialize frozen configuration snapshot")
 }
 
+pub(crate) fn from_document(
+    document: &serde_json::Value,
+) -> Result<(Config, Option<ConfigLocation>)> {
+    let snapshot: FrozenConfigFile = serde_json::from_value(document.clone())
+        .context("Invalid frozen configuration snapshot")?;
+    snapshot.into_config()
+}
+
 /// Validate a snapshot document and store it at `path`, readable only by
 /// the user.
 pub fn write_document(path: &Path, document: &serde_json::Value) -> Result<()> {
@@ -127,24 +147,15 @@ pub fn write_document(path: &Path, document: &serde_json::Value) -> Result<()> {
 
 pub fn load(path: &Path) -> Result<(Config, Option<ConfigLocation>)> {
     let file = open_snapshot(path)?;
-    let mut snapshot: FrozenConfigFile = serde_json::from_reader(BufReader::new(file))
-        .with_context(|| {
+    let snapshot: FrozenConfigFile =
+        serde_json::from_reader(BufReader::new(file)).with_context(|| {
             format!(
                 "Failed to parse frozen configuration snapshot: {}",
                 path.display()
             )
         })?;
 
-    if snapshot.version != SNAPSHOT_VERSION {
-        bail!(
-            "Unsupported frozen configuration snapshot version {}",
-            snapshot.version
-        );
-    }
-
-    snapshot.config.selected_agent = snapshot.selected_agent;
-    snapshot.config.agent_type = snapshot.agent_type;
-    Ok((snapshot.config, snapshot.location))
+    snapshot.into_config()
 }
 
 fn open_snapshot(path: &Path) -> Result<File> {
@@ -217,7 +228,7 @@ mod tests {
 
     fn sample_location(root: &Path) -> ConfigLocation {
         ConfigLocation {
-            config_path: root.join("app/.workmux.yaml"),
+            config_path: root.join("app/.workrex.yaml"),
             config_dir: root.join("app"),
             rel_dir: PathBuf::from("app"),
         }
@@ -248,6 +259,25 @@ mod tests {
         assert_eq!(loaded.agent_type, config.agent_type);
         assert_eq!(loaded.selected_agent, config.selected_agent);
         assert_eq!(loaded_location, Some(location));
+    }
+
+    #[test]
+    fn durable_document_preserves_selection_location_and_version_checks() {
+        let root = tempfile::tempdir().unwrap();
+        let config = sample_config();
+        let location = sample_location(root.path());
+        let mut document = snapshot_document(&config, Some(&location)).unwrap();
+        let (loaded, loaded_location) = from_document(&document).unwrap();
+        assert_eq!(loaded.selected_agent, config.selected_agent);
+        assert_eq!(loaded.agent_type, config.agent_type);
+        assert_eq!(loaded_location, Some(location));
+        document["version"] = serde_json::json!(999);
+        assert!(
+            from_document(&document)
+                .unwrap_err()
+                .to_string()
+                .contains("version")
+        );
     }
 
     #[test]
@@ -308,7 +338,7 @@ sandbox:
     #[test]
     fn rejects_snapshot_directory_inside_worktree() {
         let worktree = Path::new("/tmp/project");
-        let directory = worktree.join(".workmux/frozen-config");
+        let directory = worktree.join(".workrex/frozen-config");
 
         let error = ensure_outside_worktree(&directory, worktree).unwrap_err();
 
@@ -317,7 +347,7 @@ sandbox:
 
     #[test]
     fn accepts_snapshot_directory_outside_worktree() {
-        ensure_outside_worktree(Path::new("/tmp/workmux-state"), Path::new("/tmp/project"))
+        ensure_outside_worktree(Path::new("/tmp/workrex-state"), Path::new("/tmp/project"))
             .unwrap();
     }
 

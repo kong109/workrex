@@ -108,17 +108,6 @@ pub fn run(
     let context = WorkflowContext::new(config, mux, config_location)?;
 
     let preliminary_mode = context.config.mode();
-    if let Some(record) = remote_records.iter().flatten().next()
-        && mode_override.unwrap_or(context.config.remote_mode()) == MuxMode::Session
-    {
-        bail!(
-            "Session mode cannot be used with remote workspace '{}' on '{}'; remote agents \
-             open in a window: pass --mode window",
-            record.handle,
-            record.remote
-        );
-    }
-
     if new_window && mode_override == Some(MuxMode::Session) {
         bail!("--new is not supported in session mode. Each worktree can only have one session.");
     }
@@ -210,7 +199,7 @@ pub fn run(
 
                 if result.did_switch {
                     println!(
-                        "✓ Switched to existing tmux {} for '{}'\n  Worktree: {}",
+                        "✓ Switched to existing Rex {} for '{}'\n  Worktree: {}",
                         target_type,
                         resolved_name,
                         result.worktree_path.display()
@@ -221,7 +210,7 @@ pub fn run(
                     }
 
                     println!(
-                        "✓ Opened tmux {} for '{}'\n  Worktree: {}",
+                        "✓ Opened Rex {} for '{}'\n  Worktree: {}",
                         target_type,
                         resolved_name,
                         result.worktree_path.display()

@@ -1,7 +1,5 @@
-//! Where an execution's terminals live: a session per pane on the node tmux
-//! server, or on the node's own Rex server, which Rex.app shows directly.
-//! The host is fixed when the execution starts and recorded on it
-//! (`Execution::rex`), so verbs never read it from config.
+//! Remote workspace sessions hosted by the node's Rex server.
+//! Recorded server and session IDs keep ownership stable when labels change.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -12,15 +10,13 @@ use sha2::{Digest, Sha256};
 
 use tempfile::TempPath;
 
-use super::execution::{kill_execution, new_session, session_alive, set_session_env, tmux_socket};
 use super::{Execution, NodeRoot, refuse, secrets};
 use crate::config::RemoteTerminal;
 use crate::multiplexer::rex::{HostedRead, HostedSession, RexBackend};
-use crate::multiplexer::{LivePaneInfo, Multiplexer, tmux::TmuxBackend};
+use crate::multiplexer::{LivePaneInfo, Multiplexer};
 use crate::remote::protocol::{RexPlacement, Secrets, code, session_name};
 
 pub enum SessionHost {
-    Tmux { socket: PathBuf, mux: TmuxBackend },
     Rex(Box<RexHost>),
 }
 
@@ -38,145 +34,67 @@ pub struct RexHost {
 }
 
 impl SessionHost {
-    pub fn tmux(root: &NodeRoot) -> Result<Self> {
-        let socket = tmux_socket(root)?;
-        Ok(Self::Tmux {
-            mux: TmuxBackend::for_socket(&socket.to_string_lossy()),
-            socket,
-        })
+    pub fn for_execution(root: &NodeRoot, _execution: &Execution) -> Result<Self> {
+        Ok(Self::Rex(Box::new(RexHost::open(root, false)?)))
     }
 
-    /// The host `execution` was started on.
-    pub fn for_execution(root: &NodeRoot, execution: &Execution) -> Result<Self> {
-        match execution.rex {
-            Some(_) => Ok(Self::Rex(Box::new(RexHost::open(root, false)?))),
-            None => Self::tmux(root),
+    pub fn open_for_start(root: &NodeRoot, _terminal: RemoteTerminal) -> Result<Self> {
+        let host = RexHost::open(root, true)?;
+        let marker = hosted_marker(root);
+        if let Some(run) = marker.parent() {
+            crate::remote::transport::ensure_private_dir(run, unsafe { libc::getuid() })?;
         }
-    }
-
-    /// The host a new execution starts on. Rex needs the server on the
-    /// tailnet, where Rex.app reaches it.
-    pub fn open_for_start(root: &NodeRoot, terminal: RemoteTerminal) -> Result<Self> {
-        match terminal {
-            RemoteTerminal::Tmux => Self::tmux(root),
-            RemoteTerminal::Rex => {
-                let host = RexHost::open(root, true)?;
-                let marker = hosted_marker(root);
-                if let Some(run) = marker.parent() {
-                    crate::remote::transport::ensure_private_dir(run, unsafe { libc::getuid() })?;
-                }
-                crate::util::write_atomic(&marker, b"")?;
-                Ok(Self::Rex(Box::new(host)))
-            }
-        }
+        crate::util::write_atomic(&marker, b"")?;
+        Ok(Self::Rex(Box::new(host)))
     }
 
     pub fn mux(&self) -> &dyn Multiplexer {
-        match self {
-            Self::Tmux { mux, .. } => mux,
-            Self::Rex(rex) => &rex.mux,
-        }
+        let Self::Rex(rex) = self;
+        &rex.mux
     }
 
     pub fn placement(&self) -> Option<RexPlacement> {
-        match self {
-            Self::Tmux { .. } => None,
-            Self::Rex(rex) => Some(RexPlacement {
-                host_label: rex.host_label.clone(),
-                instance_id: rex.instance_id.clone(),
-                sessions: Default::default(),
-            }),
-        }
+        let Self::Rex(rex) = self;
+        Some(RexPlacement {
+            host_label: rex.host_label.clone(),
+            instance_id: rex.instance_id.clone(),
+            sessions: Default::default(),
+            blocks: Default::default(),
+            shells: Default::default(),
+        })
     }
 
-    /// Whether pane `index` of `execution` has its session.
     pub fn pane_alive(&self, execution: &Execution, index: usize) -> bool {
-        match self {
-            Self::Tmux { socket, .. } => {
-                session_alive(socket, &session_name(&execution.ex_id, index))
-            }
-            Self::Rex(rex) => rex.pane_alive(execution, index),
-        }
+        let Self::Rex(rex) = self;
+        rex.pane_alive(execution, index)
     }
 
-    /// End pane `index`'s session, if any, before it starts again.
-    pub fn kill_pane(&self, root: &NodeRoot, execution: &Execution, index: usize) {
-        match self {
-            Self::Tmux { socket, .. } => {
-                let name = session_name(&execution.ex_id, index);
-                let _ = super::execution::tmux(socket)
-                    .args(["kill-session", "-t", &format!("={name}")])
-                    .output();
-            }
-            Self::Rex(rex) => {
-                let name = session_name(&execution.ex_id, index);
-                let own: Vec<&str> = rex.recorded(execution, index).into_iter().collect();
-                rex.kill_owned(root, execution, &own, |label| label == name);
-            }
-        }
-    }
-
-    /// Start pane `spec.name`'s session running the login shell, with the
-    /// workspace's config, spawn variables and secrets in its environment.
     pub fn create(&self, root: &NodeRoot, spec: &NewSession) -> Result<Created> {
-        match self {
-            Self::Tmux { socket, .. } => {
-                let pane_id = new_session(
-                    socket,
-                    spec.conf,
-                    spec.name,
-                    spec.cwd,
-                    spec.config_path,
-                    spec.spawn_env,
-                    None,
-                )?;
-                if !spec.secrets.0.is_empty() {
-                    set_session_env(root, socket, spec.name, spec.secrets)?;
-                }
-                Ok(Created {
-                    pane_id,
-                    rex_session: None,
-                    _env: Vec::new(),
-                })
-            }
-            Self::Rex(rex) => {
-                // The shell flavor takes no environment, so each block sources
-                // it from its own read-once file.
-                let env = block_env(spec, std::env::vars());
-                let shell_env = secrets::export_file(root, &format!("{}.shell", spec.name), &env)?;
-                let label = rex.label(spec.name);
-                let (session, block) = rex.mux.create_hosted_session(
-                    &label,
-                    spec.window_label,
-                    spec.cwd,
-                    &shell_env,
-                )?;
-                let agent_env = secrets::export_file(root, spec.name, &env)?;
-                rex.mux.source_on_respawn(agent_env.to_path_buf());
-                Ok(Created {
-                    pane_id: block,
-                    rex_session: Some(session),
-                    _env: vec![shell_env, agent_env],
-                })
-            }
-        }
+        let Self::Rex(rex) = self;
+        let env = block_env(spec, std::env::vars());
+        let shell_env = secrets::export_file(root, &format!("{}.shell", spec.name), &env)?;
+        let label = rex.label(spec.name);
+        let (session, block) =
+            rex.mux
+                .create_hosted_session(&label, spec.window_label, spec.cwd, &shell_env)?;
+        Ok(Created {
+            pane_id: block,
+            rex_session: Some(session),
+            _env: vec![shell_env],
+        })
     }
 
-    /// End every session of `execution`, live or not.
     pub fn kill_execution(&self, root: &NodeRoot, execution: &Execution) {
-        match self {
-            Self::Tmux { socket, .. } => kill_execution(root, socket, &execution.ex_id),
-            Self::Rex(rex) => rex.kill_execution(root, execution),
-        }
+        let Self::Rex(rex) = self;
+        rex.kill_execution(root, execution);
     }
 }
 
 pub struct NewSession<'a> {
-    /// The tmux session name, `<ex_id>-<index>`.
+    /// The Rex session name, `<ex_id>-<index>`.
     pub name: &'a str,
     /// Rex window label: the workspace handle, which the Rex.app tab shows.
     pub window_label: &'a str,
-    pub conf: &'a Path,
     pub cwd: &'a Path,
     pub config_path: &'a Path,
     pub spawn_env: Option<(&'a Path, &'a str)>,
@@ -191,8 +109,16 @@ pub struct Created {
     _env: Vec<TempPath>,
 }
 
-/// What a tmux session of `spec` gets through `new_session` and
-/// `set_session_env`.
+impl Created {
+    pub fn wait_ready(&self) -> Result<()> {
+        for file in &self._env {
+            secrets::wait_consumed(file)?;
+        }
+        Ok(())
+    }
+}
+
+/// Workspace variables provided to each native block.
 fn session_env(spec: &NewSession) -> Secrets {
     let mut env = spec.secrets.clone();
     env.0.insert("COLORTERM".into(), "truecolor".into());
@@ -211,12 +137,15 @@ fn session_env(spec: &NewSession) -> Secrets {
     env
 }
 
-/// The environment of a Rex block of `spec`: the node's own, as a tmux
-/// server the node starts inherits it, under `session_env`. Rex blocks would
+/// The environment of a Rex block includes the node process environment
+/// and explicit workspace variables. Rex blocks would
 /// otherwise run with the Rex server's environment, which differs from the
 /// node's; on WSL it carries the Windows PATH, whose drvfs directories make
 /// shell startup files that search PATH take a second.
-fn block_env(spec: &NewSession, node_env: impl IntoIterator<Item = (String, String)>) -> Secrets {
+pub(super) fn block_env(
+    spec: &NewSession,
+    node_env: impl IntoIterator<Item = (String, String)>,
+) -> Secrets {
     let mut env = Secrets(
         node_env
             .into_iter()
@@ -241,7 +170,10 @@ fn block_own_env(name: &str) -> bool {
 /// answer has nothing running for it, so it is skipped with a warning.
 pub fn stop_execution(root: &NodeRoot, execution: &Execution) -> Result<()> {
     match SessionHost::for_execution(root, execution) {
-        Ok(host) => host.kill_execution(root, execution),
+        Ok(host) => {
+            host.kill_execution(root, execution);
+            super::execution::AgentMarker::sweep(root);
+        }
         Err(err) if execution.rex.is_some() => {
             tracing::warn!(ex_id = %execution.ex_id, "Rex server unavailable: {err:#}");
         }
@@ -299,7 +231,7 @@ impl RexHost {
         })
     }
 
-    /// The label of the session tmux would name `name`.
+    /// Root-scoped label of a workspace or shell session.
     fn label(&self, name: &str) -> String {
         format!("{}{name}", self.tag)
     }
@@ -310,7 +242,7 @@ impl RexHost {
         label.strip_prefix(&self.tag)
     }
 
-    /// This root's sessions, each named as its tmux session would be. A
+    /// This root's sessions, each identified by its workspace execution. A
     /// session one of `executions` recorded keeps that name after Rex
     /// renames it; any other is named by its label without the tag.
     pub fn sessions(&self, executions: &[&Execution]) -> Result<Vec<HostedSession>> {
@@ -332,8 +264,7 @@ impl RexHost {
             .collect())
     }
 
-    /// The sessions `executions` recorded on this server, each by the name
-    /// its tmux session would have.
+    /// Sessions recorded on this server, keyed by their logical execution identity.
     fn recorded_names<'a>(&self, executions: &[&'a Execution]) -> HashMap<&'a str, String> {
         executions
             .iter()
@@ -346,6 +277,12 @@ impl RexHost {
                     .sessions
                     .iter()
                     .map(|(index, id)| (id.as_str(), session_name(&execution.ex_id, *index)))
+                    .chain(
+                        placement
+                            .shells
+                            .iter()
+                            .map(|(slot, id)| (id.as_str(), format!("{}-{slot}", execution.ex_id))),
+                    )
             })
             .collect()
     }
@@ -359,18 +296,54 @@ impl RexHost {
     }
 
     fn pane_alive(&self, execution: &Execution, index: usize) -> bool {
+        let Some(placement) = execution.rex.as_ref() else {
+            return false;
+        };
+        let block = placement.blocks.get(&index);
+        if !placement.blocks.is_empty() && block.is_none() {
+            return false;
+        }
         self.recorded(execution, index).is_some_and(|id| {
-            self.mux
-                .read_hosted(&[id])
-                .is_ok_and(|mut reads| reads.remove(id).is_some_and(|read| !read.live().is_empty()))
+            self.mux.read_hosted(&[id]).is_ok_and(|mut reads| {
+                reads.remove(id).is_some_and(|read| {
+                    read.live()
+                        .iter()
+                        .any(|(id, _)| block.is_none_or(|block| block == id))
+                })
+            })
         })
     }
 
-    /// Live blocks of the panes of `executions`, each named as its tmux
-    /// session would be, so the observer reads both hosts alike. One read
+    /// Live blocks of `executions`, each assigned to its configured pane. One read
     /// covers every recorded session.
     pub fn live_panes(&self, executions: &[&Execution]) -> HashMap<String, LivePaneInfo> {
         let names = self.recorded_names(executions);
+        let blocks: HashMap<&str, String> = executions
+            .iter()
+            .filter_map(|execution| {
+                let placement = execution.rex.as_ref()?;
+                (placement.instance_id == self.instance_id).then_some((execution, placement))
+            })
+            .flat_map(|(execution, placement)| {
+                placement
+                    .blocks
+                    .iter()
+                    .map(|(index, block)| (block.as_str(), session_name(&execution.ex_id, *index)))
+            })
+            .collect();
+        let mut legacy = HashMap::new();
+        for execution in executions {
+            if let Some(placement) = execution.rex.as_ref()
+                && placement.instance_id == self.instance_id
+                && placement.blocks.is_empty()
+            {
+                for (index, session) in &placement.sessions {
+                    legacy
+                        .entry(session.as_str())
+                        .or_insert_with(|| session_name(&execution.ex_id, *index));
+                }
+            }
+        }
         let ids: Vec<&str> = names.keys().copied().collect();
         let reads = self.mux.read_hosted(&ids).unwrap_or_else(|err| {
             tracing::debug!("rex sessions unreadable: {err:#}");
@@ -382,7 +355,13 @@ impl RexHost {
                 tracing::debug!(session = %id, "rex session unreadable: {err:#}");
             }
             for (block, mut pane) in read.live() {
-                pane.session = names.get(id.as_str()).cloned();
+                let Some(identity) = blocks
+                    .get(block.as_str())
+                    .or_else(|| legacy.get(id.as_str()))
+                else {
+                    continue;
+                };
+                pane.session = Some(identity.clone());
                 live.insert(block, pane);
             }
         }
@@ -449,13 +428,19 @@ impl RexHost {
             .rex
             .iter()
             .filter(|placement| placement.instance_id == self.instance_id)
-            .flat_map(|placement| placement.sessions.values().map(String::as_str))
+            .flat_map(|placement| {
+                placement
+                    .sessions
+                    .values()
+                    .chain(placement.shells.values())
+                    .map(String::as_str)
+            })
             .collect()
     }
 }
 
 /// Present once the root started an execution on Rex: only then do gc and
-/// the observer look at the Rex server, which tmux-only nodes leave alone.
+/// the observer look at the Rex server.
 pub fn hosted_marker(root: &NodeRoot) -> PathBuf {
     root.path.join("run").join("rex-hosted")
 }
@@ -528,7 +513,6 @@ mod tests {
         fn rex(&self) -> &RexHost {
             match &self.host {
                 SessionHost::Rex(rex) => rex,
-                SessionHost::Tmux { .. } => unreachable!(),
             }
         }
 
@@ -606,6 +590,8 @@ mod tests {
                     .iter()
                     .map(|(index, id)| (*index, id.to_string()))
                     .collect(),
+                shells: Default::default(),
+                blocks: Default::default(),
             }),
         }
     }
@@ -630,7 +616,7 @@ mod tests {
                 &NewSession {
                     name: "x0123456789ab-0",
                     window_label: "feat-r",
-                    conf: Path::new("/unused"),
+
                     cwd: Path::new("/work"),
                     config_path: &config_path,
                     spawn_env: Some((&root.path, "w0123456789ab")),
@@ -640,6 +626,23 @@ mod tests {
             .unwrap();
         assert_eq!(created.pane_id, "block:b0");
         assert_eq!(created.rex_session.as_deref(), Some("session:new"));
+        let agent_file = super::secrets::export_file(
+            &root,
+            "agent",
+            &block_env(
+                &NewSession {
+                    name: "agent",
+                    window_label: "feat-r",
+                    cwd: Path::new("/work"),
+                    config_path: &config_path,
+                    spawn_env: Some((&root.path, "w0123456789ab")),
+                    secrets: &secrets,
+                },
+                std::env::vars(),
+            ),
+        )
+        .unwrap();
+        fake.rex().mux.source_on_respawn(agent_file.to_path_buf());
         let respawned = fake
             .rex()
             .mux
@@ -647,13 +650,14 @@ mod tests {
             .unwrap();
         assert_eq!(respawned, "block:agent");
 
-        let [shell_path, agent_path] = [0, 1].map(|i| created._env[i].to_path_buf());
+        let shell_path = created._env[0].to_path_buf();
+        let agent_path = agent_file.to_path_buf();
         for path in [&shell_path, &agent_path] {
             let env = std::fs::read_to_string(path).unwrap();
             assert!(env.contains("export WR8_SECRET='s3cr3t value'\n"), "{env}");
             assert!(env.contains("export COLORTERM=truecolor\n"), "{env}");
             assert!(env.contains(&format!("{}=", crate::frozen_config::FROZEN_CONFIG_ENV)));
-            // The node's own environment, which a tmux session inherits.
+            // The node's own environment, which a Rex session inherits.
             let path_line = format!(
                 "export PATH={}\n",
                 crate::shell::shell_quote(&std::env::var("PATH").unwrap())
@@ -702,7 +706,7 @@ mod tests {
         NewSession {
             name: "x0123456789ab-0",
             window_label: "feat-r",
-            conf: Path::new("/unused"),
+
             cwd: Path::new("/work"),
             config_path,
             spawn_env: Some((&root.path, "w0123456789ab")),
@@ -724,7 +728,7 @@ mod tests {
         std::fs::create_dir_all(&root.path).unwrap();
         let host = SessionHost::Rex(Box::new(fake.open(true).unwrap()));
         let execution = execution(&[], "instance-1");
-        host.kill_pane(&root, &execution, 0);
+        host.kill_execution(&root, &execution);
         let config_path = root.path.join("config.json");
         let created = host
             .create(&root, &new_session(&root, &config_path))
@@ -775,8 +779,8 @@ mod tests {
         let root = fake.root();
         let host = SessionHost::Rex(Box::new(fake.open(true).unwrap()));
         let execution = execution(&[], "instance-1");
-        host.kill_pane(&root, &execution, 0);
-        host.kill_pane(&root, &execution, 0);
+        host.kill_execution(&root, &execution);
+        host.kill_execution(&root, &execution);
         assert_eq!(
             fake.steps(),
             [
@@ -1062,6 +1066,42 @@ mod tests {
     }
 
     #[test]
+    fn renamed_interactive_shells_stay_owned_by_their_execution() {
+        let list = serde_json::json!({"sessions": [
+            {"session_id": "session:shell", "label": "debugging notes"},
+            {"session_id": "session:other", "label": "other notes"}
+        ]});
+        let fake = Fake::new(&[
+            ("session.list", &list.to_string()),
+            ("session.destroy", "{}"),
+        ]);
+        let mut current = execution(&[], "instance-1");
+        current
+            .rex
+            .as_mut()
+            .unwrap()
+            .shells
+            .insert("shell7".into(), "session:shell".into());
+        let named = fake.rex().sessions(&[&current]).unwrap();
+        assert_eq!(
+            named,
+            [HostedSession {
+                id: "session:shell".into(),
+                label: "x0123456789ab-shell7".into()
+            }]
+        );
+        fake.host.kill_execution(&fake.root(), &current);
+        let destroyed: Vec<_> = fake
+            .calls()
+            .into_iter()
+            .filter(|call| call.contains("session.destroy"))
+            .collect();
+        assert_eq!(destroyed.len(), 1);
+        assert!(destroyed[0].contains("session:shell"));
+        assert!(!destroyed[0].contains("session:other"));
+    }
+
+    #[test]
     fn killing_a_rex_execution_destroys_only_its_own_sessions() {
         let list = serde_json::json!({ "sessions": [
             { "session_id": "session:renamed", "label": "the agent renamed me" },
@@ -1136,17 +1176,17 @@ mod tests {
             let id = format!("\"session:{id}\"");
             destroyed().iter().filter(|call| call.contains(&id)).count()
         };
-        fake.host.kill_pane(&root, &a, 0);
+        fake.host.kill_execution(&root, &a);
         assert_eq!(
             ["a", "b", "pane1", "orphan"].map(destroys),
-            [1, 0, 0, 1],
+            [1, 0, 1, 1],
             "{:?}",
             destroyed()
         );
         fake.host.kill_execution(&root, &a);
         assert_eq!(
             ["a", "b", "pane1", "orphan"].map(destroys),
-            [2, 0, 1, 2],
+            [2, 0, 2, 2],
             "{:?}",
             destroyed()
         );
@@ -1171,7 +1211,7 @@ mod tests {
             &NewSession {
                 name: "x0123456789ab-0",
                 window_label: "feat-r",
-                conf: Path::new("/unused"),
+
                 cwd: Path::new("/work"),
                 config_path: Path::new("/node/config.json"),
                 spawn_env: Some((root, "w0123456789ab")),
@@ -1193,13 +1233,13 @@ mod tests {
     }
 
     #[test]
-    fn a_block_gets_none_of_the_variables_a_tmux_session_is_kept_from() {
+    fn a_block_gets_none_of_the_variables_a_session_is_kept_from() {
         let node = |name: &str, value: &str| (name.to_string(), value.to_string());
         let env = block_env(
             &NewSession {
                 name: "x0123456789ab-0",
                 window_label: "feat-r",
-                conf: Path::new("/unused"),
+
                 cwd: Path::new("/work"),
                 config_path: Path::new("/node/config.json"),
                 spawn_env: None,
@@ -1207,7 +1247,6 @@ mod tests {
             },
             [
                 node("PATH", "/usr/bin"),
-                node("TMUX", "/tmp/tmux-1000/default,1,0"),
                 node("XDG_STATE_HOME", "/node/state"),
                 node(super::super::NODE_ROOT_ENV, "/node"),
                 node(super::super::spawn::SESSION_ROOT_ENV, "/node"),
@@ -1303,6 +1342,41 @@ mod tests {
         )]);
         assert!(!exited.host.pane_alive(&ex, 0));
         assert!(exited.rex().live_panes(&[&ex]).is_empty());
+    }
+
+    #[test]
+    fn unrecorded_blocks_cannot_impersonate_a_missing_configured_pane() {
+        let running = Fake::new(&[(
+            "rex.session.attach",
+            &read_reply(
+                &[(
+                    "session:s",
+                    &[("block:owned", RUNNING), ("block:user-split", RUNNING)],
+                )],
+                &[],
+            ),
+        )]);
+        let mut current = execution(&[(0, "session:s"), (1, "session:s")], "instance-1");
+        current.rex.as_mut().unwrap().blocks =
+            BTreeMap::from([(0, "block:owned".into()), (1, "block:closed".into())]);
+        assert!(running.host.pane_alive(&current, 0));
+        assert!(!running.host.pane_alive(&current, 1));
+        let mut missing_mapping = current.clone();
+        missing_mapping.rex.as_mut().unwrap().blocks.remove(&1);
+        assert!(!running.host.pane_alive(&missing_mapping, 1));
+        let live = running.rex().live_panes(&[&current]);
+        let mut ids: Vec<_> = live.keys().map(String::as_str).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["block:owned"]);
+        assert_eq!(
+            live["block:owned"].session.as_deref(),
+            Some("x0123456789ab-0")
+        );
+        assert!(
+            !live
+                .values()
+                .any(|pane| pane.session.as_deref() == Some("x0123456789ab-1"))
+        );
     }
 
     #[test]

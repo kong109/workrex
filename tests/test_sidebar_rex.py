@@ -13,7 +13,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -22,9 +21,9 @@ from .conftest import (
     get_test_backends,
     get_window_name,
     poll_until,
-    run_workmux_command,
+    run_workrex_command,
     skip_if_backend_unavailable,
-    write_workmux_config,
+    write_workrex_config,
 )
 from .rex_env import RexEnvironment
 
@@ -33,35 +32,35 @@ SPINNER = re.compile("[⠀-⣿]")
 
 
 class SidebarRex(RexEnvironment):
-    def __init__(self, tmp_path: Path, workmux: Path):
+    def __init__(self, tmp_path: Path, workrex: Path):
         super().__init__(tmp_path)
-        self.workmux = workmux
+        self.workrex = workrex
 
 
 @pytest.fixture
-def rex(request, tmp_path: Path, workmux_exe_path: Path):
+def rex(request, tmp_path: Path, workrex_exe_path: Path):
     if "rex" not in get_test_backends(request.config):
         pytest.skip("Rex sidebar tests need --backend=rex")
     skip_if_backend_unavailable("rex")
-    env = SidebarRex(tmp_path, workmux_exe_path)
+    env = SidebarRex(tmp_path, workrex_exe_path)
     env.start_server()
     # Sidebar sockets live in TMPDIR and must fit macOS sockaddr_un.
     short_tmp = env.socket_dir / "t"
     short_tmp.mkdir()
     env.env["TMPDIR"] = str(short_tmp)
-    env.env["WORKMUX_BACKEND"] = "rex"
+    env.env["WORKREX_BACKEND"] = "rex"
     claude = env.fake_bin_dir / "claude"
     claude.write_text("#!/bin/sh\nexec sleep 100000\n")
     claude.chmod(0o755)
     yield env
-    env.run_command([str(workmux_exe_path), "sidebar", "off"], check=False)
+    env.run_command([str(workrex_exe_path), "sidebar", "off"], check=False)
     env.stop_server()
 
 
-def cli(env: SidebarRex, *args: str, extra_env: Optional[dict] = None):
+def cli(env: SidebarRex, *args: str, extra_env: dict | None = None):
     run_env = dict(env.env, **(extra_env or {}))
     result = subprocess.run(
-        [str(env.workmux), "sidebar", *args],
+        [str(env.workrex), "sidebar", *args],
         cwd=env.tmp_path,
         env=run_env,
         capture_output=True,
@@ -76,7 +75,7 @@ def shell_layout(env: SidebarRex) -> dict:
     return env._shell_layout()
 
 
-def new_window(env: SidebarRex, session_id: str, layout: Optional[dict] = None):
+def new_window(env: SidebarRex, session_id: str, layout: dict | None = None):
     created = env.api(
         "session.new_window",
         {
@@ -97,11 +96,11 @@ def tiled(window: dict) -> dict:
     return next(layer for layer in window["layers"] if layer["kind"] == "tiled")
 
 
-def root_split(window: dict) -> Optional[dict]:
+def root_split(window: dict) -> dict | None:
     return tiled(window)["layout"].get("split")
 
 
-def sidebar_of(window: dict) -> Optional[dict]:
+def sidebar_of(window: dict) -> dict | None:
     """The window's sidebar block, when it sits on the left of the root split."""
     split = root_split(window)
     if split is None:
@@ -154,12 +153,12 @@ def split_layout(env: SidebarRex) -> dict:
 
 
 def sidebar_files(env: SidebarRex) -> Path:
-    return env.home_path / ".local/state/workmux/sidebar"
+    return env.home_path / ".local/state/workrex/sidebar"
 
 
-def daemon_pid(env: SidebarRex) -> Optional[int]:
+def daemon_pid(env: SidebarRex) -> int | None:
     for path in sidebar_files(env).glob("rex-*-daemon.json"):
-        pid = json.loads(path.read_text())["globals"].get("@workmux_sidebar_daemon_pid")
+        pid = json.loads(path.read_text())["globals"].get("@workrex_sidebar_daemon_pid")
         if pid:
             return int(pid)
     return None
@@ -199,7 +198,7 @@ def test_a_new_window_gets_a_sidebar_from_its_creation_event(rex):
     assert sidebar_count(windows(env, env.session_id)[window_id]) == 1
 
 
-def session_labeled(env: SidebarRex, label: str) -> Optional[str]:
+def session_labeled(env: SidebarRex, label: str) -> str | None:
     for session in env.api("session.list")["sessions"]:
         if session.get("label") == label:
             return session["session_id"]
@@ -211,6 +210,67 @@ def gets_sidebars(env: SidebarRex, session_id: str) -> bool:
     return poll_until(
         lambda: all_have_sidebars(env, session_id), timeout=5.0, poll_interval=0.05
     )
+
+
+def has_one_root_sidebar(window: dict) -> bool:
+    return sidebar_of(window) is not None and sidebar_count(window) == 1
+
+
+# How long a window may show two sidebars. Repairing a nested sidebar
+# places the root one before it closes the nested one, which takes about
+# 20-90 ms.
+MAX_DOUBLE_SIDEBAR = 0.25
+
+
+def assert_settles_to_one_sidebar_each(env: SidebarRex, session_id: str) -> None:
+    """Every window of the session settles to exactly one sidebar, at its
+    root, within 5 s, still has exactly one 0.5 s later, and never shows
+    more than one for longer than `MAX_DOUBLE_SIDEBAR`.
+
+    A split that lands between the daemon's read and its placement nests the
+    sidebar. The next pass places a root sidebar, then closes the nested one,
+    so the window shows two for a moment before it settles."""
+    doubled_since: dict[str, float] = {}
+
+    def read() -> dict:
+        now = time.monotonic()
+        current = windows(env, session_id)
+        for window_id, window in current.items():
+            if sidebar_count(window) < 2:
+                doubled_since.pop(window_id, None)
+                continue
+            since = doubled_since.setdefault(window_id, now)
+            assert now - since <= MAX_DOUBLE_SIDEBAR, (
+                f"{window.get('label')} showed {sidebar_count(window)} sidebars "
+                f"for {now - since:.2f} s",
+                layers(env, session_id),
+            )
+        return current
+
+    assert poll_until(
+        lambda: all(has_one_root_sidebar(w) for w in read().values()),
+        timeout=5.0,
+        poll_interval=0.02,
+    ), (layouts(env, session_id), layers(env, session_id))
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        current = read()
+        assert all(has_one_root_sidebar(w) for w in current.values()), (
+            layouts(env, session_id),
+            layers(env, session_id),
+        )
+        time.sleep(0.02)
+
+
+def layers(env: SidebarRex, session_id: str) -> dict:
+    """Every layer of every window, tiled and floating, with block labels."""
+    return {
+        window.get("label"): [
+            (layer["kind"], [block.get("label") for block in layer["blocks"]])
+            for layer in window["layers"]
+        ]
+        for window in windows(env, session_id).values()
+    }
 
 
 def shape(window: dict) -> object:
@@ -252,16 +312,16 @@ def test_add_gets_a_sidebar_in_either_mode(rex, _template_git_repo, mode):
     repo = env.tmp_path
     shutil.copytree(_template_git_repo / ".git", repo / ".git")
     shutil.copy(_template_git_repo / ".gitignore", repo / ".gitignore")
-    (env.home_path / ".config" / "workmux").mkdir(parents=True, exist_ok=True)
-    (env.home_path / ".config" / "workmux" / "config.yaml").write_text("{}\n")
+    (env.home_path / ".config" / "workrex").mkdir(parents=True, exist_ok=True)
+    (env.home_path / ".config" / "workrex" / "config.yaml").write_text("{}\n")
     # Two panes: the add splits its first pane while the daemon places the
     # sidebar, and the sidebar must still wrap the whole window.
-    write_workmux_config(repo)
+    write_workrex_config(repo)
     cli(env, "on")
     branch = f"feat-{mode}"
     args = "--background" if mode == "session" else "--mode window --background"
 
-    run_workmux_command(env, env.workmux, repo, f"add {branch} {args}")
+    run_workrex_command(env, env.workrex, repo, f"add {branch} {args}")
 
     if mode == "session":
         session_id = session_labeled(env, get_session_name(branch))
@@ -274,9 +334,7 @@ def test_add_gets_a_sidebar_in_either_mode(rex, _template_git_repo, mode):
             for w in windows(env, session_id).values()
             if w.get("label") == get_window_name(branch)
         ]
-    assert gets_sidebars(env, session_id), layouts(env, session_id)
-    for window in windows(env, session_id).values():
-        assert sidebar_count(window) == 1, layouts(env, session_id)
+    assert_settles_to_one_sidebar_each(env, session_id)
     assert len(tiled(windows(env, session_id)[added["window_id"]])["blocks"]) == 3
 
 
@@ -306,7 +364,7 @@ def test_dragging_one_sidebar_moves_every_sidebar_and_persists(rex):
 
     assert poll_until(followed, timeout=1.0, poll_interval=0.05)
     settings = json.loads(
-        (env.home_path / ".local/state/workmux/settings.json").read_text()
+        (env.home_path / ".local/state/workrex/settings.json").read_text()
     )
     # Headless blocks are 80 columns wide.
     assert settings["sidebar_width"] == 32
@@ -345,7 +403,7 @@ def test_opening_and_closing_a_pane_keeps_every_sidebar_width(rex):
     cli(env, "on")
     assert poll_until(lambda: all_have_sidebars(env, env.session_id), timeout=2)
     [window_id] = [w for w in windows(env, env.session_id) if w != other]
-    settings = env.home_path / ".local/state/workmux/settings.json"
+    settings = env.home_path / ".local/state/workrex/settings.json"
 
     def ratios() -> dict:
         return {
@@ -466,7 +524,10 @@ def test_a_killed_daemon_is_restarted_by_the_next_command(rex):
     pid = daemon_pid(env)
     assert pid is not None
     command = subprocess.run(
-        ["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True
+        ["ps", "-o", "command=", "-p", str(pid)],
+        check=False,
+        capture_output=True,
+        text=True,
     ).stdout
     assert "_sidebar-daemon" in command, command
     os.kill(pid, signal.SIGKILL)
@@ -500,7 +561,10 @@ def test_the_daemon_exits_after_its_server_dies(rex):
 
 def events_children(pid: int) -> list:
     rows = subprocess.run(
-        ["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True
+        ["ps", "-axo", "pid=,ppid=,command="],
+        check=False,
+        capture_output=True,
+        text=True,
     ).stdout
     return [
         int(fields[0])
@@ -590,10 +654,10 @@ def start_agent(env: SidebarRex) -> None:
     assert block is not None
     env.mux_command(["send", "-b", block, "claude\n"])
     assert poll_until(
-        lambda: (env.block_call(block, "process") or {})
-        .get("foreground", {})
-        .get("name")
-        == "sleep",
+        lambda: (
+            (env.block_call(block, "process") or {}).get("foreground", {}).get("name")
+            == "sleep"
+        ),
         timeout=5,
     )
 
@@ -601,7 +665,7 @@ def start_agent(env: SidebarRex) -> None:
 def set_status(env: SidebarRex, status: str) -> None:
     assert env.session_id is not None and env.runner_block_id is not None
     subprocess.run(
-        [str(env.workmux), "set-window-status", status],
+        [str(env.workrex), "set-window-status", status],
         env=dict(env.env, REX_SESSION=env.session_id, REX_BLOCK=env.runner_block_id),
         cwd=env.tmp_path,
         check=True,
@@ -748,7 +812,8 @@ def test_a_refused_jump_shows_the_fix_in_the_sidebar_until_a_key(rex):
     ), capture(env, sidebar)
 
     jump = subprocess.run(
-        [str(env.workmux), "sidebar", "jump", "1"],
+        [str(env.workrex), "sidebar", "jump", "1"],
+        check=False,
         env=dict(env.env, REX_SESSION=env.session_id, REX_BLOCK=env.runner_block_id),
         cwd=env.tmp_path,
         capture_output=True,
@@ -799,7 +864,7 @@ def test_an_agent_that_exits_leaves_the_running_sidebar(rex):
     )
     agent = made["block_ids"][0]
     subprocess.run(
-        [str(env.workmux), "set-window-status", "working"],
+        [str(env.workrex), "set-window-status", "working"],
         env=dict(env.env, REX_SESSION=env.session_id, REX_BLOCK=agent),
         cwd=env.tmp_path,
         check=True,
@@ -832,7 +897,8 @@ def test_a_sidebar_started_without_a_server_exits_at_once(rex):
         REX_BLOCK=env.runner_block_id,
     )
     done = subprocess.run(
-        [str(env.workmux), "_sidebar-run"],
+        [str(env.workrex), "_sidebar-run"],
+        check=False,
         env=run_env,
         cwd=env.tmp_path,
         stdin=subprocess.DEVNULL,
@@ -845,9 +911,9 @@ def test_a_sidebar_started_without_a_server_exits_at_once(rex):
 def closed_windows(env: SidebarRex) -> dict:
     [daemon] = sidebar_files(env).glob("rex-*-daemon.json")
     return {
-        window: options["@workmux_sidebar_closed"]
+        window: options["@workrex_sidebar_closed"]
         for window, options in json.loads(daemon.read_text()).get("windows", {}).items()
-        if "@workmux_sidebar_closed" in options
+        if "@workrex_sidebar_closed" in options
     }
 
 
@@ -907,7 +973,7 @@ def test_a_balance_for_fewer_panes_is_not_a_drag(rex):
     cli(env, "on")
     assert poll_until(lambda: all_have_sidebars(env, env.session_id), timeout=2)
     [window_id] = list(windows(env, env.session_id))
-    settings = env.home_path / ".local/state/workmux/settings.json"
+    settings = env.home_path / ".local/state/workrex/settings.json"
     side = placed_sidebar(windows(env, env.session_id)[window_id])
     applied = side["ratio"]
     pane = first_block(side["split"]["after"])
@@ -956,9 +1022,9 @@ def test_a_keyboard_step_onto_an_even_share_is_saved(rex):
     cli(env, "on")
     assert poll_until(lambda: all_have_sidebars(env, env.session_id), timeout=2)
     [window_id] = list(windows(env, env.session_id))
-    settings = env.home_path / ".local/state/workmux/settings.json"
+    settings = env.home_path / ".local/state/workrex/settings.json"
 
-    def saved() -> Optional[int]:
+    def saved() -> int | None:
         if not settings.exists():
             return None
         return json.loads(settings.read_text()).get("sidebar_width")
@@ -978,3 +1044,74 @@ def test_a_keyboard_step_onto_an_even_share_is_saved(rex):
         assert poll_until(lambda: saved() == cols, timeout=2), (ratio, saved())
         now = placed_sidebar(windows(env, env.session_id)[window_id])["ratio"]
         assert abs(now - ratio) < 0.01, (ratio, now)
+
+
+def test_top_sidebar_uses_a_native_vertical_split_and_keeps_focus(rex):
+    env = rex
+    new_window(env, env.session_id, split_layout(env))
+    before = view(env, env.session_id)
+
+    cli(env, "on", "--position", "top", "--height", "3")
+
+    after = view(env, env.session_id)
+    focused = {w["window_id"]: w.get("focused_block_id") for w in before["windows"]}
+    for window in after["windows"]:
+        sidebar = placed_sidebar(window)
+        split = sidebar["split"]
+        assert split["direction"] == "vertical"
+        assert split["before"]["rect"][2] == pytest.approx(1.0)
+        assert sidebar_count(window) == 1
+        assert window.get("focused_block_id") == focused[window["window_id"]]
+        assert sidebar["ratio"] == pytest.approx(3 / 24, abs=0.02)
+
+    cli(env, "on", "--position", "left", "--width", "30")
+    for window in view(env, env.session_id)["windows"]:
+        sidebar = placed_sidebar(window)
+        assert sidebar["split"]["direction"] == "horizontal"
+        assert sidebar_count(window) == 1
+        assert window.get("focused_block_id") == focused[window["window_id"]]
+
+
+def test_dragging_a_top_sidebar_shares_rows_and_preserves_column_settings(rex):
+    env = rex
+    new_window(env, env.session_id)
+    cli(env, "on", "--position", "top")
+    [window, _] = windows(env, env.session_id).values()
+    sidebar = placed_sidebar(window)
+    env.api(
+        "session.resize_pane",
+        {
+            "session_id": env.session_id,
+            "direction": "vertical",
+            "before_block_id": sidebar["block_id"],
+            "after_block_id": first_block(sidebar["split"]["after"]),
+            "ratio": 0.25,
+        },
+    )
+
+    def followed():
+        return all(
+            abs(placed_sidebar(w)["ratio"] - 0.25) < 0.02
+            for w in windows(env, env.session_id).values()
+        )
+
+    assert poll_until(followed, timeout=2.0)
+    settings = json.loads(
+        (env.home_path / ".local/state/workrex/settings.json").read_text()
+    )
+    assert settings["sidebar_height"] == 6
+    assert settings.get("sidebar_width") is None
+
+
+def test_configured_top_sidebar_uses_its_height_percentage(rex):
+    env = rex
+    config = env.home_path / ".config/workrex/config.yaml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("sidebar:\n  position: top\n  height: 25%\n")
+
+    cli(env, "on")
+
+    for window in view(env, env.session_id)["windows"]:
+        sidebar = placed_sidebar(window)
+        assert sidebar["split"]["direction"] == "vertical"
+        assert sidebar["ratio"] == pytest.approx(0.25, abs=0.02)

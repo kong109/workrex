@@ -50,47 +50,43 @@ impl App {
             .and_then(|pane_id| self.capture_preview(&pane_id));
     }
 
-    /// The pane's output: captured locally, or for a remote agent no local
-    /// pane relays, the last capture its node returned while a new one is
-    /// fetched.
+    /// Local block output, or the last native remote capture while it refreshes.
     fn capture_preview(&mut self, pane_id: &str) -> Option<String> {
-        let detached = self
+        let remote = self
             .agents
             .iter()
-            .find(|agent| agent.pane_id == pane_id && crate::remote::agents::is_detached(agent))
+            .find(|agent| agent.pane_id == pane_id)
             .and_then(|agent| agent.remote.clone());
-        let Some(remote) = detached else {
+        let Some(remote) = remote else {
             return self.mux.capture_pane(pane_id, PREVIEW_LINES);
         };
-        let busy = self.remote_preview_fetch.is_some_and(|(started, running)| {
-            started.elapsed()
-                < if running {
-                    REMOTE_PREVIEW_TIMEOUT
-                } else {
-                    REMOTE_PREVIEW_INTERVAL
-                }
-        });
+        let busy = self
+            .remote_preview_fetch
+            .as_ref()
+            .is_some_and(|(at, started, running)| {
+                *at == remote.at
+                    && started.elapsed()
+                        < if *running {
+                            REMOTE_PREVIEW_TIMEOUT
+                        } else {
+                            REMOTE_PREVIEW_INTERVAL
+                        }
+            });
         let placeholder = format!("(fetching from {})", remote.at.remote);
         if !busy {
-            self.remote_preview_fetch = Some((std::time::Instant::now(), true));
+            self.remote_preview_fetch = Some((remote.at.clone(), std::time::Instant::now(), true));
             let tx = self.event_tx.clone();
-            let config = self.config.clone();
             let pane_id = pane_id.to_string();
+            let at = remote.at.clone();
             std::thread::spawn(move || {
-                let capture = crate::remote::agents::capture_from(
-                    &config,
-                    &remote.at.remote,
-                    &remote.at.ws_id,
-                    Some(remote.at.pane),
-                    PREVIEW_LINES,
-                )
-                .map_err(|err| format!("{err:#}"));
-                let _ = tx.send(AppEvent::RemotePreview(pane_id, capture));
+                let capture = crate::remote::agents::capture_native(&at, PREVIEW_LINES)
+                    .map_err(|err| format!("{err:#}"));
+                let _ = tx.send(AppEvent::RemotePreview(pane_id, at, capture));
             });
         }
         Some(
             self.remote_previews
-                .get(pane_id)
+                .get(&remote.at)
                 .cloned()
                 .unwrap_or(placeholder),
         )

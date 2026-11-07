@@ -12,7 +12,7 @@ use crate::{git, naming};
 use super::context::WorkflowContext;
 use super::types::RenameResult;
 
-/// Rename a worktree, its tmux window/session, per-worktree git metadata,
+/// Rename a worktree, its Rex window/session, per-worktree git metadata,
 /// agent state files, and (optionally) the branch.
 pub fn rename(
     user_target: &str,
@@ -22,7 +22,7 @@ pub fn rename(
 ) -> Result<RenameResult> {
     // 1. Resolve source worktree. `user_target` may be a handle OR a branch;
     //    `find_worktree` handles both. Always derive the authoritative handle
-    //    from the worktree's directory basename to keep metadata/tmux/state
+    //    from the worktree's directory basename to keep metadata/Rex/state
     //    migrations consistent regardless of what the user typed.
     let (old_path, branch_name) = git::find_worktree(user_target).with_context(|| {
         format!(
@@ -49,7 +49,7 @@ pub fn rename(
 
     // 3. Derive new handle (slugify + validate). Treat new_name as an explicit
     //    handle override, matching `add --name` semantics: prefix is bypassed,
-    //    slugify still runs to keep it filesystem/tmux safe.
+    //    slugify still runs to keep it filesystem/Rex safe.
     let new_handle = naming::derive_handle(&branch_name, Some(new_name), &context.config)?;
 
     if new_handle == old_handle && !rename_branch {
@@ -63,7 +63,7 @@ pub fn rename(
     if rename_branch && branch_name == "(detached)" {
         return Err(anyhow!(
             "Cannot rename the branch of a detached HEAD worktree. \
-             Omit --branch to rename only the worktree and tmux window."
+             Omit --branch to rename only the worktree and Rex window."
         ));
     }
 
@@ -104,7 +104,7 @@ pub fn rename(
         return Err(anyhow!("Branch '{}' already exists", b));
     }
 
-    // 7. tmux target collision check (only if handle is changing)
+    // 7. Rex target collision check (only if handle is changing)
     let mode = git::get_worktree_mode(&old_handle);
     let attachment = git::get_worktree_attachment_in(&old_handle, Some(&context.execution_dir));
     let old_full = prefixed(&context.prefix, &old_handle);
@@ -115,7 +115,7 @@ pub fn rename(
         match mode {
             MuxMode::Session => {
                 if context.mux.session_exists(&new_full)? {
-                    return Err(anyhow!("tmux session '{}' already exists", new_full));
+                    return Err(anyhow!("Rex session '{}' already exists", new_full));
                 }
             }
             MuxMode::Window => {
@@ -123,7 +123,7 @@ pub fn rename(
                 let re = duplicate_name_regex(&new_full);
                 if all.iter().any(|w| re.is_match(w)) {
                     return Err(anyhow!(
-                        "tmux window '{}' (or a numbered duplicate) already exists",
+                        "Rex window '{}' (or a numbered duplicate) already exists",
                         new_full
                     ));
                 }
@@ -177,19 +177,19 @@ pub fn rename(
         info!(old = branch_name, new = nb, "rename:branch renamed");
     }
 
-    // 13. Rename tmux window(s)/session
-    let mut tmux_renamed = 0;
+    // 13. Rename Rex window(s)/session
+    let mut terminal_targets_renamed = 0;
     if mux_running && attachment.manages_mux() && new_handle != old_handle {
         match mode {
             MuxMode::Session => {
                 if context.mux.session_exists(&old_full).unwrap_or(false) {
                     match context.mux.rename_session(&old_full, &new_full) {
                         Ok(()) => {
-                            tmux_renamed += 1;
+                            terminal_targets_renamed += 1;
                             info!(old = %old_full, new = %new_full, "rename:session renamed");
                         }
                         Err(e) => {
-                            warn!(error = %e, "rename:failed to rename tmux session");
+                            warn!(error = %e, "rename:failed to rename Rex session");
                         }
                     }
                 }
@@ -201,9 +201,9 @@ pub fn rename(
                 for old_name in &matches {
                     let new_name = remap_duplicate_name(old_name, &old_full, &new_full);
                     if let Err(e) = context.mux.rename_window(old_name, &new_name) {
-                        warn!(window = old_name, error = %e, "rename:tmux rename_window failed");
+                        warn!(window = old_name, error = %e, "rename:Rex rename_window failed");
                     } else {
-                        tmux_renamed += 1;
+                        terminal_targets_renamed += 1;
                         info!(old = old_name, new = new_name, "rename:window renamed");
                     }
                 }
@@ -240,7 +240,7 @@ pub fn rename(
         new_handle,
         old_branch: branch_name,
         new_branch,
-        tmux_renamed,
+        terminal_targets_renamed,
         agents_migrated,
     })
 }
@@ -271,40 +271,40 @@ mod tests {
 
     #[test]
     fn remap_exact_match() {
-        assert_eq!(remap_duplicate_name("wm-old", "wm-old", "wm-new"), "wm-new");
+        assert_eq!(remap_duplicate_name("wr-old", "wr-old", "wr-new"), "wr-new");
     }
 
     #[test]
     fn remap_numeric_suffix() {
         assert_eq!(
-            remap_duplicate_name("wm-old-2", "wm-old", "wm-new"),
-            "wm-new-2"
+            remap_duplicate_name("wr-old-2", "wr-old", "wr-new"),
+            "wr-new-2"
         );
         assert_eq!(
-            remap_duplicate_name("wm-old-42", "wm-old", "wm-new"),
-            "wm-new-42"
+            remap_duplicate_name("wr-old-42", "wr-old", "wr-new"),
+            "wr-new-42"
         );
     }
 
     #[test]
     fn remap_non_matching_unchanged() {
-        assert_eq!(remap_duplicate_name("other", "wm-old", "wm-new"), "other");
+        assert_eq!(remap_duplicate_name("other", "wr-old", "wr-new"), "other");
         // Non-numeric suffix: not a duplicate pattern
         assert_eq!(
-            remap_duplicate_name("wm-old-abc", "wm-old", "wm-new"),
-            "wm-old-abc"
+            remap_duplicate_name("wr-old-abc", "wr-old", "wr-new"),
+            "wr-old-abc"
         );
     }
 
     #[test]
     fn duplicate_regex_matches_base_and_suffixes() {
-        let re = duplicate_name_regex("wm-feature");
-        assert!(re.is_match("wm-feature"));
-        assert!(re.is_match("wm-feature-2"));
-        assert!(re.is_match("wm-feature-99"));
-        assert!(!re.is_match("wm-feature-abc"));
-        assert!(!re.is_match("wm-feature-x"));
-        assert!(!re.is_match("wm-feature2"));
+        let re = duplicate_name_regex("wr-feature");
+        assert!(re.is_match("wr-feature"));
+        assert!(re.is_match("wr-feature-2"));
+        assert!(re.is_match("wr-feature-99"));
+        assert!(!re.is_match("wr-feature-abc"));
+        assert!(!re.is_match("wr-feature-x"));
+        assert!(!re.is_match("wr-feature2"));
         assert!(!re.is_match("other"));
     }
 }

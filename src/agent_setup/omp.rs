@@ -1,9 +1,9 @@
 //! OMP agent status tracking setup.
 //!
 //! Detects OMP via its agent directory at `~/.omp/agent/` and writes
-//! `workmux-status.ts` to that agent directory.
+//! `workrex-status.ts` to that agent directory.
 //!
-//! Installs extension by writing `workmux-status.ts` to the extensions directory.
+//! Installs extension by writing `workrex-status.ts` to the extensions directory.
 
 use anyhow::Result;
 use std::ffi::OsString;
@@ -13,8 +13,7 @@ use super::{StatusCheck, UpdatePreview};
 use crate::agent_setup::extension_file;
 
 /// The OMP extension source, embedded at compile time.
-const EXTENSION_SOURCE: &str =
-    crate::rebrand_include!("../../resources/omp/extensions/workmux-status.ts");
+const EXTENSION_SOURCE: &str = include_str!("../../resources/omp/extensions/workrex-status.ts");
 
 fn omp_agent_dir() -> Option<PathBuf> {
     let home = home::home_dir()?;
@@ -57,7 +56,7 @@ pub fn detect() -> Option<&'static str> {
     None
 }
 
-/// Check if workmux extension is installed for OMP.
+/// Check if workrex extension is installed for OMP.
 pub fn check() -> Result<StatusCheck> {
     extension_file::check_installed(extension_path().as_deref(), EXTENSION_SOURCE)
 }
@@ -78,7 +77,7 @@ pub(crate) fn update_preview() -> Result<Option<UpdatePreview>> {
     }))
 }
 
-/// Install workmux extension for OMP.
+/// Install workrex extension for OMP.
 /// Returns a description of what was done.
 pub fn install() -> Result<String> {
     let dir =
@@ -102,7 +101,7 @@ pub(crate) fn install_dir(dir: &Path) -> Result<String> {
     ))
 }
 
-/// Remove workmux extension for OMP agent.
+/// Remove workrex extension for OMP agent.
 ///
 /// Deletes the extension file and cleans up empty parent directories.
 pub fn uninstall() -> Result<String> {
@@ -145,18 +144,19 @@ mod tests {
             .expect("agent_start handler");
 
         assert!(registration < agent_start);
-        assert!(EXTENSION_SOURCE.contains(crate::rebrand!(
-            "await pi.exec(\"workmux\", [\"register-agent\"]).catch(() => {});"
-        )));
+        assert!(
+            EXTENSION_SOURCE
+                .contains("await pi.exec(\"workrex\", [\"register-agent\"]).catch(() => {});")
+        );
     }
 
     #[test]
     fn test_extension_without_registration_needs_update() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("workmux-status.ts");
+        let path = temp.path().join("workrex-status.ts");
         let previous_source = EXTENSION_SOURCE
             .replace(
-                crate::rebrand!("  pi.on(\"session_start\", async () => {\n    pendingPrompt = undefined;\n    await pi.exec(\"workmux\", [\"register-agent\"]).catch(() => {});\n  });\n\n"),
+                "  pi.on(\"session_start\", async () => {\n    pendingPrompt = undefined;\n    await pi.exec(\"workrex\", [\"register-agent\"]).catch(() => {});\n  });\n\n",
                 "",
             );
         std::fs::write(&path, previous_source).unwrap();
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn test_uninstall_no_omp_extension_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let ext_path = tmp.path().join("extensions/workmux-status.ts");
+        let ext_path = tmp.path().join("extensions/workrex-status.ts");
         let result = uninstall_at(ext_path).unwrap();
         assert!(result.contains("No omp extension found"));
     }
@@ -205,7 +205,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ext_dir = tmp.path().join("extensions");
         std::fs::create_dir_all(&ext_dir).unwrap();
-        let ext_path = ext_dir.join("workmux-status.ts");
+        let ext_path = ext_dir.join("workrex-status.ts");
         std::fs::write(&ext_path, "// extension").unwrap();
 
         let result = uninstall_at(ext_path.clone()).unwrap();
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn test_uninstall_omp_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        let ext_path = tmp.path().join("extensions/workmux-status.ts");
+        let ext_path = tmp.path().join("extensions/workrex-status.ts");
         let result1 = uninstall_at(ext_path.clone()).unwrap();
         assert!(result1.contains("No omp extension found"));
         let result2 = uninstall_at(ext_path).unwrap();

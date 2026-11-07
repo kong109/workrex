@@ -21,7 +21,7 @@ pub fn extract_worktree_name(
         // Session mode: worktree name is in the session name
         (stripped.to_string(), false)
     } else {
-        // Non-workmux agent: derive from filesystem path
+        // Non-workrex agent: derive from filesystem path
         derive_worktree_name_from_path(path)
     }
 }
@@ -105,8 +105,7 @@ enum LabelSource {
 /// third line in the renderer, and promoting it to primary/secondary caused
 /// duplication and made the first line jump around as the agent's task changed.
 ///
-/// `window_cmd` is the foreground command of the agent's pane; if `None` (non-tmux
-/// backends), the window name is never promoted because we have no way to detect
+/// `window_cmd` is the foreground command of the agent's pane; if unavailable, the window name is never promoted because we have no way to detect
 /// auto-tracking vs a sticky user-set name.
 pub fn resolve_labels(
     project: &str,
@@ -175,7 +174,7 @@ pub fn resolve_labels(
 /// Generic window names that should never be promoted as a primary label,
 /// regardless of whether they happen to differ from `pane_current_command`.
 /// Covers default shells (POSIX + alternatives + Windows), the literal
-/// "default", and tmux's common defaults.
+/// "default", and default terminal labels.
 fn is_generic_window_name(name: &str) -> bool {
     matches!(
         name,
@@ -193,7 +192,6 @@ fn is_generic_window_name(name: &str) -> bool {
             | "pwsh"
             | "powershell"
             | "cmd"
-            | "tmux"
             | "default"
             | ""
     )
@@ -218,8 +216,7 @@ fn is_window_meaningful(window: &str, cmd: Option<&str>) -> bool {
     if is_generic_window_name(window) {
         return false;
     }
-    // tmux's #{automatic_rename} flag is unreliable; comparing window_name against
-    // pane_current_command is the only signal that survives across versions.
+    // A window label matching its foreground command adds no useful identity.
     window != cmd
 }
 
@@ -306,7 +303,7 @@ mod tests {
     fn test_extract_worktree_name_window_mode() {
         let path = Path::new("/home/user/myproject__worktrees/fix-bug");
         let (name, is_main) =
-            extract_worktree_name("main-session", "workmux:fix-bug", "workmux:", path);
+            extract_worktree_name("main-session", "workrex:fix-bug", "workrex:", path);
         assert_eq!(name, "fix-bug");
         assert!(!is_main);
     }
@@ -315,7 +312,7 @@ mod tests {
     fn test_extract_worktree_name_session_mode() {
         let path = Path::new("/home/user/myproject__worktrees/feature-auth");
         let (name, is_main) =
-            extract_worktree_name("workmux:feature-auth", "zsh", "workmux:", path);
+            extract_worktree_name("workrex:feature-auth", "zsh", "workrex:", path);
         assert_eq!(name, "feature-auth");
         assert!(!is_main);
     }
@@ -324,9 +321,9 @@ mod tests {
     fn test_extract_worktree_name_window_preferred_over_session() {
         let path = Path::new("/home/user/myproject__worktrees/from-window");
         let (name, is_main) = extract_worktree_name(
-            "workmux:from-session",
-            "workmux:from-window",
-            "workmux:",
+            "workrex:from-session",
+            "workrex:from-window",
+            "workrex:",
             path,
         );
         assert_eq!(name, "from-window");
@@ -336,7 +333,7 @@ mod tests {
     #[test]
     fn test_extract_worktree_name_path_fallback_sibling() {
         let path = Path::new("/home/user/myproject__worktrees/fix-bug");
-        let (name, is_main) = extract_worktree_name("0", "zsh", "workmux:", path);
+        let (name, is_main) = extract_worktree_name("0", "zsh", "workrex:", path);
         assert_eq!(name, "fix-bug");
         assert!(!is_main);
     }
@@ -344,7 +341,7 @@ mod tests {
     #[test]
     fn test_extract_worktree_name_path_fallback_subdir() {
         let path = Path::new("/home/user/myproject/.worktrees/fix-bug");
-        let (name, is_main) = extract_worktree_name("0", "zsh", "workmux:", path);
+        let (name, is_main) = extract_worktree_name("0", "zsh", "workrex:", path);
         assert_eq!(name, "fix-bug");
         assert!(!is_main);
     }
@@ -353,7 +350,7 @@ mod tests {
     fn test_extract_worktree_name_path_fallback_nested_cwd() {
         // Agent cwd is a subdirectory of the worktree
         let path = Path::new("/home/user/myproject__worktrees/fix-bug/src/lib");
-        let (name, is_main) = extract_worktree_name("0", "zsh", "workmux:", path);
+        let (name, is_main) = extract_worktree_name("0", "zsh", "workrex:", path);
         assert_eq!(name, "fix-bug");
         assert!(!is_main);
     }
@@ -361,7 +358,7 @@ mod tests {
     #[test]
     fn test_extract_worktree_name_path_fallback_main() {
         let path = Path::new("/home/user/myproject");
-        let (name, is_main) = extract_worktree_name("0", "zsh", "workmux:", path);
+        let (name, is_main) = extract_worktree_name("0", "zsh", "workrex:", path);
         assert_eq!(name, "main");
         assert!(is_main);
     }
@@ -415,7 +412,7 @@ mod tests {
 
     #[test]
     fn resolve_labels_promotes_sticky_window_on_main_worktree() {
-        // Multiple agents on `main` with sticky tmux window names.
+        // Multiple agents on `main` with persistent Rex window labels.
         let (primary, secondary) =
             resolve_labels("api", "api", "main", "db-migration", Some("sleep"));
         assert_eq!(primary, "db-migration");
@@ -441,7 +438,7 @@ mod tests {
 
     #[test]
     fn resolve_labels_window_never_promoted_without_cmd() {
-        // Non-tmux backends pass None for window_cmd; window must not be promoted.
+        // Missing process observations leave window_cmd unset; window must not be promoted.
         let (primary, secondary) = resolve_labels("api", "api", "main", "looks-meaningful", None);
         assert_eq!(primary, "api");
         assert_eq!(secondary, "main");

@@ -3,7 +3,7 @@
 //! The laptop drives a node over a [`transport::Transport`]. Shell probes
 //! cover everything that must work before a node binary exists (platform
 //! detection, installation, doctor checks); everything else goes through the
-//! pinned node binary's `workmux node <verb> --json` entry point.
+//! pinned node binary's `workrex node <verb> --json` entry point.
 
 pub mod agents;
 pub mod attach;
@@ -43,7 +43,7 @@ use crate::shell::shell_quote;
 pub const DEFAULT_NODE_PATH: &str = crate::bin_name::NODE_ROOT;
 
 /// A validated `remotes.<name>` entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RemoteSpec {
     pub name: String,
     pub host: String,
@@ -78,12 +78,6 @@ impl RemoteSpec {
             .map(|binary| expand_local_tilde(name, binary))
             .transpose()?;
         let isolation = resolve_isolation(remote.isolation, config.sandbox.is_enabled());
-        if remote.terminal == Some(RemoteTerminal::Rex) && isolation != RemoteIsolation::None {
-            bail!(
-                "remotes.{name}.terminal: rex needs isolation: none; Rex-hosted agents \
-                 cannot run in a container yet"
-            );
-        }
         Ok(Self {
             name: name.to_string(),
             host: remote.host.clone(),
@@ -207,7 +201,7 @@ fn unknown_remote_error(config: &Config, name: &str) -> anyhow::Error {
     if config.remotes.is_empty() {
         anyhow!(
             "Unknown remote '{name}': no remotes are configured. Define remotes.{name} \
-             in your global config (~/.config/workmux/config.yaml)"
+             in your global config (~/.config/workrex/config.yaml)"
         )
     } else {
         anyhow!(
@@ -264,7 +258,7 @@ pub fn resolve_placement(
                 (Some(only), None) => Ok(Placement::Remote(only.clone())),
                 (None, _) => bail!(
                     "--remote: no remotes are configured. Define one under `remotes:` in \
-                     your global config (~/.config/workmux/config.yaml)"
+                     your global config (~/.config/workrex/config.yaml)"
                 ),
                 _ => bail!(
                     "--remote needs a name when several remotes are configured ({}): \
@@ -328,33 +322,6 @@ mod tests {
             placement: placement.map(str::to_string),
             ..Config::default()
         }
-    }
-
-    #[test]
-    fn rex_terminals_need_agents_on_the_host() {
-        let with = |isolation| Config {
-            remotes: [(
-                "box".to_string(),
-                RemoteConfig {
-                    terminal: Some(RemoteTerminal::Rex),
-                    isolation,
-                    ..remote("example")
-                },
-            )]
-            .into_iter()
-            .collect(),
-            ..Config::default()
-        };
-        let err = RemoteSpec::resolve(&with(Some(RemoteIsolation::Container)), "box").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("terminal: rex needs isolation: none"),
-            "{err}"
-        );
-        RemoteSpec::resolve(&with(Some(RemoteIsolation::None)), "box").unwrap();
-        let terminal = |config| RemoteSpec::resolve(&config, "box").unwrap().terminal;
-        assert_eq!(terminal(with(None)), RemoteTerminal::Rex);
-        assert_eq!(terminal(config_with(&["box"], None)), RemoteTerminal::Tmux);
     }
 
     #[test]
@@ -482,10 +449,7 @@ mod tests {
     fn reject_remote_placement_names_remote_and_fix() {
         let config = config_with(&["hetzner"], Some("hetzner"));
         let err = reject_remote_placement(&config).unwrap_err().to_string();
-        assert!(
-            err.contains(crate::rebrand!("workmux add --remote hetzner")),
-            "{err}"
-        );
+        assert!(err.contains("workrex add --remote hetzner"), "{err}");
         assert!(reject_remote_placement(&config_with(&["hetzner"], None)).is_ok());
     }
 
@@ -595,7 +559,7 @@ mod tests {
     #[test]
     fn spec_expands_binary_tilde_locally() {
         let mut with_binary = remote("h");
-        with_binary.binary = Some("~/bin/workmux".into());
+        with_binary.binary = Some("~/bin/workrex".into());
         let config = Config {
             remotes: [("r".to_string(), with_binary)].into_iter().collect(),
             ..Config::default()
@@ -603,7 +567,7 @@ mod tests {
         let spec = RemoteSpec::resolve(&config, "r").unwrap();
         assert_eq!(
             spec.binary.unwrap(),
-            home::home_dir().unwrap().join("bin/workmux")
+            home::home_dir().unwrap().join("bin/workrex")
         );
     }
 }

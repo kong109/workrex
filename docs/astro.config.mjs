@@ -9,7 +9,7 @@ import changelogReleases from "./plugins/changelog-releases.mjs";
 const site = "https://kong109.github.io";
 const base = "/workrex";
 const repo = "https://github.com/kong109/workrex";
-const socialImage = `${site}${base}/social-preview.png`;
+const socialImage = `${site}${base}/favicon.svg`;
 
 export default defineConfig({
   site,
@@ -155,14 +155,6 @@ export default defineConfig({
               label: "Maintenance and troubleshooting",
               slug: "guide/remote/troubleshooting",
             },
-          ],
-        },
-        {
-          label: "Other backends",
-          items: [
-            { label: "kitty", slug: "guide/kitty" },
-            { label: "WezTerm", slug: "guide/wezterm" },
-            { label: "Zellij", slug: "guide/zellij" },
           ],
         },
         {

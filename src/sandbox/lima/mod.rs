@@ -13,8 +13,8 @@ pub use instance::{LimaInstance, LimaInstanceInfo, ensure_vm_running, parse_lima
 pub use mounts::{determine_project_root, generate_mounts};
 pub use wrap::wrap_for_lima;
 
-/// Prefix for all workmux-managed Lima VM names.
-pub const VM_PREFIX: &str = "wm-";
+/// Prefix for all workrex-managed Lima VM names.
+pub const VM_PREFIX: &str = "wr-";
 
 use crate::config::{Config, IsolationLevel};
 use anyhow::Result;
@@ -62,8 +62,8 @@ fn hash_key(key: &str, len: usize) -> String {
 /// Generate a unique instance name for a worktree based on isolation level.
 ///
 /// For project isolation, the name includes the project directory name for
-/// human readability: `wm-<project>-<hash8>`.
-/// For shared isolation, the name is a hash of "global": `wm-<hash8>`.
+/// human readability: `wr-<project>-<hash8>`.
+/// For shared isolation, the name is a hash of "global": `wr-<hash8>`.
 pub fn instance_name(
     worktree: &Path,
     isolation: IsolationLevel,
@@ -85,7 +85,7 @@ pub fn instance_name(
             let hash = hash_key(&key, 8);
 
             // Extract project directory name for human-readable prefix
-            // Budget: "wm-" (3) + project (up to 18) + "-" (1) + hash (8) = 30 max
+            // Budget: "wr-" (3) + project (up to 18) + "-" (1) + hash (8) = 30 max
             let project_dir_name = canonical
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_name_basic() {
-        assert_eq!(sanitize_name("workmux", 20), "workmux");
+        assert_eq!(sanitize_name("workrex", 20), "workrex");
     }
 
     #[test]

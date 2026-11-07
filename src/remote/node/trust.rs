@@ -226,7 +226,7 @@ fn edit_locked(path: &Path, edit: impl FnOnce(&str) -> Result<Option<String>>) -
 }
 
 /// Open `path` for reading and writing, creating it private when missing,
-/// and hold an advisory lock so concurrent workmux writers take turns.
+/// and hold an advisory lock so concurrent workrex writers take turns.
 fn open_locked(path: &Path) -> Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     if let Some(parent) = path.parent() {
@@ -521,7 +521,7 @@ mod tests {
             std::env::var("HOME").ok()
         );
         let config: Config = serde_yaml::from_str(
-            "agents:\n  cx:\n    command: CODEX_HOME=/srv/codex-a codex\n    type: codex\n    env:\n      CODEX_HOME:\n        from_env: WORKMUX_TEST_UNSET_CODEX_HOME\n",
+            "agents:\n  cx:\n    command: CODEX_HOME=/srv/codex-a codex\n    type: codex\n    env:\n      CODEX_HOME:\n        from_env: WORKREX_TEST_UNSET_CODEX_HOME\n",
         )
         .unwrap();
         assert_eq!(

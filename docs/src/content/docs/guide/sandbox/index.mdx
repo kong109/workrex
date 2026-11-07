@@ -3,19 +3,9 @@ title: "Sandbox"
 description: Run agents in isolated containers or VMs for enhanced security
 ---
 
-import Screenshot from "../../../../components/Screenshot.astro";
-import screenshot from "../../../../assets/screenshots/sandbox-claude.webp";
-
 workrex provides first-class sandboxing for agents in containers or VMs. Agents are isolated from host secrets like SSH keys, AWS credentials, and other sensitive files. When a supported agent runs in a sandboxed agent pane, workrex automatically disables its interactive permission prompts and relies on the configured sandbox backend as the security boundary.
 
 Status indicators, the dashboard, [spawning agents](/guide/workflows/#from-an-ongoing-agent-session), [merging](/guide/workflows/#direct-merge), and [image pasting](/guide/sandbox/features/#clipboard-proxy) all work the same with or without a sandbox. A built-in RPC bridge keeps host-side workrex features in sync with agent activity inside the sandbox.
-
-<Screenshot
-  src={screenshot}
-  alt="Claude Code running inside a Lima VM sandbox"
-  framed={false}
-  shadow
-/>
 
 ## Security model
 
@@ -26,7 +16,7 @@ and may run as your host user when you later build, test, or otherwise use the
 repository. Workrex host Git operations can also run configured content filters
 and merge drivers from the writable worktree.
 
-Host-side hooks and pane commands from `.workmux.yaml` and explicitly proxied
+Host-side hooks and pane commands from `.workrex.yaml` and explicitly proxied
 host commands are also outside the sandbox boundary. Lima exposes writable Git
 metadata.
 
@@ -97,12 +87,12 @@ Agents often need project tooling (compilers, linters, build tools) available in
 Install [Docker](https://www.docker.com/), [Podman](https://podman.io/), or [Apple Container](https://github.com/apple/container) (macOS 26+, Apple Silicon), then enable in config:
 
 ```yaml
-# ~/.config/workmux/config.yaml or .workmux.yaml
+# ~/.config/workrex/config.yaml or .workrex.yaml
 sandbox:
   enabled: true
 ```
 
-These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
+These are the Workrex configuration paths. See [configuration](/guide/configuration/).
 
 The pre-built image is pulled automatically on first run. See the [container backend](/guide/sandbox/container/) page for details.
 
@@ -111,7 +101,7 @@ The pre-built image is pulled automatically on first run. See the [container bac
 Install [Lima](https://lima-vm.io/) (`brew install lima`), then enable in config:
 
 ```yaml
-# ~/.config/workmux/config.yaml or .workmux.yaml
+# ~/.config/workrex/config.yaml or .workrex.yaml
 sandbox:
   enabled: true
   backend: lima

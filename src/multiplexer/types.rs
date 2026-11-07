@@ -1,6 +1,4 @@
-//! Shared types for multiplexer backends.
-//!
-//! These types are used by both the tmux and WezTerm backends.
+//! Rex session, window, block, and agent state types.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -86,22 +84,20 @@ pub enum ReportedStatus {
     Idle,
 }
 
-/// Information about a specific pane running a workmux agent
+/// Information about a specific pane running a workrex agent
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentPane {
-    /// Session name (tmux session or WezTerm workspace)
+    /// Rex session label.
     pub session: String,
-    /// Window name (e.g., wm-feature-auth)
+    /// Window name (e.g., wr-feature-auth)
     pub window_name: String,
-    /// Pane ID (e.g., %0 for tmux, numeric for WezTerm)
+    /// Immutable Rex block ID, prefixed with `block:`.
     pub pane_id: String,
-    /// Stable window ID (e.g., @42 in tmux). Empty when not yet resolved.
+    /// Stable Rex window ID, prefixed with `window:`. Empty until resolved.
     #[serde(default)]
     pub window_id: String,
-    /// Window index as shown in the multiplexer's window list (e.g., 3 for
-    /// tmux window `3:wm-feature-auth`). Refreshed from the live tmux poll
-    /// because indexes change on renumber/move. `None` on backends without
-    /// window indexes.
+    /// Zero-based position in the Rex session's tab order. Refreshed from
+    /// the live session view when windows move.
     #[serde(default)]
     pub window_index: Option<u32>,
     /// Working directory path of the pane
@@ -120,9 +116,7 @@ pub struct AgentPane {
     #[serde(default)]
     pub updated_ts: Option<u64>,
     /// Foreground command of the agent's pane (e.g., "node", "zsh").
-    /// Only populated for the tmux backend; other backends pass `None` because
-    /// no equivalent signal exists for distinguishing auto-tracked window names
-    /// from user-set ones. Used by the sidebar identity resolver.
+    /// Reported by Rex and used by the sidebar identity resolver.
     #[serde(default)]
     pub window_cmd: Option<String>,
     /// The agent command that launched this pane (e.g., "claude --verbose").
@@ -233,7 +227,7 @@ impl AgentPane {
 /// Parameters for creating a new window/tab
 #[derive(Debug, Clone)]
 pub struct CreateWindowParams<'a> {
-    /// Prefix for the window name (e.g., "wm-")
+    /// Prefix for the window name (e.g., "wr-")
     pub prefix: &'a str,
     /// Base window name
     pub name: &'a str,
@@ -246,22 +240,22 @@ pub struct CreateWindowParams<'a> {
 /// Parameters for creating a new session
 #[derive(Debug, Clone)]
 pub struct CreateSessionParams<'a> {
-    /// Prefix for the session name (e.g., "wm-")
+    /// Prefix for the session name (e.g., "wr-")
     pub prefix: &'a str,
     /// Base session name
     pub name: &'a str,
     /// Working directory for the session's initial window
     pub cwd: &'a std::path::Path,
-    /// Optional name for the initial window. If None, tmux auto-names it.
+    /// Optional label for the initial Rex window.
     pub initial_window_name: Option<&'a str>,
 }
 
 /// Parameters for creating a new window within an existing session
 #[derive(Debug, Clone)]
 pub struct CreateWindowInSessionParams<'a> {
-    /// Full session name (already prefixed, e.g., "wm-feature-auth")
+    /// Full session name (already prefixed, e.g., "wr-feature-auth")
     pub session_name: &'a str,
-    /// Optional window name. If None, tmux auto-names based on running command.
+    /// Optional Rex window label.
     pub name: Option<&'a str>,
     /// Working directory for the window
     pub cwd: &'a std::path::Path,
@@ -270,6 +264,8 @@ pub struct CreateWindowInSessionParams<'a> {
 /// Result of setting up panes in a window
 #[derive(Debug, Clone)]
 pub struct PaneSetupResult {
+    /// Final Rex block IDs in configured pane order. Respawned blocks use their new ID.
+    pub pane_ids: Vec<String>,
     /// The ID of the pane that should receive focus
     pub focus_pane_id: String,
     /// The ID of the pane that should be zoomed, if any
@@ -289,7 +285,7 @@ pub struct PaneSetupOptions<'a> {
     pub lima_vm_name: Option<&'a str>,
     /// How to resume a conversation (continue last, fork specific session, or none).
     pub resume_mode: ResumeMode,
-    /// Shell-quoted words that replace `workmux sandbox run` in wrapped panes.
+    /// Shell-quoted words that replace `workrex sandbox run` in wrapped panes.
     pub sandbox_supervisor: Option<&'a str>,
     /// Directory put first on every pane shell's `PATH`, so commands typed
     /// in the pane find it too.
@@ -299,26 +295,13 @@ pub struct PaneSetupOptions<'a> {
 /// Backend type for multiplexer selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BackendType {
-    /// tmux backend (default)
     #[default]
-    Tmux,
-    /// WezTerm backend
-    WezTerm,
-    /// Kitty backend
-    Kitty,
-    /// Zellij backend
-    Zellij,
-    /// Rex backend
     Rex,
 }
 
 impl std::fmt::Display for BackendType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackendType::Tmux => write!(f, "tmux"),
-            BackendType::WezTerm => write!(f, "wezterm"),
-            BackendType::Kitty => write!(f, "kitty"),
-            BackendType::Zellij => write!(f, "zellij"),
             BackendType::Rex => write!(f, "rex"),
         }
     }
@@ -326,22 +309,7 @@ impl std::fmt::Display for BackendType {
 
 impl BackendType {
     /// Every backend, in the order they are listed to users.
-    pub const ALL: [BackendType; 5] = [
-        BackendType::Tmux,
-        BackendType::WezTerm,
-        BackendType::Kitty,
-        BackendType::Zellij,
-        BackendType::Rex,
-    ];
-
-    /// The accepted `WORKMUX_BACKEND` values, as "tmux|wezterm|...".
-    pub fn expected_names() -> String {
-        Self::ALL
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("|")
-    }
+    pub const ALL: [BackendType; 1] = [BackendType::Rex];
 }
 
 impl std::str::FromStr for BackendType {
@@ -381,7 +349,7 @@ pub struct LivePaneInfo {
     /// Pane title (if set)
     pub title: Option<String>,
 
-    /// Session name (tmux session or WezTerm workspace)
+    /// Rex session label.
     pub session: Option<String>,
 
     /// Window name
@@ -393,7 +361,6 @@ pub struct LivePaneInfo {
     /// Stable window ID for backends that expose one.
     pub window_id: Option<String>,
 
-    /// Window index as shown in the tmux status bar. None for backends that
-    /// do not number their windows.
+    /// Zero-based position in the Rex session tab order.
     pub window_index: Option<u32>,
 }

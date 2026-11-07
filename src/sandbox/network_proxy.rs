@@ -362,7 +362,7 @@ fn reject_over_capacity(mut stream: TcpStream) {
     let _ = write_error(
         &mut stream,
         503,
-        "workmux network proxy connection limit reached",
+        "workrex network proxy connection limit reached",
     );
     let _ = stream.shutdown(Shutdown::Write);
 
@@ -447,7 +447,7 @@ fn handle_proxy_connection(stream: TcpStream, ctx: &ProxyContext) -> Result<()> 
     debug!(hostname, port, "CONNECT request");
 
     // Verify auth token
-    let expected = format!("Basic {}", base64_encode(&format!("workmux:{}", ctx.token)));
+    let expected = format!("Basic {}", base64_encode(&format!("workrex:{}", ctx.token)));
     match proxy_auth {
         None => {
             debug!(hostname, "proxy auth missing");
@@ -671,7 +671,7 @@ mod tests {
     }
 
     fn proxy_auth(token: &str) -> String {
-        format!("Basic {}", base64_encode(&format!("workmux:{token}")))
+        format!("Basic {}", base64_encode(&format!("workrex:{token}")))
     }
 
     fn proxy_connect_request(host_port: &str, auth_header: &str, auth: &str) -> String {
@@ -881,7 +881,7 @@ mod tests {
 
     #[test]
     fn base64_encode_basic_auth() {
-        assert_eq!(base64_encode("workmux:mytoken"), "d29ya211eDpteXRva2Vu");
+        assert_eq!(base64_encode("workrex:mytoken"), "d29ya3JleDpteXRva2Vu");
         assert_eq!(base64_encode(""), "");
         assert_eq!(base64_encode("a"), "YQ==");
         assert_eq!(base64_encode("ab"), "YWI=");
@@ -931,7 +931,7 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
         assert!(response.contains("Connection: close\r\n"));
-        assert!(response.ends_with("workmux network proxy connection limit reached"));
+        assert!(response.ends_with("workrex network proxy connection limit reached"));
 
         drop(holder);
         wait_for_active_connections(&proxy, 0);

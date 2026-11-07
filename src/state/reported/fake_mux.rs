@@ -219,6 +219,7 @@ impl Multiplexer for FakeMux {
         _task_agent: Option<&str>,
     ) -> Result<PaneSetupResult> {
         Ok(PaneSetupResult {
+            pane_ids: vec![initial_pane_id.to_string()],
             focus_pane_id: initial_pane_id.to_string(),
             zoom_pane_id: None,
         })

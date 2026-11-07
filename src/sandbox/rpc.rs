@@ -1,7 +1,7 @@
 //! TCP RPC protocol for guest-host communication in sandboxed environments.
 //!
 //! The host-side supervisor runs an RPC server on a random port. The guest
-//! workmux binary connects via a host-internal address and sends JSON-lines
+//! workrex binary connects via a host-internal address and sends JSON-lines
 //! requests.
 
 use crate::bin_name::BIN;
@@ -236,7 +236,7 @@ pub enum RpcResponse {
 
 /// Context available to RPC request handlers.
 pub struct RpcContext {
-    /// The tmux/wezterm pane ID of the supervisor pane.
+    /// The Rex block ID of the supervisor pane.
     pub pane_id: String,
     /// Path to the worktree being supervised.
     pub worktree_path: PathBuf,
@@ -244,7 +244,7 @@ pub struct RpcContext {
     pub mux: Arc<dyn Multiplexer>,
     /// Effective configuration captured before the guest starts.
     pub config: Arc<Config>,
-    /// Host-only snapshot used by Workmux child commands.
+    /// Host-only snapshot used by Workrex child commands.
     pub frozen_config_path: PathBuf,
     /// Shared secret for authenticating RPC requests.
     pub token: String,
@@ -477,7 +477,7 @@ fn handle_connection(stream: TcpStream, ctx: &RpcContext) -> Result<()> {
         } = request
         {
             // SECURITY: Force --no-verify --no-hooks regardless of guest request.
-            // Workmux hooks are user-configured shell commands that run unsandboxed
+            // Workrex hooks are user-configured shell commands that run unsandboxed
             // on the host. Git native hooks are also disabled in handle_merge via
             // core.hooksPath=/dev/null to prevent a compromised guest from planting
             // hooks in the bind-mounted .git/hooks/ directory.
@@ -764,13 +764,13 @@ fn handle_clipboard_read(mime: &str, worktree_path: &std::path::Path) -> RpcResp
     }
 }
 
-fn host_workmux_command(ctx: &RpcContext) -> std::process::Command {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("workmux"));
+fn host_workrex_command(ctx: &RpcContext) -> std::process::Command {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("workrex"));
     let mut cmd = std::process::Command::new(exe);
-    cmd.env_remove("WM_SANDBOX_GUEST")
-        .env_remove("WM_RPC_HOST")
-        .env_remove("WM_RPC_PORT")
-        .env_remove("WM_RPC_TOKEN")
+    cmd.env_remove("WORKREX_SANDBOX_GUEST")
+        .env_remove("WORKREX_RPC_HOST")
+        .env_remove("WORKREX_RPC_PORT")
+        .env_remove("WORKREX_RPC_TOKEN")
         .env(
             crate::frozen_config::FROZEN_CONFIG_ENV,
             &ctx.frozen_config_path,
@@ -785,7 +785,7 @@ fn spawn_agent_command(
     background: Option<bool>,
     ctx: &RpcContext,
 ) -> std::process::Command {
-    let mut cmd = host_workmux_command(ctx);
+    let mut cmd = host_workrex_command(ctx);
     // The guest runs on this host, so its siblings do too, whatever the
     // configured placement.
     cmd.args(["add", "--local"]);
@@ -800,7 +800,7 @@ fn spawn_agent_command(
         cmd.arg("--background");
     }
 
-    // Workmux hooks can execute host commands. Git hook suppression keeps RPC
+    // Workrex hooks can execute host commands. Git hook suppression keeps RPC
     // children independent of repository Git policy across sandbox backends.
     cmd.arg("--no-hooks");
     disable_git_hooks(&mut cmd);
@@ -825,11 +825,11 @@ fn handle_spawn_agent(
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             RpcResponse::Error {
-                message: format!("workmux add failed: {}", stderr.trim()),
+                message: format!("workrex add failed: {}", stderr.trim()),
             }
         }
         Err(e) => RpcResponse::Error {
-            message: format!("Failed to run workmux add: {}", e),
+            message: format!("Failed to run workrex add: {}", e),
         },
     }
 }
@@ -838,13 +838,13 @@ fn handle_spawn_agent(
 /// started on this node, and the laptop opens its window when it next
 /// looks at the node.
 fn node_spawn_command(root: &Path) -> std::process::Command {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("workmux"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("workrex"));
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["node", "spawn", "--json"])
         .env(crate::remote::node::NODE_ROOT_ENV, root)
         .env("XDG_STATE_HOME", root.join("state"))
         .env_remove(crate::frozen_config::FROZEN_CONFIG_ENV)
-        .env_remove("WM_SANDBOX_GUEST")
+        .env_remove("WORKREX_SANDBOX_GUEST")
         .current_dir(root)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -881,11 +881,11 @@ fn handle_node_spawn(
                     .map(|envelope| envelope.error.message)
                     .unwrap_or_else(|_| String::from_utf8_lossy(&output.stderr).trim().to_string());
             RpcResponse::Error {
-                message: format!("workmux add failed: {message}"),
+                message: format!("workrex add failed: {message}"),
             }
         }
         Err(e) => RpcResponse::Error {
-            message: format!("Failed to run workmux node spawn: {e:#}"),
+            message: format!("Failed to run workrex node spawn: {e:#}"),
         },
     }
 }
@@ -902,7 +902,7 @@ fn merge_command(
     notification: bool,
     ctx: &RpcContext,
 ) -> std::process::Command {
-    let mut cmd = host_workmux_command(ctx);
+    let mut cmd = host_workrex_command(ctx);
     cmd.arg("merge");
 
     if let Some(target) = into {
@@ -927,7 +927,7 @@ fn merge_command(
         cmd.arg("--notification");
     }
 
-    // Workmux hooks can execute host commands. Git hook suppression keeps RPC
+    // Workrex hooks can execute host commands. Git hook suppression keeps RPC
     // children independent of repository Git policy across sandbox backends.
     cmd.args(["--no-verify", "--no-hooks"]);
     disable_git_hooks(&mut cmd);
@@ -971,7 +971,7 @@ fn handle_merge(
             write_response(
                 writer,
                 &RpcResponse::Error {
-                    message: format!("Failed to run workmux merge: {}", e),
+                    message: format!("Failed to run workrex merge: {}", e),
                 },
             )?;
             return Ok(());
@@ -991,7 +991,7 @@ fn handle_merge(
             writer,
             &RpcResponse::Error {
                 message: format!(
-                    "workmux merge exited with code {}",
+                    "workrex merge exited with code {}",
                     status.code().unwrap_or(1)
                 ),
             },
@@ -1043,7 +1043,7 @@ fn sanitized_env() -> std::collections::HashMap<String, String> {
 }
 
 fn close_command(name: &str, ctx: &RpcContext) -> std::process::Command {
-    let mut cmd = host_workmux_command(ctx);
+    let mut cmd = host_workrex_command(ctx);
     cmd.arg("close").arg("--").arg(name);
     cmd.current_dir(&ctx.worktree_path);
     cmd
@@ -1063,7 +1063,7 @@ fn handle_close(name: &str, ctx: &RpcContext, writer: &mut impl Write) -> Result
             write_response(
                 writer,
                 &RpcResponse::Error {
-                    message: format!("Failed to run workmux close: {}", e),
+                    message: format!("Failed to run workrex close: {}", e),
                 },
             )?;
             return Ok(());
@@ -1099,7 +1099,7 @@ fn handle_close(name: &str, ctx: &RpcContext, writer: &mut impl Write) -> Result
     } else {
         let message = if stderr.trim().is_empty() {
             format!(
-                "workmux close exited with code {}",
+                "workrex close exited with code {}",
                 status.code().unwrap_or(1)
             )
         } else {
@@ -1201,23 +1201,23 @@ fn handle_exec(
 
 /// RPC client for guest-side use. Connects to the host supervisor.
 ///
-/// Used by the guest workmux binary to send requests to the host supervisor
-/// when `WM_SANDBOX_GUEST=1` is set. Commands like `set-window-status` route
-/// through RPC instead of calling tmux directly.
+/// Used by the guest workrex binary to send requests to the host supervisor
+/// when `WORKREX_SANDBOX_GUEST=1` is set. Commands like `set-window-status` route
+/// through RPC instead of calling Rex directly.
 pub struct RpcClient {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
 }
 
 impl RpcClient {
-    /// Connect using WM_RPC_HOST, WM_RPC_PORT, and WM_RPC_TOKEN env vars.
+    /// Connect using WORKREX_RPC_HOST, WORKREX_RPC_PORT, and WORKREX_RPC_TOKEN env vars.
     pub fn from_env() -> Result<Self> {
-        let host = std::env::var("WM_RPC_HOST").context("WM_RPC_HOST not set")?;
-        let port: u16 = std::env::var("WM_RPC_PORT")
-            .context("WM_RPC_PORT not set")?
+        let host = std::env::var("WORKREX_RPC_HOST").context("WORKREX_RPC_HOST not set")?;
+        let port: u16 = std::env::var("WORKREX_RPC_PORT")
+            .context("WORKREX_RPC_PORT not set")?
             .parse()
-            .context("WM_RPC_PORT is not a valid port")?;
-        let token = std::env::var("WM_RPC_TOKEN").context("WM_RPC_TOKEN not set")?;
+            .context("WORKREX_RPC_PORT is not a valid port")?;
+        let token = std::env::var("WORKREX_RPC_TOKEN").context("WORKREX_RPC_TOKEN not set")?;
 
         Self::connect(&host, port, &token)
     }
@@ -1308,7 +1308,7 @@ mod tests {
         };
         assert!(refusal(&paste).contains("clipboard is on the local machine"));
         let close = RpcRequest::Close { name: "x".into() };
-        assert!(refusal(&close).contains(crate::rebrand!("`workmux close feat`")));
+        assert!(refusal(&close).contains("`workrex close feat`"));
         assert!(on_node(&RpcRequest::Heartbeat, &node, worktree).is_none());
     }
 
@@ -1321,7 +1321,7 @@ mod tests {
         };
         match dispatch_request(&request, &test_context(dir.path())) {
             RpcResponse::Error { message } => {
-                assert!(message.contains(crate::rebrand!("`workmux rm feat`")))
+                assert!(message.contains("`workrex rm feat`"))
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -1331,7 +1331,7 @@ mod tests {
         RpcContext {
             pane_id: "%0".to_string(),
             worktree_path: worktree_path.to_path_buf(),
-            mux: multiplexer::create_backend(multiplexer::BackendType::Tmux),
+            mux: multiplexer::create_backend(multiplexer::BackendType::Rex),
             config: Arc::new(Config::default()),
             frozen_config_path: worktree_path.join("frozen-config.json"),
             token: "test-token".to_string(),
@@ -1551,7 +1551,7 @@ mod tests {
         // Common secret env vars should never appear
         assert!(!envs.contains_key("AWS_SECRET_ACCESS_KEY"));
         assert!(!envs.contains_key("GITHUB_TOKEN"));
-        assert!(!envs.contains_key("WM_RPC_TOKEN"));
+        assert!(!envs.contains_key("WORKREX_RPC_TOKEN"));
         // Only allowlisted keys should be present
         for key in envs.keys() {
             assert!(
@@ -1604,7 +1604,7 @@ mod tests {
         let token = generate_token();
         let tmp = tempfile::tempdir().unwrap();
 
-        let mux = multiplexer::create_backend(multiplexer::BackendType::Tmux);
+        let mux = multiplexer::create_backend(multiplexer::BackendType::Rex);
         let ctx = Arc::new(RpcContext {
             pane_id: "%0".to_string(),
             worktree_path: tmp.path().to_path_buf(),
@@ -1704,8 +1704,10 @@ mod tests {
         // The RPC token is in our process env but should NOT leak to child
         let env_lines: Vec<&str> = stdout.lines().collect();
         assert!(
-            !env_lines.iter().any(|l| l.starts_with("WM_RPC_TOKEN=")),
-            "WM_RPC_TOKEN should not be in child environment"
+            !env_lines
+                .iter()
+                .any(|l| l.starts_with("WORKREX_RPC_TOKEN=")),
+            "WORKREX_RPC_TOKEN should not be in child environment"
         );
 
         // PATH should still be present (it's in the allowlist)
@@ -2018,38 +2020,38 @@ mod tests {
     // ── Git hook suppression tests ──────────────────────────────────────
 
     #[test]
-    fn test_host_workmux_command_sets_host_only_environment() {
+    fn test_host_workrex_command_sets_host_only_environment() {
         use std::ffi::OsStr;
 
         let tmp = tempfile::tempdir().unwrap();
         let ctx = test_context(tmp.path());
-        let cmd = host_workmux_command(&ctx);
+        let cmd = host_workrex_command(&ctx);
         let envs: std::collections::HashMap<&OsStr, Option<&OsStr>> = cmd.get_envs().collect();
 
         assert_eq!(
-            envs.get(OsStr::new("WM_SANDBOX_GUEST")),
+            envs.get(OsStr::new("WORKREX_SANDBOX_GUEST")),
             Some(&None),
-            "host workmux child must not inherit guest mode"
+            "host workrex child must not inherit guest mode"
         );
         assert_eq!(
-            envs.get(OsStr::new("WM_RPC_HOST")),
+            envs.get(OsStr::new("WORKREX_RPC_HOST")),
             Some(&None),
-            "host workmux child must not inherit guest RPC host"
+            "host workrex child must not inherit guest RPC host"
         );
         assert_eq!(
-            envs.get(OsStr::new("WM_RPC_PORT")),
+            envs.get(OsStr::new("WORKREX_RPC_PORT")),
             Some(&None),
-            "host workmux child must not inherit guest RPC port"
+            "host workrex child must not inherit guest RPC port"
         );
         assert_eq!(
-            envs.get(OsStr::new("WM_RPC_TOKEN")),
+            envs.get(OsStr::new("WORKREX_RPC_TOKEN")),
             Some(&None),
-            "host workmux child must not inherit guest RPC token"
+            "host workrex child must not inherit guest RPC token"
         );
         assert_eq!(
             envs.get(OsStr::new(crate::frozen_config::FROZEN_CONFIG_ENV)),
             Some(&Some(ctx.frozen_config_path.as_os_str())),
-            "host workmux child must use the supervisor snapshot"
+            "host workrex child must use the supervisor snapshot"
         );
     }
 
@@ -2164,7 +2166,7 @@ mod tests {
     #[test]
     fn test_response_serialization_clipboard_data() {
         let resp = RpcResponse::ClipboardData {
-            path: "/tmp/test/.workmux/tmp/clipboard-123-456.png".to_string(),
+            path: "/tmp/test/.workrex/tmp/clipboard-123-456.png".to_string(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"type\":\"ClipboardData\""));
@@ -2186,7 +2188,7 @@ mod tests {
         let port = server.port();
         let token = generate_token();
 
-        let mux = multiplexer::create_backend(multiplexer::BackendType::Tmux);
+        let mux = multiplexer::create_backend(multiplexer::BackendType::Rex);
         let ctx = Arc::new(RpcContext {
             pane_id: "%0".to_string(),
             worktree_path: PathBuf::from("/tmp/test"),

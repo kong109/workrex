@@ -3,6 +3,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::io::Write;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
@@ -135,7 +136,7 @@ impl WindowView {
     }
 
     /// Agent panes: terminals in the tiled layout. Floating layers hold
-    /// workmux's own dashboard and sidebar.
+    /// workrex's own dashboard and sidebar.
     fn terminal_block_ids(&self) -> impl Iterator<Item = &BlockId> {
         self.layers
             .iter()
@@ -223,17 +224,34 @@ type Verdict = std::result::Result<(), String>;
 static SERVER_VERDICTS: LazyLock<Mutex<HashMap<Option<String>, VerdictSlot>>> =
     LazyLock::new(Default::default);
 
-/// `None` until a version check answers. A check that fails stores nothing,
-/// so the next call checks again.
-type VerdictSlot = Arc<Mutex<Option<Verdict>>>;
+/// `None` until a version check runs.
+type VerdictSlot = Arc<Mutex<Option<Checked>>>;
+
+/// What a version check found.
+#[derive(Clone)]
+enum Checked {
+    Answered(Verdict),
+    /// The check itself failed, as on a server that never answers. Calls in
+    /// the backend's retry window fail without checking again, so one
+    /// hung server costs a command one timeout, not one per call.
+    Failed {
+        error: String,
+        at: Instant,
+    },
+}
+
+/// How long a failed version check stands before a call checks again. A
+/// long-lived process such as the sidebar daemon still recovers once the
+/// server answers.
+const VERSION_CHECK_RETRY: Duration = Duration::from_secs(5);
 
 /// Longer than rex's own 10 s request limit, so a server that never answers
 /// fails with rex's error. This bounds a `rex` process that never finishes.
 const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How long a command reuses a session list or view it already fetched. A
-/// loop that polls for a change made outside workmux sees it within this time.
-/// `WORKMUX_REX_READ_REUSE_MS` overrides it, so a test can count calls that
+/// loop that polls for a change made outside workrex sees it within this time.
+/// `WORKREX_REX_READ_REUSE_MS` overrides it, so a test can count calls that
 /// load cannot change.
 const READ_REUSE: Duration = Duration::from_millis(250);
 
@@ -543,7 +561,7 @@ struct ClientInfo {
     label: Option<String>,
 }
 
-/// Workmux's identity for a window it created. Rex windows carry only a
+/// Workrex's identity for a window it created. Rex windows carry only a
 /// label, which an agent in the window can rename, so the ids live beside
 /// the agent state, one file per window.
 #[derive(Debug, Serialize, Deserialize)]
@@ -625,7 +643,7 @@ fn found<T>(result: CallResult<T>) -> Result<Option<T>> {
 /// A terminal block that runs `command` directly. Rex's default goes through
 /// `/usr/bin/login` on macOS, which resets `HOME` and `PATH`, so the block
 /// asks for no login wrapper and the command starts the login shell itself,
-/// as tmux does with its default shell.
+/// using the configured default shell.
 fn shell_block(cwd: &Path, command: &[&str]) -> Value {
     json!({
         "block": {
@@ -640,7 +658,7 @@ fn shell_block(cwd: &Path, command: &[&str]) -> Value {
     })
 }
 
-/// Input for `send_key`: tmux key names become Rex key names, and a single
+/// Input for `send_key`: CLI key names become Rex key names, and a single
 /// character is typed as text so it is not reinterpreted by a keyboard layout.
 #[derive(Debug, PartialEq, Eq)]
 enum KeyInput {
@@ -744,26 +762,167 @@ fn drain(
 /// cannot be mistaken for any server's.
 const UNRESOLVED_INSTANCE: &str = "unresolved";
 
-/// `unix://` addresses with the path percent-decoded and symlinks, `.` and
-/// repeated slashes resolved, so every spelling of one socket compares equal.
+/// Whether `server`, as REX_SERVER spells it (`None` when unset), names the
+/// server at `address`.
+pub fn same_server(server: Option<&str>, address: &str) -> bool {
+    canonical_endpoint(server).is_some_and(|server| server == canonical_address(address))
+}
+
+/// The server `rex -S server` reaches, spelled one way, so every spelling of
+/// one server compares equal. Unset (`None`) is the local server's default
+/// socket; `None` comes back only when that socket can't be named.
+fn canonical_endpoint(server: Option<&str>) -> Option<String> {
+    // Rex takes `-S` as it is, so only a blank REX_SERVER, which
+    // `RexBackend::new` treats as unset, is trimmed away.
+    match server.filter(|server| !server.trim().is_empty()) {
+        Some(server) => Some(canonical_address(server)),
+        None => default_socket(std::env::var_os("REX_RUNTIME_DIR").as_deref(), || {
+            let xdg_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+            if cfg!(target_os = "macos") {
+                macos_default_socket(xdg_runtime_dir.as_deref(), home::home_dir().as_deref())
+            } else if cfg!(target_os = "linux") {
+                // SAFETY: getuid has no preconditions and cannot fail.
+                let uid = unsafe { libc::getuid() };
+                linux_default_socket(
+                    xdg_runtime_dir.as_deref(),
+                    &Path::new("/run/user").join(uid.to_string()),
+                    |dir| linux_runtime_dir(dir, uid),
+                )
+            } else {
+                None
+            }
+        })
+        .map(|socket| unix_endpoint(&socket)),
+    }
+}
+
+/// Rex reads `unix://` and a bare absolute path as a Unix socket, takes the
+/// scheme in any case, and drops trailing slashes. It probes a bare
+/// `host:port` or host label over HTTPS and then HTTP, so that spelling
+/// stays as it is and matches no URL.
+fn canonical_address(address: &str) -> String {
+    if let Some(endpoint) = canonical_unix_endpoint(address) {
+        return endpoint;
+    }
+    match address.split_once("://") {
+        Some((scheme, rest))
+            if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") =>
+        {
+            format!(
+                "{}://{}",
+                scheme.to_ascii_lowercase(),
+                rest.trim_end_matches('/')
+            )
+        }
+        None if address.starts_with('/') => unix_endpoint(Path::new(address)),
+        _ => address.to_string(),
+    }
+}
+
+/// Where rex looks for the local server when REX_SERVER is unset: in a
+/// nonempty REX_RUNTIME_DIR, else where the platform puts it. Rex takes a
+/// relative REX_RUNTIME_DIR from its logical `$PWD`, which a symlink can
+/// part from the physical working directory, so that one names no socket.
+fn default_socket(
+    rex_runtime_dir: Option<&OsStr>,
+    platform_default: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let Some(dir) = rex_runtime_dir.filter(|dir| !dir.is_empty()).map(Path::new) else {
+        return platform_default();
+    };
+    dir.is_absolute().then(|| dir.join("server.sock"))
+}
+
+/// Under any absolute XDG_RUNTIME_DIR, else under Application Support.
+fn macos_default_socket(xdg_runtime_dir: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
+    match xdg_runtime_dir
+        .map(Path::new)
+        .filter(|dir| dir.is_absolute())
+    {
+        Some(dir) => Some(dir.join("rex").join("server.sock")),
+        None => home.map(|home| home.join("Library/Application Support/rex/server.sock")),
+    }
+}
+
+/// How Linux rex judges a runtime directory.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RuntimeDir {
+    Usable,
+    /// Rex passes over it for the next place.
+    Unusable,
+    /// What rex makes of it isn't known.
+    Unknown,
+}
+
+/// Under an absolute XDG_RUNTIME_DIR rex finds usable, else under
+/// `run_user`, the user's `/run/user/<uid>`. Where rex's choice isn't
+/// known, no socket is named.
+fn linux_default_socket(
+    xdg_runtime_dir: Option<&OsStr>,
+    run_user: &Path,
+    judge: impl Fn(&Path) -> RuntimeDir,
+) -> Option<PathBuf> {
+    let socket = |dir: &Path| dir.join("rex").join("server.sock");
+    if let Some(dir) = xdg_runtime_dir
+        .map(Path::new)
+        .filter(|dir| dir.is_absolute())
+    {
+        match judge(dir) {
+            RuntimeDir::Usable => return Some(socket(dir)),
+            RuntimeDir::Unknown => return None,
+            RuntimeDir::Unusable => {}
+        }
+    }
+    (judge(run_user) == RuntimeDir::Usable).then(|| socket(run_user))
+}
+
+/// Linux rex uses a runtime directory, through symlinks, whose permission
+/// bits are 0700, and passes over a missing path, a file, or any other
+/// mode. Whether it checks the owner isn't known, so another user's
+/// directory is `Unknown`.
+fn linux_runtime_dir(dir: &Path, uid: u32) -> RuntimeDir {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    match std::fs::metadata(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => RuntimeDir::Unusable,
+        Err(_) => RuntimeDir::Unknown,
+        Ok(meta) if !meta.is_dir() || meta.permissions().mode() & 0o777 != 0o700 => {
+            RuntimeDir::Unusable
+        }
+        Ok(meta) if meta.uid() != uid => RuntimeDir::Unknown,
+        Ok(_) => RuntimeDir::Usable,
+    }
+}
+
+/// `unix://` addresses, in any case, with the path percent-decoded and
+/// spelled as `unix_endpoint` spells it, so every spelling of one socket
+/// compares equal. Rex refuses a relative path.
 fn canonical_unix_endpoint(address: &str) -> Option<String> {
-    let path = address.strip_prefix("unix://")?;
+    let (scheme, path) = address.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("unix") {
+        return None;
+    }
     let path = PathBuf::from(
         percent_encoding::percent_decode_str(path)
             .decode_utf8_lossy()
             .into_owned(),
     );
-    let path = path
-        .canonicalize()
-        .unwrap_or_else(|_| crate::util::normalize_path(&path));
-    Some(format!("unix://{}", path.display()))
+    path.is_absolute().then(|| unix_endpoint(&path))
+}
+
+/// Rex drops `.` and `..` from a socket path before it connects, so `L/..`
+/// is the directory holding `L` even when `L` is a symlink. Symlinks are
+/// resolved only after that.
+fn unix_endpoint(path: &Path) -> String {
+    let path = crate::util::normalize_path(path);
+    let path = path.canonicalize().unwrap_or(path);
+    format!("unix://{}", path.display())
 }
 
 pub fn in_rex_terminal() -> bool {
     std::env::var("REX_BLOCK").is_ok_and(|value| !value.is_empty())
 }
 
-/// The Rex pane workmux runs in, from `REX_SESSION` and `REX_BLOCK`.
+/// The Rex pane workrex runs in, from `REX_SESSION` and `REX_BLOCK`.
 #[derive(Debug, Default)]
 struct Caller {
     session: Option<SessionId>,
@@ -844,14 +1003,15 @@ pub struct RexBackend {
     reads: Mutex<Reads>,
     reuse: Duration,
     version_timeout: Duration,
+    version_retry: Duration,
     server: Option<String>,
     caller: Caller,
     endpoint: OnceLock<String>,
     block_sessions: Mutex<HashMap<BlockId, SessionId>>,
-    /// Where `session` keeps the IDs of the sessions workmux created.
+    /// Where `session` keeps the IDs of the sessions workrex created.
     registry: Option<PathBuf>,
     /// Env file the next respawned block sources (see `hosting`).
-    respawn_env: Mutex<Option<PathBuf>>,
+    respawn_env: Mutex<std::collections::VecDeque<PathBuf>>,
     program_status: Arc<ProgramStatuses>,
     pane_reads: Arc<PaneReads>,
 }
@@ -878,11 +1038,12 @@ impl RexBackend {
         Self {
             program,
             reads: Mutex::default(),
-            reuse: std::env::var("WORKMUX_REX_READ_REUSE_MS")
+            reuse: std::env::var("WORKREX_REX_READ_REUSE_MS")
                 .ok()
                 .and_then(|ms| ms.parse().ok())
                 .map_or(READ_REUSE, Duration::from_millis),
             version_timeout: VERSION_CHECK_TIMEOUT,
+            version_retry: VERSION_CHECK_RETRY,
             server,
             caller: Caller::from_env(),
             endpoint: OnceLock::new(),
@@ -890,7 +1051,7 @@ impl RexBackend {
             registry: crate::xdg::state_dir()
                 .ok()
                 .map(|dir| dir.join("rex-sessions.json")),
-            respawn_env: Mutex::new(None),
+            respawn_env: Mutex::new(std::collections::VecDeque::new()),
             program_status: Arc::default(),
             pane_reads: Arc::default(),
         }
@@ -945,12 +1106,29 @@ impl RexBackend {
         // Concurrent first calls to one server wait here for one check.
         let mut known = slot.lock().unwrap();
         let verdict = match known.as_ref() {
-            Some(verdict) => verdict.clone(),
-            None => {
+            Some(Checked::Answered(verdict)) => verdict.clone(),
+            Some(Checked::Failed { error, at }) if at.elapsed() < self.version_retry => {
+                return Err(CallError::Failed(anyhow!("{error}")));
+            }
+            _ => {
                 let check = ["api", "call", "server.version"];
-                let output = self.exec_within(&check, None, Some(self.version_timeout), &check)?;
-                let verdict = Self::parse::<ServerVersion>("server.version", &output)?.check();
-                known.insert(verdict).clone()
+                let version = self
+                    .exec_within(&check, None, Some(self.version_timeout), &check)
+                    .and_then(|output| Self::parse::<ServerVersion>("server.version", &output));
+                match version {
+                    Ok(version) => {
+                        let verdict = version.check();
+                        *known = Some(Checked::Answered(verdict.clone()));
+                        verdict
+                    }
+                    Err(error) => {
+                        *known = Some(Checked::Failed {
+                            error: error.to_string(),
+                            at: Instant::now(),
+                        });
+                        return Err(error);
+                    }
+                }
             }
         };
         verdict.map_err(CallError::Unsupported)
@@ -958,11 +1136,10 @@ impl RexBackend {
 
     /// Why this server's API is unsupported, once a call has found it so.
     pub fn unsupported(&self) -> Option<String> {
-        self.verdict_slot()
-            .lock()
-            .unwrap()
-            .clone()
-            .and_then(Result::err)
+        match self.verdict_slot().lock().unwrap().clone() {
+            Some(Checked::Answered(Err(reason))) => Some(reason),
+            _ => None,
+        }
     }
 
     fn verdict_slot(&self) -> VerdictSlot {
@@ -976,16 +1153,14 @@ impl RexBackend {
     }
 
     fn verdict_key(&self) -> Option<String> {
-        self.server
-            .as_deref()
-            .map(|server| canonical_unix_endpoint(server).unwrap_or_else(|| server.to_string()))
+        canonical_endpoint(self.server.as_deref())
     }
 
     /// Keeps the verdict on a `server.version` answer read some other way,
     /// so later calls skip their own check.
     fn record_verdict(&self, version: &ServerVersion) -> CallResult<()> {
         let verdict = version.check();
-        *self.verdict_slot().lock().unwrap() = Some(verdict.clone());
+        *self.verdict_slot().lock().unwrap() = Some(Checked::Answered(verdict.clone()));
         verdict.map_err(CallError::Unsupported)
     }
 
@@ -1070,9 +1245,16 @@ impl RexBackend {
         if let Some(input) = stdin
             && let Some(mut pipe) = child.stdin.take()
         {
-            pipe.write_all(input.as_bytes())
-                .context("Failed to write rex input")
-                .map_err(CallError::Failed)?;
+            // A rex that answers before reading its input, as it does on an
+            // early error, closes the pipe. Its exit status and output still
+            // carry the answer.
+            if let Err(error) = pipe.write_all(input.as_bytes())
+                && error.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(CallError::Failed(
+                    anyhow!(error).context("Failed to write rex input"),
+                ));
+            }
         }
         let Some(timeout) = timeout else {
             return child
@@ -1623,7 +1805,7 @@ impl Multiplexer for RexBackend {
 
     fn is_running(&self) -> Result<bool> {
         // An unsupported server is running, so a command that acts on it
-        // goes on to a call that names why workmux cannot use it.
+        // goes on to a call that names why workrex cannot use it.
         match self.run(&["api", "call", "session.list", "-"], Some("{}")) {
             Ok(_) | Err(CallError::Unsupported(_)) => Ok(true),
             Err(_) => Ok(false),
@@ -2061,7 +2243,7 @@ impl Multiplexer for RexBackend {
         Ok(())
     }
 
-    /// Like tmux `select-pane`, this moves no client: `select_window` and
+    /// Selecting a block updates server focus without switching an app: `select_window` and
     /// `switch_to_pane` switch the app, so a window-mode `add` that runs
     /// both asks the app once.
     fn select_pane(&self, pane_id: &str) -> Result<()> {
@@ -2258,11 +2440,6 @@ impl Multiplexer for RexBackend {
         let direction = match direction {
             SplitDirection::Horizontal => "horizontal",
             SplitDirection::Vertical => "vertical",
-            SplitDirection::Stacked => {
-                return Err(anyhow!(
-                    "split: stacked is only supported by the Zellij backend"
-                ));
-            }
         };
         let anchor = BlockId::parse(target_pane_id)?;
         let session = self.require_session_of(&anchor)?;
@@ -2288,7 +2465,7 @@ impl Multiplexer for RexBackend {
                     "direction": direction,
                     "side": "after",
                     "ratio": anchor_ratio(percentage, size, total),
-                    "layout": self.block_layout(cwd, command)?,
+                    "layout": self.queued_env_layout(cwd, command)?,
                 }),
             )
             .context("Failed to split Rex pane")?;
@@ -2402,7 +2579,7 @@ mod tests {
     fn session_view_keeps_tab_order_and_blocks_per_window() {
         let view = view();
         let labels: Vec<_> = view.windows.iter().map(|w| w.label.as_str()).collect();
-        assert_eq!(labels, ["main", "wm-feat-a", "logs"]);
+        assert_eq!(labels, ["main", "wr-feat-a", "logs"]);
         let editor = &view.windows[1];
         assert_eq!(editor.block_ids().count(), 2);
         assert_eq!(
@@ -2416,13 +2593,13 @@ mod tests {
         let view = view();
         let second_block = view.windows[1].block_ids().nth(1).unwrap().clone();
         let window = view.window_of(&second_block).unwrap();
-        assert_eq!(window.label, "wm-feat-a");
+        assert_eq!(window.label, "wr-feat-a");
         assert_eq!(
             view.window_after(&view.windows[0].window_id),
             Some(&view.windows[1].window_id)
         );
         assert_eq!(view.window_after(&view.windows[2].window_id), None);
-        assert_eq!(view.windows_labeled("wm-feat-a").count(), 1);
+        assert_eq!(view.windows_labeled("wr-feat-a").count(), 1);
     }
 
     #[test]
@@ -2541,7 +2718,7 @@ mod tests {
     }
 
     #[test]
-    fn tmux_key_names_map_to_rex_keys() {
+    fn key_names_map_to_rex_keys() {
         assert_eq!(key_input("q"), KeyInput::Text("q".into()));
         assert_eq!(key_input("Enter"), KeyInput::Key("enter".into()));
         assert_eq!(key_input("Escape"), KeyInput::Key("escape".into()));
@@ -2623,6 +2800,198 @@ mod tests {
             assert_eq!(rex.resolve_instance_id().unwrap(), canonical, "{spelling}");
         }
         assert_eq!(canonical_unix_endpoint("rex.tail4e96ed.ts.net"), None);
+    }
+
+    #[test]
+    fn every_spelling_rex_accepts_names_one_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("server.sock");
+        std::fs::write(&socket, "").unwrap();
+        let exported = format!("unix://{}", socket.canonicalize().unwrap().display());
+        let path = socket.display().to_string();
+        for spelling in [
+            exported.clone(),
+            format!("unix://{path}"),
+            format!("UNIX://{path}"),
+            format!("Unix://{path}/"),
+            path.clone(),
+            format!("{path}/"),
+        ] {
+            assert!(same_server(Some(&spelling), &exported), "{spelling}");
+        }
+        assert!(!same_server(Some("/tmp/other.sock"), &exported));
+
+        for spelling in [
+            "http://127.0.0.1:7600",
+            "http://127.0.0.1:7600/",
+            "http://127.0.0.1:7600//",
+            "HTTP://127.0.0.1:7600",
+            "HttP://127.0.0.1:7600/",
+        ] {
+            assert!(
+                same_server(Some(spelling), "http://127.0.0.1:7600"),
+                "{spelling}"
+            );
+        }
+        assert!(same_server(Some("http://h:1/rex/"), "http://h:1/rex"));
+        assert!(!same_server(Some("http://h:1/rex"), "http://h:1"));
+        assert!(!same_server(Some("https://h:1"), "http://h:1"));
+        assert!(!same_server(
+            Some("http://127.0.0.1:7600"),
+            "http://127.0.0.1:7601"
+        ));
+        assert!(same_server(
+            Some("rex.tail4e96ed.ts.net"),
+            "rex.tail4e96ed.ts.net"
+        ));
+    }
+
+    #[test]
+    fn a_dotdot_after_a_symlink_names_the_directory_holding_the_link() {
+        let root = tempfile::tempdir().unwrap();
+        let (a, b) = (root.path().join("a"), root.path().join("b"));
+        std::fs::create_dir_all(a.join("sub")).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        std::os::unix::fs::symlink(a.join("sub"), b.join("L")).unwrap();
+        for dir in [&a, &b] {
+            std::fs::write(dir.join("server.sock"), "").unwrap();
+        }
+        let endpoint = |dir: &Path| {
+            format!(
+                "unix://{}",
+                dir.join("server.sock").canonicalize().unwrap().display()
+            )
+        };
+        let dotdot = b.join("L/../server.sock").display().to_string();
+        for spelling in [dotdot.clone(), format!("unix://{dotdot}")] {
+            assert!(same_server(Some(&spelling), &endpoint(&b)), "{spelling}");
+            assert!(!same_server(Some(&spelling), &endpoint(&a)), "{spelling}");
+        }
+        assert_eq!(
+            unix_endpoint(&default_socket(Some(b.join("L/..").as_os_str()), || None).unwrap()),
+            endpoint(&b)
+        );
+    }
+
+    #[test]
+    fn rex_server_is_compared_as_rex_receives_it() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("s.sock");
+        std::fs::write(&socket, "").unwrap();
+        let exported = format!("unix://{}", socket.canonicalize().unwrap().display());
+        assert!(!same_server(
+            Some(&format!("{} ", socket.display())),
+            &exported
+        ));
+        assert!(!same_server(
+            Some(&format!(" {}", socket.display())),
+            &exported
+        ));
+        // A blank REX_SERVER is unset, as `RexBackend::new` reads it.
+        assert_eq!(canonical_endpoint(Some("  ")), canonical_endpoint(None));
+    }
+
+    #[test]
+    fn a_bare_host_and_port_is_no_url_in_particular() {
+        // Rex probes `host:port` over HTTPS and then HTTP, so it reaches
+        // whichever answers.
+        for url in ["http://127.0.0.1:7600", "https://127.0.0.1:7600"] {
+            assert!(!same_server(Some("127.0.0.1:7600"), url), "{url}");
+        }
+        assert!(!same_server(Some("[::1]:7600"), "http://[::1]:7600"));
+        assert!(same_server(Some("127.0.0.1:7600"), "127.0.0.1:7600"));
+    }
+
+    #[test]
+    fn rex_runtime_dir_holds_the_default_socket_on_every_platform() {
+        let platform = || Some(PathBuf::from("/platform/rex/server.sock"));
+        let socket = |dir: Option<&str>| default_socket(dir.map(OsStr::new), platform);
+        assert_eq!(socket(Some("/rt")), Some(PathBuf::from("/rt/server.sock")));
+        // Rex takes a relative one from its logical $PWD, which workrex
+        // can't know.
+        assert_eq!(socket(Some("rt")), None);
+        assert_eq!(socket(Some("..")), None);
+        assert_eq!(socket(Some("")), platform());
+        assert_eq!(socket(None), platform());
+    }
+
+    #[test]
+    fn macos_rex_takes_any_absolute_runtime_dir() {
+        let home = Path::new("/Users/u");
+        let fallback = Some(home.join("Library/Application Support/rex/server.sock"));
+        assert_eq!(
+            macos_default_socket(Some(OsStr::new("/nonexistent")), Some(home)),
+            Some(PathBuf::from("/nonexistent/rex/server.sock"))
+        );
+        assert_eq!(
+            macos_default_socket(Some(OsStr::new("run")), Some(home)),
+            fallback
+        );
+        assert_eq!(macos_default_socket(None, Some(home)), fallback);
+    }
+
+    #[test]
+    fn linux_rex_falls_back_from_a_runtime_dir_it_cant_use() {
+        let run_user = Path::new("/run/user/1001");
+        let xdg = OsStr::new("/xdg");
+        let at = |dir: &str| Some(Path::new(dir).join("rex/server.sock"));
+        let judged = |xdg_dir: RuntimeDir, run_user_dir: RuntimeDir| {
+            move |dir: &Path| {
+                if dir == Path::new("/xdg") {
+                    xdg_dir
+                } else {
+                    run_user_dir
+                }
+            }
+        };
+        use RuntimeDir::*;
+        let socket = |xdg, judge| linux_default_socket(xdg, run_user, judge);
+        assert_eq!(socket(Some(xdg), judged(Usable, Usable)), at("/xdg"));
+        assert_eq!(
+            socket(Some(xdg), judged(Unusable, Usable)),
+            at("/run/user/1001")
+        );
+        assert_eq!(
+            socket(Some(OsStr::new("xdg")), judged(Usable, Usable)),
+            at("/run/user/1001")
+        );
+        assert_eq!(socket(None, judged(Usable, Usable)), at("/run/user/1001"));
+        // Where rex's choice isn't known, no socket is named.
+        assert_eq!(socket(Some(xdg), judged(Unknown, Usable)), None);
+        assert_eq!(socket(Some(xdg), judged(Unusable, Unusable)), None);
+        assert_eq!(socket(None, judged(Usable, Unknown)), None);
+    }
+
+    #[test]
+    fn linux_rex_uses_only_a_private_runtime_dir() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        let dir = |name: &str, mode: u32| {
+            let path = root.path().join(name);
+            std::fs::create_dir(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            path
+        };
+        let judge = |path: &Path| linux_runtime_dir(path, uid);
+        assert_eq!(judge(&dir("private", 0o700)), RuntimeDir::Usable);
+        assert_eq!(judge(&dir("sticky", 0o1700)), RuntimeDir::Usable);
+        for mode in [0o711, 0o755, 0o500, 0o770] {
+            let path = dir(&format!("mode{mode:o}"), mode);
+            assert_eq!(judge(&path), RuntimeDir::Unusable, "{mode:o}");
+        }
+        let link = root.path().join("link");
+        symlink(root.path().join("private"), &link).unwrap();
+        assert_eq!(judge(&link), RuntimeDir::Usable);
+        let file = root.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(judge(&file), RuntimeDir::Unusable);
+        assert_eq!(judge(&root.path().join("missing")), RuntimeDir::Unusable);
+        assert_eq!(
+            linux_runtime_dir(&root.path().join("private"), uid + 1),
+            RuntimeDir::Unknown
+        );
     }
 
     #[test]
@@ -2714,6 +3083,29 @@ mod tests {
     }
 
     #[test]
+    fn a_rex_that_answers_without_reading_its_input_is_heard() {
+        let dir = tempfile::tempdir().unwrap();
+        let rex = RexBackend::scripted(
+            dir.path(),
+            "case \"$*\" in\n\
+             \x20 *server.version*) echo '{\"rex_version\":\"t\",\"api_revision\":8}';;\n\
+             \x20 *session.focus_block*) echo '{}';;\n\
+             \x20 *) echo 'Error: early failure' >&2; exit 1;;\nesac\n"
+                .to_string(),
+        );
+        // More than a pipe holds, so the write outlives the exited rex.
+        let input = json!({ "pad": "x".repeat(1 << 20) });
+
+        rex.api::<Value>("session.focus_block", input.clone())
+            .unwrap();
+        let error = rex.api::<Value>("session.close_window", input).unwrap_err();
+        assert!(
+            error.to_string().contains("Error: early failure"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn an_unsupported_server_fails_every_call_after_one_version_query() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -2752,7 +3144,7 @@ mod tests {
             .terminal_blocks()
             .map(|(window, _)| window.label.as_str())
             .collect();
-        assert_eq!(probed, ["wm-agent"]);
+        assert_eq!(probed, ["wr-agent"]);
     }
 
     #[test]
@@ -2764,7 +3156,7 @@ mod tests {
         let running: ProcessReport = serde_json::from_str(PROCESS).unwrap();
         let pane = pane_info(&view, window, &running, "claude".into()).unwrap();
         assert_eq!(pane.pid, Some(85152));
-        assert_eq!(pane.window.as_deref(), Some("wm-feat-a"));
+        assert_eq!(pane.window.as_deref(), Some("wr-feat-a"));
     }
 
     #[test]
@@ -3216,7 +3608,7 @@ mod tests {
         let view = json!({
             "session_id": "session:b",
             "label": "b",
-            "windows": [{ "window_id": "window:w", "label": "wm-feat", "layers": [] }],
+            "windows": [{ "window_id": "window:w", "label": "wr-feat", "layers": [] }],
         })
         .to_string();
         FakeRex::new(&[
@@ -3234,7 +3626,7 @@ mod tests {
 
     fn select_wm_feat(rex: &RexBackend) {
         rex.select_window_target(&WindowTarget::with_id(
-            "wm-feat".into(),
+            "wr-feat".into(),
             None,
             "window:w".into(),
         ))
@@ -3242,7 +3634,7 @@ mod tests {
     }
 
     /// Session B after `add`: the caller's pane in `main`, and the server
-    /// focus on the new agent pane in `wm-feat`.
+    /// focus on the new agent pane in `wr-feat`.
     fn after_add_fake() -> FakeRex {
         let window = |id: &str, label: &str, block: &str| {
             json!({
@@ -3258,7 +3650,7 @@ mod tests {
             "active_window_id": "window:feat",
             "windows": [
                 window("window:main", "main", CALLER_BLOCK),
-                window("window:feat", "wm-feat", "block:agent"),
+                window("window:feat", "wr-feat", "block:agent"),
             ],
         })
         .to_string();
@@ -3284,7 +3676,7 @@ mod tests {
         let fake = app_fake(APP, &[app(APP, &[CALLER_SESSION])], "{}");
         fake.rex.select_pane("block:agent").unwrap();
         select_wm_feat(&fake.rex);
-        fake.rex.select_window("", "wm-feat").unwrap();
+        fake.rex.select_window("", "wr-feat").unwrap();
         fake.rex.switch_to_session("", "b").unwrap();
         assert_eq!(fake.rex.shell_switch_session_cmd("b").unwrap(), "true");
         assert!(fake.calls("client.perform").is_empty());
@@ -3472,9 +3864,7 @@ mod tests {
         let hint = fake.rex.focus_new_session("block:agent", "feat-a").unwrap();
         assert_eq!(
             hint.as_deref(),
-            Some(crate::rebrand!(
-                "Rex.app stays put: to see feat-a, press Enter on its row in workmux dashboard."
-            ))
+            Some("Rex.app stays put: to see feat-a, press Enter on its row in workrex dashboard.")
         );
         assert!(
             fake.calls("client.perform").is_empty(),
@@ -3572,12 +3962,12 @@ mod tests {
                 &view_json(
                     "session:s",
                     "proj",
-                    &[("window:1", "wm-x"), ("window:2", "wm-x")],
+                    &[("window:1", "wr-x"), ("window:2", "wr-x")],
                 ),
             ),
             ("session.close_window", "{}"),
         ]);
-        fake.rex.kill_window("wm-x").unwrap();
+        fake.rex.kill_window("wr-x").unwrap();
         let closes = fake.calls("session.close_window");
         assert_eq!(closes.len(), 1, "{closes:?}");
         assert!(closes[0].contains("window:1"), "{closes:?}");
@@ -3607,14 +3997,14 @@ mod tests {
             ),
             (
                 "session.view*session:main",
-                &view_json("session:main", "main", &[("window:m", "wm-a")]),
+                &view_json("session:main", "main", &[("window:m", "wr-a")]),
             ),
             (
                 "session.view*session:rp",
-                &view_json("session:rp", "ReviewParents", &[("window:r", "wm-a")]),
+                &view_json("session:rp", "ReviewParents", &[("window:r", "wr-a")]),
             ),
         ]);
-        let target = WindowTarget::new("wm-a".into(), Some("ReviewParents".into()));
+        let target = WindowTarget::new("wr-a".into(), Some("ReviewParents".into()));
         assert_eq!(
             fake.rex.target_window(&target).unwrap(),
             Some((SessionId("session:rp".into()), WindowId("window:r".into())))
@@ -3756,27 +4146,36 @@ mod tests {
     }
 
     #[test]
-    fn a_version_check_that_times_out_is_made_again() {
+    fn a_version_check_that_times_out_is_made_again_after_its_retry_window() {
         let mut fake = FakeRex::new(&[
             ("server.version", STALLED_VERSION),
             ("session.list", &session_list(&[])),
         ]);
-        fake.rex.version_timeout = Duration::from_millis(200);
-        let rex = &fake.rex;
-        let first = thread::scope(|scope| {
-            let (answered, answer) = mpsc::channel();
-            scope.spawn(move || answered.send(rex.sessions().map(|_| ())));
-            let answer = answer.recv_timeout(Duration::from_secs(20));
-            fake.write("release", "");
-            answer
-        });
-        let error = first.expect("the check outlived its timeout").unwrap_err();
+        fake.rex.version_timeout = Duration::from_millis(1);
+        // The window ends only when the test ends it below.
+        fake.rex.version_retry = Duration::from_secs(3600);
+        let error = fake.rex.sessions().unwrap_err();
         assert!(
             format!("{error:#}").contains("server.version gave no answer within"),
             "{error:#}"
         );
+        // The timeout can stop the fake before or after it marks `started`.
+        let started = fake.dir.path().join("started");
+        let _ = std::fs::remove_file(&started);
+        fake.write("release", "");
+
+        // Within the window a call fails at once, without a second check.
+        let error = fake.rex.sessions().unwrap_err();
+        assert!(
+            format!("{error:#}").contains("server.version gave no answer within"),
+            "{error:#}"
+        );
+        assert!(!started.exists(), "the failed check was made again at once");
+
+        fake.rex.version_retry = Duration::ZERO;
+        fake.rex.version_timeout = Duration::from_secs(10);
         fake.rex.sessions().unwrap();
-        assert!(fake.dir.path().join("answered").exists());
+        assert!(started.exists(), "the check was not made again");
     }
 
     #[test]
@@ -4237,43 +4636,6 @@ mod tests {
             "updated_ts": 0,
         }))
         .unwrap()
-    }
-
-    /// A remote relay's window closes itself when its remote session ends,
-    /// possibly right after a command last read the relay's session. The
-    /// command must still see the session empty and destroy it.
-    #[test]
-    fn a_relay_session_emptied_after_a_reused_read_is_destroyed() {
-        let fake = FakeRex::new(&[
-            ("session.list", &session_list(&[("session:r", "wm-feat")])),
-            ("session.view", "$cat \"$dir/view\""),
-            ("session.destroy", "{}"),
-        ])
-        .reusing();
-        let relay = [("window:1", "wm-feat")];
-        fake.write("view", &view_json("session:r", "wm-feat", &relay));
-        let names = fake.rex.get_window_names_in_session("wm-feat").unwrap();
-        assert!(names.contains("wm-feat"), "{names:?}");
-        fake.write("view", &view_json("session:r", "wm-feat", &[]));
-
-        let mut record = crate::remote::cache::WorkspaceRecord::new(
-            "w1".into(),
-            "box",
-            "p".into(),
-            PathBuf::from("/src/app"),
-            "feat",
-            "feat",
-            "0".repeat(40),
-            None,
-            "wm-feat".into(),
-            PathBuf::from("/src/app__worktrees/feat"),
-        );
-        record.window_session = Some("wm-feat".into());
-        crate::remote::lifecycle::drop_emptied_session(&fake.rex, &record);
-
-        let destroys = fake.calls("session.destroy");
-        assert_eq!(destroys.len(), 1, "{destroys:?}");
-        assert!(destroys[0].contains("session:r"), "{destroys:?}");
     }
 
     #[test]

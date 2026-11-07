@@ -16,8 +16,8 @@ pub fn run() -> Result<()> {
     let mux = create_backend(detect_backend());
     let store = StateStore::new()?;
 
-    // Read agent state directly from disk without validating against tmux.
-    // This avoids O(n) tmux queries. Dead panes are handled during switch.
+    // Read agent state directly from disk without validating against Rex.
+    // This avoids O(n) Rex queries. Dead panes are handled during switch.
     let agents = crate::state::reported::with_reported(&store, store.list_all_agents()?)?;
 
     // Filter to done/waiting agents for current backend/instance
@@ -188,7 +188,7 @@ mod tests {
     ) -> AgentState {
         AgentState {
             pane_key: PaneKey {
-                backend: "tmux".to_string(),
+                backend: "Rex".to_string(),
                 instance: "default".to_string(),
                 pane_id: pane_id.to_string(),
             },
@@ -200,7 +200,7 @@ mod tests {
             pane_pid: 1000,
             command: "node".to_string(),
             updated_ts,
-            window_name: Some("wm-test".to_string()),
+            window_name: Some("wr-test".to_string()),
             session_name: Some("main".to_string()),
             boot_id: None,
             agent_kind: None,
@@ -212,7 +212,7 @@ mod tests {
 
     fn make_key(pane_id: &str) -> PaneKey {
         PaneKey {
-            backend: "tmux".to_string(),
+            backend: "Rex".to_string(),
             instance: "default".to_string(),
             pane_id: pane_id.to_string(),
         }

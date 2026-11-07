@@ -52,16 +52,11 @@ fn load_remote_diff(
     app.view_mode = ViewMode::Diff(Box::new(view));
 
     let tx = app.event_tx.clone();
-    let config = app.config.clone();
     let at = remote.at;
     std::thread::spawn(move || {
-        let result = crate::remote::agents::fetch_diff(&config, &at.remote, &at.ws_id, mode)
-            .map_err(|err| format!("{err:#}"));
-        let _ = tx.send(super::app::AppEvent::RemoteDiff(
-            at.ws_id,
-            branch_diff,
-            result,
-        ));
+        let result =
+            crate::remote::agents::fetch_diff_for(&at, mode).map_err(|err| format!("{err:#}"));
+        let _ = tx.send(super::app::AppEvent::RemoteDiff(at, branch_diff, result));
     });
 }
 
@@ -69,7 +64,7 @@ fn load_remote_diff(
 /// for. A failed fetch leaves the cached copy, if any, with a note.
 pub(super) fn apply_remote_diff(
     app: &mut App,
-    ws_id: &str,
+    at: &crate::multiplexer::RemoteRef,
     branch_diff: bool,
     result: Result<CachedDiff, String>,
 ) {
@@ -79,7 +74,7 @@ pub(super) fn apply_remote_diff(
     let Some(remote) = view
         .remote
         .clone()
-        .filter(|remote| remote.at.ws_id == ws_id && view.is_branch_diff == branch_diff)
+        .filter(|remote| remote.at == *at && view.is_branch_diff == branch_diff)
     else {
         return;
     };
@@ -92,7 +87,7 @@ pub(super) fn apply_remote_diff(
         Ok(diff) => remote_diff_view(&remote, branch_diff, path, pane_id, Ok(&diff), None),
         Err(err) => {
             let mode = diff_mode(branch_diff);
-            match crate::remote::agents::cached_diff(&remote.at.remote, ws_id, mode) {
+            match crate::remote::agents::cached_diff(&remote.at.remote, &remote.at.ws_id, mode) {
                 Some(diff) => {
                     let age = crate::util::format_compact_age(
                         crate::remote::cache::now().saturating_sub(diff.fetched_at),
@@ -269,23 +264,33 @@ fn reload_unstaged_diff(app: &mut App) {
 
 /// Focus the diff agent pane and send a command, then close the diff modal
 fn focus_and_send(app: &mut App, command: String) {
-    if let ViewMode::Diff(diff) = &app.view_mode {
-        if app.mux.requires_focus_for_input() {
-            let window_hint = app
-                .agents
-                .iter()
-                .find(|a| a.pane_id == diff.pane_id)
-                .map(|a| a.window_name.clone());
-            let _ = app
-                .mux
-                .switch_to_pane(&diff.pane_id, window_hint.as_deref());
-        }
-
-        let _ = app
-            .mux
-            .send_keys_to_agent(&diff.pane_id, &command, app.config.agent.as_deref());
+    let ViewMode::Diff(diff) = &app.view_mode else {
+        return;
+    };
+    let result = if let Some(remote) = &diff.remote {
+        crate::remote::agents::send_keys_to_agent(
+            &remote.at,
+            &command,
+            remote.agent_kind.as_deref(),
+        )
+    } else {
+        (|| {
+            if app.mux.requires_focus_for_input() {
+                let window_hint = app
+                    .agents
+                    .iter()
+                    .find(|a| a.pane_id == diff.pane_id)
+                    .map(|a| a.window_name.as_str());
+                app.mux.switch_to_pane(&diff.pane_id, window_hint)?;
+            }
+            app.mux
+                .send_keys_to_agent(&diff.pane_id, &command, app.config.agent.as_deref())
+        })()
+    };
+    match result {
+        Ok(()) => app.close_diff(),
+        Err(err) => app.hold_status(format!("send command: {err:#}")),
     }
-    app.close_diff();
 }
 
 impl DiffOps for App {
@@ -598,6 +603,7 @@ impl DiffOps for App {
                 format!("WIP: {worktree_name}")
             };
             let remote = RemoteDiff {
+                agent_kind: agent.agent_kind.clone(),
                 at: remote.at,
                 title,
             };

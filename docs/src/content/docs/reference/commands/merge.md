@@ -3,7 +3,7 @@ title: "merge"
 description: Merge a branch and clean up the worktree, window, and local branch
 ---
 
-Merges a branch into a target branch (main by default) and automatically cleans up all associated resources (worktree, tmux window, and local branch).
+Merges a branch into a target branch (main by default) and automatically cleans up all associated resources (worktree, Rex window, and local branch).
 
 ```bash
 workrex merge [branch-name] [flags]
@@ -43,11 +43,11 @@ By default, `workrex merge` performs a standard merge commit (configurable via `
 If you don't want to have merge commits in your main branch, use the `rebase` merge strategy, which does `--rebase` by default.
 
 ```yaml
-# ~/.config/workmux/config.yaml
+# ~/.config/workrex/config.yaml
 merge_strategy: rebase
 ```
 
-The config path keeps its workmux name so existing workmux configs work. See [Configuration](/guide/configuration/).
+The config path keeps its workrex name so existing workrex configs work. See [Configuration](/guide/configuration/).
 
 To keep the worktree, window, and branch after every merge unless overridden, set:
 
@@ -64,7 +64,7 @@ Use `workrex merge --cleanup` to clean up for a single merge when this default i
 3. Checks for uncommitted changes (errors if found, unless `--ignore-uncommitted` is used)
 4. Commits staged changes if present (unless `--ignore-uncommitted` is used)
 5. Merges your branch into the target using the selected strategy (default: merge commit)
-6. Deletes the tmux window unless keep behavior is enabled via `--keep` or `merge_keep: true`
+6. Deletes the Rex window unless keep behavior is enabled via `--keep` or `merge_keep: true`
 7. Removes the worktree unless keep behavior is enabled via `--keep` or `merge_keep: true`
 8. Deletes the local branch unless keep behavior is enabled via `--keep` or `merge_keep: true`
 
@@ -80,7 +80,7 @@ When `merge` closes a Rex session that Rex.app shows, the app moves to the first
 
 ## Typical workflow
 
-When you're done working in a worktree, simply run `workrex merge` from within that worktree's tmux window. The command will automatically detect which branch you're on, merge it into main, and close the current window as part of cleanup.
+When you're done working in a worktree, simply run `workrex merge` from within that worktree's Rex window. The command will automatically detect which branch you're on, merge it into main, and close the current window as part of cleanup.
 
 ## Examples
 
@@ -89,7 +89,7 @@ When you're done working in a worktree, simply run `workrex merge` from within t
 workrex merge user-auth
 
 # Merge the current worktree you're in
-# (run this from within the worktree's tmux window)
+# (run this from within the worktree's Rex window)
 workrex merge
 
 # Rebase onto main before merging for a linear history

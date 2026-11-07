@@ -3,22 +3,9 @@ title: "Status tracking"
 description: Display agent status in multiplexer tabs for at-a-glance visibility
 ---
 
-import Screenshot from "../../../components/Screenshot.astro";
-import screenshot from "../../../assets/screenshots/status.webp";
-
-workrex shows the status of the agent in each window: in tmux window names, Zellij
-tab titles and Rex window labels. You can see what every agent is doing without
-switching to it.
-
-<div style="display: flex; justify-content: center; max-width: 45rem; margin: 1.5rem 0;">
-
-<Screenshot
-  src={screenshot}
-  alt="tmux status showing agent icons"
-  framed={false}
-/>
-
-</div>
+Workrex shows agent status in the dashboard, sidebar, and managed Rex window
+labels. Agents can report status through Rex's program status protocol or the
+hooks installed by `workrex setup`.
 
 ## Agent support
 
@@ -50,7 +37,7 @@ switching to it.
 
 - 🤖 = agent is working
 - 💬 = agent is waiting for user input
-- ✅ = agent finished (auto-clears on window focus in tmux)
+- ✅ = agent finished (changes on the next status update)
 
 ## Rex program status
 
@@ -79,19 +66,20 @@ workrex setup
 
 This detects Claude Code, Codex, Copilot CLI, Gemini CLI, Grok, Muse Code, Antigravity CLI, OpenCode, Pi, and Oh My Pi by checking for their executable or configuration directories, then offers to install the appropriate hooks. Agent-specific configuration directory overrides are respected. workrex also offers updates when an installed integration differs from its bundled version.
 
-Under tmux, workrex modifies your `window-status-format` to display the status icons. This happens once per session and only affects the current tmux session (not your global config).
-
 ## Manual setup
 
-The sections below install each agent's integration by hand. The files they download from the workrex repo call the `workmux` command, because the fork keeps upstream's files unchanged. `workrex setup` installs the same content with each `workmux` command changed to `workrex`, and names each separate file or hook group `workrex-status`. If you copy a file by hand, change every `workmux` command in it to `workrex`. For OpenCode, also change the plugin ids `workmux.status` and `workmux.status.server` to `workrex.status` and `workrex.status.server`.
+The sections below describe manual installation. The repository's native
+`workrex-status` integrations already call `workrex`. Merge the relevant entries
+with existing user configuration so unrelated hooks remain intact.
 
 ## Claude Code setup
 
 `workrex setup --hooks` adds the hooks to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json` when that is set.
 
-To add them by hand, copy the hooks from [.claude-plugin/plugin.json](https://github.com/kong109/workrex/blob/main/.claude-plugin/plugin.json) into `~/.claude/settings.json` and change each `workmux` command to `workrex`.
+To add them by hand, copy the hooks from [.claude-plugin/plugin.json](https://github.com/kong109/workrex/blob/main/.claude-plugin/plugin.json) into `~/.claude/settings.json`, preserving unrelated hooks.
 
-The `workmux-status` plugin from the upstream marketplace (`claude plugin marketplace add raine/workmux`) runs the upstream `workmux` command, so it does not report status to workrex. `workrex setup` counts a Claude Code plugin as installed only when its key in `enabledPlugins` starts with `workrex-status@`. It treats a `workmux-status@…` key as upstream's plugin, so it still offers to install the workrex hooks.
+`workrex setup` also recognizes an enabled Workrex Claude Code plugin whose
+`enabledPlugins` key begins with `workrex-status@`.
 
 ## Pi setup
 
@@ -100,7 +88,7 @@ If you prefer manual setup, copy the workrex status extension to your global pi 
 ```bash
 mkdir -p ~/.pi/agent/extensions
 curl -o ~/.pi/agent/extensions/workrex-status.ts \
-  https://raw.githubusercontent.com/kong109/workrex/main/resources/pi/extensions/workmux-status.ts
+  https://raw.githubusercontent.com/kong109/workrex/main/resources/pi/extensions/workrex-status.ts
 ```
 
 Restart pi for the extension to take effect.
@@ -129,7 +117,7 @@ If you prefer manual setup, copy the workrex status extension to your global OMP
 ```bash
 mkdir -p ~/.omp/agent/extensions
 curl -o ~/.omp/agent/extensions/workrex-status.ts \
-  https://raw.githubusercontent.com/kong109/workrex/main/resources/omp/extensions/workmux-status.ts
+  https://raw.githubusercontent.com/kong109/workrex/main/resources/omp/extensions/workrex-status.ts
 ```
 
 Restart omp for the extension to take effect.
@@ -144,7 +132,7 @@ For manual setup:
 mkdir -p ~/.config/opencode/plugins/workrex-status
 for file in index.ts tui.ts status.ts; do
   curl -fsSL -o "$HOME/.config/opencode/plugins/workrex-status/$file" \
-    "https://raw.githubusercontent.com/kong109/workrex/main/resources/opencode/v2/workmux-status/$file"
+    "https://raw.githubusercontent.com/kong109/workrex/main/resources/opencode/v2/workrex-status/$file"
 done
 ```
 
@@ -168,7 +156,7 @@ Then download the hooks configuration:
 codex_home="${CODEX_HOME:-$HOME/.codex}"
 mkdir -p "$codex_home"
 curl -o "$codex_home/hooks.json" \
-  https://raw.githubusercontent.com/kong109/workrex/main/resources/codex/hooks/workmux-status.json
+  https://raw.githubusercontent.com/kong109/workrex/main/resources/codex/hooks/workrex-status.json
 ```
 
 If you already have a `hooks.json` in your Codex home, merge the hook entries from the downloaded file into your existing configuration.
@@ -205,7 +193,7 @@ For manual setup, download the hooks configuration:
 grok_home="${GROK_HOME:-$HOME/.grok}"
 mkdir -p "$grok_home/hooks"
 curl -o "$grok_home/hooks/workrex-status.json" \
-  https://raw.githubusercontent.com/kong109/workrex/main/.grok/hooks/workmux-status.json
+  https://raw.githubusercontent.com/kong109/workrex/main/.grok/hooks/workrex-status.json
 ```
 
 `UserPromptSubmit` and `PostToolUse` mark the pane working, `Notification` marks it waiting, and `Stop` or `SessionEnd` marks it done. Grok permission prompts do not all emit `Notification`, so some prompts may remain marked as working while waiting for input.
@@ -215,11 +203,11 @@ curl -o "$grok_home/hooks/workrex-status.json" \
 Muse runs hooks from its `settings.json` with most environment variables removed, including the ones workrex uses to find the agent's pane. Hooks in a managed hooks file keep the variables that `managed_hooks_env_vars` names. `workrex setup` therefore writes the hooks to `workrex-status.json` in Muse's config directory, `$XDG_CONFIG_HOME/muse/` or `~/.config/muse/`. It also adds two keys to `settings.json` in that directory:
 
 - `managed_hooks_path` names the hooks file.
-- `managed_hooks_env_vars` lists the multiplexer, `WORKMUX_*` and XDG variables that the hooks need.
+- `managed_hooks_env_vars` lists the multiplexer, `WORKREX_*` and XDG variables that the hooks need.
 
 Setup records the variable names it adds in `workrex-env-vars.json` in the same directory. `workrex uninstall` removes the hooks file, `managed_hooks_path`, and only the names in that record, so names you listed before setup stay.
 
-If `settings.json` already sets `managed_hooks_path` to another file, setup changes nothing and reports the conflict. Add the hooks from [`resources/muse/workmux-status.json`](https://github.com/kong109/workrex/blob/main/resources/muse/workmux-status.json) to that file, with the command renamed to `workrex`.
+If `settings.json` already sets `managed_hooks_path` to another file, setup changes nothing and reports the conflict. Add the hooks from [`resources/muse/workrex-status.json`](https://github.com/kong109/workrex/blob/main/resources/muse/workrex-status.json) to that file, using the `workrex` commands shown in that file.
 
 `UserPromptSubmit`, `ToolUseStart`, `PostToolUse` and `PostToolUseFailure` mark the pane working, `Notification` marks it waiting, and `Stop`, `Interrupt` or `SessionEnd` marks it done. Muse sends `Notification` only while a permission prompt or a question is still unanswered a few seconds after it opens. A shell command you run with `!` does not change the status, and neither does an event that Muse marks as sent after the turn ended.
 
@@ -264,45 +252,28 @@ Copilot CLI 0.0.422 or later supports personal hooks. If you prefer manual setup
 copilot_home="${COPILOT_HOME:-$HOME/.copilot}"
 mkdir -p "$copilot_home/hooks"
 curl -o "$copilot_home/hooks/workrex-status.json" \
-  https://raw.githubusercontent.com/kong109/workrex/main/resources/copilot/hooks/workmux-status/hooks.json
+  https://raw.githubusercontent.com/kong109/workrex/main/resources/copilot/hooks/workrex-status/hooks.json
 ```
 
-Copilot loads personal hooks in every repository. If the repository contains a `.github/hooks/workmux-status` installation, remove that directory to avoid running both copies of the hook. The Copilot CLI hooks API does not support detecting permission prompts, so only working/done states are tracked (no waiting state).
+Copilot loads personal hooks in every repository. If the repository contains a `.github/hooks/workrex-status` installation, remove that directory to avoid running both copies of the hook. The Copilot CLI hooks API does not support detecting permission prompts, so only working/done states are tracked (no waiting state).
 
 ## Customization
 
-You can customize the icons in your config. workrex keeps the workmux names for config paths and `WORKMUX_*` variables, so an existing workmux config works unchanged. See [Configuration](/guide/configuration/).
+You can customize the icons in your config. Use the Workrex configuration paths and `WORKREX_*` variables. See [Configuration](/guide/configuration/).
 
 ```yaml
-# ~/.config/workmux/config.yaml
+# ~/.config/workrex/config.yaml
 status_icons:
   working: "🔄"
   waiting: "⏸️"
   done: "✔️"
 ```
 
-Tmux style codes are supported for colored icons, and work in both the tmux status bar and the dashboard:
+Style-tag codes are supported for colored icons, and render in the dashboard and sidebar:
 
 ```yaml
 status_icons:
   done: "#[fg=#a6e3a1]󰄴#[fg=default]"
-```
-
-Zellij displays the visible icon text in its tab title and ignores tmux style
-codes. Zellij does not auto-clear waiting or done icons on tab focus; the next
-status update replaces them.
-
-If you prefer to manage the tmux format yourself, disable auto-modification and add the status variable to your `~/.tmux.conf`:
-
-```yaml
-# ~/.config/workmux/config.yaml
-status_format: false
-```
-
-```bash
-# ~/.tmux.conf
-set -g window-status-format '#I:#W#{?@workmux_status, #{@workmux_status},}#{?window_flags,#{window_flags}, }'
-set -g window-status-current-format '#I:#W#{?@workmux_status, #{@workmux_status},}#{?window_flags,#{window_flags}, }'
 ```
 
 ## Interrupted agent detection
@@ -315,38 +286,24 @@ The detection runs in the sidebar daemon. If the agent resumes producing output,
 
 Use `workrex last-done` to quickly switch to the agent that most recently finished its task or is waiting for user input. Repeated invocations cycle through all completed and waiting agents in reverse chronological order (most recent first).
 
-Add a tmux keybinding for quick access:
-
-```bash
-# ~/.tmux.conf
-bind l run-shell "workrex last-done"
-```
-
-Then press `prefix + l` to jump to the last completed or waiting agent, press again to cycle to the next oldest, and so on. This is useful when you have multiple agents running and want to quickly attend to agents that need your attention.
-
 Under Rex, `last-done` and `last-agent` switch Rex.app to the agent, which needs Remote Control. See [Rex](/guide/rex/#remote-control).
 
 ## Toggle between agents
 
-Use `workrex last-agent` to toggle between your current agent and the last one you visited. This works like vim's `Ctrl+^` or tmux's `last-window` - it remembers which agent you came from and switches back to it. Pressing it again returns you to where you were.
+Use `workrex last-agent` to toggle between your current agent and the last one you visited. It remembers which agent you came from and switches back to it. Pressing it again returns you to where you were.
 
 This is available both as a CLI command and as the `Tab` key in the [dashboard](/guide/dashboard/).
 
-Add a tmux keybinding for quick access:
-
-```bash
-# ~/.tmux.conf
-bind Tab run-shell "workrex last-agent"
-```
-
-Then press `prefix + Tab` to toggle between your two most recent agents.
+Use the command from a Rex terminal or a Rex action that runs Workrex. The
+bundled dashboard action provides navigation without inventing another app's
+keybinding syntax. See [Rex dashboard](/guide/rex/#dashboard).
 
 ## Disabling status hooks for nested agents
 
-If you launch another agent from inside an agent, that nested agent may run its own configured workrex status hooks and report activity from the same pane. Set `WORKMUX_DISABLE_SET_WINDOW_STATUS=1` on the nested command to make `workrex set-window-status` exit successfully without updating tmux or agent state:
+If you launch another agent from inside an agent, that nested agent may run its own configured workrex status hooks and report activity from the same pane. Set `WORKREX_DISABLE_SET_WINDOW_STATUS=1` on the nested command to make `workrex set-window-status` exit successfully without updating Rex or agent state:
 
 ```bash
-WORKMUX_DISABLE_SET_WINDOW_STATUS=1 codex
+WORKREX_DISABLE_SET_WINDOW_STATUS=1 codex
 ```
 
 Use this when you want only the parent agent pane to drive the workrex status indicator.

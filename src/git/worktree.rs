@@ -101,7 +101,7 @@ pub fn create_worktree_in(
 ///
 /// Git updates the worktree admin dir's `gitdir` file and the worktree's
 /// `.git` pointer. Note: the admin dir itself (`.git/worktrees/<basename>/`)
-/// keeps its original basename; workmux does not rely on that path shape.
+/// keeps its original basename; workrex does not rely on that path shape.
 pub fn move_worktree(old_path: &Path, new_path: &Path) -> Result<()> {
     let old = old_path
         .to_str()
@@ -116,13 +116,13 @@ pub fn move_worktree(old_path: &Path, new_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Migrate all `workmux.worktree.<old_handle>.*` config entries to
-/// `workmux.worktree.<new_handle>.*`, then remove the old section.
+/// Migrate all `workrex.worktree.<old_handle>.*` config entries to
+/// `workrex.worktree.<new_handle>.*`, then remove the old section.
 pub fn migrate_worktree_meta(old_handle: &str, new_handle: &str) -> Result<()> {
     if old_handle == new_handle {
         return Ok(());
     }
-    let old_section = format!("workmux.worktree.{}", old_handle);
+    let old_section = format!("workrex.worktree.{}", old_handle);
     let regex_pattern = format!(r"^{}\.", regex::escape(&old_section));
     let output = Cmd::new("git")
         .args(&["config", "--local", "--get-regexp", &regex_pattern])
@@ -138,7 +138,7 @@ pub fn migrate_worktree_meta(old_handle: &str, new_handle: &str) -> Result<()> {
         let Some(suffix) = key.strip_prefix(&format!("{}.", old_section)) else {
             continue;
         };
-        let new_key = format!("workmux.worktree.{}.{}", new_handle, suffix);
+        let new_key = format!("workrex.worktree.{}.{}", new_handle, suffix);
         Cmd::new("git")
             .args(&["config", "--local", &new_key, value])
             .run()
@@ -356,7 +356,7 @@ pub fn set_worktree_meta_in(
     value: &str,
     workdir: Option<&Path>,
 ) -> Result<()> {
-    let config_key = format!("workmux.worktree.{}.{}", handle, key);
+    let config_key = format!("workrex.worktree.{}.{}", handle, key);
     let cmd = Cmd::new("git").args(&["config", "--local", &config_key, value]);
     let cmd = match workdir {
         Some(path) => cmd.workdir(path),
@@ -376,7 +376,7 @@ pub fn get_worktree_meta(handle: &str, key: &str) -> Option<String> {
 
 /// Retrieve per-worktree metadata from git config in a specific workdir.
 pub fn get_worktree_meta_in(handle: &str, key: &str, workdir: Option<&Path>) -> Option<String> {
-    let config_key = format!("workmux.worktree.{}.{}", handle, key);
+    let config_key = format!("workrex.worktree.{}.{}", handle, key);
     let cmd = Cmd::new("git").args(&["config", "--local", "--get", &config_key]);
     let cmd = match workdir {
         Some(path) => cmd.workdir(path),
@@ -457,13 +457,13 @@ pub fn get_worktree_window_session_in(handle: &str, workdir: Option<&Path>) -> O
     get_worktree_meta_in(handle, "window-session", workdir)
 }
 
-/// Determine the tmux mode for a worktree from git metadata.
+/// Determine the Rex target mode for a worktree from git metadata.
 /// Returns None if no metadata is found (legacy worktree).
 pub fn get_worktree_mode_opt(handle: &str) -> Option<MuxMode> {
     get_worktree_mode_opt_in(handle, None)
 }
 
-/// Determine the tmux mode for a worktree from git metadata in a specific workdir.
+/// Determine the Rex target mode for a worktree from git metadata in a specific workdir.
 pub fn get_worktree_mode_opt_in(handle: &str, workdir: Option<&Path>) -> Option<MuxMode> {
     match get_worktree_meta_in(handle, "mode", workdir) {
         Some(mode) if mode == "session" => Some(MuxMode::Session),
@@ -472,7 +472,7 @@ pub fn get_worktree_mode_opt_in(handle: &str, workdir: Option<&Path>) -> Option<
     }
 }
 
-/// Determine the tmux mode for a worktree from git metadata.
+/// Determine the Rex target mode for a worktree from git metadata.
 /// Falls back to Window mode if no metadata is found (backward compatibility).
 pub fn get_worktree_mode(handle: &str) -> MuxMode {
     get_worktree_mode_opt(handle).unwrap_or(MuxMode::Window)
@@ -482,7 +482,7 @@ pub fn get_all_worktree_meta_key_in(
     workdir: Option<&Path>,
     key_name: &str,
 ) -> std::collections::HashMap<String, String> {
-    let pattern = format!(r"^workmux\.worktree\..*\.{}$", regex::escape(key_name));
+    let pattern = format!(r"^workrex\.worktree\..*\.{}$", regex::escape(key_name));
     let cmd = Cmd::new("git").args(&["config", "--local", "--get-regexp", &pattern]);
     let cmd = match workdir {
         Some(path) => cmd.workdir(path),
@@ -497,7 +497,7 @@ pub fn get_all_worktree_meta_key_in(
         if parts.len() == 2 {
             let key = parts[0];
             let value = parts[1].trim();
-            if let Some(rest) = key.strip_prefix("workmux.worktree.")
+            if let Some(rest) = key.strip_prefix("workrex.worktree.")
                 && let Some(handle) = rest.strip_suffix(&suffix)
             {
                 values.insert(handle.to_string(), value.to_string());
@@ -515,7 +515,7 @@ pub fn get_all_worktree_modes_in(
         "config",
         "--local",
         "--get-regexp",
-        r"^workmux\.worktree\..*\.mode$",
+        r"^workrex\.worktree\..*\.mode$",
     ]);
     let cmd = match workdir {
         Some(path) => cmd.workdir(path),
@@ -525,13 +525,13 @@ pub fn get_all_worktree_modes_in(
 
     let mut modes = std::collections::HashMap::new();
     for line in output.lines() {
-        // Format: "workmux.worktree.<handle>.mode <value>"
+        // Format: "workrex.worktree.<handle>.mode <value>"
         let parts: Vec<&str> = line.splitn(2, ' ').collect();
         if parts.len() == 2 {
             let key = parts[0];
             let value = parts[1].trim();
-            // Extract handle from "workmux.worktree.<handle>.mode"
-            if let Some(rest) = key.strip_prefix("workmux.worktree.")
+            // Extract handle from "workrex.worktree.<handle>.mode"
+            if let Some(rest) = key.strip_prefix("workrex.worktree.")
                 && let Some(handle) = rest.strip_suffix(".mode")
             {
                 let mode = if value == "session" {
@@ -548,7 +548,7 @@ pub fn get_all_worktree_modes_in(
 
 /// Remove worktree metadata using an explicitly identified repository.
 pub fn remove_worktree_meta_at(handle: &str, git_common_dir: &Path) -> Result<()> {
-    let section = format!("workmux.worktree.{handle}");
+    let section = format!("workrex.worktree.{handle}");
     let key_pattern = format!(r"^{}\.", regex::escape(&section));
     let mut probe = super::unattended_git(Some(git_common_dir))?;
     let probe_output = probe
@@ -560,13 +560,13 @@ pub fn remove_worktree_meta_at(handle: &str, git_common_dir: &Path) -> Result<()
             &key_pattern,
         ])
         .output()
-        .context("Failed to inspect Workmux metadata")?;
+        .context("Failed to inspect Workrex metadata")?;
     if !probe_output.status.success() {
         if probe_output.status.code() == Some(1) {
             return Ok(());
         }
         return Err(anyhow!(
-            "Failed to inspect Workmux metadata: {}",
+            "Failed to inspect Workrex metadata: {}",
             String::from_utf8_lossy(&probe_output.stderr).trim()
         ));
     }
@@ -575,10 +575,10 @@ pub fn remove_worktree_meta_at(handle: &str, git_common_dir: &Path) -> Result<()
     let remove_output = remove
         .args(["config", "--local", "--remove-section", &section])
         .output()
-        .context("Failed to remove Workmux metadata")?;
+        .context("Failed to remove Workrex metadata")?;
     if !remove_output.status.success() {
         return Err(anyhow!(
-            "Failed to remove Workmux metadata: {}",
+            "Failed to remove Workrex metadata: {}",
             String::from_utf8_lossy(&remove_output.stderr).trim()
         ));
     }
@@ -706,12 +706,18 @@ mod tests {
             test_support::init_repo(&repo_a);
             test_support::init_repo(&repo_b);
 
-            test_support::run_isolated_test(TEST_NAME, &repo_a, &[("WM_TEST_TEMP", temp.path())]);
+            test_support::run_isolated_test(
+                TEST_NAME,
+                &repo_a,
+                &[("WORKREX_TEST_TEMP", temp.path())],
+            );
             return;
         }
 
         println!("{}", test_support::ISOLATED_TEST_CANARY);
-        let temp = std::env::var_os("WM_TEST_TEMP").map(PathBuf::from).unwrap();
+        let temp = std::env::var_os("WORKREX_TEST_TEMP")
+            .map(PathBuf::from)
+            .unwrap();
         let repo_a = temp.join("repo-a");
         let repo_b = temp.join("repo-b");
         assert_eq!(

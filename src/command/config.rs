@@ -76,12 +76,12 @@ fn run_path() -> Result<()> {
 }
 
 fn run_reference() -> Result<()> {
-    print!("{}", crate::rebrand!(crate::config::EXAMPLE_PROJECT_CONFIG));
+    print!("{}", crate::config::EXAMPLE_PROJECT_CONFIG);
     Ok(())
 }
 
-const DEFAULT_GLOBAL_CONFIG: &str = r#"# workmux global configuration
-# Settings here apply to all projects. Project-specific .workmux.yaml overrides these.
+const DEFAULT_GLOBAL_CONFIG: &str = r#"# workrex global configuration
+# Settings here apply to all projects. Project-specific .workrex.yaml overrides these.
 # See: https://kong109.github.io/workrex/guide/configuration/
 
 # nerdfont: true

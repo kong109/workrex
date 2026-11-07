@@ -25,7 +25,7 @@ inputs.workrex.url = "github:kong109/workrex";
 
 ### Home Manager
 
-Install the package and write the config file. The config path keeps the workmux name, so an existing workmux config works. See [Configuration](/guide/configuration/).
+Install the package and write the config file. The config path keeps the workrex name, so an existing workrex config works. See [Configuration](/guide/configuration/).
 
 ```nix
 { inputs, pkgs, ... }:
@@ -33,7 +33,7 @@ Install the package and write the config file. The config path keeps the workmux
 {
   home.packages = [ inputs.workrex.packages.${pkgs.system}.default ];
 
-  xdg.configFile."workmux/config.yaml".text = ''
+  xdg.configFile."workrex/config.yaml".text = ''
     merge_strategy: rebase
     agent: claude
     panes:
@@ -58,7 +58,7 @@ See [Configuration](/guide/configuration/) for all config options.
 }
 ```
 
-The package's Nix name is `workmux`, after the Cargo package. The binary it installs is `workrex`.
+The package's Nix name is `workrex`, after the Cargo package. The binary it installs is `workrex`.
 
 ## Shell completions
 

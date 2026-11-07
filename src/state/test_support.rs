@@ -8,14 +8,14 @@ pub(crate) fn temp_store() -> (StateStore, TempDir) {
     (store, dir)
 }
 
-pub(crate) fn tmux_pane_key(pane_id: &str) -> PaneKey {
+pub(crate) fn rex_pane_key(pane_id: &str) -> PaneKey {
     PaneKey {
-        backend: "tmux".into(),
+        backend: "rex".into(),
         instance: "default".into(),
         pane_id: pane_id.into(),
     }
 }
 
 pub(crate) fn default_pane_key() -> PaneKey {
-    tmux_pane_key("%1")
+    rex_pane_key("%1")
 }

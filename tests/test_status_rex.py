@@ -1,23 +1,25 @@
 """Agent status from Rex program status (OSC 7501), falling back to hooks."""
 
 import json
+import os
+import re
+import shlex
 import shutil
+import signal
 import subprocess
 import textwrap
 import time
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
 from .conftest import (
-    MuxEnvironment,
     get_window_name,
     get_worktree_path,
     poll_until,
-    run_workmux_add,
+    run_workrex_add,
     wait_for_window_ready,
-    write_workmux_config,
+    write_workrex_config,
 )
 from .rex_env import RexEnvironment
 from .test_sidebar_rex import SIDEBAR_LABEL, SPINNER
@@ -39,25 +41,28 @@ FAKE_AGENT = textwrap.dedent(
 
 
 @pytest.fixture
-def rex(mux_server: MuxEnvironment) -> RexEnvironment:
+def rex(mux_server: RexEnvironment) -> RexEnvironment:
     if not isinstance(mux_server, RexEnvironment):
         pytest.skip("program status is a Rex feature")
     return mux_server
 
 
-def workmux(env: RexEnvironment, exe: Path, cwd: Path, *args: str, block=None):
-    run_env = {**env.env, "WORKMUX_BACKEND": "rex"}
+def workrex(env: RexEnvironment, exe: Path, cwd: Path, *args: str, block=None):
+    run_env = {**env.env, "WORKREX_BACKEND": "rex"}
     if block:
         run_env["REX_BLOCK"] = block
     return subprocess.run(
-        [str(exe), *args], cwd=cwd, env=run_env, capture_output=True, text=True
+        [str(exe), *args],
+        check=False,
+        cwd=cwd,
+        env=run_env,
+        capture_output=True,
+        text=True,
     )
 
 
-def agent_status(
-    env: RexEnvironment, exe: Path, repo: Path, block: str
-) -> Optional[str]:
-    result = workmux(env, exe, repo, "status", "--json")
+def agent_status(env: RexEnvironment, exe: Path, repo: Path, block: str) -> str | None:
+    result = workrex(env, exe, repo, "status", "--json")
     assert result.returncode == 0, result.stderr
     for agent in json.loads(result.stdout)["agents"]:
         if agent["pane_id"] == block:
@@ -75,8 +80,8 @@ def start_fake_agent(
 ) -> str:
     """Start the fake agent in a new worktree window. `launch` is the shell
     command line, and `before` runs on the block before the agent starts."""
-    write_workmux_config(repo, panes=[{"focus": True}])
-    run_workmux_add(env, exe, repo, branch)
+    write_workrex_config(repo, panes=[{"focus": True}])
+    run_workrex_add(env, exe, repo, branch)
     window = get_window_name(branch)
     wait_for_window_ready(env, window)
     block = env._target_block(window)
@@ -96,6 +101,11 @@ def foreground_name(env: RexEnvironment, block: str) -> str:
     return (process.get("foreground") or {}).get("name", "")
 
 
+def pane_shell(env: RexEnvironment) -> str:
+    """The shell program a new worktree block runs: workrex starts `$SHELL -l`."""
+    return Path(env.env["SHELL"]).name
+
+
 def report(env: RexEnvironment, block: str, body: str) -> None:
     env.send_keys(block, body)
     assert poll_until(
@@ -112,9 +122,25 @@ def window_label(env: RexEnvironment, block: str) -> str:
     raise AssertionError(f"no window holds {block}")
 
 
-def test_program_status_shows_without_hooks(rex, workmux_exe_path, repo_path):
-    block = start_fake_agent(rex, workmux_exe_path, repo_path, "osc-agent")
-    assert agent_status(rex, workmux_exe_path, repo_path, block) is None
+def test_styled_hook_icon_uses_visible_text_in_native_window_label(
+    rex, workrex_exe_path, repo_path
+):
+    config = rex.home_path / ".config/workrex/config.yaml"
+    config.write_text(
+        config.read_text()
+        + "status_icons:\n  waiting: '#[fg=red,bold]WAIT#[default]'\n"
+    )
+    block = start_fake_agent(rex, workrex_exe_path, repo_path, "styled-icon")
+    result = workrex(
+        rex, workrex_exe_path, repo_path, "set-window-status", "waiting", block=block
+    )
+    assert result.returncode == 0, result.stderr
+    assert window_label(rex, block) == f"WAIT\u2002{get_window_name('styled-icon')}"
+
+
+def test_program_status_shows_without_hooks(rex, workrex_exe_path, repo_path):
+    block = start_fake_agent(rex, workrex_exe_path, repo_path, "osc-agent")
+    assert agent_status(rex, workrex_exe_path, repo_path, block) is None
 
     for body, expected in [
         ("state=working:app=fake", "working"),
@@ -124,131 +150,618 @@ def test_program_status_shows_without_hooks(rex, workmux_exe_path, repo_path):
         ("state=idle:app=fake", None),
     ]:
         report(rex, block, body)
-        assert agent_status(rex, workmux_exe_path, repo_path, block) == expected, body
+        assert agent_status(rex, workrex_exe_path, repo_path, block) == expected, body
 
 
-def test_agent_is_dropped_after_it_exits(rex, workmux_exe_path, repo_path):
-    block = start_fake_agent(rex, workmux_exe_path, repo_path, "osc-exit")
+def test_agent_is_dropped_after_it_exits(rex, workrex_exe_path, repo_path):
+    block = start_fake_agent(rex, workrex_exe_path, repo_path, "osc-exit")
     report(rex, block, "state=done:app=fake")
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "done"
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "done"
 
     rex.send_keys(block, "exit")
     assert poll_until(
-        lambda: agent_status(rex, workmux_exe_path, repo_path, block) is None,
+        lambda: agent_status(rex, workrex_exe_path, repo_path, block) is None,
         timeout=10,
     )
 
 
-def test_program_status_wins_over_a_stale_hook_status(rex, workmux_exe_path, repo_path):
-    block = start_fake_agent(rex, workmux_exe_path, repo_path, "osc-hooked")
-    hook = workmux(
-        rex, workmux_exe_path, repo_path, "set-window-status", "waiting", block=block
+def test_program_status_wins_over_a_stale_hook_status(rex, workrex_exe_path, repo_path):
+    block = start_fake_agent(rex, workrex_exe_path, repo_path, "osc-hooked")
+    hook = workrex(
+        rex, workrex_exe_path, repo_path, "set-window-status", "waiting", block=block
     )
     assert hook.returncode == 0, hook.stderr
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "waiting"
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "waiting"
 
     report(rex, block, "state=working:app=fake")
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "working"
 
     report(rex, block, "state=clear")
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "waiting"
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "waiting"
 
 
 def test_hook_status_puts_its_icon_in_the_window_label(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
-    block = start_fake_agent(rex, workmux_exe_path, repo_path, "label-icon")
+    block = start_fake_agent(rex, workrex_exe_path, repo_path, "label-icon")
     window = get_window_name("label-icon")
 
     for status, icon in [("waiting", "💬"), ("done", "✅")]:
-        hook = workmux(
-            rex, workmux_exe_path, repo_path, "set-window-status", status, block=block
+        hook = workrex(
+            rex, workrex_exe_path, repo_path, "set-window-status", status, block=block
         )
         assert hook.returncode == 0, hook.stderr
         assert window_label(rex, block) == f"{icon}\u2002{window}"
 
-    hook = workmux(
-        rex, workmux_exe_path, repo_path, "set-window-status", "clear", block=block
+    hook = workrex(
+        rex, workrex_exe_path, repo_path, "set-window-status", "clear", block=block
     )
     assert hook.returncode == 0, hook.stderr
     assert window_label(rex, block) == window
 
 
+def test_a_status_target_recalled_into_another_pane_reports_that_pane(
+    rex, workrex_exe_path, repo_path
+):
+    # Workrex types `export WORKREX_STATUS_*=...; <agent>` into an agent
+    # pane, so the line lands in shell history. Rerunning it in another pane
+    # carries the first pane's target into the second pane's agent.
+    write_workrex_config(repo_path, panes=[{"focus": True}])
+    run_workrex_add(rex, workrex_exe_path, repo_path, "second-target", background=True)
+    wait_for_window_ready(rex, get_window_name("second-target"))
+    second = rex._target_block(get_window_name("second-target"))
+    first = start_fake_agent(rex, workrex_exe_path, repo_path, "first-target")
+    hook_env = {
+        "WORKREX_STATUS_BACKEND": "rex",
+        "WORKREX_STATUS_INSTANCE": rex.server_url,
+        "WORKREX_STATUS_PANE_ID": first,
+        "REX_BLOCK": second,
+    }
+    hook = subprocess.run(
+        [str(workrex_exe_path), "set-window-status", "waiting"],
+        check=False,
+        cwd=repo_path,
+        env={**rex.env, **hook_env},
+        capture_output=True,
+        text=True,
+    )
+    assert hook.returncode == 0, hook.stderr
+
+    assert window_label(rex, second) == f"💬\u2002{get_window_name('second-target')}"
+    assert window_label(rex, first) == get_window_name("first-target")
+
+
+def test_a_status_target_reaches_its_pane_from_a_hook_without_rex_block(
+    rex, workrex_exe_path, repo_path
+):
+    block = start_fake_agent(rex, workrex_exe_path, repo_path, "lost-block")
+    hook_env = {
+        "WORKREX_STATUS_BACKEND": "rex",
+        "WORKREX_STATUS_INSTANCE": rex.server_url,
+        "WORKREX_STATUS_PANE_ID": block,
+    }
+    env = {**rex.env, **hook_env}
+    env.pop("REX_BLOCK", None)
+    env.pop("REX_SESSION", None)
+    hook = subprocess.run(
+        [str(workrex_exe_path), "set-window-status", "waiting"],
+        check=False,
+        cwd=repo_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert hook.returncode == 0, hook.stderr
+
+    assert window_label(rex, block) == f"💬\u2002{get_window_name('lost-block')}"
+
+
+def report_waiting(env, exe, cwd, block, **overrides):
+    """Run a `waiting` hook whose exported status target names `block` on
+    `env`'s server, with `overrides` on top of `env`'s variables."""
+    hook_env = {
+        **env.env,
+        "WORKREX_STATUS_BACKEND": "rex",
+        "WORKREX_STATUS_INSTANCE": env.server_url,
+        "WORKREX_STATUS_PANE_ID": block,
+        **overrides,
+    }
+    hook = subprocess.run(
+        [str(exe), "set-window-status", "waiting"],
+        check=False,
+        cwd=cwd,
+        # An override of None leaves the variable unset.
+        env={name: value for name, value in hook_env.items() if value is not None},
+        capture_output=True,
+        text=True,
+    )
+    assert hook.returncode == 0, hook.stderr
+
+
+@pytest.mark.parametrize("caller", ["closed", "unknown"])
+def test_a_status_target_is_used_when_the_callers_pane_is_gone(
+    rex, workrex_exe_path, repo_path, caller
+):
+    # A hook can outlive the pane named by its REX_BLOCK, or inherit a
+    # REX_BLOCK that never named a pane on this server.
+    write_workrex_config(repo_path, panes=[{"focus": True}])
+    if caller == "closed":
+        run_workrex_add(rex, workrex_exe_path, repo_path, "gone", background=True)
+        wait_for_window_ready(rex, get_window_name("gone"))
+        gone = rex._target_block(get_window_name("gone"))
+        rex.kill_window(get_window_name("gone"))
+    else:
+        gone = "block:01a1b381-0000-7000-8000-000000000000"
+    agent = start_fake_agent(rex, workrex_exe_path, repo_path, "kept-target")
+
+    report_waiting(rex, workrex_exe_path, repo_path, agent, REX_BLOCK=gone)
+
+    assert window_label(rex, agent) == f"💬\u2002{get_window_name('kept-target')}"
+
+
+@pytest.fixture
+def other_server(tmp_path):
+    (tmp_path / "other").mkdir()
+    other = RexEnvironment(tmp_path / "other")
+    other.start_server()
+    yield other
+    other.stop_server()
+
+
+def test_a_status_target_is_used_when_the_callers_pane_is_on_another_server(
+    rex, workrex_exe_path, repo_path, other_server
+):
+    # REX_SERVER names the target's server, but REX_BLOCK is a live pane on
+    # another server, so it names no pane on the server the hook reaches.
+    agent = start_fake_agent(rex, workrex_exe_path, repo_path, "cross-server")
+
+    report_waiting(
+        rex, workrex_exe_path, repo_path, agent, REX_BLOCK=other_server.runner_block_id
+    )
+
+    assert window_label(rex, agent) == f"💬\u2002{get_window_name('cross-server')}"
+
+
+def test_a_status_target_recalled_on_another_server_reports_that_servers_pane(
+    rex, workrex_exe_path, repo_path, other_server
+):
+    agent = start_fake_agent(rex, workrex_exe_path, repo_path, "recalled-away")
+    caller = other_server.runner_block_id
+    caller_window = window_label(other_server, caller)
+
+    report_waiting(
+        rex,
+        workrex_exe_path,
+        repo_path,
+        agent,
+        REX_BLOCK=caller,
+        REX_SERVER=other_server.server_url,
+    )
+
+    assert window_label(rex, agent) == get_window_name("recalled-away")
+    assert window_label(other_server, caller) == f"💬\u2002{caller_window}"
+
+
+def counted_rex(env, tmp_path) -> tuple[Path, Path]:
+    """A `rex` shim that logs each call's arguments, which name its server."""
+    shim_dir = tmp_path / "rex-shim"
+    shim_dir.mkdir(exist_ok=True)
+    log = tmp_path / "rex-calls.log"
+    log.write_text("")
+    shim = shim_dir / "rex"
+    shim.write_text(
+        f'#!/bin/sh\necho "$*" >> {shlex.quote(str(log))}\n'
+        f'exec {shlex.quote(env.rex)} "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim_dir, log
+
+
+@pytest.fixture
+def stopped_server(tmp_path):
+    """A Rex server that accepts connections but never answers."""
+    (tmp_path / "stopped").mkdir()
+    stopped = RexEnvironment(tmp_path / "stopped")
+    stopped.start_server()
+    assert stopped.server is not None
+    pid = stopped.server.pid
+    os.kill(pid, signal.SIGSTOP)
+    yield stopped
+    os.kill(pid, signal.SIGCONT)
+    stopped.stop_server()
+
+
+@pytest.mark.parametrize("target", ["live", "closed"])
+def test_a_recalled_line_reports_its_pane_when_rex_server_names_another_server(
+    rex, workrex_exe_path, repo_path, other_server, target
+):
+    # Panes of a server started with `--listen` inherit the REX_SERVER of
+    # the shell that started it, so REX_SERVER can name another live server
+    # than the one holding the caller's pane.
+    agent = start_fake_agent(rex, workrex_exe_path, repo_path, "recalled-here")
+    if target == "closed":
+        rex.kill_window(get_window_name("recalled-here"))
+    caller = rex.runner_block_id
+    caller_window = window_label(rex, caller)
+
+    report_waiting(
+        rex,
+        workrex_exe_path,
+        repo_path,
+        agent,
+        REX_BLOCK=caller,
+        REX_SERVER=other_server.server_url,
+    )
+
+    assert window_label(rex, caller) == f"💬\u2002{caller_window}"
+    if target == "live":
+        assert window_label(rex, agent) == get_window_name("recalled-here")
+
+
+def test_a_hook_in_its_own_pane_does_not_wait_on_a_hung_rex_server(
+    rex, workrex_exe_path, repo_path, stopped_server, tmp_path
+):
+    agent = start_fake_agent(rex, workrex_exe_path, repo_path, "own-pane")
+    shim_dir, log = counted_rex(rex, tmp_path)
+
+    report_waiting(
+        rex,
+        workrex_exe_path,
+        repo_path,
+        agent,
+        REX_BLOCK=agent,
+        REX_SERVER=stopped_server.server_url,
+        REX_BIN_DIR=str(shim_dir),
+    )
+
+    assert window_label(rex, agent) == f"💬\u2002{get_window_name('own-pane')}"
+    calls = log.read_text().splitlines()
+    assert not [c for c in calls if stopped_server.server_url in c], "\n".join(calls)
+
+
+def rex_default_socket(env: RexEnvironment) -> Path:
+    """The socket rex reaches from `env`'s variables with REX_SERVER unset,
+    as rex reports it."""
+    probe = subprocess.run(
+        [
+            env.rex,
+            "--autostart=false",
+            "--timeout",
+            "1s",
+            "api",
+            "call",
+            "server.version",
+        ],
+        env={name: value for name, value in env.env.items() if name != "REX_SERVER"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    found = re.search(r"no Rex server is running at (.+?), and autostart", probe.stderr)
+    assert found, probe.stderr
+    return Path(found[1])
+
+
+def private_dir(path: Path) -> str:
+    """A runtime directory Linux rex uses: it passes over any but 0700."""
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o700)
+    return str(path)
+
+
+def serve_at(env: RexEnvironment, socket: Path) -> None:
+    # Never a real runtime directory's socket, such as the user's server.
+    assert socket.resolve().is_relative_to(env.socket_dir.resolve()), socket
+    socket.parent.mkdir(parents=True, exist_ok=True)
+    env.server_url = f"unix://{socket.resolve()}"
+    env.start_server()
+
+
+@pytest.fixture(
+    params=["XDG_RUNTIME_DIR", "REX_RUNTIME_DIR"],
+    ids=["xdg-runtime-dir", "rex-runtime-dir"],
+)
+def stopped_default_server(tmp_path, request):
+    """A Rex server that never answers, on the socket rex uses when
+    REX_SERVER is unset."""
+    (tmp_path / "default").mkdir()
+    env = RexEnvironment(tmp_path / "default")
+    # Private runtime directories move rex's default socket off the user's
+    # server, on paths short enough for a Unix socket. REX_RUNTIME_DIR, when
+    # set, wins over XDG_RUNTIME_DIR.
+    env.env["XDG_RUNTIME_DIR"] = private_dir(env.socket_dir / "xdg")
+    env.env.pop("REX_RUNTIME_DIR", None)
+    if request.param == "REX_RUNTIME_DIR":
+        env.env["REX_RUNTIME_DIR"] = str(env.socket_dir / "rt")
+    serve_at(env, rex_default_socket(env))
+    assert env.server is not None
+    pid = env.server.pid
+    os.kill(pid, signal.SIGSTOP)
+    yield env
+    os.kill(pid, signal.SIGCONT)
+    env.stop_server()
+
+
+@pytest.mark.parametrize(
+    "rex_server",
+    ["unix-url", "unset", "socket-path", "upper-scheme", "trailing-slash"],
+)
+def test_a_hung_server_costs_a_hook_one_version_check(
+    stopped_default_server, workrex_exe_path, repo_path, tmp_path, rex_server
+):
+    # The exported target names the server by its canonical endpoint. Every
+    # spelling rex accepts for the same server shares its failed check.
+    env = stopped_default_server
+    shim_dir, log = counted_rex(env, tmp_path)
+    block = env.runner_block_id
+    path = env.server_url.removeprefix("unix://")
+    spelling = {
+        "unix-url": env.server_url,
+        "unset": None,
+        "socket-path": path,
+        "upper-scheme": f"UNIX://{path}",
+        "trailing-slash": f"unix://{path}/",
+    }[rex_server]
+
+    report_waiting(
+        env,
+        workrex_exe_path,
+        repo_path,
+        block,
+        REX_SERVER=spelling,
+        REX_BLOCK=block,
+        REX_BIN_DIR=str(shim_dir),
+    )
+
+    calls = log.read_text().splitlines()
+    assert len([c for c in calls if "server.version" in c]) == 1, "\n".join(calls)
+
+
+def test_an_unset_rex_server_reports_the_callers_pane_on_rexs_default_server(
+    tmp_path, workrex_exe_path, repo_path
+):
+    # With REX_SERVER unset, rex reaches $REX_RUNTIME_DIR/server.sock before
+    # the socket under XDG_RUNTIME_DIR, so a target on the latter is on
+    # another server than the caller's pane.
+    (tmp_path / "own").mkdir()
+    (tmp_path / "target").mkdir()
+    own = RexEnvironment(tmp_path / "own")
+    target = RexEnvironment(tmp_path / "target")
+    runtime = {
+        "XDG_RUNTIME_DIR": private_dir(target.socket_dir / "xdg"),
+        "REX_RUNTIME_DIR": str(own.socket_dir / "rt"),
+    }
+    target.env["XDG_RUNTIME_DIR"] = runtime["XDG_RUNTIME_DIR"]
+    target.env.pop("REX_RUNTIME_DIR", None)
+    own.env.update(runtime)
+    serve_at(target, rex_default_socket(target))
+    try:
+        serve_at(own, rex_default_socket(own))
+        try:
+            assert own.server_url != target.server_url
+            caller, agent = own.runner_block_id, target.runner_block_id
+            assert caller is not None and agent is not None
+            caller_window = window_label(own, caller)
+            target_window = window_label(target, agent)
+
+            report_waiting(
+                target,
+                workrex_exe_path,
+                repo_path,
+                agent,
+                REX_SERVER=None,
+                REX_BLOCK=caller,
+                **runtime,
+            )
+
+            assert window_label(own, caller) == f"💬\u2002{caller_window}"
+            assert window_label(target, agent) == target_window
+        finally:
+            own.stop_server()
+    finally:
+        target.stop_server()
+
+
+def report_from_another_servers_pane(
+    target: RexEnvironment,
+    caller_server: RexEnvironment,
+    exe: Path,
+    cwd: Path,
+    **overrides,
+) -> None:
+    """Report `target`'s runner pane waiting from a hook whose REX_BLOCK is
+    `caller_server`'s runner pane, which `overrides` say how to reach. The
+    caller's pane shows it, since the target names another server."""
+    caller, agent = caller_server.runner_block_id, target.runner_block_id
+    assert caller is not None and agent is not None
+    caller_window = window_label(caller_server, caller)
+    target_window = window_label(target, agent)
+
+    report_waiting(target, exe, cwd, agent, REX_BLOCK=caller, **overrides)
+
+    assert window_label(caller_server, caller) == f"💬\u2002{caller_window}"
+    assert window_label(target, agent) == target_window
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    ["rex-server-path", "rex-server-url", "rex-runtime-dir", "xdg-runtime-dir"],
+)
+def test_a_dotdot_after_a_symlink_names_the_server_rex_reaches(
+    tmp_path, workrex_exe_path, repo_path, spelling
+):
+    # Rex drops `L/..` from a socket path before it connects, so the caller
+    # reaches its own server even though L links into the target's
+    # directory.
+    sub = "rex/server.sock" if spelling == "xdg-runtime-dir" else "server.sock"
+    (tmp_path / "target").mkdir()
+    (tmp_path / "caller").mkdir()
+    target = RexEnvironment(tmp_path / "target")
+    caller = RexEnvironment(tmp_path / "caller")
+    serve_at(target, target.socket_dir / sub)
+    try:
+        serve_at(caller, caller.socket_dir / sub)
+        try:
+            (target.socket_dir / "sub").mkdir()
+            (caller.socket_dir / "L").symlink_to(target.socket_dir.resolve() / "sub")
+            dotdot = f"{caller.socket_dir.resolve()}/L/.."
+            overrides = {
+                "rex-server-path": {"REX_SERVER": f"{dotdot}/server.sock"},
+                "rex-server-url": {"REX_SERVER": f"unix://{dotdot}/server.sock"},
+                "rex-runtime-dir": {"REX_SERVER": None, "REX_RUNTIME_DIR": dotdot},
+                "xdg-runtime-dir": {
+                    "REX_SERVER": None,
+                    "REX_RUNTIME_DIR": None,
+                    "XDG_RUNTIME_DIR": dotdot,
+                },
+            }[spelling]
+            report_from_another_servers_pane(
+                target, caller, workrex_exe_path, repo_path, **overrides
+            )
+        finally:
+            caller.stop_server()
+    finally:
+        target.stop_server()
+
+
+def test_a_relative_rex_runtime_dir_never_names_the_target_server(
+    tmp_path, workrex_exe_path
+):
+    # Rex takes a relative REX_RUNTIME_DIR from the logical $PWD, which can
+    # differ from the physical working directory. From caller/L, with
+    # L -> target/sub, `..` is the caller's directory to rex, but target's
+    # directory once L is resolved.
+    (tmp_path / "target").mkdir()
+    (tmp_path / "caller").mkdir()
+    target = RexEnvironment(tmp_path / "target")
+    caller = RexEnvironment(tmp_path / "caller")
+    serve_at(target, target.socket_dir / "server.sock")
+    try:
+        serve_at(caller, caller.socket_dir / "server.sock")
+        try:
+            (target.socket_dir / "sub").mkdir()
+            cwd = caller.socket_dir.resolve() / "L"
+            cwd.symlink_to(target.socket_dir.resolve() / "sub")
+            report_from_another_servers_pane(
+                target,
+                caller,
+                workrex_exe_path,
+                cwd,
+                REX_SERVER=None,
+                REX_RUNTIME_DIR="..",
+                XDG_RUNTIME_DIR=None,
+                PWD=str(cwd),
+            )
+        finally:
+            caller.stop_server()
+    finally:
+        target.stop_server()
+
+
+def test_a_trailing_space_in_rex_server_names_another_socket(
+    tmp_path, workrex_exe_path, repo_path
+):
+    # Rex takes REX_SERVER as it is, so `s.sock ` is a socket of its own.
+    (tmp_path / "target").mkdir()
+    (tmp_path / "caller").mkdir()
+    target = RexEnvironment(tmp_path / "target")
+    caller = RexEnvironment(tmp_path / "caller")
+    socket = target.socket_dir.resolve() / "s.sock"
+    serve_at(target, socket)
+    try:
+        caller.server_url = f"{socket} "
+        caller.start_server()
+        try:
+            report_from_another_servers_pane(
+                target,
+                caller,
+                workrex_exe_path,
+                repo_path,
+                REX_SERVER=caller.server_url,
+            )
+        finally:
+            caller.stop_server()
+    finally:
+        target.stop_server()
+
+
 def test_a_window_prefix_ending_in_a_space_keeps_its_window(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     prefix = " "
-    write_workmux_config(repo_path, panes=[{"focus": True}], window_prefix=prefix)
-    run_workmux_add(rex, workmux_exe_path, repo_path, "nerd")
+    write_workrex_config(repo_path, panes=[{"focus": True}], window_prefix=prefix)
+    run_workrex_add(rex, workrex_exe_path, repo_path, "nerd")
     wait_for_window_ready(rex, f"{prefix}nerd")
     block = rex._target_block(f"{prefix}nerd")
 
-    hook = workmux(
-        rex, workmux_exe_path, repo_path, "set-window-status", "waiting", block=block
+    hook = workrex(
+        rex, workrex_exe_path, repo_path, "set-window-status", "waiting", block=block
     )
     assert hook.returncode == 0, hook.stderr
     assert window_label(rex, block) == f"💬 {prefix}nerd"
 
 
 def test_agent_run_from_the_shell_is_dropped_after_it_exits(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     block = start_fake_agent(
-        rex, workmux_exe_path, repo_path, "osc-shell-exit", launch="{agent}"
+        rex, workrex_exe_path, repo_path, "osc-shell-exit", launch="{agent}"
     )
     report(rex, block, "state=done:app=fake")
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "done"
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "done"
 
     rex.send_keys(block, "exit")
-    assert poll_until(lambda: foreground_name(rex, block) == "zsh", timeout=10)
-    assert agent_status(rex, workmux_exe_path, repo_path, block) is None
+    assert poll_until(
+        lambda: foreground_name(rex, block) == pane_shell(rex), timeout=10
+    )
+    assert agent_status(rex, workrex_exe_path, repo_path, block) is None
 
 
 def test_a_shell_that_execs_after_the_agent_does_not_inherit_its_status(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     block = start_fake_agent(
         rex,
-        workmux_exe_path,
+        workrex_exe_path,
         repo_path,
         "osc-sh-exec",
         launch="exec sh -c '{agent}; exec /bin/zsh -f'",
     )
     report(rex, block, "state=done:app=fake")
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "done"
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "done"
 
     rex.send_keys(block, "exit")
     assert poll_until(lambda: foreground_name(rex, block) == "zsh", timeout=10)
-    assert agent_status(rex, workmux_exe_path, repo_path, block) is None
+    assert agent_status(rex, workrex_exe_path, repo_path, block) is None
 
 
 def test_the_hook_status_returns_after_clear_even_after_pruning_readers(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     block = start_fake_agent(
-        rex, workmux_exe_path, repo_path, "osc-clear", launch="{agent}"
+        rex, workrex_exe_path, repo_path, "osc-clear", launch="{agent}"
     )
-    hook = workmux(
-        rex, workmux_exe_path, repo_path, "set-window-status", "waiting", block=block
+    hook = workrex(
+        rex, workrex_exe_path, repo_path, "set-window-status", "waiting", block=block
     )
     assert hook.returncode == 0, hook.stderr
 
     report(rex, block, "state=working:app=fake")
-    pruning = workmux(rex, workmux_exe_path, repo_path, "list")
+    pruning = workrex(rex, workrex_exe_path, repo_path, "list")
     assert pruning.returncode == 0, pruning.stderr
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "working"
 
     report(rex, block, "state=clear")
-    pruning = workmux(rex, workmux_exe_path, repo_path, "list")
+    pruning = workrex(rex, workrex_exe_path, repo_path, "list")
     assert pruning.returncode == 0, pruning.stderr
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "waiting"
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "waiting"
 
 
-def test_a_stale_hook_file_does_not_block_adoption(rex, workmux_exe_path, repo_path):
+def test_a_stale_hook_file_does_not_block_adoption(rex, workrex_exe_path, repo_path):
     def shell_hook(block):
-        hook = workmux(
+        hook = workrex(
             rex,
-            workmux_exe_path,
+            workrex_exe_path,
             repo_path,
             "set-window-status",
             "waiting",
@@ -258,14 +771,14 @@ def test_a_stale_hook_file_does_not_block_adoption(rex, workmux_exe_path, repo_p
 
     block = start_fake_agent(
         rex,
-        workmux_exe_path,
+        workrex_exe_path,
         repo_path,
         "osc-stale-hook",
         launch="{agent}",
         before=shell_hook,
     )
     report(rex, block, "state=working:app=fake")
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "working"
 
 
 def assert_last_done_focuses(env: RexEnvironment, exe: Path, repo: Path, block: str):
@@ -281,38 +794,38 @@ def assert_last_done_focuses(env: RexEnvironment, exe: Path, repo: Path, block: 
     )
     assert active_block() == env.runner_block_id
 
-    result = workmux(env, exe, repo, "last-done")
+    result = workrex(env, exe, repo, "last-done")
     assert result.returncode == 0, result.stderr
     assert poll_until(lambda: active_block() == block, timeout=5), result.stdout
 
 
 def test_last_done_focuses_an_agent_that_only_reported_done(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
-    block = start_fake_agent(rex, workmux_exe_path, repo_path, "osc-last-done")
+    block = start_fake_agent(rex, workrex_exe_path, repo_path, "osc-last-done")
     report(rex, block, "state=done:app=fake")
-    pruning = workmux(rex, workmux_exe_path, repo_path, "list")
+    pruning = workrex(rex, workrex_exe_path, repo_path, "list")
     assert pruning.returncode == 0, pruning.stderr
 
-    assert_last_done_focuses(rex, workmux_exe_path, repo_path, block)
+    assert_last_done_focuses(rex, workrex_exe_path, repo_path, block)
 
 
 def test_last_done_prefers_a_hook_status_newer_than_the_last_report_a_reader_saw(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     block = start_fake_agent(
-        rex, workmux_exe_path, repo_path, "osc-hook-newer", launch="{agent}"
+        rex, workrex_exe_path, repo_path, "osc-hook-newer", launch="{agent}"
     )
 
     def hook(status):
-        result = workmux(
-            rex, workmux_exe_path, repo_path, "set-window-status", status, block=block
+        result = workrex(
+            rex, workrex_exe_path, repo_path, "set-window-status", status, block=block
         )
         assert result.returncode == 0, result.stderr
 
     hook("working")
     report(rex, block, "state=working:app=fake")
-    pruning = workmux(rex, workmux_exe_path, repo_path, "list")
+    pruning = workrex(rex, workrex_exe_path, repo_path, "list")
     assert pruning.returncode == 0, pruning.stderr
 
     # Statuses carry whole seconds, so the hook must land in a later second.
@@ -320,52 +833,52 @@ def test_last_done_prefers_a_hook_status_newer_than_the_last_report_a_reader_saw
     report(rex, block, "state=done:app=fake")
     hook("done")
 
-    assert_last_done_focuses(rex, workmux_exe_path, repo_path, block)
+    assert_last_done_focuses(rex, workrex_exe_path, repo_path, block)
 
 
 def hook_status(env: RexEnvironment, exe: Path, repo: Path, block: str, status: str):
-    result = workmux(env, exe, repo, "set-window-status", status, block=block)
+    result = workrex(env, exe, repo, "set-window-status", status, block=block)
     assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("hook", ["waiting", "done"])
 def test_last_done_agrees_with_status_when_a_live_report_outranks_a_newer_hook(
-    rex, workmux_exe_path, repo_path, hook
+    rex, workrex_exe_path, repo_path, hook
 ):
     block = start_fake_agent(
-        rex, workmux_exe_path, repo_path, f"osc-outranks-{hook}", launch="{agent}"
+        rex, workrex_exe_path, repo_path, f"osc-outranks-{hook}", launch="{agent}"
     )
     report(rex, block, "state=working:app=fake")
-    assert workmux(rex, workmux_exe_path, repo_path, "list").returncode == 0
+    assert workrex(rex, workrex_exe_path, repo_path, "list").returncode == 0
 
     time.sleep(1.2)
-    hook_status(rex, workmux_exe_path, repo_path, block, hook)
-    assert workmux(rex, workmux_exe_path, repo_path, "list").returncode == 0
+    hook_status(rex, workrex_exe_path, repo_path, block, hook)
+    assert workrex(rex, workrex_exe_path, repo_path, "list").returncode == 0
 
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"
-    result = workmux(rex, workmux_exe_path, repo_path, "last-done")
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "working"
+    result = workrex(rex, workrex_exe_path, repo_path, "last-done")
     assert result.returncode == 0, result.stderr
     assert "No completed or waiting agents found" in result.stdout + result.stderr
 
 
 def test_last_done_agrees_with_status_after_a_hook_change_in_the_reports_second(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     block = start_fake_agent(
-        rex, workmux_exe_path, repo_path, "osc-same-second", launch="{agent}"
+        rex, workrex_exe_path, repo_path, "osc-same-second", launch="{agent}"
     )
-    hook_status(rex, workmux_exe_path, repo_path, block, "waiting")
+    hook_status(rex, workrex_exe_path, repo_path, block, "waiting")
     report(rex, block, "state=working:app=fake")
-    assert workmux(rex, workmux_exe_path, repo_path, "list").returncode == 0
+    assert workrex(rex, workrex_exe_path, repo_path, "list").returncode == 0
 
     time.sleep(1.2 - time.time() % 1)
     report(rex, block, "state=done:app=fake")
-    assert workmux(rex, workmux_exe_path, repo_path, "list").returncode == 0
-    hook_status(rex, workmux_exe_path, repo_path, block, "working")
-    assert workmux(rex, workmux_exe_path, repo_path, "list").returncode == 0
+    assert workrex(rex, workrex_exe_path, repo_path, "list").returncode == 0
+    hook_status(rex, workrex_exe_path, repo_path, block, "working")
+    assert workrex(rex, workrex_exe_path, repo_path, "list").returncode == 0
 
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "done"
-    assert_last_done_focuses(rex, workmux_exe_path, repo_path, block)
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "done"
+    assert_last_done_focuses(rex, workrex_exe_path, repo_path, block)
 
 
 UPDATED_AGY = "agy.1793778097211245000.old"
@@ -383,8 +896,8 @@ def start_native_agy(env: RexEnvironment, exe: Path, repo: Path, branch: str):
     source = env.tmp_path / "agy.c"
     source.write_text("#include <unistd.h>\nint main(void) { for (;;) pause(); }\n")
     subprocess.run([cc, "-o", str(agent), str(source)], check=True)
-    write_workmux_config(repo, panes=[{"focus": True}])
-    run_workmux_add(env, exe, repo, branch)
+    write_workrex_config(repo, panes=[{"focus": True}])
+    run_workrex_add(env, exe, repo, branch)
     window = get_window_name(branch)
     wait_for_window_ready(env, window)
     block = env._target_block(window)
@@ -398,7 +911,7 @@ def agy_hooks(env: RexEnvironment, exe: Path, block: str):
     hooks_dir = env.tmp_path / "agy-config"
     hooks_dir.mkdir(exist_ok=True)
     for args in (["register-agent"], ["set-window-status", "working"]):
-        hook = workmux(env, exe, hooks_dir, *args, block=block)
+        hook = workrex(env, exe, hooks_dir, *args, block=block)
         assert hook.returncode == 0, hook.stderr
 
 
@@ -408,16 +921,16 @@ def update_agy(env: RexEnvironment, agent: Path, block: str):
 
 
 def test_a_hooked_agent_stays_listed_after_renaming_its_running_binary(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     branch = "renamed-agent"
-    block, agent = start_native_agy(rex, workmux_exe_path, repo_path, branch)
-    agy_hooks(rex, workmux_exe_path, block)
-    assert agent_status(rex, workmux_exe_path, repo_path, block) == "working"
+    block, agent = start_native_agy(rex, workrex_exe_path, repo_path, branch)
+    agy_hooks(rex, workrex_exe_path, block)
+    assert agent_status(rex, workrex_exe_path, repo_path, block) == "working"
 
     update_agy(rex, agent, block)
 
-    result = workmux(rex, workmux_exe_path, repo_path, "status", "--json")
+    result = workrex(rex, workrex_exe_path, repo_path, "status", "--json")
     assert result.returncode == 0, result.stderr
     agents = [a for a in json.loads(result.stdout)["agents"] if a["pane_id"] == block]
     assert len(agents) == 1, result.stdout
@@ -431,17 +944,17 @@ def test_a_hooked_agent_stays_listed_after_renaming_its_running_binary(
 
 
 def test_a_reporting_pane_in_the_main_worktree_is_not_adopted(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     block = start_fake_agent(
         rex,
-        workmux_exe_path,
+        workrex_exe_path,
         repo_path,
         "osc-main-worktree",
         launch=f"cd {repo_path} && exec {{agent}}",
     )
     report(rex, block, "state=working:app=fake")
-    assert agent_status(rex, workmux_exe_path, repo_path, block) is None
+    assert agent_status(rex, workrex_exe_path, repo_path, block) is None
 
 
 # The sidebar draws a working agent as a spinner, not an icon.
@@ -460,16 +973,16 @@ def sidebar_blocks(env) -> list[str]:
 
 
 def test_the_sidebar_follows_each_status_the_agent_reports(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     env = rex
     short_tmp = env.socket_dir / "t"
     short_tmp.mkdir()
     env.env["TMPDIR"] = str(short_tmp)
-    block = start_fake_agent(env, workmux_exe_path, repo_path, "side-osc")
+    block = start_fake_agent(env, workrex_exe_path, repo_path, "side-osc")
     report(env, block, "state=working:app=fake")
 
-    result = workmux(env, workmux_exe_path, repo_path, "sidebar", "on")
+    result = workrex(env, workrex_exe_path, repo_path, "sidebar", "on")
     assert result.returncode == 0, result.stderr
     try:
         assert poll_until(lambda: bool(sidebar_blocks(env)), timeout=10), env.views()
@@ -492,19 +1005,19 @@ def test_the_sidebar_follows_each_status_the_agent_reports(
                 env.capture_pane(sidebar),
             )
     finally:
-        workmux(env, workmux_exe_path, repo_path, "sidebar", "off")
+        workrex(env, workrex_exe_path, repo_path, "sidebar", "off")
 
 
 def test_the_sidebar_shows_an_agent_that_registers_after_renaming_its_binary(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     env = rex
     short_tmp = env.socket_dir / "t"
     short_tmp.mkdir()
     env.env["TMPDIR"] = str(short_tmp)
-    block, agent = start_native_agy(env, workmux_exe_path, repo_path, "side-agy")
+    block, agent = start_native_agy(env, workrex_exe_path, repo_path, "side-agy")
 
-    result = workmux(env, workmux_exe_path, repo_path, "sidebar", "on")
+    result = workrex(env, workrex_exe_path, repo_path, "sidebar", "on")
     assert result.returncode == 0, result.stderr
     try:
         assert poll_until(lambda: bool(sidebar_blocks(env)), timeout=10), env.views()
@@ -517,26 +1030,26 @@ def test_the_sidebar_shows_an_agent_that_registers_after_renaming_its_binary(
         # The daemon read the pane before the update, and a rename sends no
         # process event, so it keeps the name it read then.
         update_agy(env, agent, block)
-        agy_hooks(env, workmux_exe_path, block)
+        agy_hooks(env, workrex_exe_path, block)
         assert poll_until(
             lambda: bool(SPINNER.search(env.capture_pane(sidebar) or "")), timeout=10
         ), env.capture_pane(sidebar)
     finally:
-        workmux(env, workmux_exe_path, repo_path, "sidebar", "off")
+        workrex(env, workrex_exe_path, repo_path, "sidebar", "off")
 
 
 def test_the_sidebar_shows_an_agent_that_renamed_its_binary_before_it_started(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     env = rex
     short_tmp = env.socket_dir / "t"
     short_tmp.mkdir()
     env.env["TMPDIR"] = str(short_tmp)
-    block, agent = start_native_agy(env, workmux_exe_path, repo_path, "scan-agy")
-    agy_hooks(env, workmux_exe_path, block)
+    block, agent = start_native_agy(env, workrex_exe_path, repo_path, "scan-agy")
+    agy_hooks(env, workrex_exe_path, block)
     update_agy(env, agent, block)
 
-    result = workmux(env, workmux_exe_path, repo_path, "sidebar", "on")
+    result = workrex(env, workrex_exe_path, repo_path, "sidebar", "on")
     assert result.returncode == 0, result.stderr
     try:
         assert poll_until(lambda: bool(sidebar_blocks(env)), timeout=10), env.views()
@@ -545,11 +1058,11 @@ def test_the_sidebar_shows_an_agent_that_renamed_its_binary_before_it_started(
             lambda: bool(SPINNER.search(env.capture_pane(sidebar) or "")), timeout=10
         ), env.capture_pane(sidebar)
     finally:
-        workmux(env, workmux_exe_path, repo_path, "sidebar", "off")
+        workrex(env, workrex_exe_path, repo_path, "sidebar", "off")
 
 
 def test_the_sidebar_keeps_an_agent_that_retitles_itself_after_it_starts(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     # A node program that sets process.title changes its argv0, and Rex sends
     # no event for it, so the sidebar's snapshot still says node.
@@ -578,8 +1091,8 @@ def test_the_sidebar_keeps_an_agent_that_retitles_itself_after_it_starts(
     )
     (shim / "rex").chmod(0o755)
     env.env["REX_BIN_DIR"] = str(shim)
-    write_workmux_config(repo_path, panes=[{"focus": True}])
-    run_workmux_add(env, workmux_exe_path, repo_path, "title-agent")
+    write_workrex_config(repo_path, panes=[{"focus": True}])
+    run_workrex_add(env, workrex_exe_path, repo_path, "title-agent")
     window = get_window_name("title-agent")
     wait_for_window_ready(env, window)
     block = env._target_block(window)
@@ -588,7 +1101,7 @@ def test_the_sidebar_keeps_an_agent_that_retitles_itself_after_it_starts(
         process = env.block_call(block, "process") or {}
         return (process.get("foreground") or {}).get("argv0", "")
 
-    result = workmux(env, workmux_exe_path, repo_path, "sidebar", "on")
+    result = workrex(env, workrex_exe_path, repo_path, "sidebar", "on")
     assert result.returncode == 0, result.stderr
     try:
         assert poll_until(lambda: bool(sidebar_blocks(env)), timeout=10), env.views()
@@ -599,7 +1112,7 @@ def test_the_sidebar_keeps_an_agent_that_retitles_itself_after_it_starts(
         ), env.capture_pane(sidebar)
         env.send_keys(block, f"exec {node} {script}")
         assert poll_until(lambda: argv0() == "agy", timeout=10), argv0()
-        agy_hooks(env, workmux_exe_path, block)
+        agy_hooks(env, workrex_exe_path, block)
         assert poll_until(
             lambda: bool(SPINNER.search(env.capture_pane(sidebar) or "")), timeout=10
         ), env.capture_pane(sidebar)
@@ -617,11 +1130,11 @@ def test_the_sidebar_keeps_an_agent_that_retitles_itself_after_it_starts(
         assert process_reads() - before <= 2
         assert SPINNER.search(env.capture_pane(sidebar) or "")
     finally:
-        workmux(env, workmux_exe_path, repo_path, "sidebar", "off")
+        workrex(env, workrex_exe_path, repo_path, "sidebar", "off")
 
 
 def test_an_agent_stored_by_an_older_build_stays_listed_until_it_exits(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     # Claude Code runs as a `claude` symlink to `claude.exe`. Builds before
     # argv0 naming stored the file name.
@@ -635,35 +1148,35 @@ def test_an_agent_stored_by_an_older_build_stays_listed_until_it_exits(
     source.write_text("#include <unistd.h>\nint main(void) { for (;;) pause(); }\n")
     subprocess.run([cc, "-o", str(bindir / "claude.exe"), str(source)], check=True)
     (bindir / "claude").symlink_to("claude.exe")
-    write_workmux_config(repo_path, panes=[{"focus": True}])
-    run_workmux_add(env, workmux_exe_path, repo_path, "old-state")
+    write_workrex_config(repo_path, panes=[{"focus": True}])
+    run_workrex_add(env, workrex_exe_path, repo_path, "old-state")
     window = get_window_name("old-state")
     wait_for_window_ready(env, window)
     block = env._target_block(window)
     env.send_keys(block, str(bindir / "claude"))
     assert poll_until(lambda: foreground_name(env, block) == "claude.exe", timeout=10)
     for args in (["register-agent"], ["set-window-status", "waiting"]):
-        hook = workmux(env, workmux_exe_path, repo_path, *args, block=block)
+        hook = workrex(env, workrex_exe_path, repo_path, *args, block=block)
         assert hook.returncode == 0, hook.stderr
 
-    states = Path(env.env["XDG_STATE_HOME"]) / "workmux" / "agents"
+    states = Path(env.env["XDG_STATE_HOME"]) / "workrex" / "agents"
     [state_file] = list(states.glob("*.json"))
     state = json.loads(state_file.read_text())
     assert state["command"] == "claude"
     state["command"] = "claude.exe"
     state_file.write_text(json.dumps(state))
 
-    assert agent_status(env, workmux_exe_path, repo_path, block) == "waiting"
-    assert agent_status(env, workmux_exe_path, repo_path, block) == "waiting"
+    assert agent_status(env, workrex_exe_path, repo_path, block) == "waiting"
+    assert agent_status(env, workrex_exe_path, repo_path, block) == "waiting"
 
     process = env.block_call(block, "process") or {}
     subprocess.run(["kill", str(process["foreground"]["pid"])], check=True)
-    assert poll_until(lambda: foreground_name(env, block) == "zsh", timeout=5)
-    assert agent_status(env, workmux_exe_path, repo_path, block) is None
+    assert poll_until(lambda: foreground_name(env, block) == pane_shell(env), timeout=5)
+    assert agent_status(env, workrex_exe_path, repo_path, block) is None
 
 
 def test_program_status_survives_the_agent_renaming_its_running_binary(
-    rex, workmux_exe_path, repo_path
+    rex, workrex_exe_path, repo_path
 ):
     cc = shutil.which("cc")
     if not cc:
@@ -678,17 +1191,17 @@ def test_program_status_survives_the_agent_renaming_its_running_binary(
         "  fflush(stdout);\n  for (;;) pause();\n}\n"
     )
     subprocess.run([cc, "-o", str(agent), str(source)], check=True)
-    write_workmux_config(repo_path, panes=[{"focus": True}])
-    run_workmux_add(env, workmux_exe_path, repo_path, "osc-agy")
+    write_workrex_config(repo_path, panes=[{"focus": True}])
+    run_workrex_add(env, workrex_exe_path, repo_path, "osc-agy")
     window = get_window_name("osc-agy")
     wait_for_window_ready(env, window)
     block = env._target_block(window)
     env.send_keys(block, f"exec {agent}")
     assert poll_until(
-        lambda: agent_status(env, workmux_exe_path, repo_path, block) == "working",
+        lambda: agent_status(env, workrex_exe_path, repo_path, block) == "working",
         timeout=10,
     )
 
     update_agy(env, agent, block)
 
-    assert agent_status(env, workmux_exe_path, repo_path, block) == "working"
+    assert agent_status(env, workrex_exe_path, repo_path, block) == "working"

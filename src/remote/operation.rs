@@ -9,7 +9,7 @@ use super::cache::{self, WorkspaceRecord};
 use super::client::Node;
 use super::node::operation::{Claim, Operation, Outcome, Update};
 use super::{RemoteSpec, observe::Observation};
-use crate::config::{Config, MergeStrategy};
+use crate::config::{Config, ConfigLocation, MergeStrategy};
 use crate::multiplexer::{create_backend, detect_backend};
 use crate::workflow::WorkflowContext;
 
@@ -58,9 +58,19 @@ fn spawn(record: &WorkspaceRecord, id: &str, sandboxed: bool) -> Result<()> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "false")
         .env("GIT_SEQUENCE_EDITOR", "false")
+        .env_remove(crate::frozen_config::FROZEN_CONFIG_ENV)
+        .env_remove("REX_SESSION")
+        .env_remove("REX_BLOCK")
+        .env_remove(crate::multiplexer::STATUS_TARGET_BACKEND_ENV)
+        .env_remove(crate::multiplexer::STATUS_TARGET_INSTANCE_ENV)
+        .env_remove(crate::multiplexer::STATUS_TARGET_PANE_ENV)
         .stdin(Stdio::null())
         .stdout(output.try_clone()?)
         .stderr(output);
+    let snapshot = operation_config(record, id)?;
+    if let Some(path) = &snapshot {
+        command.env(crate::frozen_config::FROZEN_CONFIG_ENV, path);
+    }
     if sandboxed {
         // Git hooks in the workspace's repository come from the agent.
         crate::sandbox::rpc::disable_git_hooks(&mut command);
@@ -68,7 +78,7 @@ fn spawn(record: &WorkspaceRecord, id: &str, sandboxed: bool) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // Closing the relay must not terminate its lifecycle worker.
+        // The lifecycle worker belongs to its request, rather than a terminal.
         unsafe {
             command.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -78,11 +88,67 @@ fn spawn(record: &WorkspaceRecord, id: &str, sandboxed: bool) -> Result<()> {
             });
         }
     }
-    let mut child = command.spawn()?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(path) = snapshot {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error.into());
+        }
+    };
     std::thread::spawn(move || {
         let _ = child.wait();
     });
     Ok(())
+}
+
+fn config_directory(remote: &str) -> Result<std::path::PathBuf> {
+    Ok(cache::remote_dir(remote)?.join("operation-configs"))
+}
+
+/// Each worker owns a separate snapshot, including duplicate dispatches of one
+/// request. The worker removes it after hooks and nested lifecycle calls finish.
+fn operation_config(record: &WorkspaceRecord, id: &str) -> Result<Option<std::path::PathBuf>> {
+    let Some(document) = &record.local_config else {
+        return Ok(None);
+    };
+    let directory = config_directory(&record.remote)?;
+    super::transport::ensure_private_dir(&directory, unsafe { libc::geteuid() })?;
+    let file = tempfile::Builder::new()
+        .prefix(&format!("{id}-"))
+        .suffix(".json")
+        .tempfile_in(directory)?;
+    crate::frozen_config::write_document(file.path(), document)?;
+    Ok(Some(file.into_temp_path().keep()?))
+}
+
+struct OperationConfig(Option<std::path::PathBuf>);
+
+impl OperationConfig {
+    fn inherited(remote: &str, id: &str) -> Result<Self> {
+        let directory = config_directory(remote)?;
+        let path = std::env::var_os(crate::frozen_config::FROZEN_CONFIG_ENV)
+            .map(std::path::PathBuf::from)
+            .filter(|path| {
+                path.parent() == Some(directory.as_path())
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| {
+                            name.starts_with(&format!("{id}-")) && name.ends_with(".json")
+                        })
+            });
+        Ok(Self(path))
+    }
+}
+
+impl Drop for OperationConfig {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 fn log_path(remote: &str, id: &str) -> Result<std::path::PathBuf> {
@@ -138,12 +204,13 @@ pub fn logs(remote: &str, id: Option<&str>) -> Result<()> {
 pub fn run(remote: &str, ws_id: &str, id: &str) -> Result<()> {
     super::node::validate_id(ws_id, 'w', "workspace id")?;
     super::node::validate_id(id, 'r', "request id")?;
+    let _snapshot = OperationConfig::inherited(remote, id)?;
     let records = cache::all();
     let record = owned_record(&records, remote, ws_id)
         .ok_or_else(|| anyhow::anyhow!("remote workspace no longer exists"))?
         .clone();
     std::env::set_current_dir(&record.project_root)?;
-    let config = Config::load(None)?;
+    let (config, location) = Config::load_with_location(None, None)?;
     let node = Node::connect(&RemoteSpec::resolve(&config, remote)?)?;
     // The node serializes claims with expiry and withdrawal. A stale snapshot,
     // observer restart or duplicate worker cannot run an operation twice.
@@ -185,7 +252,7 @@ pub fn run(remote: &str, ws_id: &str, id: &str) -> Result<()> {
                 if claim.sandboxed && !git_hooks_disabled() {
                     bail!("a sandboxed agent's request needs git hooks disabled");
                 }
-                execute(record, config, claim, &progress)
+                execute(record, config, location, claim, &progress)
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(anyhow::anyhow!(
                 "request was already acted on; submit a new request"
@@ -234,10 +301,10 @@ fn git_hooks_disabled() -> bool {
 fn execute(
     record: WorkspaceRecord,
     config: Config,
+    location: Option<ConfigLocation>,
     claim: Claim,
     progress: &dyn Fn(&str),
 ) -> Result<()> {
-    let mux = create_backend(detect_backend());
     let run_hooks = !claim.sandboxed;
     match claim.operation {
         Operation::Remove { force } => {
@@ -262,7 +329,7 @@ fn execute(
                     refuse_unmerged: true,
                 },
             )?;
-            super::lifecycle::close_relay(mux.as_ref(), &record);
+            super::lifecycle::forget_agent_state(&record);
             Ok(())
         }
         Operation::Merge {
@@ -290,7 +357,7 @@ fn execute(
             // merge or hooks. Revision expressions and options are not branches.
             let into = into.map(|name| resolve_into(&record, &name)).transpose()?;
             let keep = !cleanup && (keep || config.merge_keep.unwrap_or(false));
-            let context = WorkflowContext::new(config, mux, None)?;
+            let context = WorkflowContext::new(config, create_backend(detect_backend()), location)?;
             super::homecoming::merge(
                 &context,
                 record,
@@ -328,26 +395,20 @@ fn refusal(err: &anyhow::Error, is_merge: bool, remote: &str, id: &str) -> Strin
     let text = format!("{err:#}").to_lowercase();
     let logs = || format!("on the local machine, run `{BIN} remote logs {remote} {id}`");
     let message = if text.contains("not merged into") {
-        crate::rebrand!("has commits not merged into its base; run `workmux rm --force`")
+        "has commits not merged into its base; run `workrex rm --force`"
     } else if text.contains("uncommitted")
         || text.contains("unstaged")
         || text.contains("untracked")
     {
         if is_merge {
-            crate::rebrand!(
-                "this remote workspace has uncommitted changes; commit them and retry, or use `workmux merge --ignore-uncommitted` to merge only committed changes"
-            )
+            "this remote workspace has uncommitted changes; commit them and retry, or use `workrex merge --ignore-uncommitted` to merge only committed changes"
         } else {
-            crate::rebrand!(
-                "this remote workspace has uncommitted changes; commit them before removing it, or use `workmux rm --force` to discard them"
-            )
+            "this remote workspace has uncommitted changes; commit them before removing it, or use `workrex rm --force` to discard them"
         }
     } else if text.contains("interactive") {
         "this merge needs interaction; commit staged changes first or run merge on the local machine"
     } else if text.contains("conflict") {
-        crate::rebrand!(
-            "merge conflict; resolve it on the local machine, then run workmux merge there"
-        )
+        "merge conflict; resolve it on the local machine, then run workrex merge there"
     } else if text.contains("hook") || text.contains("post-create") {
         return format!("a local hook failed; {}", logs());
     } else if text.contains("existing local branch") {
@@ -404,7 +465,7 @@ mod tests {
             "mine",
             "0".repeat(40),
             None,
-            "wm-mine".into(),
+            "wr-mine".into(),
             "/laptop/mine".into(),
         );
         let records = [record];
@@ -420,12 +481,12 @@ mod tests {
         for dirty in ["uncommitted changes", "unstaged changes", "untracked files"] {
             let err = anyhow::anyhow!(dirty);
             let merge = refusal(&err, true, "vps", "r123456789abc");
-            assert!(merge.contains(crate::rebrand!("workmux merge --ignore-uncommitted")));
+            assert!(merge.contains("workrex merge --ignore-uncommitted"));
             assert!(merge.contains("only committed changes"));
             assert!(!merge.contains("remote logs"));
             assert!(!merge.contains("rm --force"));
             let remove = refusal(&err, false, "vps", "r123456789abc");
-            assert!(remove.contains(crate::rebrand!("workmux rm --force")));
+            assert!(remove.contains("workrex rm --force"));
             assert!(remove.contains("discard them"));
             assert!(!remove.contains("remote logs"));
             assert!(!remove.contains("merge --ignore-uncommitted"));
@@ -450,7 +511,7 @@ mod tests {
             "unknown failure /private/laptop/secret: token",
         ] {
             let message = refusal(&anyhow::anyhow!(text), true, "vps", "r123456789abc");
-            assert!(message.contains(crate::rebrand!("workmux remote logs vps r123456789abc")));
+            assert!(message.contains("workrex remote logs vps r123456789abc"));
             assert!(!message.contains("secret"));
             assert!(!message.contains("token"));
         }

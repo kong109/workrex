@@ -45,7 +45,7 @@ pub trait AgentProfile: Send + Sync {
         None
     }
 
-    /// CLI flags every launch of this agent in a workmux pane needs.
+    /// CLI flags every launch of this agent in a workrex pane needs.
     fn launch_flags(&self) -> &'static [&'static str] {
         &[]
     }
@@ -221,7 +221,7 @@ impl AgentProfile for CodexProfile {
     /// `--no-daemon`: codex's shared background server runs every session's
     /// hooks with the environment of the process that started the server,
     /// so status hooks would report to that pane, or fail where its `PATH`
-    /// lacks workmux. In a sandbox, the server would also be out of reach
+    /// lacks workrex. In a sandbox, the server would also be out of reach
     /// or installed into the host's codex home.
     fn launch_flags(&self) -> &'static [&'static str] {
         &["--no-daemon"]
@@ -436,7 +436,7 @@ pub fn resolve_profile(agent_command: Option<&str>) -> &'static dyn AgentProfile
 
 /// Resolve an agent command to its profile without doing any I/O.
 ///
-/// Unlike [`resolve_profile`], this does not call `tmux show-environment` or
+/// Unlike [`resolve_profile`], this does not call `rex show-environment` or
 /// `which` to canonicalize bare command names, so it is safe to call from hot
 /// render paths. The trade-off is that commands invoked via a custom symlink
 /// or wrapper whose own filename does not match a known profile name will
@@ -636,7 +636,7 @@ impl SelectedAgent {
         self.profile.name()
     }
 
-    /// Add the flags every launch in a workmux pane needs, skipping any the
+    /// Add the flags every launch in a workrex pane needs, skipping any the
     /// command already sets.
     pub fn add_launch_flags(&mut self) {
         self.prepend_missing(self.profile.launch_flags().iter().copied());

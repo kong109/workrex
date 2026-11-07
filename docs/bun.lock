@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "workmux-docs",
+      "name": "workrex-docs",
       "dependencies": {
         "@astrojs/starlight": "^0.41.7",
         "astro": "^7.1.1",

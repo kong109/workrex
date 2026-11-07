@@ -1,9 +1,8 @@
-//! Backend-agnostic utility functions for multiplexer operations.
-//!
-//! These helpers are shared between tmux, WezTerm, and any future backends.
+//! Shared Rex terminal and agent launch helpers.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
@@ -13,6 +12,7 @@ use crate::config::Config;
 
 use super::PaneHandshake;
 use super::handshake::UnixPipeHandshake;
+#[cfg(test)]
 use super::types::LivePaneInfo;
 
 /// Helper function to add prefix to window name.
@@ -59,6 +59,61 @@ pub fn is_posix_shell(shell: &str) -> bool {
     matches!(shell_name, "bash" | "zsh" | "sh" | "dash" | "ksh" | "ash")
 }
 
+/// How a line typed into a pane's shell sets an environment variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvSyntax {
+    /// POSIX shells and fish: `export NAME=value`.
+    Export,
+    /// Nushell: `$env.NAME = "value"`.
+    Nu,
+    /// csh and tcsh: `setenv NAME value`.
+    Csh,
+    /// Any other shell. Only an `env NAME=value command` prefix is portable.
+    EnvPrefix,
+}
+
+impl EnvSyntax {
+    pub fn of(shell: &str) -> Self {
+        match Path::new(shell).file_name().and_then(|s| s.to_str()) {
+            Some("nu") => Self::Nu,
+            Some("csh" | "tcsh") => Self::Csh,
+            Some("fish") => Self::Export,
+            _ if is_posix_shell(shell) => Self::Export,
+            _ => Self::EnvPrefix,
+        }
+    }
+
+    /// A statement that sets `name` for the rest of the line, or `None` for
+    /// a shell with no known statement.
+    pub fn set(self, name: &str, value: &str) -> Option<String> {
+        let quoted = crate::shell::shell_quote(value);
+        match self {
+            Self::Export => Some(format!("export {name}={quoted}")),
+            Self::Nu => Some(format!("$env.{name} = {}", nu_quote(value))),
+            Self::Csh => Some(format!("setenv {name} {quoted}")),
+            Self::EnvPrefix => None,
+        }
+    }
+
+    /// A statement that puts `dir` first on `PATH`. A shell with no known
+    /// statement gets the POSIX one.
+    pub fn prepend_path(self, dir: &Path) -> String {
+        let dir = dir.to_string_lossy();
+        let quoted = crate::shell::shell_quote(&dir);
+        match self {
+            Self::Export | Self::EnvPrefix => format!("export PATH={quoted}:\"$PATH\""),
+            Self::Nu => format!("$env.PATH = ($env.PATH | prepend {})", nu_quote(&dir)),
+            Self::Csh => format!("setenv PATH {quoted}:\"$PATH\""),
+        }
+    }
+}
+
+/// Quote `s` as a Nushell double-quoted string, which takes it literally
+/// once backslashes and double quotes are escaped.
+pub fn nu_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// Return the last `lines` lines from terminal output.
 pub fn tail_lines(output: &str, lines: u16) -> String {
     let all_lines: Vec<&str> = output.lines().collect();
@@ -67,6 +122,7 @@ pub fn tail_lines(output: &str, lines: u16) -> String {
 }
 
 /// Build a `LivePaneInfo` from shared pane fields.
+#[cfg(test)]
 pub fn build_live_pane_info(
     pid: Option<u32>,
     current_command: Option<String>,
@@ -90,43 +146,6 @@ pub fn build_live_pane_info(
         window_id: None,
         window_index: None,
     }
-}
-
-/// Snapshot of live pane fields before conversion to `LivePaneInfo`.
-pub struct LivePaneSnapshot {
-    pub pane_id: String,
-    pub pid: Option<u32>,
-    pub current_command: Option<String>,
-    pub working_dir: PathBuf,
-    pub title: String,
-    pub session: String,
-    pub window: String,
-}
-
-impl LivePaneSnapshot {
-    pub fn into_pair(self) -> (String, LivePaneInfo) {
-        let pane_id = self.pane_id;
-        let info = build_live_pane_info(
-            self.pid,
-            self.current_command,
-            self.working_dir,
-            &self.title,
-            self.session,
-            self.window,
-        );
-        (pane_id, info)
-    }
-}
-
-/// Build a pane ID map from live pane snapshots.
-pub fn live_pane_map<I>(snapshots: I) -> HashMap<String, LivePaneInfo>
-where
-    I: IntoIterator<Item = LivePaneSnapshot>,
-{
-    snapshots
-        .into_iter()
-        .map(LivePaneSnapshot::into_pair)
-        .collect()
 }
 
 /// Resolve the default shell from `$SHELL`, falling back when unset.
@@ -407,7 +426,7 @@ mod tests {
 
     #[test]
     fn test_prefixed() {
-        assert_eq!(prefixed("wm-", "feature"), "wm-feature");
+        assert_eq!(prefixed("wr-", "feature"), "wr-feature");
         assert_eq!(prefixed("", "feature"), "feature");
         assert_eq!(prefixed("prefix-", ""), "prefix-");
     }

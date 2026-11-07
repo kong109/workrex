@@ -27,10 +27,10 @@ mod skills;
 mod spinner;
 mod state;
 mod template;
+mod terminal_style;
 #[cfg(test)]
 mod test_support;
 mod tips;
-mod tmux_style;
 mod ui;
 mod util;
 mod workflow;
@@ -47,22 +47,22 @@ fn main() -> Result<()> {
     info!(
         args = ?args,
         cwd = ?context.cwd,
-        tmux_pane = ?context.tmux_pane,
-        "workmux start"
+        rex_block = ?context.rex_block,
+        "workrex start"
     );
 
     match cli::run() {
         Ok(result) => {
             info!(
                 cwd = ?context.cwd,
-                tmux_pane = ?context.tmux_pane,
-                "workmux finished successfully"
+                rex_block = ?context.rex_block,
+                "workrex finished successfully"
             );
             Ok(result)
         }
         Err(err) => {
             if !deferred_cleanup_worker {
-                error!(error = ?err, "workmux failed");
+                error!(error = ?err, "workrex failed");
             }
             Err(err)
         }
@@ -71,14 +71,14 @@ fn main() -> Result<()> {
 
 struct LogContext {
     cwd: Option<std::path::PathBuf>,
-    tmux_pane: Option<String>,
+    rex_block: Option<String>,
 }
 
 impl LogContext {
     fn current() -> Self {
         Self {
             cwd: std::env::current_dir().ok(),
-            tmux_pane: std::env::var("TMUX_PANE").ok(),
+            rex_block: std::env::var("REX_BLOCK").ok(),
         }
     }
 }

@@ -1,4 +1,4 @@
-//! `workmux remote gc <name>`: list what a remote holds that no workspace
+//! `workrex remote gc <name>`: list what a remote holds that no workspace
 //! accounts for, plus laptop records of workspaces the remote no longer
 //! has, and remove them once confirmed.
 
@@ -14,7 +14,6 @@ use super::install::Pin;
 use super::node::gc::{GcRequest, GcResponse};
 use super::protocol;
 use crate::config::Config;
-use crate::multiplexer::{create_backend, detect_backend};
 use crate::ui::confirm::{ConfirmDefault, confirm};
 
 /// Records younger than this may belong to an `add --remote` in progress.
@@ -105,14 +104,13 @@ pub fn run(config: &Config, name: &str, dry_run: bool, force: bool) -> Result<()
     // A record whose workspace reached the node meanwhile (a resumed
     // `add --remote`) is kept.
     let on_node: HashSet<&str> = applied.workspaces.iter().map(String::as_str).collect();
-    let mux = create_backend(detect_backend());
     for record in cache::all().iter().filter(|current| {
         current.remote == name
             && current.homecoming.is_none()
             && stale.iter().any(|record| record.ws_id == current.ws_id)
             && !on_node.contains(current.ws_id.as_str())
     }) {
-        match super::lifecycle::forget_locally(mux.as_ref(), record) {
+        match super::lifecycle::forget_locally(record) {
             Ok(()) => removed += 1,
             Err(err) => failed.push(format!("record {}: {err:#}", record.handle)),
         }

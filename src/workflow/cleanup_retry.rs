@@ -225,7 +225,7 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let original = root.path().join("worktree");
-        let trash = root.path().join(".workmux_trash_test");
+        let trash = root.path().join(".workrex_trash_test");
         std::fs::create_dir_all(original.join("churn")).unwrap();
         std::fs::write(original.join("churn/seed"), "seed").unwrap();
         std::fs::create_dir(original.join("crate-0")).unwrap();
@@ -296,7 +296,7 @@ mod tests {
     fn persists_before_rename_and_clears_only_after_success() {
         let root = tempfile::tempdir().unwrap();
         let original = root.path().join("worktree");
-        let trash = root.path().join(".workmux_trash_test");
+        let trash = root.path().join(".workrex_trash_test");
         std::fs::create_dir(&original).unwrap();
         std::fs::write(original.join("file"), "contents").unwrap();
         let pending = PendingCleanup::prepare_in(
@@ -324,7 +324,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let original = root.path().join("worktree");
         std::fs::create_dir(&original).unwrap();
-        let trash = root.path().join(".workmux_trash_test");
+        let trash = root.path().join(".workrex_trash_test");
         let state = root.path().join("state");
         std::fs::write(&state, "not a directory").unwrap();
         assert!(
@@ -351,7 +351,7 @@ mod tests {
     fn preserves_record_and_rejects_replaced_directory() {
         let root = tempfile::tempdir().unwrap();
         let original = root.path().join("original");
-        let trash = root.path().join(".workmux_trash_test");
+        let trash = root.path().join(".workrex_trash_test");
         std::fs::create_dir(&original).unwrap();
         let pending = PendingCleanup::prepare_in(
             &root.path().join("state"),

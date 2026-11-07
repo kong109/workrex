@@ -1,17 +1,16 @@
 {
-  "name": "workmux",
+  "name": "workrex",
   "owner": {
-    "name": "raine",
-    "email": "raine.virta@gmail.com"
+    "name": "kong109"
   },
   "metadata": {
-    "description": "Plugins for workmux - git worktrees and tmux workflow tool"
+    "description": "Plugins for workrex - git worktrees and Rex workflow tool"
   },
   "plugins": [
     {
-      "name": "workmux-status",
+      "name": "workrex-status",
       "source": "./",
-      "description": "Display Claude agent status (working/waiting) in tmux window names"
+      "description": "Display Claude agent status (working/waiting) in Rex session status"
     }
   ]
 }

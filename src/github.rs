@@ -57,7 +57,7 @@ pub enum CheckState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClosingIssue {
     pub number: u32,
-    /// Repository name with owner, for example `raine/workmux`.
+    /// Repository name with owner, for example `kong109/workrex`.
     pub repository: String,
 }
 
@@ -1707,7 +1707,7 @@ mod tests {
     fn closing_issues_match_between_graphql_and_cli_shapes() {
         let issue = serde_json::json!({
             "number": 308,
-            "repository": { "name": "workmux", "owner": { "login": "raine" } }
+            "repository": { "name": "workrex", "owner": { "login": "kong109" } }
         });
         let summary = parse_branch_summary_values(
             serde_json::json!({
@@ -1716,7 +1716,7 @@ mod tests {
                     "title": "Feature",
                     "state": "OPEN",
                     "isDraft": false,
-                    "url": "https://github.com/raine/workmux/pull/42",
+                    "url": "https://github.com/kong109/workrex/pull/42",
                     "closingIssuesReferences": { "nodes": [issue.clone()] },
                     "commits": { "nodes": [] }
                 }]
@@ -1730,7 +1730,7 @@ mod tests {
             "state": "OPEN",
             "isDraft": false,
             "headRefName": "feature",
-            "url": "https://github.com/raine/workmux/pull/42",
+            "url": "https://github.com/kong109/workrex/pull/42",
             "closingIssuesReferences": [issue]
         }]))
         .unwrap();
@@ -1744,7 +1744,7 @@ mod tests {
             .collect();
 
         assert_eq!(summary.pr.unwrap().closing_issues, cli_issues);
-        assert_eq!(cli_issues[0].repository, "raine/workmux");
+        assert_eq!(cli_issues[0].repository, "kong109/workrex");
     }
 
     #[test]
@@ -1755,7 +1755,7 @@ mod tests {
             "state": "OPEN",
             "isDraft": false,
             "checks": null,
-            "url": "https://github.com/raine/workmux/pull/42"
+            "url": "https://github.com/kong109/workrex/pull/42"
         }))
         .unwrap();
 
@@ -1794,7 +1794,7 @@ mod tests {
                     "title": "Feature",
                     "state": "OPEN",
                     "isDraft": false,
-                    "url": "https://github.com/raine/workmux/pull/42",
+                    "url": "https://github.com/kong109/workrex/pull/42",
                     "closingIssuesReferences": null,
                     "commits": { "nodes": [] }
                 }] },

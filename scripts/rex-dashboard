@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Build the current tree and create a Rex session with a disposable dashboard.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+label="${1:-workrex-demo}"
+
+if [[ "$label" == --help || "$label" == -h ]]; then
+  echo "Usage: scripts/rex-dashboard [session-label]"
+  exit 0
+fi
+
+for command in rex cargo git; do
+  command -v "$command" >/dev/null || { echo "Missing required command: $command" >&2; exit 1; }
+done
+
+cargo build --manifest-path "$repo_root/Cargo.toml" --locked
+task_fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/workrex-demo.XXXXXX")"
+task_fixture_repo="$task_fixture_root/project"
+mkdir -p "$task_fixture_repo" "$task_fixture_root/config/workrex" "$task_fixture_root/state"
+git -C "$task_fixture_repo" init --quiet --initial-branch=main
+git -C "$task_fixture_repo" config user.name "Workrex demo"
+git -C "$task_fixture_repo" config user.email "workrex-demo@example.invalid"
+printf '# Workrex dashboard demo\n' > "$task_fixture_repo/README.md"
+git -C "$task_fixture_repo" add README.md
+git -C "$task_fixture_repo" commit --quiet -m "Create demo fixture"
+git -C "$task_fixture_repo" worktree add --quiet -b feature/demo "$task_fixture_root/feature"
+
+runner="$task_fixture_root/dashboard.sh"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'set -euo pipefail'
+  printf 'task_fixture_root=%q\n' "$task_fixture_root"
+  echo 'trap '\''rm -rf -- "$task_fixture_root"'\'' EXIT'
+  printf 'cd %q\n' "$task_fixture_repo"
+  printf 'XDG_CONFIG_HOME=%q XDG_STATE_HOME=%q %q dashboard --tab worktrees\n' \
+    "$task_fixture_root/config" "$task_fixture_root/state" "$repo_root/target/debug/workrex"
+} > "$runner"
+chmod 755 "$runner"
+
+rex new "$label" --window Dashboard -c "$task_fixture_repo" -- "$runner"

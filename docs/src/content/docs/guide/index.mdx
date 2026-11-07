@@ -13,13 +13,10 @@ and builds never get in another agent's way. When a task is done,
 `workrex merge` merges the branch and removes the worktree, the Rex session,
 and the local branch.
 
-workrex is a fork of [workmux](https://github.com/raine/workmux) by Raine Virta.
-The fork adds a Rex backend and installs as its own binary, `workrex`, so it can
-run next to an upstream `workmux` install. It reads the same configuration
-files as workmux. The rest of workmux works the same way, including tmux,
-WezTerm, kitty, and Zellij support.
-[NOTICE.md](https://github.com/kong109/workrex/blob/main/NOTICE.md) lists what
-the fork renames.
+Workrex is a Rex-only application with its own configuration, status hooks,
+and agent skills. It builds on an MIT-licensed project originally authored by
+[Raine Virta](https://github.com/raine). See
+[NOTICE.md](https://github.com/kong109/workrex/blob/main/NOTICE.md) for attribution.
 
 ## A task from start to finish
 
@@ -43,8 +40,8 @@ steps from your [configuration](/guide/configuration/).
 
 ## How workrex uses Rex
 
-workrex detects Rex from the `$REX_BLOCK` variable that Rex sets in every pane.
-It needs no extra setup.
+Workrex connects to Rex using `REX_SERVER`. Rex supplies `REX_SESSION` and
+`REX_BLOCK` in its terminal blocks, so commands can target the caller precisely.
 
 - **One session per task.** Each worktree gets its own Rex session. To get one
   tab per task in the current session instead, set `mode: window`.
@@ -55,8 +52,7 @@ It needs no extra setup.
 - **A floating dashboard.** With the bundled Lua file loaded, a key opens the
   [dashboard](/guide/dashboard/) as a layer over the current tab.
 
-The [Rex guide](/guide/rex/) covers each of these, and the differences from
-tmux.
+The [Rex guide](/guide/rex/) covers terminal identity, navigation, and server scope.
 
 ## What else workrex does
 
@@ -85,9 +81,7 @@ several agents work on one repository at once.
 - macOS on Apple Silicon or Linux on x86_64 for the prebuilt binaries. Other
   platforms can [build from source](/guide/installation/#build-from-source).
 - Git 2.5 or later.
-- Rex, with a server that speaks API revision 8 or 9. workrex also works with
-  tmux, [WezTerm](/guide/wezterm/), [kitty](/guide/kitty/), or
-  [Zellij](/guide/zellij/).
+- Rex, with a server that speaks API revision 8 or 9.
 
 To get started, [install workrex](/guide/installation/), then follow the
 [quick start](/guide/quick-start/).

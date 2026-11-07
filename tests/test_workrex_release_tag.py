@@ -10,9 +10,10 @@ SCRIPT = Path(__file__).parent.parent / "scripts/check-release-tag.sh"
 
 def check(tag: str, version: str, tmp_path: Path) -> subprocess.CompletedProcess:
     cargo = tmp_path / "Cargo.toml"
-    cargo.write_text(f'[package]\nname = "workmux"\nversion = "{version}"\n')
+    cargo.write_text(f'[package]\nname = "workrex"\nversion = "{version}"\n')
     return subprocess.run(
         [SCRIPT, tag, cargo],
+        check=False,
         capture_output=True,
         text=True,
         env={"PATH": "/usr/bin:/bin"},

@@ -51,7 +51,7 @@ struct RemoteStatus {
     connected: bool,
     /// When the remote last answered.
     last_seen: Option<u64>,
-    /// Why the execution ended under the agent (`host_reboot`); `workmux
+    /// Why the execution ended under the agent (`host_reboot`); `workrex
     /// open` starts it again.
     #[serde(skip_serializing_if = "Option::is_none")]
     ended: Option<crate::multiplexer::EndReason>,
@@ -254,23 +254,16 @@ fn remote_entries(
     config: &crate::config::Config,
     records: &[WorkspaceRecord],
     observations: &HashMap<String, remote::observe::Observation>,
-    attached: &[AgentPane],
     now: u64,
 ) -> Vec<StatusEntry> {
     let hosts = remote::agents::hosts(config);
     records
         .iter()
         .flat_map(|record| {
-            remote::agents::rows(
-                std::slice::from_ref(record),
-                attached,
-                observations,
-                &hosts,
-                now,
-            )
-            .into_iter()
-            .map(|agent| remote_entry(&agent, record, now))
-            .collect::<Vec<_>>()
+            remote::agents::rows(std::slice::from_ref(record), observations, &hosts, now)
+                .into_iter()
+                .map(|agent| remote_entry(&agent, record, now))
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -298,8 +291,7 @@ pub fn run(worktrees: &[String], json: bool, all: bool, show_git: bool) -> Resul
     let store = StateStore::open_read_only()?;
     let mut report = match store.load_reconciled_agent_report(mux.as_ref()) {
         Ok(report) => report,
-        // Nodes answer for remote agents, which need no local multiplexer
-        // unless a local pane relays them.
+        // Remote Rex nodes answer independently of the local Rex server.
         Err(error)
             if !worktrees.is_empty()
                 && worktrees
@@ -315,12 +307,11 @@ pub fn run(worktrees: &[String], json: bool, all: bool, show_git: bool) -> Resul
         Err(error) => return Err(error),
     };
     let agent_panes = std::mem::take(&mut report.agents);
-    let attached = std::mem::take(&mut report.remote_agents);
     let invalid_state_failures =
         report.state_files_invalid_matching_context + report.state_files_invalid_unattributed;
     if invalid_state_failures > 0 {
         return Err(anyhow!(
-            "{} invalid agent state file(s) for {} instance {} or with unattributable filenames; inspect the workmux agents state directory",
+            "{} invalid agent state file(s) for {} instance {} or with unattributable filenames; inspect the workrex agents state directory",
             invalid_state_failures,
             report.backend,
             report.instance
@@ -485,13 +476,7 @@ pub fn run(worktrees: &[String], json: bool, all: bool, show_git: bool) -> Resul
         }
     }
 
-    entries.extend(remote_entries(
-        &config,
-        &remote_records,
-        &observations,
-        &attached,
-        now,
-    ));
+    entries.extend(remote_entries(&config, &remote_records, &observations, now));
 
     let target_failure_count = target_errors.len();
     if json {

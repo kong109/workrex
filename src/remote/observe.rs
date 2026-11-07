@@ -2,19 +2,20 @@
 //!
 //! One process per remote at a time runs `node watch` as a stream over the
 //! shared connection and keeps `remote/<name>/observed.v<N>.json` current;
-//! it holds `remote/<name>/observer.v<N>.lock` while doing so. Relays, views
+//! it holds `remote/<name>/observer.v<N>.lock` while doing so. Views
 //! and commands read the file, so the remote carries one stream however
 //! many panes and views look at it.
 //!
 //! `N` is [`GENERATION`], the format of the file. Dashboards, sidebars and
-//! relays run for days, so an older build may still be observing when a
+//! observers run for days, so an older build may still be observing when a
 //! newer one starts; each generation elects its own observer and keeps its
 //! own file, and no build reads what another generation writes as current.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -26,7 +27,9 @@ use serde::{Deserialize, Serialize};
 use super::RemoteSpec;
 use super::cache::{WorkspaceRecord, now};
 use super::client::Node;
-use super::node::observe::{ObservedPane, ObservedWorkspace, Snapshot, WatchFrame, WatchRequest};
+#[cfg(test)]
+use super::node::observe::ObservedPane;
+use super::node::observe::{ObservedWorkspace, Snapshot, WatchFrame, WatchRequest};
 use super::protocol::{self, ErrorEnvelope};
 use crate::config::Config;
 
@@ -37,7 +40,170 @@ const TAKEOVER_INTERVAL: Duration = Duration::from_secs(3);
 /// Format of the observation file and scope of the observer election. Bump
 /// it whenever [`Observation`] or anything it contains changes shape, so
 /// builds that disagree never share a file (`format_is_pinned` checks).
-const GENERATION: u32 = 3;
+const GENERATION: u32 = 4;
+
+/// Keep node-requested lifecycle operations working after a short CLI command exits.
+/// The startup lock serializes launching; the owner and stream locks separately
+/// bound the persistent process and the connection shared with views.
+pub fn ensure_background(spec: &RemoteSpec, project_root: &Path) -> Result<()> {
+    if !tracked(&spec.name) {
+        return Ok(());
+    }
+    let startup =
+        super::cache::lock_file(&spec.name, &format!("observer-start.v{GENERATION}.lock"))?;
+    startup
+        .lock()
+        .context("Failed to serialize remote observer startup")?;
+    let Some(owner) = take_owner_lock(&spec.name)? else {
+        return Ok(());
+    };
+    drop(owner);
+
+    let log_path =
+        super::cache::remote_dir(&spec.name)?.join(format!("observer.v{GENERATION}.log"));
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let log = options
+        .open(&log_path)
+        .context("Failed to open remote observer log")?;
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("_remote-observer")
+        .arg(&spec.name)
+        .current_dir(project_root)
+        .env_remove("REX_SESSION")
+        .env_remove("REX_BLOCK")
+        .env_remove(crate::frozen_config::FROZEN_CONFIG_ENV)
+        .env_remove(crate::multiplexer::STATUS_TARGET_BACKEND_ENV)
+        .env_remove(crate::multiplexer::STATUS_TARGET_INSTANCE_ENV)
+        .env_remove(crate::multiplexer::STATUS_TARGET_PANE_ENV)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(log);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // The observer belongs to saved workspace records, rather than this terminal.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = command.spawn().context("Failed to start remote observer")?;
+    let sent = serde_json::to_writer(child.stdin.take().expect("stdin is piped"), spec);
+    if let Err(error) = sent {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error).context("Failed to initialize remote observer");
+    }
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut line = String::new();
+        let ready = BufReader::new(stdout)
+            .read_line(&mut line)
+            .is_ok_and(|bytes| bytes > 0 && line.trim() == "ready");
+        let _ = sender.send(ready);
+    });
+    if !receiver
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap_or(false)
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        anyhow::bail!("remote observer did not start; see {}", log_path.display());
+    }
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// Hidden detached entry point. The resolved connection is sent over a private
+/// pipe so explicit config paths and the caller's selection survive startup.
+pub fn run_background(name: &str) -> Result<()> {
+    super::validate_name(name)?;
+    let spec: RemoteSpec = serde_json::from_reader(std::io::stdin().lock())
+        .context("Failed to read remote observer connection")?;
+    anyhow::ensure!(
+        spec.name == name,
+        "remote observer connection names a different remote"
+    );
+    let owner = take_owner_lock(name)?;
+    let lock = if owner.is_some() {
+        take_lock(name)?
+    } else {
+        None
+    };
+    if lock.is_some() {
+        mark_stale(name);
+    }
+    println!("ready");
+    std::io::stdout().flush()?;
+    if let Some(owner) = owner {
+        let mut lock = lock;
+        loop {
+            observe(spec.clone(), lock.take(), true);
+            let startup =
+                super::cache::lock_file(name, &format!("observer-start.v{GENERATION}.lock"))?;
+            startup
+                .lock()
+                .context("Failed to coordinate remote observer shutdown")?;
+            if tracked(name) {
+                drop(startup);
+                continue;
+            }
+            drop(owner);
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn take_owner_lock(name: &str) -> Result<Option<File>> {
+    let file = super::cache::lock_file(name, &format!("observer-owner.v{GENERATION}.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(error)) => {
+            Err(error).context("Failed to lock remote observer owner")
+        }
+    }
+}
+
+fn tracked(name: &str) -> bool {
+    super::cache::all()
+        .iter()
+        .any(|record| record.remote == name && record.execution.is_some())
+}
+
+fn keep_observing(spec: &RemoteSpec, managed: bool) -> bool {
+    !managed || tracked(&spec.name)
+}
+
+fn pause(spec: &RemoteSpec, duration: Duration, managed: bool) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < duration {
+        if !keep_observing(spec, managed) {
+            return false;
+        }
+        thread::sleep(
+            duration
+                .saturating_sub(started.elapsed())
+                .min(Duration::from_secs(1)),
+        );
+    }
+    keep_observing(spec, managed)
+}
 
 /// Contents of `observed.v<N>.json`. Node timestamps in `workspaces` are raw;
 /// [`Observation::local_ts`] moves them to the laptop clock.
@@ -81,6 +247,7 @@ impl Observation {
     }
 
     /// Pane `index` of execution `ex_id` of `ws_id`.
+    #[cfg(test)]
     pub fn pane(&self, ws_id: &str, ex_id: &str, index: usize) -> Option<&ObservedPane> {
         self.execution(ws_id, ex_id)?
             .panes
@@ -206,6 +373,13 @@ pub fn spawn(config: &Config, names: &[String]) {
                 continue;
             }
         };
+        if let Some(record) = super::cache::all()
+            .iter()
+            .find(|record| record.remote == *name && record.execution.is_some())
+            && let Err(error) = ensure_background(&spec, &record.project_root)
+        {
+            tracing::warn!(remote = name, "cannot retain remote observer: {error:#}");
+        }
         started.insert(name.clone(), now());
         // Elect now, so that on return the file is either kept current by
         // another process or marked as not current.
@@ -218,7 +392,7 @@ pub fn spawn(config: &Config, names: &[String]) {
         }
         let spawned = thread::Builder::new()
             .name(format!("observe-{name}"))
-            .spawn(move || observe(spec, lock));
+            .spawn(move || observe(spec, lock, false));
         if let Err(err) = spawned {
             tracing::warn!(remote = name, "failed to start observer: {err}");
         }
@@ -236,11 +410,13 @@ fn mark_stale(name: &str) {
 
 /// Become the remote's observer unless `lock` already makes it so, then
 /// observe until the process ends.
-fn observe(spec: RemoteSpec, lock: Option<File>) {
+fn observe(spec: RemoteSpec, lock: Option<File>, managed: bool) {
     let _lock = match lock {
         Some(lock) => lock,
         None => loop {
-            thread::sleep(TAKEOVER_INTERVAL);
+            if !pause(&spec, TAKEOVER_INTERVAL, managed) {
+                return;
+            }
             match take_lock(&spec.name) {
                 Ok(Some(lock)) => {
                     mark_stale(&spec.name);
@@ -255,11 +431,17 @@ fn observe(spec: RemoteSpec, lock: Option<File>) {
     let mut observation = load(&spec.name).unwrap_or_default();
     let mut attempt = 0;
     loop {
+        if !keep_observing(&spec, managed) {
+            return;
+        }
         let started = Instant::now();
-        let reason = match stream(&spec, &mut observation) {
+        let reason = match stream(&spec, &mut observation, managed) {
             Ok(reason) => reason,
             Err(err) => format!("{err:#}"),
         };
+        if !keep_observing(&spec, managed) {
+            return;
+        }
         tracing::info!(remote = %spec.name, reason, "remote observation lost");
         observation.connected = false;
         if let Err(err) = save(&spec.name, &observation) {
@@ -268,7 +450,9 @@ fn observe(spec: RemoteSpec, lock: Option<File>) {
         if started.elapsed() >= super::attach::STABLE {
             attempt = 0;
         }
-        thread::sleep(super::attach::backoff(attempt));
+        if !pause(&spec, super::attach::backoff(attempt), managed) {
+            return;
+        }
         attempt += 1;
     }
 }
@@ -294,7 +478,7 @@ impl Drop for Child {
 
 /// Run one `node watch` stream, folding frames into `observation` and
 /// saving it, until the stream ends or goes quiet. Returns why it ended.
-fn stream(spec: &RemoteSpec, observation: &mut Observation) -> Result<String> {
+fn stream(spec: &RemoteSpec, observation: &mut Observation, managed: bool) -> Result<String> {
     let node = Node::connect_reader(spec, protocol::WATCH)?;
     let request = serde_json::to_vec(&WatchRequest {
         stream: true,
@@ -323,6 +507,9 @@ fn stream(spec: &RemoteSpec, observation: &mut Observation) -> Result<String> {
     // Wall clock: a monotonic clock stops while the laptop sleeps.
     let mut deadline = now() + STALE_AFTER.as_secs();
     loop {
+        if !keep_observing(spec, managed) {
+            return Ok("no tracked workspaces".into());
+        }
         match receiver.recv_timeout(Duration::from_secs(1)) {
             Ok(line) => {
                 if let Ok(frame) = serde_json::from_str::<WatchFrame>(&line) {
@@ -548,7 +735,7 @@ mod tests {
 
         observation.apply(
             WatchFrame::Error {
-                message: "tmux failed".into(),
+                message: "Rex failed".into(),
             },
             151,
         );
@@ -617,6 +804,13 @@ mod tests {
         let mut full = snapshot(90, AgentStatus::Done);
         if let WatchFrame::Snapshot(snapshot) = &mut full {
             let ws = &mut snapshot.workspaces[0];
+            ws.rex = Some(crate::remote::protocol::RexPlacement {
+                host_label: "server".into(),
+                instance_id: "instance".into(),
+                sessions: [(0, "session".into())].into(),
+                blocks: [(0, "block".into())].into(),
+                shells: [("shell".into(), "shell-session".into())].into(),
+            });
             if let Some(agent) = ws.panes[0].agent.as_mut() {
                 agent.title = Some("t".into());
                 agent.prompt = Some("p".into());
@@ -631,9 +825,12 @@ mod tests {
                 operation: super::super::node::operation::Operation::Remove { force: false },
                 requested_at: 90,
                 claimed: false,
-                sandboxed: false,
-                progress: Vec::new(),
-                outcome: None,
+                sandboxed: true,
+                progress: vec!["started".into()],
+                outcome: Some(super::super::node::operation::Outcome {
+                    success: true,
+                    message: "done".into(),
+                }),
             });
             ws.ended = Some(EndReason::HostReboot);
             ws.sibling = Some(Sibling {
@@ -645,7 +842,7 @@ mod tests {
                     base_sha: "0".into(),
                 },
                 worktree: "/w".into(),
-                pin: "workmux-1".into(),
+                pin: "workrex-1".into(),
                 origin: Origin {
                     parent: "w1".into(),
                     base_label: "main".into(),
@@ -691,7 +888,11 @@ mod tests {
             ".workspaces[].operation.operation.force",
             ".workspaces[].operation.operation.kind",
             ".workspaces[].operation.outcome",
+            ".workspaces[].operation.outcome.message",
+            ".workspaces[].operation.outcome.success",
+            ".workspaces[].operation.progress",
             ".workspaces[].operation.requested_at",
+            ".workspaces[].operation.sandboxed",
             ".workspaces[].panes",
             ".workspaces[].panes[].agent",
             ".workspaces[].panes[].agent.agent_kind",
@@ -701,6 +902,15 @@ mod tests {
             ".workspaces[].panes[].agent.title",
             ".workspaces[].panes[].alive",
             ".workspaces[].panes[].index",
+            ".workspaces[].rex",
+            ".workspaces[].rex.blocks",
+            ".workspaces[].rex.blocks.0",
+            ".workspaces[].rex.host_label",
+            ".workspaces[].rex.instance_id",
+            ".workspaces[].rex.sessions",
+            ".workspaces[].rex.sessions.0",
+            ".workspaces[].rex.shells",
+            ".workspaces[].rex.shells.shell",
             ".workspaces[].sibling",
             ".workspaces[].sibling.background",
             ".workspaces[].sibling.base_label",
@@ -728,7 +938,7 @@ mod tests {
             ".workspaces[].ws_id",
         ];
         assert_eq!(paths, expected, "bump GENERATION, then update this list");
-        assert_eq!(GENERATION, 3);
+        assert_eq!(GENERATION, 4);
     }
 
     #[test]

@@ -9,14 +9,14 @@ These features work with both the container and Lima sandbox backends.
 
 The `extra_mounts` option lets you mount additional host directories into the sandbox. Mounts are read-only by default for security.
 
-`extra_mounts` is a **global-only** setting. If set in a project's `.workmux.yaml`, it is ignored and a warning is logged. This prevents a malicious repository from mounting arbitrary host paths into the sandbox.
+`extra_mounts` is a **global-only** setting. If set in a project's `.workrex.yaml`, it is ignored and a warning is logged. This prevents a malicious repository from mounting arbitrary host paths into the sandbox.
 
-These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
+These are the Workrex configuration paths. See [configuration](/guide/configuration/).
 
 Each entry can be a simple path string (read-only, mirrored into the guest at the same path) or a detailed spec with `host_path`, optional `guest_path`, and optional `writable` flag.
 
 ```yaml
-# ~/.config/workmux/config.yaml
+# ~/.config/workrex/config.yaml
 sandbox:
   extra_mounts:
     # Simple: read-only, same path in guest
@@ -45,12 +45,12 @@ Any allowed command can execute code from project files. For example, an agent c
 :::
 
 ```yaml
-# ~/.config/workmux/config.yaml
+# ~/.config/workrex/config.yaml
 sandbox:
   host_commands: ["just", "cargo", "npm"]
 ```
 
-`host_commands` is only read from your global config. If set in a project's `.workmux.yaml`, it is ignored and a warning is logged. This ensures that only you control which commands get host access, not the projects you clone.
+`host_commands` is only read from your global config. If set in a project's `.workrex.yaml`, it is ignored and a warning is logged. This ensures that only you control which commands get host access, not the projects you clone.
 
 When configured, workrex creates shim scripts inside the sandbox that transparently forward these commands to the host via RPC. The host runs them in the project's toolchain environment (Devbox/Nix if available), streams stdout/stderr back to the sandbox in real-time, and returns the exit code.
 
@@ -67,7 +67,7 @@ Host-exec applies several layers of defense to limit what a compromised agent in
 - **No shell injection**: When toolchain wrapping is active (devbox/nix), command arguments are passed as positional parameters to bash (`"$@"`), never interpolated into a shell string. Without toolchain wrapping, commands are executed directly via the OS with no shell involved.
 - **Environment isolation**: Child processes run with a sanitized environment. Only essential variables (`PATH`, `HOME`, `TERM`, etc.) are passed through. Host secrets like API keys are not inherited. `PATH` is normalized to absolute entries only to prevent relative-path hijacking.
 - **Filesystem sandbox**: On macOS, child processes run under `sandbox-exec` (Seatbelt), which denies access to sensitive directories (including `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.claude`, `~/.config/gh`, `~/.password-store`, keychains, browser data) and credential files (including `~/.gitconfig`, `~/.vault-token`, shell histories), and denies writes to `$HOME` except toolchain caches (`.cache`, `.cargo`, `.rustup`, `.npm`). On Linux, `bwrap` (Bubblewrap) provides similar isolation with a read-only root filesystem, tmpfs over secret directories, and a writable worktree bind mount. If `bwrap` is not installed on Linux, host-exec commands are refused (fail closed).
-- **Global-only config**: `host_commands` is only read from global config (`~/.config/workmux/config.yaml`). Project-level `.workmux.yaml` cannot set it. A warning is logged if it tries.
+- **Global-only config**: `host_commands` is only read from global config (`~/.config/workrex/config.yaml`). Project-level `.workrex.yaml` cannot set it. A warning is logged if it tries.
 - **Global-only RPC host**: `rpc_host` is only read from global config. A malicious project config cannot redirect RPC traffic to attacker infrastructure.
 - **Worktree-locked**: All commands execute with the project worktree as the working directory.
 
@@ -106,7 +106,7 @@ Codex also gets `--no-daemon`. The sandbox mounts the host's `~/.codex`, where C
 
 Codex also gets `--dangerously-bypass-hook-trust`. Codex otherwise asks you to review every new or changed hook before it runs, including the hooks workrex installs for [status tracking](/guide/status-tracking/), and the sandbox path of `~/.codex/hooks.json` differs from the host's, so approvals given on the host don't apply. Hooks run inside the sandbox, the same as any command the agent runs with `--yolo`, so the review adds no protection there. Hooks you disabled in Codex stay disabled. The flag applies to that launch only and records no approval.
 
-`--no-daemon` needs Codex 0.156 or newer. The default image, upstream's `ghcr.io/raine/workmux-sandbox`, installs the latest release. A custom image (`sandbox.image`) or a Lima VM with an older Codex fails to start Codex with "unexpected argument '--no-daemon'": update Codex in the image, or recreate the VM with `workrex sandbox prune`.
+`--no-daemon` needs Codex 0.156 or newer. The Workrex image installs a supported Codex version. A custom image (`sandbox.image`) or a Lima VM with an older Codex fails to start Codex with "unexpected argument '--no-daemon'": update Codex in the image, or recreate the VM with `workrex sandbox prune`.
 
 ## Credentials
 
@@ -139,7 +139,7 @@ The container backend also uses a separate config file for Claude, mounted to `/
 By default, each agent's standard config directory is mounted into the sandbox (see table above). To use a separate directory, keeping sandbox config isolated from the host:
 
 ```yaml
-# ~/.config/workmux/config.yaml
+# ~/.config/workrex/config.yaml
 sandbox:
   agent_config_dir: ~/sandbox-config/{agent}
 ```
@@ -154,7 +154,7 @@ This is useful when you want different MCP servers, project configs, or settings
 A coordinator agent sits on the main branch, plans work, and delegates tasks to worktree agents via `/worktree`. See [Workflows](/guide/workflows/#from-an-ongoing-agent-session) for more on this pattern.
 :::
 
-Coordinator agents can run inside a sandbox using `workrex sandbox agent`. When the coordinator calls `workrex add` from inside the sandbox, the command is routed through RPC to the host, where sub-agents are created normally (and sandboxed if the project config enables it). The default image and Lima VMs have only upstream `workmux`, so run [`workrex sandbox install-dev`](#installing-local-builds) first.
+Coordinator agents can run inside a sandbox using `workrex sandbox agent`. When the coordinator calls `workrex add` from inside the sandbox, the command is routed through RPC to the host, where sub-agents are created normally (and sandboxed if the project config enables it). When using an unreleased checkout, build its sandbox image or run [`workrex sandbox install-dev`](#installing-local-builds) first.
 
 Alternatively, coordinators can run on the host (unsandboxed) and only sandbox leaf agents.
 
@@ -164,8 +164,8 @@ The supervisor and guest communicate via JSON-lines over TCP. Each request is a 
 
 **Supported requests:**
 
-- `SetStatus` - updates the tmux pane status icon (working/waiting/done/clear)
-- `SetTitle` - renames the tmux window
+- `SetStatus` - updates the Rex block status icon (working/waiting/done/clear)
+- `SetTitle` - renames the Rex window
 - `Heartbeat` - health check, returns Ok
 - `SpawnAgent` - runs `workrex add` on the host to create a new worktree and pane
 - `Exec` - runs a command on the host and streams stdout/stderr back (used by host-exec shims, including built-in `afplay`)
@@ -173,7 +173,7 @@ The supervisor and guest communicate via JSON-lines over TCP. Each request is a 
 - `Remove` - asks the local machine to remove a workspace on a [remote server](/guide/remote/), without hooks; refused locally, where `pre_remove` hooks would run on the host
 - `ClipboardRead` - reads the host clipboard and writes image data to the shared worktree filesystem (used by `wl-paste`/`xclip` shims)
 
-Requests are authenticated with a per-session token passed via the `WM_RPC_TOKEN` environment variable.
+Requests are authenticated with a per-session token passed via the `WORKREX_RPC_TOKEN` environment variable.
 
 ## Troubleshooting
 
@@ -185,12 +185,12 @@ If credentials are missing, start a shell in the sandbox with `workrex sandbox s
 
 ### Debugging blocked requests
 
-Network proxy rejections are logged on the host at `$XDG_STATE_HOME/workmux/workmux.log`, or `~/.local/state/workmux/workmux.log` by default.
+Network proxy rejections are logged on the host at `$XDG_STATE_HOME/workrex/workrex.log`, or `~/.local/state/workrex/workrex.log` by default.
 
 To watch rejections while reproducing an issue:
 
 ```bash
-tail -f ~/.local/state/workmux/workmux.log | grep rejected
+tail -f ~/.local/state/workrex/workrex.log | grep rejected
 ```
 
 Rejected entries include the denied hostname. Add any expected hosts to your sandbox's `network.domains` list and retry.

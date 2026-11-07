@@ -1,77 +1,36 @@
 # Notice
 
-workrex is a fork of [workmux](https://github.com/raine/workmux) by Raine Virta
-and the workmux contributors, used under the MIT License. The upstream copyright
-and license text are kept unchanged in [LICENSE](LICENSE). Thanks to everyone who
-built workmux.
+Workrex derives from the MIT-licensed terminal-worktree project originally
+authored by [Raine Virta](https://github.com/raine) and its contributors. The
+original copyright notice and MIT license terms are preserved in
+[LICENSE](LICENSE), alongside a separate copyright line for Workrex changes.
+Thanks to everyone who built the original project.
 
-## What the fork renames
+## Workrex identity
 
-The installed binary is `workrex`, so it can sit beside an upstream `workmux`
-install. Self-references that a user or an agent runs go
-through the binary name: the CLI name, `workrex update` (from
-[kong109/workrex](https://github.com/kong109/workrex) releases), remote node
-binaries, the status hook commands that `workrex setup` writes, and the bundled
-skills.
+This repository maintains Workrex as a Rex-only application. Its package,
+installed binary, agent skills, status hooks, documentation, configuration,
+cache, and state use the Workrex name.
 
-Files both binaries would otherwise write get workrex's own name, so neither
-install touches the other's: the default remote node root `~/.workrex-node` and
-its `workrex-*` pins, the OpenCode plugin `workrex-status`, and the agent hook
-files named `workrex-status`.
+- Binary and Cargo package: `workrex`.
+- Project configuration: `.workrex.yaml`.
+- Global configuration: `~/.config/workrex/config.yaml`.
+- Environment variables: `WORKREX_*`.
+- Remote node root: `~/.workrex-node`.
+- Managed agent integrations: `workrex-status`.
+- Logs: `$XDG_STATE_HOME/workrex/workrex.log`.
 
-The Claude Code plugin id is `workrex-status`. workrex counts its Claude Code
-plugin as installed only when `enabledPlugins` in Claude Code's `settings.json`
-has an enabled `workrex-status@…` key. It treats a `workmux-status@…` key as
-upstream workmux's plugin.
+Rex owns terminal sessions, windows, and blocks. Workrex records the IDs it
+creates and scopes terminal operations to the selected Rex server.
 
-These names stay the same as upstream, so the fork rebases cleanly and reads
-existing workmux configuration:
+## Upstream history
 
-- The Cargo package `workmux`
-- Config, cache and state directories (`~/.config/workmux`, and so on)
-- `.workmux.yaml` project config
-- `WORKMUX_*` environment variables
+Original history and attribution remain in Git. Active documentation describes
+the behavior of this Rex application. Historical release notes for the original
+application are available in earlier repository revisions and are not presented
+as Workrex features.
 
-Log filters use the binary's crate name, so write `RUST_LOG=workrex=debug`.
-
-## Rebasing on upstream
-
-The fork's [README.md](README.md) replaces upstream's. Upstream edits its
-README often, so without help every rebase onto upstream stops on a README
-conflict. A git merge driver resolves it. To install the driver, run this once
-in each clone:
-
-```bash
-scripts/setup-readme-merge
-```
-
-The script copies [`scripts/merge-workrex-readme`](scripts/merge-workrex-readme)
-into the git directory and adds `/README.md merge=workrex-readme` to
-`.git/info/attributes`. The driver keeps the README whose first line is
-`# workrex` when only one side has it, and makes a normal three-way merge when
-both or neither side has it. It works for `git rebase` and `git merge`.
-
-Fork commits older than the README rewrite, such as "Ship the binary as
-workrex", have a README that does not start with `# workrex`. A rebase can
-still stop on one of them when upstream edits the top of its README. To go on, keep upstream's copy for
-that step. A later fork commit puts the fork's README back:
-
-```bash
-git checkout --ours README.md
-git add README.md
-git rebase --continue
-```
-
-The fork does not use `README.md merge=ours` in `.gitattributes`. A rebase
-swaps the sides, so `ours` is upstream's copy and git drops the fork's README
-with no conflict. A committed `.gitattributes` also does not apply to the
-rebase steps before the commit that adds it.
-
-Right after a rebase onto `upstream/main`, `ORIG_HEAD` is the old fork tip.
-To read the upstream README changes that the rebase brought in, run:
-
-```bash
-git log -p ORIG_HEAD..upstream/main -- README.md
-```
-
-Carry over anything that workrex should also say.
+The README merge helper remains available for maintainers carrying changes
+across repository histories. Install it with `scripts/setup-readme-merge`; it
+preserves the README identified by the `# workrex` heading. Its implementation
+is in `scripts/merge-workrex-readme`.

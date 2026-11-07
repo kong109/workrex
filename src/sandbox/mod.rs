@@ -36,7 +36,7 @@ pub(crate) fn proxy_env_vars(
     proxy_port: u16,
     proxy_token: &str,
 ) -> Vec<(String, String)> {
-    let proxy_url = format!("http://workmux:{}@{}:{}", proxy_token, rpc_host, proxy_port);
+    let proxy_url = format!("http://workrex:{}@{}:{}", proxy_token, rpc_host, proxy_port);
     let no_proxy = format!("localhost,127.0.0.1,{}", rpc_host);
 
     vec![
@@ -48,7 +48,7 @@ pub(crate) fn proxy_env_vars(
         ("no_proxy".into(), no_proxy),
         // Pass hostname (not IP literal) so the init script can resolve ALL
         // IPs and whitelist them all in iptables.
-        ("WM_PROXY_HOST".into(), rpc_host.to_string()),
-        ("WM_PROXY_PORT".into(), proxy_port.to_string()),
+        ("WORKREX_PROXY_HOST".into(), rpc_host.to_string()),
+        ("WORKREX_PROXY_PORT".into(), proxy_port.to_string()),
     ]
 }

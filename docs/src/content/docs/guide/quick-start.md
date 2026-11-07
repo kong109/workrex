@@ -12,10 +12,6 @@ Before you start, you need:
 - Rex running, with a pane open in a git repository.
 - An agent CLI, such as [Claude Code](https://www.anthropic.com/claude-code).
 
-workrex also runs in tmux, [WezTerm](/guide/wezterm/), [kitty](/guide/kitty/),
-and [Zellij](/guide/zellij/). The steps are the same, but each task gets a
-window or tab instead of a Rex session.
-
 ## 1. Create the project configuration
 
 In the repository's root, run:
@@ -24,14 +20,13 @@ In the repository's root, run:
 workrex init
 ```
 
-workrex writes a commented `.workmux.yaml`. The project file keeps the workmux
-name, as do all workrex [configuration](/guide/configuration/) files, so
-existing workmux configs work.
+Workrex writes a commented `.workrex.yaml` with project defaults. See
+[Configuration](/guide/configuration/) for its options.
 
 ## 2. Choose the agent
 
 workrex starts an agent only when the project has a `CLAUDE.md` or the
-configuration names an agent. Open `.workmux.yaml` and uncomment this line:
+configuration names an agent. Open `.workrex.yaml` and uncomment this line:
 
 ```yaml
 agent: claude
@@ -51,7 +46,7 @@ workrex creates the `user-auth` branch and its worktree, opens a Rex session
 for it, and starts the agent with your prompt. You should see output like this:
 
 ```
-✓ Successfully created worktree and tmux session for 'user-auth'
+✓ Successfully created worktree and Rex session for 'user-auth'
   Base: main
   Worktree: /Users/you/projects/my-project__worktrees/user-auth
 Rex.app stays put: to see user-auth, press Enter on its row in workrex dashboard.
@@ -62,7 +57,7 @@ The worktree is a sibling of your project directory:
 ```
 ~/projects/
 ├── my-project/                 your main checkout
-│   └── .workmux.yaml
+│   └── .workrex.yaml
 └── my-project__worktrees/
     └── user-auth/              the agent's checkout, on branch user-auth
 ```

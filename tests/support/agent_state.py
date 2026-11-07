@@ -6,16 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..conftest import (
-    MuxEnvironment,
-    TmuxEnvironment,
     get_window_name,
     get_worktree_path,
     make_env_script,
     poll_until,
-    run_workmux_add,
+    run_workrex_add,
     wait_for_window_ready,
-    write_workmux_config,
+    write_workrex_config,
 )
+from ..rex_env import RexEnvironment
 
 
 @dataclass(frozen=True)
@@ -25,15 +24,15 @@ class ActiveAgent:
     worktree: Path
 
 
-def get_state_dir(env: MuxEnvironment) -> Path:
-    return Path(env.env["XDG_STATE_HOME"]) / "workmux"
+def get_state_dir(env: RexEnvironment) -> Path:
+    return Path(env.env["XDG_STATE_HOME"]) / "workrex"
 
 
-def get_agents_dir(env: MuxEnvironment) -> Path:
+def get_agents_dir(env: RexEnvironment) -> Path:
     return get_state_dir(env) / "agents"
 
 
-def list_agent_state_files(env: MuxEnvironment) -> list[Path]:
+def list_agent_state_files(env: RexEnvironment) -> list[Path]:
     agents_dir = get_agents_dir(env)
     if not agents_dir.exists():
         return []
@@ -45,12 +44,12 @@ def read_agent_state(path: Path) -> dict:
 
 
 def build_status_cmd(
-    env: MuxEnvironment,
-    workmux_exe: Path,
+    env: RexEnvironment,
+    workrex_exe: Path,
     status: str,
     env_vars: dict[str, str] | None = None,
 ) -> str:
-    command = f"{workmux_exe} set-window-status {status}"
+    command = f"{workrex_exe} set-window-status {status}"
     script_env = {"XDG_STATE_HOME": env.env["XDG_STATE_HOME"]}
     if env_vars:
         script_env.update(env_vars)
@@ -58,13 +57,13 @@ def build_status_cmd(
 
 
 def build_status_cmd_with_marker(
-    env: MuxEnvironment,
-    workmux_exe: Path,
+    env: RexEnvironment,
+    workrex_exe: Path,
     status: str,
     marker_path: Path,
     env_vars: dict[str, str] | None = None,
 ) -> str:
-    command = f"{workmux_exe} set-window-status {status}; touch {shlex.quote(str(marker_path))}"
+    command = f"{workrex_exe} set-window-status {status}; touch {shlex.quote(str(marker_path))}"
     script_env = {"XDG_STATE_HOME": env.env["XDG_STATE_HOME"]}
     if env_vars:
         script_env.update(env_vars)
@@ -72,14 +71,14 @@ def build_status_cmd_with_marker(
 
 
 def mark_agent_state(
-    env: MuxEnvironment,
-    workmux_exe_path: Path,
+    env: RexEnvironment,
+    workrex_exe_path: Path,
     window_name: str,
     status: str,
     *,
     timeout: float = 5.0,
 ) -> None:
-    status_cmd = build_status_cmd(env, workmux_exe_path, status)
+    status_cmd = build_status_cmd(env, workrex_exe_path, status)
     env.send_keys(window_name, status_cmd)
     assert poll_until(lambda: len(list_agent_state_files(env)) > 0, timeout=timeout), (
         "Agent state file not created"
@@ -87,8 +86,8 @@ def mark_agent_state(
 
 
 def start_active_agent(
-    env: MuxEnvironment,
-    workmux_exe_path: Path,
+    env: RexEnvironment,
+    workrex_exe_path: Path,
     repo_path: Path,
     branch: str,
     *,
@@ -96,11 +95,11 @@ def start_active_agent(
     timeout: float = 5.0,
 ) -> ActiveAgent:
     window_name = get_window_name(branch)
-    write_workmux_config(repo_path, panes=[{"focus": True}])
-    run_workmux_add(env, workmux_exe_path, repo_path, branch)
+    write_workrex_config(repo_path, panes=[{"focus": True}])
+    run_workrex_add(env, workrex_exe_path, repo_path, branch)
     wait_for_window_ready(env, window_name)
 
-    mark_agent_state(env, workmux_exe_path, window_name, status, timeout=timeout)
+    mark_agent_state(env, workrex_exe_path, window_name, status, timeout=timeout)
 
     return ActiveAgent(
         branch=branch,
@@ -109,26 +108,20 @@ def start_active_agent(
     )
 
 
-def stabilize_tmux_agent(env: TmuxEnvironment, agent: ActiveAgent) -> None:
+def stabilize_rex_agent(env: RexEnvironment, agent: ActiveAgent) -> None:
     """Keep a synthetic tracked agent live across subsequent test commands."""
     env.send_keys(agent.window, "exec sleep 30")
     assert poll_until(
-        lambda: "sleep"
-        in env.tmux(
-            ["list-panes", "-t", agent.window, "-F", "#{pane_current_command}"]
-        ).stdout.splitlines(),
+        lambda: (
+            "sleep"
+            in env.read_blocks(
+                agent.window, ["command"], separator="\t"
+            ).stdout.splitlines()
+        ),
         timeout=5.0,
     )
     pane_id, command, pane_pid = (
-        env.tmux(
-            [
-                "list-panes",
-                "-t",
-                agent.window,
-                "-F",
-                "#{pane_id}|#{pane_current_command}|#{pane_pid}",
-            ]
-        )
+        env.read_blocks(agent.window, ["block_id", "command", "pid"], separator="|")
         .stdout.strip()
         .split("|", 2)
     )

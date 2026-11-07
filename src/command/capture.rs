@@ -7,7 +7,7 @@ use crate::workflow;
 pub fn run(name: &str, lines: u16) -> Result<()> {
     let output = match crate::remote::agents::find_target(name) {
         Some(record) => {
-            let config = crate::config::Config::load(None).unwrap_or_default();
+            let (config, _) = record.creator_config()?;
             crate::remote::agents::capture(&config, &record, None, lines)?
         }
         None => {
@@ -22,8 +22,7 @@ pub fn run(name: &str, lines: u16) -> Result<()> {
     let stripped = strip_ansi_codes(&output);
 
     // Trim trailing blank lines and limit to requested line count.
-    // tmux capture-pane may return more lines than requested (it captures
-    // from -N to the bottom of the visible pane area).
+    // Rex may return more terminal output than the requested line count.
     let trimmed: Vec<&str> = stripped
         .lines()
         .collect::<Vec<_>>()

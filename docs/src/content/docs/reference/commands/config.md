@@ -3,7 +3,7 @@ title: "config"
 description: Edit, locate, or view the global workrex configuration file
 ---
 
-Manage the global workrex configuration file (`~/.config/workmux/config.yaml`). Config and state paths keep their workmux names so existing workmux configs work. See [Configuration](/guide/configuration/).
+Manage the global workrex configuration file (`~/.config/workrex/config.yaml`). Configuration and state live under Workrex-owned paths. See [Configuration](/guide/configuration/).
 
 ## config edit
 
@@ -21,7 +21,7 @@ Print the path to the global configuration file. Useful for scripting.
 
 ```bash
 workrex config path
-# Output: /home/user/.config/workmux/config.yaml
+# Output: /home/user/.config/workrex/config.yaml
 ```
 
 ## config reference
@@ -51,4 +51,4 @@ workrex config reference
 ## See also
 
 - [Configuration guide](/guide/configuration/) for all available options
-- [`init`](/reference/commands/init/) to generate a project-level `.workmux.yaml`
+- [`init`](/reference/commands/init/) to generate a project-level `.workrex.yaml`

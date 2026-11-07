@@ -725,13 +725,13 @@ mod tests {
         let cases = [
             (
                 "session",
-                "wm-feature-auth",
+                "wr-feature-auth",
                 None,
                 "/tmp/project__worktrees/feature-auth",
                 ("feature-auth", "project"),
             ),
             (
-                "wm-session-branch",
+                "wr-session-branch",
                 "zsh",
                 Some("zsh"),
                 "/tmp/project__worktrees/session-branch",
@@ -770,7 +770,7 @@ mod tests {
         }
 
         let mut agent = test_agent();
-        agent.window_name = "wm-feature-auth".to_string();
+        agent.window_name = "wr-feature-auth".to_string();
         agent.pane_title = Some("feature-auth".to_string());
         let pane_suffixes = vec![String::new()];
         let ctx = RowContext::build(&app, &agent, 0, &pane_suffixes, 100, None);

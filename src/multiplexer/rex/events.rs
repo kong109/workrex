@@ -10,7 +10,7 @@ use std::sync::mpsc;
 
 use super::RexBackend;
 
-/// The server events workmux acts on. Client connections, layer changes and
+/// The server events workrex acts on. Client connections, layer changes and
 /// every other event parse to `None`: each `rex` CLI call connects a client,
 /// so a consumer reacting to those would feed on its own calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +194,7 @@ pub(crate) struct EventStream {
 }
 
 impl EventStream {
-    /// The events workmux acts on. It disconnects once the stream ends.
+    /// The events workrex acts on. It disconnects once the stream ends.
     pub(crate) fn receiver(&self) -> &mpsc::Receiver<Event> {
         &self.events
     }
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn session_and_close_events_parse() {
-        let session = r#"{"type":"session_created","payload":{"session":{"session_id":"session:3","label":"wm-proj2"}}}"#;
+        let session = r#"{"type":"session_created","payload":{"session":{"session_id":"session:3","label":"wr-proj2"}}}"#;
         assert_eq!(
             Event::parse(session),
             Some(Event::SessionCreated {

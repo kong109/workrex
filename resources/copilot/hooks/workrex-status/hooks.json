@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "workrex register-agent"
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "workrex set-window-status working"
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "workrex set-window-status working"
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "workrex set-window-status done"
+      }
+    ]
+  }
+}

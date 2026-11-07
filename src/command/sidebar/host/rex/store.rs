@@ -1,9 +1,6 @@
-//! Sidebar state for one Rex server. Rex has no user options, so the values
-//! tmux keeps in `@workmux_*` options live in three files: preferences,
-//! written by the CLI and the sidebar TUI; the daemon's outputs, written only
-//! by the daemon; and the sidebar blocks placed, written by the CLI, the
-//! daemon's control plane and a quitting sidebar. Every write holds the
-//! file's lock for its read-modify-write.
+//! Workrex sidebar state for one Rex server. Preferences, daemon outputs,
+//! and owned sidebar blocks live in separate files. Every read-modify-write
+//! holds the corresponding file lock.
 
 use anyhow::{Context, Result};
 use nix::fcntl::{Flock, FlockArg};
@@ -13,20 +10,20 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-pub(super) const SCOPE: &str = "@workmux_sidebar_scope";
-pub(super) const OPTOUT: &str = "@workmux_sidebar_optout_sessions";
-pub(super) const POSITION: &str = "@workmux_sidebar_position";
-pub(super) const WIDTH: &str = "@workmux_sidebar_width";
-pub(super) const SLEEPING: &str = "@workmux_sleeping_panes";
-pub(super) const EXPANDED: &str = "@workmux_sidebar_expanded";
-pub(super) const DAEMON_PID: &str = "@workmux_sidebar_daemon_pid";
-pub(super) const AGENTS: &str = "@workmux_sidebar_agents";
+pub(super) const SCOPE: &str = "@workrex_sidebar_scope";
+pub(super) const OPTOUT: &str = "@workrex_sidebar_optout_sessions";
+pub(super) const POSITION: &str = "@workrex_sidebar_position";
+pub(super) const WIDTH: &str = "@workrex_sidebar_width";
+pub(super) const HEIGHT: &str = "@workrex_sidebar_height";
+pub(super) const SLEEPING: &str = "@workrex_sleeping_panes";
+pub(super) const EXPANDED: &str = "@workrex_sidebar_expanded";
+pub(super) const DAEMON_PID: &str = "@workrex_sidebar_daemon_pid";
+pub(super) const AGENTS: &str = "@workrex_sidebar_agents";
 /// Per window, in the daemon's file: the window's sidebar was closed by the
 /// user, so no reconcile brings it back. The value is the session id.
-pub(super) const CLOSED: &str = "@workmux_sidebar_closed";
+pub(super) const CLOSED: &str = "@workrex_sidebar_closed";
 
-/// Option values by name, server-wide and per window, the way tmux scopes
-/// them.
+/// Shared Workrex preferences, scoped to the server or a window.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub(super) struct Options {
     #[serde(default)]
@@ -101,6 +98,8 @@ pub(super) struct WindowSidebar {
     pub window_id: String,
     pub block_id: String,
     pub split_id: String,
+    #[serde(default)]
+    pub position: crate::config::SidebarPosition,
     /// An older sidebar block in the window that failed to close. The next
     /// pass closes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,8 +107,10 @@ pub(super) struct WindowSidebar {
     /// The root split ratio as Rex reported it after the last placement.
     /// A different ratio in a later view means the user dragged the border.
     pub applied_ratio: f64,
-    pub last_cols: u32,
-    pub window_cols: u32,
+    #[serde(alias = "last_cols")]
+    pub last_extent: u32,
+    #[serde(alias = "window_cols")]
+    pub window_extent: u32,
     /// The window's tiled blocks as the last pass saw them, and when a pass
     /// first saw them change, in Unix milliseconds.
     #[serde(default)]
@@ -143,16 +144,6 @@ impl Files {
 
     fn path(&self, kind: &str) -> PathBuf {
         self.dir.join(format!("rex-{}-{kind}.json", self.key))
-    }
-
-    /// An empty directory the sidebar's tmux calls resolve their socket in,
-    /// so an upstream tmux call under Rex finds no server instead of an
-    /// unrelated one.
-    pub fn no_tmux_dir(&self) -> Result<PathBuf> {
-        let dir = self.dir.join("no-tmux");
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("Failed to create {}", dir.display()))?;
-        Ok(dir)
     }
 
     pub fn prefs(&self) -> Options {
@@ -271,10 +262,11 @@ mod tests {
             window_id: window.into(),
             block_id: format!("block:{window}"),
             split_id: format!("split:{window}"),
+            position: crate::config::SidebarPosition::Left,
             stray: None,
             applied_ratio: 0.18,
-            last_cols: 30,
-            window_cols: 166,
+            last_extent: 30,
+            window_extent: 166,
             panes: String::new(),
             panes_changed_ms: 0,
         }
@@ -287,6 +279,12 @@ mod tests {
         let old = r#"{"window:w":{"session_id":"session:s","window_id":"window:w","block_id":"block:b","split_id":"split:x","applied_ratio":0.18,"last_cols":30,"window_cols":166}}"#;
         let records: Records = serde_json::from_str(old).unwrap();
         assert_eq!(records["window:w"].stray, None);
+        assert_eq!(
+            records["window:w"].position,
+            crate::config::SidebarPosition::Left
+        );
+        assert_eq!(records["window:w"].last_extent, 30);
+        assert_eq!(records["window:w"].window_extent, 166);
         let written = serde_json::to_string(&records).unwrap();
         assert!(!written.contains("stray"), "{written}");
     }
@@ -303,7 +301,7 @@ mod tests {
             .unwrap();
         files
             .update_daemon(|daemon| {
-                daemon.set_window("window:1", "@workmux_sidebar_scope", Some("{}".into()))
+                daemon.set_window("window:1", "@workrex_sidebar_scope", Some("{}".into()))
             })
             .unwrap();
         let mut guard = files.lock_records().unwrap();
@@ -313,7 +311,7 @@ mod tests {
 
         assert_eq!(files.prefs().global(SCOPE), Some("global"));
         assert_eq!(
-            files.daemon().window("window:1", "@workmux_sidebar_scope"),
+            files.daemon().window("window:1", "@workrex_sidebar_scope"),
             Some("{}")
         );
         assert_eq!(files.records()["window:1"], record("window:1"));
@@ -325,7 +323,7 @@ mod tests {
         let files = Files::at(dir.path().to_path_buf(), "default");
         std::fs::write(
             files.path("prefs"),
-            r#"{"globals":{"@workmux_sidebar_scope":"global"},"future":1}"#,
+            r#"{"globals":{"@workrex_sidebar_scope":"global"},"future":1}"#,
         )
         .unwrap();
         assert_eq!(files.prefs().global(SCOPE), Some("global"));

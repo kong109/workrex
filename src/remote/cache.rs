@@ -1,9 +1,9 @@
 //! Laptop records of remote workspaces, under
-//! `~/.local/state/workmux/remote/<name>/workspaces/<ws-id>.json`.
+//! `~/.local/state/workrex/remote/<name>/workspaces/<ws-id>.json`.
 //!
 //! A record is the laptop's handle on a node workspace: it exists from the
-//! first provisioning call until the node acknowledges removal, whether or
-//! not a local window is attached. Nothing here prunes records on its own.
+//! first provisioning call until the node acknowledges removal, independent
+//! of which session Rex.app shows. Nothing here prunes records on its own.
 
 use crate::bin_name::BIN;
 use std::fs;
@@ -33,13 +33,12 @@ pub enum WorkspaceState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionRecord {
     pub ex_id: String,
-    /// Indices of the configured panes with a remote session.
+    /// Indices of the configured native terminal blocks.
     pub panes: Vec<usize>,
-    /// Pinned node binary that started the execution; attaching uses it, so
-    /// a laptop upgrade does not strand running agents.
+    /// Pinned binary that started the execution, kept available for node reads
+    /// across laptop upgrades.
     pub node_bin: String,
-    /// Set when the agents' terminals are on the node's Rex server, which
-    /// Rex.app shows; no local window relays them.
+    /// Recorded session and block identities on the node's Rex server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rex: Option<crate::remote::protocol::RexPlacement>,
 }
@@ -96,9 +95,9 @@ pub struct WorkspaceRecord {
     pub base_sha: String,
     /// The ref the base was resolved from, for display.
     pub base_label: Option<String>,
-    /// Full local window name.
+    /// Workspace label used in agent views.
     pub window_name: String,
-    /// Explicit local parent session, retained when reopening the relay.
+    /// Older local placement metadata; native remote sessions ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_session: Option<String>,
     /// Worktree path on the node, once known.
@@ -106,6 +105,10 @@ pub struct WorkspaceRecord {
     pub state: WorkspaceState,
     pub layout: Vec<LayoutPane>,
     pub execution: Option<ExecutionRecord>,
+    /// Resolved creator configuration for autonomous laptop operations.
+    /// The private record outlives an explicit config or temporary RPC snapshot.
+    #[serde(default, skip_serializing)]
+    pub local_config: Option<serde_json::Value>,
     pub created_at: u64,
     /// When the node last answered a lifecycle call for this workspace.
     pub observed_at: u64,
@@ -117,8 +120,8 @@ pub struct WorkspaceRecord {
     /// Project repository path on the node, once an export reported it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_repo: Option<String>,
-    /// Adopted from the node while no multiplexer could take its window;
-    /// a later adoption pass opens it.
+    /// A node workspace was recorded, but adoption registration still needs
+    /// finalization on a later observation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub window_pending: bool,
 }
@@ -154,6 +157,7 @@ impl WorkspaceRecord {
             state: WorkspaceState::Provisioning,
             layout: Vec::new(),
             execution: None,
+            local_config: None,
             created_at: now,
             observed_at: now,
             local_path,
@@ -197,12 +201,35 @@ impl WorkspaceRecord {
         self.observed_at = now();
     }
 
+    pub(crate) fn creator_config(
+        &self,
+    ) -> Result<(crate::config::Config, Option<crate::config::ConfigLocation>)> {
+        match &self.local_config {
+            Some(document) => crate::frozen_config::from_document(document),
+            None => crate::config::Config::load_with_location_from(&self.project_root, None),
+        }
+    }
+
     pub fn save(&self) -> Result<()> {
         let path = record_path(&root()?, &self.remote, &self.ws_id);
         let dir = path.parent().expect("record path has a parent");
         fs::create_dir_all(dir).with_context(|| format!("Failed to create {}", dir.display()))?;
-        let json = serde_json::to_vec_pretty(self)?;
+        let json = self.private_bytes()?;
         crate::util::write_atomic(&path, &json)
+    }
+
+    fn private_bytes(&self) -> Result<Vec<u8>> {
+        #[derive(Serialize)]
+        struct Stored<'a> {
+            #[serde(flatten)]
+            record: &'a WorkspaceRecord,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            local_config: &'a Option<serde_json::Value>,
+        }
+        Ok(serde_json::to_vec_pretty(&Stored {
+            record: self,
+            local_config: &self.local_config,
+        })?)
     }
 
     pub fn delete(&self) -> Result<()> {
@@ -530,6 +557,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn creator_config_stays_private_but_survives_record_storage() {
+        let mut rec = record("w1", "a", "b");
+        let document =
+            crate::frozen_config::snapshot_document(&crate::config::Config::default(), None)
+                .unwrap();
+        rec.local_config = Some(document.clone());
+        let public = serde_json::to_value(&rec).unwrap();
+        assert!(public.get("local_config").is_none());
+        let stored: WorkspaceRecord =
+            serde_json::from_slice(&rec.private_bytes().unwrap()).unwrap();
+        assert_eq!(stored.local_config, Some(document));
+        assert!(stored.creator_config().is_ok());
+    }
+
+    #[test]
     fn a_sent_turn_admits_only_later_states() {
         let state = |status, ts| ObservedAgent {
             status: Some(status),
@@ -576,7 +618,7 @@ mod tests {
             branch,
             "0".repeat(40),
             None,
-            format!("wm-{handle}"),
+            format!("wr-{handle}"),
             PathBuf::from("/repo__worktrees").join(handle),
         )
     }

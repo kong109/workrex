@@ -1,11 +1,10 @@
 //! Workspaces that remote agents spawn on their node (see
 //! `node::spawn`). The node runs them without the laptop; the laptop adopts
-//! each one the next time it looks at the node: it saves a record and opens
-//! the window, as `workmux add --remote` would have.
+//! each one the next time it looks at the node, saving the native Rex placement.
 //!
 //! The record is the only acknowledgement. A running sibling the laptop has
 //! no record of is adopted again, and one it cannot adopt (unknown project,
-//! name taken) keeps running on the node until `workmux remote gc`.
+//! name taken) keeps running on the node until `workrex remote gc`.
 
 use crate::bin_name::BIN;
 use std::collections::HashSet;
@@ -22,12 +21,7 @@ use crate::config::Config;
 use crate::multiplexer::{create_backend, detect_backend};
 use crate::workflow::WorkflowContext;
 
-/// Seconds after its spawn within which a sibling's window takes focus, so
-/// a laptop that wakes up later does not jump between windows.
-const FOCUS_WITHIN: u64 = 60;
-
-/// Adopt the running siblings in `observation` of `remote` and open the
-/// windows of adopted ones that have none yet. Problems go to stderr in
+/// Adopt the running siblings in `observation` of `remote`. Problems go to stderr in
 /// `foreground` commands and to the log in observers.
 pub fn adopt(remote: &str, observation: &Observation, foreground: bool) {
     if let Err(err) = adopt_all(remote, observation, foreground) {
@@ -74,14 +68,13 @@ fn adopt_all(remote: &str, observation: &Observation, foreground: bool) -> Resul
         let pending = records
             .iter()
             .find(|record| record.remote == remote && record.ws_id == ws.ws_id);
-        // An ended execution has nothing to relay; `workmux open` restarts it.
+        // An ended execution has no live terminal; `workrex open` restarts it.
         if pending.is_some() && ws.ended.is_some() {
             continue;
         }
         let result = match pending {
-            Some(record) => context(&record.project_root)
-                .and_then(|context| open(&context, record.clone(), sibling, observation, &records)),
-            None => adopt_one(remote, ws, sibling, observation, &records, foreground),
+            Some(record) => settle(record.clone()),
+            None => adopt_one(remote, ws, sibling, &records, foreground),
         };
         if let Err(err) = result {
             refused().insert(key);
@@ -101,7 +94,6 @@ fn adopt_one(
     remote: &str,
     ws: &ObservedWorkspace,
     sibling: &Sibling,
-    observation: &Observation,
     records: &[WorkspaceRecord],
     foreground: bool,
 ) -> Result<()> {
@@ -123,26 +115,14 @@ fn adopt_one(
             record.remote
         );
     }
-    let context = context(&project_root)?;
-    let window_name = crate::multiplexer::util::prefixed(&context.prefix, &identity.handle);
     let parent = records
         .iter()
         .find(|parent| parent.remote == remote && parent.ws_id == sibling.origin.parent);
-    let window_session = match parent {
-        Some(parent) => super::lifecycle::window_target(context.mux.as_ref(), parent)?
-            .and_then(|target| target.parent_session)
-            .or_else(|| parent.window_session.clone()),
-        None => None,
-    };
-    if let Some(conflict) = super::lifecycle::local_conflict(
-        &context,
-        &identity.branch,
-        &identity.handle,
-        &window_name,
-        window_session.as_deref(),
-        true,
-        "",
-    )? {
+    let context = context(&project_root, parent)?;
+    let window_name = crate::multiplexer::util::prefixed(&context.prefix, &identity.handle);
+    if let Some(conflict) =
+        super::lifecycle::local_conflict(&context, &identity.branch, &identity.handle, true, "")?
+    {
         bail!("{conflict}");
     }
     let mut record = WorkspaceRecord::new(
@@ -157,7 +137,13 @@ fn adopt_one(
         window_name,
         context.worktree_base_dir()?.join(&identity.handle),
     );
-    record.window_session = window_session;
+    record.local_config = match parent.and_then(|parent| parent.local_config.clone()) {
+        Some(document) => Some(document),
+        None => Some(crate::frozen_config::snapshot_document(
+            &context.config,
+            None,
+        )?),
+    };
     record.remote_worktree = Some(sibling.worktree.clone());
     record.state = WorkspaceState::Ready;
     record.layout = sibling.origin.layout.clone();
@@ -169,6 +155,8 @@ fn adopt_one(
     });
     record.window_pending = true;
     record.save()?;
+    let spec = super::RemoteSpec::resolve(&context.config, remote)?;
+    super::observe::ensure_background(&spec, &record.project_root)?;
     report_info(
         foreground,
         &format!(
@@ -179,51 +167,20 @@ fn adopt_one(
     if ws.ended.is_some() {
         return Ok(());
     }
-    open(&context, record, sibling, observation, records)
+    settle(record)
 }
 
-/// Open the window of adopted `record` if a multiplexer runs; otherwise it
-/// stays pending.
-fn open(
-    context: &WorkflowContext,
-    mut record: WorkspaceRecord,
-    sibling: &Sibling,
-    observation: &Observation,
-    records: &[WorkspaceRecord],
-) -> Result<()> {
-    let mux = context.mux.as_ref();
-    if !mux.is_running().unwrap_or(false) {
-        return Ok(());
-    }
-    if super::lifecycle::window_target(mux, &record)?.is_none() {
-        let spawned = observation.local_ts(sibling.origin.spawned_at);
-        let focus =
-            !sibling.origin.background && cache::now().saturating_sub(spawned) <= FOCUS_WITHIN;
-        let parent = records
-            .iter()
-            .find(|parent| parent.remote == record.remote && parent.ws_id == sibling.origin.parent)
-            .map(|parent| super::lifecycle::window_target(mux, parent))
-            .transpose()?
-            .flatten();
-        match parent {
-            // Next to the window of the agent that spawned it, in whichever
-            // session has it; focus only moves within this process's session.
-            Some(parent) => {
-                let after = format!(
-                    "={}:{}",
-                    parent.parent_session.as_deref().expect("resolved session"),
-                    parent.window_id.as_deref().expect("resolved window ID")
-                );
-                super::lifecycle::open_window_after(
-                    context,
-                    &record,
-                    focus && parent.parent_session == mux.current_session(),
-                    Some(&after),
-                )
-            }
-            None => super::lifecycle::open_window(context, &record, focus),
-        }?;
-    }
+/// Native placement already exists on the server; adoption never changes the
+/// app's selected session or creates a terminal on this machine.
+fn settle(mut record: WorkspaceRecord) -> Result<()> {
+    anyhow::ensure!(
+        record
+            .execution
+            .as_ref()
+            .is_some_and(|execution| execution.rex.is_some()),
+        "remote workspace '{}' has no Rex session",
+        record.handle
+    );
     record.window_pending = false;
     record.save()
 }
@@ -241,8 +198,14 @@ fn project_root(project_id: &str, records: &[WorkspaceRecord]) -> Option<PathBuf
     (cache::project_id_of(&root) == project_id).then_some(root)
 }
 
-fn context(project_root: &std::path::Path) -> Result<WorkflowContext> {
-    let (config, location) = Config::load_with_location_from(project_root, None)?;
+fn context(
+    project_root: &std::path::Path,
+    record: Option<&WorkspaceRecord>,
+) -> Result<WorkflowContext> {
+    let (config, location) = match record {
+        Some(record) => record.creator_config()?,
+        None => Config::load_with_location_from(project_root, None)?,
+    };
     WorkflowContext::new_in(
         project_root,
         config,
@@ -307,6 +270,6 @@ mod tests {
         assert!(!valid_pin(&format!("{BIN}-x;rm -rf ~")));
         assert!(!valid_pin(&format!("../{BIN}-1")));
         assert!(!valid_pin("sh"));
-        assert!(!valid_pin("workmux-0.1.278"));
+        assert!(!valid_pin("other-tool-0.1.278"));
     }
 }

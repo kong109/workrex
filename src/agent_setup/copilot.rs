@@ -12,8 +12,7 @@ use std::path::{Path, PathBuf};
 use super::{StatusCheck, UpdatePreview};
 
 /// Hooks configuration embedded at compile time.
-const HOOKS_JSON: &str =
-    crate::rebrand_include!("../../resources/copilot/hooks/workmux-status/hooks.json");
+const HOOKS_JSON: &str = include_str!("../../resources/copilot/hooks/workrex-status/hooks.json");
 const HOOKS_FILE_NAME: &str = concat!(env!("CARGO_BIN_NAME"), "-status.json");
 
 pub(crate) fn copilot_dir() -> Option<PathBuf> {
@@ -52,7 +51,7 @@ pub fn detect() -> Option<&'static str> {
     None
 }
 
-/// Check whether the workmux personal hook is installed for Copilot CLI.
+/// Check whether the workrex personal hook is installed for Copilot CLI.
 pub fn check() -> Result<StatusCheck> {
     let Some(path) = hooks_file() else {
         return Ok(StatusCheck::NotInstalled);
@@ -71,19 +70,19 @@ fn check_at(path: &Path) -> Result<StatusCheck> {
         .with_context(|| format!("Copilot hooks file is not valid JSON: {}", path.display()))?;
 
     let required = [
-        ("sessionStart", "workmux register-agent"),
-        ("userPromptSubmitted", "workmux set-window-status working"),
-        ("postToolUse", "workmux set-window-status working"),
-        ("agentStop", "workmux set-window-status done"),
+        ("sessionStart", "workrex register-agent"),
+        ("userPromptSubmitted", "workrex set-window-status working"),
+        ("postToolUse", "workrex set-window-status working"),
+        ("agentStop", "workrex set-window-status done"),
     ]
-    .map(|(event, command)| (event, command.replacen("workmux", crate::bin_name::BIN, 1)));
+    .map(|(event, command)| (event, command.replacen("workrex", crate::bin_name::BIN, 1)));
     if config.get("version").and_then(Value::as_u64) == Some(1)
         && required
             .iter()
             .all(|(event, command)| has_command_hook(&config, event, command))
     {
         Ok(StatusCheck::Installed)
-    } else if has_workmux_hook(&config) {
+    } else if has_workrex_hook(&config) {
         Ok(StatusCheck::UpdateAvailable)
     } else {
         Ok(StatusCheck::NotInstalled)
@@ -101,7 +100,7 @@ fn has_command_hook(config: &Value, event: &str, expected: &str) -> bool {
         })
 }
 
-fn has_workmux_hook(config: &Value) -> bool {
+fn has_workrex_hook(config: &Value) -> bool {
     config["hooks"]
         .as_object()
         .into_iter()
@@ -109,7 +108,7 @@ fn has_workmux_hook(config: &Value) -> bool {
         .filter_map(Value::as_array)
         .flatten()
         .filter_map(|hook| hook.get("bash").and_then(Value::as_str))
-        .any(super::hooks::is_workmux_hook_command)
+        .any(super::hooks::is_workrex_hook_command)
 }
 
 pub(crate) fn update_preview() -> Result<Option<UpdatePreview>> {
@@ -123,7 +122,7 @@ pub(crate) fn update_preview() -> Result<Option<UpdatePreview>> {
     }))
 }
 
-/// Install the workmux personal hook for Copilot CLI.
+/// Install the workrex personal hook for Copilot CLI.
 pub fn install() -> Result<String> {
     let path = hooks_file().context("Could not determine home directory")?;
     install_at(&path)
@@ -141,7 +140,7 @@ fn install_at(path: &Path) -> Result<String> {
     Ok(format!("Installed hooks to {}", path.display()))
 }
 
-/// Remove the workmux personal hook for Copilot CLI.
+/// Remove the workrex personal hook for Copilot CLI.
 pub fn uninstall() -> Result<String> {
     let Some(path) = hooks_file() else {
         return Ok("Home directory not found, no Copilot hooks removed".to_string());
@@ -185,9 +184,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hooks_json_contains_workmux_commands() {
-        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux register-agent")));
-        assert!(HOOKS_JSON.contains(crate::rebrand!("workmux set-window-status")));
+    fn test_hooks_json_contains_workrex_commands() {
+        assert!(HOOKS_JSON.contains("workrex register-agent"));
+        assert!(HOOKS_JSON.contains("workrex set-window-status"));
     }
 
     #[test]
@@ -226,7 +225,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let repository_hook = tmp
             .path()
-            .join("repo/.github/hooks/workmux-status/hooks.json");
+            .join("repo/.github/hooks/workrex-status/hooks.json");
         fs::create_dir_all(repository_hook.parent().unwrap()).unwrap();
         fs::write(&repository_hook, HOOKS_JSON).unwrap();
 
@@ -294,7 +293,7 @@ mod tests {
         let path = hooks_file_at(tmp.path());
         let mut config: Value = serde_json::from_str(HOOKS_JSON).unwrap();
         config["hooks"]["sessionStart"][0]["bash"] =
-            Value::String("bash -c 'workmux register-agent'".to_string());
+            Value::String("bash -c 'workrex register-agent'".to_string());
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, serde_json::to_string(&config).unwrap()).unwrap();
 

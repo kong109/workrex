@@ -13,7 +13,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::{Config, SidebarWidth};
+use crate::config::{Config, SidebarHeight, SidebarPosition, SidebarWidth};
 use crate::multiplexer::rex::RexBackend;
 use crate::multiplexer::rex::events::{Event, EventStream};
 use crate::multiplexer::rex::sidebar_api::{View, Window};
@@ -121,6 +121,7 @@ pub(super) struct Plane {
     pub files: Files,
     config: Config,
     configured_width: Option<SidebarWidth>,
+    configured_height: Option<SidebarHeight>,
     command: Vec<String>,
     cwd: PathBuf,
     /// A sidebar block the pass must leave in place: the one a quitting
@@ -135,11 +136,13 @@ impl Plane {
     pub fn new(rex: RexBackend, files: Files, config: Config) -> Result<Self> {
         let command = sidebar_command(&rex, &files)?;
         let configured_width = config.sidebar.width.clone();
+        let configured_height = config.sidebar.height.clone();
         Ok(Self {
             rex,
             files,
             config,
             configured_width,
+            configured_height,
             command,
             cwd: dirs_home(),
             spare: None,
@@ -160,26 +163,58 @@ impl Plane {
     fn reload_config(&mut self) {
         if let Ok(config) = Config::load(None) {
             self.configured_width = config.sidebar.width.clone();
+            self.configured_height = config.sidebar.height.clone();
             self.config = config;
         }
     }
 
-    /// A `--width` given to `sidebar on` stays in effect like a configured
-    /// width until the sidebar is turned off.
-    fn width_policy(&mut self, prefs: &Options) -> (bool, Option<u16>) {
-        let cli_width = prefs
+    /// CLI dimensions override configured dimensions for the active axis.
+    fn size_policy(&mut self, prefs: &Options) -> (bool, Option<u16>) {
+        self.config.sidebar.position = Some(match prefs.global(store::POSITION) {
+            Some("top") => SidebarPosition::Top,
+            Some("left") => SidebarPosition::Left,
+            _ => self.config.sidebar.position.unwrap_or_default(),
+        });
+        self.config.sidebar.width = prefs
             .global(store::WIDTH)
-            .and_then(|value| value.parse::<SidebarWidth>().ok());
-        self.config.sidebar.width = cli_width.or_else(|| self.configured_width.clone());
-        let synced = crate::state::StateStore::new()
+            .and_then(|s| s.parse::<SidebarWidth>().ok())
+            .or_else(|| self.configured_width.clone());
+        self.config.sidebar.height = prefs
+            .global(store::HEIGHT)
+            .and_then(|s| s.parse::<SidebarHeight>().ok())
+            .or_else(|| self.configured_height.clone());
+        let settings = crate::state::StateStore::new()
             .and_then(|store| store.load_settings())
-            .ok()
-            .and_then(|settings| settings.sidebar_width);
-        (self.config.sidebar.width.is_some(), synced)
+            .ok();
+        match self.position() {
+            SidebarPosition::Left => (
+                self.config.sidebar.width.is_some(),
+                settings.and_then(|s| s.sidebar_width),
+            ),
+            SidebarPosition::Top => (
+                self.config.sidebar.height.is_some(),
+                settings.and_then(|s| s.sidebar_height),
+            ),
+        }
     }
 
-    fn target(&self, window_cols: u32, synced: Option<u16>) -> u16 {
-        crate::command::sidebar::resolve_width_for(&self.config, size::extent(window_cols), synced)
+    fn position(&self) -> SidebarPosition {
+        self.config.sidebar.position.unwrap_or_default()
+    }
+
+    fn target(&self, window_extent: u32, synced: Option<u16>) -> u16 {
+        match self.position() {
+            SidebarPosition::Left => crate::command::sidebar::resolve_width_for(
+                &self.config,
+                size::extent(window_extent),
+                synced,
+            ),
+            SidebarPosition::Top => crate::command::sidebar::resolve_height_for(
+                &self.config,
+                size::extent(window_extent),
+                synced,
+            ),
+        }
     }
 
     /// Bring every session in line with the scope, adding sidebars where
@@ -208,7 +243,7 @@ impl Plane {
         result.map(|_| guard.records.clone())
     }
 
-    /// Run a pass over each session in `views`, then spread a dragged width
+    /// Run a pass over each session in `views`, then share a dragged extent
     /// to the other windows. Returns the views as they stand afterwards.
     fn sync(
         &mut self,
@@ -220,7 +255,7 @@ impl Plane {
     ) -> Result<BTreeMap<String, View>> {
         let prefs = self.files.prefs();
         let scope = Scope::from_prefs(&prefs);
-        let (configured, mut synced) = self.width_policy(&prefs);
+        let (configured, mut synced) = self.size_policy(&prefs);
         let closed_before = self.files.daemon().windows_with(store::CLOSED);
         let mut closed = closed_before.clone();
         let mut current = BTreeMap::new();
@@ -268,7 +303,7 @@ impl Plane {
         }
 
         if let Some(cols) = dragged {
-            if let Err(error) = persist_width(cols) {
+            if let Err(error) = persist_extent(cols, self.position()) {
                 tracing::warn!(%error, "failed to persist the dragged sidebar width");
             }
             synced = Some(cols);
@@ -302,7 +337,7 @@ impl Plane {
         }
     }
 
-    /// Apply a new synced width to every sidebar not already at it.
+    /// Apply a shared extent to every sidebar not already at it.
     fn spread(
         &mut self,
         records: &mut Records,
@@ -410,6 +445,27 @@ impl Plane {
                 records.remove(&window_id);
                 continue;
             }
+            if record.position != self.position() {
+                if let Some(mut placed) = self.place(session_id, window, synced)? {
+                    if let Err(error) = self.rex.close_sidebar_block(session_id, &record.block_id)
+                        && self.block_remains(session_id, &record.block_id)
+                    {
+                        if self
+                            .rex
+                            .close_sidebar_block(session_id, &placed.block_id)
+                            .is_err()
+                            && self.block_remains(session_id, &placed.block_id)
+                        {
+                            placed.stray = Some(record.block_id.clone());
+                            records.insert(window_id.clone(), placed);
+                        }
+                        return Err(error);
+                    }
+                    records.insert(window_id.clone(), placed);
+                    result.placed.insert(window_id.clone());
+                }
+                continue;
+            }
             let Some(root) = window
                 .root_split()
                 .filter(|root| root.before.block_id.as_deref() == Some(&record.block_id))
@@ -447,39 +503,44 @@ impl Plane {
                 }
                 continue;
             };
-            let observed_cols = sizes.get(&record.block_id).copied();
-            let window_cols = observed_cols
-                .and_then(|cols| size::window_cols(cols, root.ratio))
-                .unwrap_or(record.window_cols);
-            let cols = observed_cols.unwrap_or(record.last_cols);
-            let target = self.target(window_cols, synced);
+            let observed_extent = sizes.get(&record.block_id).copied();
+            let window_extent = observed_extent
+                .and_then(|cols| size::window_extent(cols, root.ratio))
+                .unwrap_or(record.window_extent);
+            let cells = observed_extent.unwrap_or(record.last_extent);
+            let target = self.target(window_extent, synced);
             let record = records.get_mut(&window_id).expect("record exists");
             let panes_changed = size::note_panes(record, window, unix_ms());
             let action = size::decide(
                 record,
                 root.ratio,
-                cols,
-                window_cols,
+                cells,
+                window_extent,
                 target,
                 configured,
                 panes_changed,
             );
-            record.window_cols = window_cols;
+            record.window_extent = window_extent;
             match action {
-                SizeAction::Keep => record.last_cols = cols,
+                SizeAction::Keep => record.last_extent = cells,
                 SizeAction::Enforce { ratio } | SizeAction::SnapBack { ratio } => {
                     let Some((neighbor, _)) = root.after.first_block() else {
                         continue;
                     };
-                    self.rex
-                        .resize_sidebar(session_id, &record.block_id, neighbor, ratio)?;
-                    record.last_cols = u32::from(target);
+                    self.rex.resize_sidebar(
+                        session_id,
+                        &record.block_id,
+                        neighbor,
+                        ratio,
+                        record.position,
+                    )?;
+                    record.last_extent = u32::from(target);
                     result.placed.insert(window_id.clone());
                 }
-                SizeAction::PersistDrag { cols } => {
+                SizeAction::PersistDrag { cells } => {
                     record.applied_ratio = root.ratio;
-                    record.last_cols = u32::from(cols);
-                    result.dragged = Some(cols);
+                    record.last_extent = u32::from(cells);
+                    result.dragged = Some(cells);
                 }
             }
         }
@@ -512,19 +573,35 @@ impl Plane {
         ) else {
             return Ok(None);
         };
-        let Some((measured, rect_w)) = layout.first_block() else {
+        let Some((measured, rect_w)) = layout.first_block_extent(self.position()) else {
             return Ok(None);
         };
-        let window_cols = self
+        let window_extent = self
             .rex
             .block_size(measured)?
-            .and_then(|size| size::window_cols(size.columns, rect_w))
-            .unwrap_or(80);
-        let target = self.target(window_cols, synced);
-        let ratio = size::sidebar_ratio(target, window_cols);
-        let created =
-            self.rex
-                .new_sidebar_split(session_id, anchor, ratio, &self.cwd, &self.command)?;
+            .and_then(|size| {
+                size::window_extent(
+                    match self.position() {
+                        SidebarPosition::Left => size.columns,
+                        SidebarPosition::Top => size.rows,
+                    },
+                    rect_w,
+                )
+            })
+            .unwrap_or(match self.position() {
+                SidebarPosition::Left => 80,
+                SidebarPosition::Top => 24,
+            });
+        let target = self.target(window_extent, synced);
+        let ratio = size::sidebar_ratio(target, window_extent, self.position());
+        let created = self.rex.new_sidebar_split(
+            session_id,
+            anchor,
+            ratio,
+            self.position(),
+            &self.cwd,
+            &self.command,
+        )?;
         // Rex keeps the ratio the sidebar's split is created with, so placing
         // the sidebar is not a pane change.
         let panes = size::panes(window, Some(&created.block_id));
@@ -533,10 +610,11 @@ impl Plane {
             window_id: window.window_id.clone(),
             block_id: created.block_id,
             split_id: created.split_id,
+            position: self.position(),
             stray: None,
             applied_ratio: ratio,
-            last_cols: u32::from(target),
-            window_cols,
+            last_extent: u32::from(target),
+            window_extent,
             panes,
             panes_changed_ms: 0,
         }))
@@ -587,10 +665,13 @@ fn unix_ms() -> u64 {
         .map_or(0, |since| since.as_millis() as u64)
 }
 
-fn persist_width(cols: u16) -> Result<()> {
+fn persist_extent(cols: u16, position: SidebarPosition) -> Result<()> {
     let store = crate::state::StateStore::new()?;
     let mut settings = store.load_settings()?;
-    settings.sidebar_width = Some(cols);
+    match position {
+        SidebarPosition::Left => settings.sidebar_width = Some(cols),
+        SidebarPosition::Top => settings.sidebar_height = Some(cols),
+    };
     store.save_settings(&settings)
 }
 
@@ -613,20 +694,16 @@ fn dirs_home() -> PathBuf {
 const PASSED_ON: [&str; 4] = ["HOME", "TMPDIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME"];
 
 /// The command a sidebar block runs: our environment, the server address
-/// and the `rex` location, with tmux pointed at an empty socket directory.
-fn sidebar_command(rex: &RexBackend, files: &Files) -> Result<Vec<String>> {
-    let exe =
-        std::env::current_exe().context(crate::rebrand!("Failed to locate the workmux binary"))?;
-    let mut command: Vec<String> = ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"]
-        .map(String::from)
-        .to_vec();
+/// and the `rex` executable location.
+fn sidebar_command(rex: &RexBackend, _files: &Files) -> Result<Vec<String>> {
+    let exe = std::env::current_exe().context("Failed to locate the workrex binary")?;
+    let mut command: Vec<String> = ["/usr/bin/env"].map(String::from).to_vec();
     for name in PASSED_ON {
         if let Some(value) = std::env::var_os(name) {
             command.push(format!("{name}={}", value.to_string_lossy()));
         }
     }
-    command.push(format!("TMUX_TMPDIR={}", files.no_tmux_dir()?.display()));
-    command.push("WORKMUX_BACKEND=rex".to_string());
+    command.push("WORKREX_BACKEND=rex".to_string());
     if let Some(server) = rex.server_address() {
         command.push(format!("REX_SERVER={server}"));
     }
@@ -645,17 +722,13 @@ pub(super) fn rex_bin_dir() -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?).find(|dir| dir.join("rex").is_file())
 }
 
-/// The environment for a process that must not reach a tmux server.
+/// Pin a Workrex child process to this Rex server.
 pub(super) fn contain(
     command: &mut std::process::Command,
     rex: &RexBackend,
-    files: &Files,
+    _files: &Files,
 ) -> Result<()> {
-    command
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
-        .env("TMUX_TMPDIR", files.no_tmux_dir()?)
-        .env("WORKMUX_BACKEND", "rex");
+    command.env("WORKREX_BACKEND", "rex");
     if let Some(server) = rex.server_address() {
         command.env("REX_SERVER", server);
     }
@@ -884,9 +957,10 @@ impl Follower {
                     session_id,
                     block_id,
                     columns,
-                    ..
+                    rows,
                 } if sidebars.contains(block_id) => {
-                    sizes.insert(block_id.clone(), *columns);
+                    let top = self.plane.files.prefs().global(store::POSITION) == Some("top");
+                    sizes.insert(block_id.clone(), if top { *rows } else { *columns });
                     touch(&mut sessions, session_id);
                 }
                 Event::ProgramStatusChanged { .. }
@@ -1026,7 +1100,7 @@ fn gather<T>(first: T, rx: &mpsc::Receiver<T>, settle: Duration) -> Vec<T> {
 }
 
 /// Ask this daemon's tick loop for an observation now, through the same
-/// signal `workmux sidebar` sends it.
+/// signal `workrex sidebar` sends it.
 fn wake_daemon() {
     let _ = signal_hook::low_level::raise(signal_hook::consts::SIGUSR1);
 }

@@ -1,6 +1,6 @@
 //! Agent identity classification.
 //!
-//! Classifies an agent pane by combining tmux's `pane_current_command` with
+//! Classifies an agent pane by combining the Rex block's foreground command with
 //! the pane title. Some agents report a version string (Claude Code: "2.1.118"),
 //! a truncated binary name (Codex: "codex-aarch64-a"), or run as a generic
 //! interpreter (Gemini, Pi, Vibe). Stem-based profile resolution alone misses

@@ -9,12 +9,12 @@ While powerful, git worktrees have nuances that are important to understand. wor
 
 When `git worktree add` creates a new working directory, it's a clean checkout. Files listed in your `.gitignore` (e.g., `.env` files, `node_modules`, IDE configuration) will not exist in the new worktree by default. Your application will be broken in the new worktree until you manually create or link these necessary files.
 
-workrex keeps the workmux names for config files (`.workmux.yaml`, `~/.config/workmux/config.yaml`) and `WORKMUX_*` environment variables, so an existing workmux config works. See [Configuration](/guide/configuration/).
+Workrex uses `.workrex.yaml`, `~/.config/workrex/config.yaml`, and `WORKREX_*` environment variables. See [Configuration](/guide/configuration/).
 
-This is a primary feature of workrex. Use the `files` section in your `.workmux.yaml` to automatically copy or symlink these files on creation:
+This is a primary feature of workrex. Use the `files` section in your `.workrex.yaml` to automatically copy or symlink these files on creation:
 
 ```yaml
-# .workmux.yaml
+# .workrex.yaml
 files:
   copy:
     - .env # Copy environment variables

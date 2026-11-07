@@ -69,7 +69,7 @@ pub fn merge(
         ));
     }
 
-    // The handle is the basename of the worktree directory (used for tmux operations)
+    // The handle is the basename of the worktree directory (used for Rex operations)
     let handle = worktree_path
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
@@ -94,7 +94,7 @@ pub fn merge(
 
     // Determine the target branch:
     // 1. Use explicit --into if provided
-    // 2. Otherwise, check if branch has a stored base (from workmux add)
+    // 2. Otherwise, check if branch has a stored base (from workrex add)
     // 3. Fall back to main_branch
     let detected_base: Option<String> = if into_branch.is_some() {
         None // User explicitly specified target, no auto-detection needed
@@ -241,12 +241,12 @@ pub fn merge(
         let project_root_str = abs_project_root.to_string_lossy();
 
         let hook_env = [
-            ("WORKMUX_HANDLE", handle),
-            ("WM_BRANCH_NAME", branch_to_merge.as_str()),
-            ("WM_TARGET_BRANCH", target_branch),
-            ("WM_WORKTREE_PATH", worktree_path_str.as_ref()),
-            ("WM_PROJECT_ROOT", project_root_str.as_ref()),
-            ("WM_HANDLE", handle),
+            ("WORKREX_HANDLE", handle),
+            ("WORKREX_BRANCH_NAME", branch_to_merge.as_str()),
+            ("WORKREX_TARGET_BRANCH", target_branch),
+            ("WORKREX_WORKTREE_PATH", worktree_path_str.as_ref()),
+            ("WORKREX_PROJECT_ROOT", project_root_str.as_ref()),
+            ("WORKREX_HANDLE", handle),
         ];
 
         for command in hooks {
@@ -410,7 +410,7 @@ fn show_notification(message: &str) {
             tracing::debug!("Failed to set notification application: {:?}", e);
         }
         if let Err(e) = Notification::default()
-            .title("workmux")
+            .title("workrex")
             .message(message)
             .send()
         {
@@ -421,7 +421,7 @@ fn show_notification(message: &str) {
     #[cfg(not(target_os = "macos"))]
     {
         if let Err(e) = notify_rust::Notification::new()
-            .summary("workmux")
+            .summary("workrex")
             .body(message)
             .show()
         {

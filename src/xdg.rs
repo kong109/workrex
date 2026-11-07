@@ -1,6 +1,6 @@
 //! Centralized XDG Base Directory resolution.
 //!
-//! All workmux-owned paths should go through this module rather than
+//! All workrex-owned paths should go through this module rather than
 //! resolving `home::home_dir()` directly.
 
 use anyhow::{Context, Result};
@@ -25,17 +25,17 @@ fn base_dir(env_var: &str, default_suffix: &str) -> Result<PathBuf> {
     Ok(home.join(default_suffix))
 }
 
-/// `$XDG_CONFIG_HOME/workmux` (default: `~/.config/workmux`)
+/// `$XDG_CONFIG_HOME/workrex` (default: `~/.config/workrex`)
 pub fn config_dir() -> Result<PathBuf> {
-    Ok(base_dir("XDG_CONFIG_HOME", ".config")?.join("workmux"))
+    Ok(base_dir("XDG_CONFIG_HOME", ".config")?.join("workrex"))
 }
 
-/// `$XDG_CACHE_HOME/workmux` (default: `~/.cache/workmux`)
+/// `$XDG_CACHE_HOME/workrex` (default: `~/.cache/workrex`)
 pub fn cache_dir() -> Result<PathBuf> {
-    Ok(base_dir("XDG_CACHE_HOME", ".cache")?.join("workmux"))
+    Ok(base_dir("XDG_CACHE_HOME", ".cache")?.join("workrex"))
 }
 
-/// `$XDG_STATE_HOME/workmux` (default: `~/.local/state/workmux`)
+/// `$XDG_STATE_HOME/workrex` (default: `~/.local/state/workrex`)
 pub fn state_dir() -> Result<PathBuf> {
-    Ok(base_dir("XDG_STATE_HOME", ".local/state")?.join("workmux"))
+    Ok(base_dir("XDG_STATE_HOME", ".local/state")?.join("workrex"))
 }

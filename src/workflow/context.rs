@@ -172,13 +172,6 @@ impl WorkflowContext {
         Ok(())
     }
 
-    /// Ensure tmux is running (backward-compat alias for ensure_mux_running)
-    #[deprecated(note = "Use ensure_mux_running() instead")]
-    #[allow(dead_code)]
-    pub fn ensure_tmux_running(&self) -> Result<()> {
-        self.ensure_mux_running()
-    }
-
     /// Change working directory to main worktree root
     ///
     /// This is necessary for destructive operations (merge, remove) to prevent

@@ -4,12 +4,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..conftest import (
-    MuxEnvironment,
-    get_window_name,
-    get_worktree_path,
-    run_workmux_add,
-)
+from ..conftest import get_window_name, get_worktree_path, run_workrex_add
+from ..rex_env import RexEnvironment
 
 
 @dataclass(frozen=True)
@@ -20,14 +16,14 @@ class AddedWorktree:
 
 
 def add_worktrees(
-    env: MuxEnvironment,
-    workmux_exe_path: Path,
+    env: RexEnvironment,
+    workrex_exe_path: Path,
     repo_path: Path,
     branches: Sequence[str],
 ) -> list[AddedWorktree]:
     worktrees: list[AddedWorktree] = []
     for branch in branches:
-        run_workmux_add(env, workmux_exe_path, repo_path, branch)
+        run_workrex_add(env, workrex_exe_path, repo_path, branch)
         worktrees.append(
             AddedWorktree(
                 branch=branch,
@@ -49,7 +45,7 @@ def assert_worktrees_removed(worktrees: Sequence[AddedWorktree]) -> None:
 
 
 def assert_windows_closed(
-    env: MuxEnvironment, worktrees: Sequence[AddedWorktree]
+    env: RexEnvironment, worktrees: Sequence[AddedWorktree]
 ) -> None:
     windows = env.list_windows()
     for wt in worktrees:
@@ -57,7 +53,7 @@ def assert_windows_closed(
 
 
 def assert_branches_present(
-    env: MuxEnvironment, repo_path: Path, branches: Iterable[str]
+    env: RexEnvironment, repo_path: Path, branches: Iterable[str]
 ) -> None:
     for branch in branches:
         result = env.run_command(["git", "branch", "--list", branch], cwd=repo_path)
@@ -65,7 +61,7 @@ def assert_branches_present(
 
 
 def assert_branches_deleted(
-    env: MuxEnvironment, repo_path: Path, branches: Iterable[str]
+    env: RexEnvironment, repo_path: Path, branches: Iterable[str]
 ) -> None:
     for branch in branches:
         result = env.run_command(["git", "branch", "--list", branch], cwd=repo_path)

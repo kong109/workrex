@@ -1,9 +1,5 @@
-//! Remote workspaces from the laptop: creation, the local window that
-//! relays them, re-opening, closing and removal.
-//!
-//! The node owns a workspace and its running panes. The laptop keeps a
-//! record of it (see [`super::cache`]) and a window whose panes each run
-//! `workmux remote attach`; closing that window only detaches.
+//! Create, reopen and remove remote workspaces whose native Rex sessions live on the node.
+//! The laptop owns workspace records; Rex.app connects directly to the remote server.
 
 use crate::bin_name::BIN;
 use std::fs;
@@ -11,10 +7,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use super::transfer::TRANSFER_LIMIT;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 
 use super::RemoteSpec;
-use super::cache::{self, ExecutionRecord, LayoutPane, WorkspaceRecord, WorkspaceState};
+use super::cache::{self, ExecutionRecord, WorkspaceRecord, WorkspaceState};
 use super::client::{Node, error_code};
 use super::portable::Portable;
 use super::protocol::{
@@ -22,10 +18,9 @@ use super::protocol::{
     RemoveRequest, RemoveResponse, StartRequest, StartResponse, WorkspaceIdentity, code,
 };
 use crate::cmd::Cmd;
-use crate::config::{Config, ConfigLocation, MuxMode};
-use crate::multiplexer::{CreateWindowParams, Multiplexer, WindowOwnershipRecord, WindowTarget};
+use crate::config::{Config, ConfigLocation};
+use crate::multiplexer::Multiplexer;
 use crate::prompt::Prompt;
-use crate::shell::shell_quote;
 use crate::workflow::{SetupOptions, WorkflowContext};
 
 pub struct CreateRequest<'a> {
@@ -50,7 +45,9 @@ pub fn create(
 ) -> Result<WorkspaceRecord> {
     let config = &context.config;
     if config.windows.is_some() {
-        bail!("'windows' configuration needs session mode, which remote agents do not support");
+        bail!(
+            "remote workspaces currently support one Rex window; configure panes instead of windows"
+        );
     }
     if let Some(panes) = &config.panes {
         crate::config::validate_panes_config(panes)?;
@@ -58,7 +55,7 @@ pub fn create(
     context.ensure_mux_running()?;
     let project_root = crate::util::canon_or_self(&context.main_worktree_root);
 
-    let mut handle = request.handle.to_string();
+    let handle = request.handle.to_string();
     let resume = match cache::claimed(&project_root, &handle, request.branch) {
         Some(record)
             if record.branch == request.branch
@@ -83,65 +80,22 @@ pub fn create(
             record.handle,
             record.remote
         ),
-        None => {
-            // Local add's rule for a window name another repository holds:
-            // an implicit name gets this project's suffix.
-            if !request.explicit_name
-                && window_name_taken(
-                    context.mux.as_ref(),
-                    &crate::multiplexer::util::prefixed(&context.prefix, &handle),
-                    request.options.window_session_name.as_deref(),
-                )?
-                && !crate::git::worktree_exists_in(request.branch, Some(&context.execution_dir))?
-            {
-                let suffixed = crate::workflow::project_suffixed_handle(context, &handle);
-                eprintln!(
-                    "{BIN}: window '{}' exists in another repository, using '{}'",
-                    crate::multiplexer::util::prefixed(&context.prefix, &handle),
-                    crate::multiplexer::util::prefixed(&context.prefix, &suffixed)
-                );
-                handle = suffixed;
-                if let Some(record) = cache::claimed(&project_root, &handle, request.branch) {
-                    bail!(
-                        "'{}' already exists as a remote workspace on '{}'. Use `{BIN} open \
-                         {}`, or pick another name with --name",
-                        record.handle,
-                        record.remote,
-                        record.handle
-                    );
-                }
-            }
-            None
-        }
+        None => None,
     };
-    let window_session = match &resume {
-        Some(record) => {
-            if let Some(requested) = &request.options.window_session_name
-                && record.window_session.as_ref() != Some(requested)
-            {
-                bail!(
-                    "Cannot change --parent-session while resuming remote workspace '{}'",
-                    record.handle
-                );
-            }
-            record.window_session.clone()
-        }
-        None => request.options.window_session_name.clone(),
-    };
+    if request.options.window_session_name.is_some() {
+        bail!(
+            "remote workspace sessions live on the node; --parent-session applies to local workspaces"
+        );
+    }
+    let window_session = None;
     let window_name = match &resume {
         Some(record) => record.window_name.clone(),
         None => crate::multiplexer::util::prefixed(&context.prefix, &handle),
     };
-    // Session mode: the relay window opens in a session named like it.
-    let window_session = window_session.or_else(|| {
-        (resume.is_none() && request.options.mode == MuxMode::Session).then(|| window_name.clone())
-    });
     if let Some(conflict) = local_conflict(
         context,
         request.branch,
         &handle,
-        &window_name,
-        window_session.as_deref(),
         resume.is_none(),
         "\nHint: use --name to pick another name.",
     )? {
@@ -208,6 +162,10 @@ pub fn create(
     };
 
     record.window_session = window_session;
+    record.local_config = Some(crate::frozen_config::snapshot_document(
+        config,
+        request.location,
+    )?);
     let node = Node::connect(spec)?;
     super::homecoming::finish_pending(&node, &record.ws_id);
     super::observe::adopt_on(&node);
@@ -346,7 +304,6 @@ pub fn create(
         )
     })?;
 
-    open_window(context, &record, request.options.focus_window)?;
     if let Some(rex) = record.execution.as_ref().and_then(|ex| ex.rex.as_ref()) {
         println!(
             "Agent terminal hosted on Rex at {}; Rex.app lists it there (`{BIN} open {}` \
@@ -357,16 +314,12 @@ pub fn create(
     Ok(record)
 }
 
-/// Why a new remote workspace cannot take `branch`, `handle` and
-/// `window_name` on this laptop: a local worktree uses them (checked with
-/// `worktrees`) or a window has the name. `hint` follows the messages about
-/// the handle.
+/// A local worktree using this branch or handle prevents creating a remote
+/// workspace with the same identity. Native sessions have their own namespace.
 pub(super) fn local_conflict(
     context: &WorkflowContext,
     branch: &str,
     handle: &str,
-    window_name: &str,
-    window_session: Option<&str>,
     worktrees: bool,
     hint: &str,
 ) -> Result<Option<String>> {
@@ -381,72 +334,7 @@ pub(super) fn local_conflict(
             "A local worktree named '{handle}' already exists.{hint}"
         )));
     }
-    if window_name_taken(context.mux.as_ref(), window_name, window_session)? {
-        return Ok(Some(format!(
-            "A {} window named '{window_name}' already exists.{hint}",
-            context.mux.name()
-        )));
-    }
     Ok(None)
-}
-
-/// Exact name matches in the destination scope, retaining linked session membership.
-fn matching_windows(
-    mux: &dyn Multiplexer,
-    name: &str,
-    session: Option<&str>,
-) -> Result<Vec<WindowOwnershipRecord>> {
-    if !mux.is_running()? {
-        return Ok(Vec::new());
-    }
-    Ok(mux
-        .window_ownership_records()?
-        .into_iter()
-        .filter(|window| {
-            window.window_name == name
-                && session.is_none_or(|session| window.session_name == session)
-        })
-        .collect())
-}
-
-/// Whether the name is occupied in the destination or would make an existing
-/// implicit remote workspace's server-wide lookup ambiguous.
-fn window_name_taken(mux: &dyn Multiplexer, name: &str, session: Option<&str>) -> Result<bool> {
-    let windows = matching_windows(mux, name, None)?;
-    Ok(windows
-        .iter()
-        .any(|window| session.is_none_or(|session| window.session_name == session))
-        || (!windows.is_empty()
-            && cache::all()
-                .iter()
-                .any(|record| record.window_session.is_none() && record.window_name == name)))
-}
-
-/// Resolve an exact remote relay name to a live window ID. Never choose between
-/// different windows with the same name; linked windows count only once.
-pub(crate) fn window_target(
-    mux: &dyn Multiplexer,
-    record: &WorkspaceRecord,
-) -> Result<Option<WindowTarget>> {
-    let mut target: Option<WindowTarget> = None;
-    for window in matching_windows(mux, &record.window_name, record.window_session.as_deref())? {
-        if let Some(found) = &target {
-            if found.window_id.as_ref() != Some(&window.window_id) {
-                bail!(
-                    "Ambiguous tmux window '{}' for remote workspace '{}'; more than one exact match",
-                    record.window_name,
-                    record.handle
-                );
-            }
-        } else {
-            target = Some(WindowTarget::with_id(
-                window.window_name,
-                Some(window.session_name),
-                window.window_id,
-            ));
-        }
-    }
-    Ok(target)
 }
 
 /// Start the workspace's execution, or rejoin the running one, and record
@@ -478,6 +366,7 @@ fn start_execution(
     });
     record.observed();
     record.save()?;
+    super::observe::ensure_background(&node.spec, &record.project_root)?;
     Ok(started)
 }
 
@@ -535,7 +424,7 @@ pub(super) fn explain(spec: &RemoteSpec, err: anyhow::Error) -> anyhow::Error {
             spec.name, spec.name
         )),
         Some(code::BUSY) => err.context(format!(
-            "Another workmux command is working on this workspace on '{}'",
+            "Another workrex command is working on this workspace on '{}'",
             spec.name
         )),
         _ => err.context(format!("remote '{}'", spec.name)),
@@ -712,199 +601,28 @@ fn collect_tree(
     Ok(())
 }
 
-/// Command a window pane runs to relay pane `index` of `ex_id`.
-fn attach_command_line(remote: &str, ex_id: &str, index: usize) -> Result<String> {
-    let exe = std::env::current_exe().context("Failed to locate the workmux binary")?;
-    Ok(attach_command(
-        &exe.to_string_lossy(),
-        remote,
-        ex_id,
-        index,
-        |name| std::env::var_os(name),
-    ))
-}
-
-fn attach_command(
-    exe: &str,
-    remote: &str,
-    ex_id: &str,
-    index: usize,
-    var: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> String {
-    let mut env: Vec<String> = Vec::new();
-    if var(super::transport::LOOPBACK_ENV).is_some_and(|v| v == "1") {
-        env.push(format!("{}=1", super::transport::LOOPBACK_ENV));
-    }
-    // Rex panes start with the Rex server's environment, which need not
-    // locate the config and state this command used.
-    for name in ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] {
-        if let Some(value) = var(name) {
-            env.push(format!("{name}={}", shell_quote(&value.to_string_lossy())));
-        }
-    }
-    let env = if env.is_empty() {
-        String::new()
-    } else {
-        format!("env {} ", env.join(" "))
-    };
-    format!(
-        "{env}{} remote attach {} {ex_id} --pane {index}",
-        shell_quote(exe),
-        shell_quote(remote)
-    )
-}
-
-/// Create the window for `record`'s execution: one pane per remote session,
-/// split, sized, named and focused as configured.
-pub fn open_window(context: &WorkflowContext, record: &WorkspaceRecord, focus: bool) -> Result<()> {
-    let placement = if record.window_session.is_some() {
-        None
-    } else {
-        context
-            .mux
-            .resolve_window_placement_target(context.config.window_placement())?
-    };
-    open_window_after(context, record, focus, placement.as_deref())
-}
-
-/// [`open_window`], placed after the tmux window `after`.
-pub(super) fn open_window_after(
-    context: &WorkflowContext,
-    record: &WorkspaceRecord,
-    focus: bool,
-    after: Option<&str>,
-) -> Result<()> {
-    let mux = context.mux.as_ref();
-    let execution = record.execution.as_ref().ok_or_else(|| {
-        anyhow!(
-            "remote workspace '{}' on '{}' has no running agent; run `{BIN} open {}`",
-            record.handle,
-            record.remote,
-            record.handle
-        )
-    })?;
-    // Rex.app shows the node's Rex server directly; there is nothing to relay.
-    if execution.rex.is_some() {
-        return Ok(());
-    }
-    let layout: Vec<&LayoutPane> = record
-        .layout
-        .iter()
-        .filter(|pane| execution.panes.contains(&pane.index))
-        .collect();
-
-    let cwd = &context.main_worktree_root;
-    let first = if let Some(session) = record.window_session.as_deref().filter(|_| after.is_none())
-    {
-        crate::multiplexer::util::create_window_in_parent_session(
-            mux,
-            session,
-            &record.window_name,
-            cwd,
-        )?
-    } else {
-        mux.create_window(CreateWindowParams {
-            prefix: "",
-            name: &record.window_name,
-            cwd,
-            after_window: after,
-        })
-        .context("Failed to create window")?
-    };
-
-    let mut pane_ids: Vec<String> = Vec::new();
-    let mut focus_pane = None;
-    let mut zoom_pane = None;
-    for (n, planned) in layout.iter().enumerate() {
-        let command = attach_command_line(&record.remote, &execution.ex_id, planned.index)?;
-        let pane = &planned.pane;
-        let pane_id = if n == 0 {
-            mux.respawn_pane(&first, cwd, Some(&command))?
-        } else {
-            let direction = pane
-                .split
-                .as_ref()
-                .unwrap_or(&crate::config::SplitDirection::Horizontal);
-            let target_index = pane.target.unwrap_or(pane_ids.len() - 1);
-            let target = pane_ids
-                .get(target_index)
-                .ok_or_else(|| anyhow!("Invalid target pane index: {target_index}"))?;
-            mux.split_pane(
-                target,
-                direction,
-                cwd,
-                pane.size,
-                pane.percentage,
-                Some(&command),
-            )?
-        };
-        if let Some(name) = pane.name.as_deref() {
-            let _ = mux.set_pane_name(&pane_id, name);
-        }
-        if pane.focus || pane.zoom {
-            focus_pane = Some(pane_id.clone());
-        }
-        if pane.zoom {
-            zoom_pane = Some(pane_id.clone());
-        }
-        pane_ids.push(pane_id);
-    }
-
-    if focus {
-        mux.select_pane(focus_pane.as_deref().unwrap_or(&pane_ids[0]))?;
-        if record.window_session.is_none() || after.is_some() {
-            mux.select_window("", &record.window_name)?;
-        }
-    }
-    if let Some(zoom) = zoom_pane {
-        mux.zoom_pane(&zoom)?;
-    }
-    Ok(())
-}
-
-/// `workmux open` of a remote workspace: focus its window, or start (or
-/// rejoin) its execution and build the window again. A window whose
-/// execution may have ended (the remote said so, or is not seen) is checked
-/// with the node first, and replaced when the execution starts again. A
-/// merged workspace only has its removal finished.
+/// Show the recorded native session, or ask its node to restart an execution
+/// whose configured blocks have closed. An unavailable server leaves ownership
+/// intact and returns an error. Merged workspaces finish their pending removal.
 pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool) -> Result<()> {
+    if record.local_config.is_none() {
+        record.local_config = Some(crate::frozen_config::snapshot_document(
+            &context.config,
+            None,
+        )?);
+        record.save()?;
+    }
+    let (config, _) = record.creator_config()?;
+    let spec = RemoteSpec::resolve(&config, &record.remote)?;
     if record.cleanup_pending() {
-        let config = Config::load(None)?;
-        let spec = RemoteSpec::resolve(&config, &record.remote)?;
         let node = super::homecoming::connect_for_cleanup(&spec, &record)?;
         return super::homecoming::finish_cleanup(&node, record);
     }
-    let mux = context.mux.as_ref();
-    let switch = |record: &WorkspaceRecord| -> Result<()> {
-        if focus && let Some(target) = window_target(mux, record)? {
-            mux.select_window_target(&target)?;
-        }
-        println!("✓ Switched to remote workspace '{}'", record.handle);
-        Ok(())
-    };
-    let target = window_target(mux, &record)?;
-    let window = target.is_some();
-    let observed = super::observe::load_connected(&record.remote);
-    let observed = observed
-        .as_ref()
-        .and_then(|observation| observation.of(&record));
-    let ended = observed.map(|workspace| workspace.ended.is_some());
-    let stale = ended.unwrap_or(window);
-    if window && !stale {
-        return switch(&record);
+    if record.execution.is_some() {
+        super::observe::ensure_background(&spec, &record.project_root)?;
     }
-    let on_rex = |record: &WorkspaceRecord| {
-        record
-            .execution
-            .as_ref()
-            .is_some_and(|execution| execution.rex.is_some())
-    };
-    // A replaced Rex server ends no execution, but leaves its panes dead.
-    if on_rex(&record)
-        && observed.is_some_and(|ws| ws.ended.is_none() && ws.panes.iter().any(|pane| pane.alive))
-        && !super::rex_jump::session_gone(&record)
-    {
-        return show_on_rex(&record, focus);
+    if super::rex_jump::is_open(&record)? {
+        return show_on_rex(&config, &record, focus);
     }
     if record.state != WorkspaceState::Ready {
         bail!(
@@ -916,60 +634,22 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
             record.handle
         );
     }
-    let config = Config::load(None)?;
-    let spec = RemoteSpec::resolve(&config, &record.remote)?;
-    let node = match Node::connect(&spec) {
-        Ok(node) => node,
-        Err(err) if window => {
-            tracing::debug!(remote = %spec.name, "open: remote not reachable: {err:#}");
-            return switch(&record);
-        }
-        Err(err) => {
-            return Err(err.context(format!(
-                "Cannot reach '{}' to open '{}'",
-                spec.name, record.handle
-            )));
-        }
-    };
+    let node = Node::connect(&spec)
+        .with_context(|| format!("Cannot reach '{}' to open '{}'", spec.name, record.handle))?;
     super::homecoming::finish_pending(&node, &record.ws_id);
-    // Observing adopts siblings, which may open this window meanwhile,
-    // through a backend of its own, so this one's earlier reads predate it.
     super::observe::adopt_on(&node);
-    mux.forget_reads();
-    if !window && window_target(mux, &record)?.is_some() {
-        return switch(&record);
-    }
-    let previous = record
-        .execution
-        .as_ref()
-        .map(|execution| execution.ex_id.clone());
     let started = start_execution(&node, &mut record, false, true)?;
-    if let Some(target) = &target {
-        let current = record.execution.as_ref().map(|execution| &execution.ex_id);
-        if started.reused && current == previous.as_ref() {
-            return switch(&record);
-        }
-        mux.kill_window_target(target)
-            .context("Failed to close the window of the ended execution")?;
-        forget_attachments(&record);
-    }
-    open_window(context, &record, focus)?;
     if record.window_pending {
         record.window_pending = false;
         record.save()?;
     }
-    if on_rex(&record) && started.reused {
-        return show_on_rex(&record, focus);
-    }
-    if on_rex(&record) && focus {
-        warn_unshown(&record);
-    }
     if started.reused {
-        println!(
-            "✓ Attached to the running agent of '{}' on '{}'",
-            record.handle, record.remote
-        );
-    } else if started.continued {
+        return show_on_rex(&config, &record, focus);
+    }
+    if focus && let Err(error) = super::rex_jump::select(&config, &record) {
+        eprintln!("warning: {error:#}");
+    }
+    if started.continued {
         println!(
             "✓ Resumed '{}' on '{}' after the host rebooted; the agent continues its \
              last conversation",
@@ -991,51 +671,22 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
 }
 
 /// Select a Rex-hosted workspace's session on Rex.app.
-fn show_on_rex(record: &WorkspaceRecord, focus: bool) -> Result<()> {
+fn show_on_rex(config: &Config, record: &WorkspaceRecord, focus: bool) -> Result<()> {
     if focus {
-        let config = Config::load(None)?;
-        super::rex_jump::select(&config, record)?;
+        super::rex_jump::select(config, record)?;
     }
     println!("✓ Switched to remote workspace '{}' on Rex", record.handle);
     Ok(())
 }
 
-fn warn_unshown(record: &WorkspaceRecord) {
-    let shown = Config::load(None).and_then(|config| super::rex_jump::select(&config, record));
-    if let Err(err) = shown {
-        eprintln!("warning: {err:#}");
-    }
-}
-
-/// `workmux close` of a remote workspace: the window goes, the remote
-/// sessions keep running.
-pub fn close(mux: &dyn Multiplexer, record: &WorkspaceRecord) -> Result<()> {
-    if let Some(rex) = record.execution.as_ref().and_then(|ex| ex.rex.as_ref()) {
-        bail!(
-            "Remote workspace '{}' has no local window: its agent terminal is on Rex at {} \
-             (`{BIN} remove {}` to end it)",
-            record.handle,
-            rex.host_label,
-            record.handle
-        );
-    }
-    let Some(target) = window_target(mux, record)? else {
-        bail!(
-            "No open window for remote workspace '{}' on '{}'",
-            record.handle,
-            record.remote
-        );
-    };
-    mux.kill_window_target(&target)
-        .context("Failed to close window")?;
-    drop_emptied_session(mux, record);
-    forget_attachments(record);
-    println!(
-        "✓ Closed the window of '{}'; its agent keeps running on '{}' (`{BIN} open {}` \
-         to return)",
-        record.handle, record.remote, record.handle
-    );
-    Ok(())
+/// Rex has no detach action; session close would terminate the agent.
+pub fn close(_mux: &dyn Multiplexer, record: &WorkspaceRecord) -> Result<()> {
+    bail!(
+        "Remote workspace '{}' runs in Rex; select another Rex session to leave its agent running, \
+        or run `{BIN} remove {}` to end it",
+        record.handle,
+        record.handle
+    )
 }
 
 pub struct RemoveOptions {
@@ -1064,12 +715,12 @@ impl RemovalBatch {
         }
     }
 
-    /// `workmux remove` of a remote workspace, with the checks a local remove
+    /// `workrex remove` of a remote workspace, with the checks a local remove
     /// makes: uncommitted work refuses and unmerged commits ask, unless
     /// `--force`. `--keep-branch` brings the branch to the laptop. Local state
     /// goes only after the node acknowledges, except that `--force` forgets a
     /// workspace whose remote is unconfigured or unreachable. The caller closes
-    /// the relay after all removals and their output have finished.
+    /// obsolete local attachment state after removal finishes.
     pub fn remove(&mut self, mut record: WorkspaceRecord, options: RemoveOptions) -> Result<()> {
         if record
             .homecoming
@@ -1089,7 +740,7 @@ impl RemovalBatch {
         }
         let forget = |record: &WorkspaceRecord, reason: anyhow::Error| -> Result<()> {
             record.delete()?;
-            forget_attachments(record);
+            forget_agent_state(record);
             eprintln!(
                 "{BIN}: forgot remote workspace '{}' without contacting '{}' ({reason:#}); \
              its worktree and agent may remain there (`{BIN} remote gc {}` removes them)",
@@ -1180,7 +831,7 @@ impl RemovalBatch {
         }
         super::homecoming::forget_fetched(&record);
         record.delete()?;
-        forget_attachments(&record);
+        forget_agent_state(&record);
         println!(
             "✓ Removed remote workspace '{}' from '{}'",
             record.handle, record.remote
@@ -1363,55 +1014,19 @@ fn keep_branch_locally(record: &WorkspaceRecord, head: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn forget_locally(mux: &dyn Multiplexer, record: &WorkspaceRecord) -> Result<()> {
+pub(super) fn forget_locally(record: &WorkspaceRecord) -> Result<()> {
     record.delete()?;
-    close_relay(mux, record);
+    forget_agent_state(record);
     Ok(())
 }
 
-/// Close the workspace's local window and forget its panes.
-pub(crate) fn close_relay(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
-    use std::io::Write;
-
-    forget_attachments(record);
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().flush();
-    match window_target(mux, record) {
-        Ok(Some(target)) => {
-            let _ = mux.kill_window_target(&target);
-        }
-        Ok(None) => {}
-        Err(err) => {
-            tracing::warn!(handle = %record.handle, "could not resolve relay window: {err:#}")
-        }
-    }
-    drop_emptied_session(mux, record);
-}
-
-/// tmux ends a session with its last window; Rex keeps it, empty. The
-/// relay's window may also have closed itself when its remote session ended,
-/// after this process last read the session.
-pub(crate) fn drop_emptied_session(mux: &dyn Multiplexer, record: &WorkspaceRecord) {
-    let Some(session) = record.window_session.as_deref() else {
-        return;
-    };
-    mux.forget_reads();
-    let emptied = mux.session_exists(session).unwrap_or(false)
-        && mux
-            .get_window_names_in_session(session)
-            .is_ok_and(|names| names.is_empty());
-    if emptied && let Err(err) = mux.kill_session(session) {
-        tracing::warn!(handle = %record.handle, "could not close emptied session: {err:#}");
-    }
-}
-
-/// Drop the state of the closed window's panes now, so a later server
-/// restart cannot bring the window back through `resurrect`.
-fn forget_attachments(record: &WorkspaceRecord) {
+/// Remove persisted agent state for this exact remote workspace, so a later
+/// server restart cannot resurrect its old rows.
+pub(crate) fn forget_agent_state(record: &WorkspaceRecord) {
     let result = crate::state::StateStore::new()
         .and_then(|store| store.delete_remote_attachments(&record.remote, &record.ws_id));
     if let Err(err) = result {
-        tracing::warn!(handle = %record.handle, "failed to forget attach panes: {err:#}");
+        tracing::warn!(handle = %record.handle, "failed to forget remote agent state: {err:#}");
     }
 }
 
@@ -1499,28 +1114,5 @@ mod transfer_tests {
                 assert!(payload.len() > 46_000_000);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod attach_tests {
-    use super::*;
-
-    #[test]
-    fn relay_command_carries_the_config_and_state_dirs() {
-        let command = attach_command("/opt/bin/workrex", "winbox", "x1", 0, |name| match name {
-            "XDG_CONFIG_HOME" => Some("/home/me/my config".into()),
-            "XDG_STATE_HOME" => Some("/home/me/state".into()),
-            _ => None,
-        });
-        assert_eq!(
-            command,
-            "env XDG_CONFIG_HOME='/home/me/my config' XDG_STATE_HOME=/home/me/state \
-             /opt/bin/workrex remote attach winbox x1 --pane 0"
-        );
-        assert_eq!(
-            attach_command("/opt/bin/workrex", "winbox", "x1", 2, |_| None),
-            "/opt/bin/workrex remote attach winbox x1 --pane 2"
-        );
     }
 }

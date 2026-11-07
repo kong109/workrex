@@ -17,7 +17,7 @@ curl -fsSL https://claude.ai/install.sh | bash
 
 # Symlink Claude config from mounted state directory (seeded from host)
 # This preserves onboarding state, tips history, etc. across VM recreations
-ln -sfn "$HOME/.workmux-state/.claude.json" "$HOME/.claude.json"
+ln -sfn "$HOME/.workrex-state/.claude.json" "$HOME/.claude.json"
 "#
         .to_string(),
 
@@ -200,9 +200,9 @@ apt-get install -y --no-install-recommends curl ca-certificates git xz-utils
 # Ensure host-exec shim directory is on PATH for login shells.
 # Agents like Codex run commands via login shell (bash -lc) which sources
 # /etc/profile, resetting PATH and losing the shim directory.
-cat > /etc/profile.d/workmux-shims.sh <<'PROFILESCRIPT'
-if [ -d "$HOME/.workmux-state/shims/bin" ]; then
-    PATH="$HOME/.workmux-state/shims/bin:$PATH"
+cat > /etc/profile.d/workrex-shims.sh <<'PROFILESCRIPT'
+if [ -d "$HOME/.workrex-state/shims/bin" ]; then
+    PATH="$HOME/.workrex-state/shims/bin:$PATH"
     export PATH
 fi
 PROFILESCRIPT
@@ -247,7 +247,7 @@ fi
             r#"#!/bin/bash
 set -eux
 {agent_install}
-curl -fsSL https://raw.githubusercontent.com/raine/workmux/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/kong109/workrex/main/scripts/install.sh | bash
 # Ensure ~/.local/bin is on PATH for non-interactive shells
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.profile
 {nix_devbox_install}"#
@@ -359,10 +359,10 @@ mod tests {
         assert!(yaml.contains("git"));
         assert!(yaml.contains("xz-utils"));
 
-        // User provision installs Claude Code and workmux
+        // User provision installs Claude Code and workrex
         assert!(yaml.contains("mode: user"));
         assert!(yaml.contains("claude.ai/install.sh"));
-        assert!(yaml.contains("workmux/main/scripts/install.sh"));
+        assert!(yaml.contains("workrex/main/scripts/install.sh"));
 
         // User provision installs Nix and Devbox
         assert!(yaml.contains("install.determinate.systems/nix"));
@@ -370,7 +370,7 @@ mod tests {
 
         // User provision symlinks Claude config from state directory
         assert!(
-            yaml.contains(r#"ln -sfn "$HOME/.workmux-state/.claude.json" "$HOME/.claude.json""#)
+            yaml.contains(r#"ln -sfn "$HOME/.workrex-state/.claude.json" "$HOME/.claude.json""#)
         );
     }
 
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn test_generate_lima_config_custom_image() {
         let sandbox_config = SandboxConfig {
-            image: Some("file:///Users/me/.lima/images/workmux-golden.qcow2".to_string()),
+            image: Some("file:///Users/me/.lima/images/workrex-golden.qcow2".to_string()),
             ..Default::default()
         };
         let yaml = generate_test_yaml(&sandbox_config, "claude", true);
@@ -419,7 +419,7 @@ mod tests {
         let image = parsed.first_image();
         assert_eq!(
             image["location"].as_str().unwrap(),
-            "file:///Users/me/.lima/images/workmux-golden.qcow2"
+            "file:///Users/me/.lima/images/workrex-golden.qcow2"
         );
         // Custom images should not have arch set (user provides arch-appropriate image)
         assert!(image["arch"].is_null());
@@ -533,7 +533,7 @@ mod tests {
         assert!(!yaml.contains(".claude.json"));
 
         // Common infrastructure should still be present
-        assert!(yaml.contains("workmux/main/scripts/install.sh"));
+        assert!(yaml.contains("workrex/main/scripts/install.sh"));
         assert!(yaml.contains("install.determinate.systems/nix"));
         assert!(yaml.contains("get.jetify.com/devbox"));
     }
@@ -604,7 +604,7 @@ mod tests {
         assert!(!yaml.contains("claude.ai/install.sh"));
 
         // Common infrastructure should still be present
-        assert!(yaml.contains("workmux/main/scripts/install.sh"));
+        assert!(yaml.contains("workrex/main/scripts/install.sh"));
     }
 
     #[test]
@@ -616,7 +616,7 @@ mod tests {
 
         // Claude agent should include config symlink
         assert!(
-            yaml.contains(r#"ln -sfn "$HOME/.workmux-state/.claude.json" "$HOME/.claude.json""#)
+            yaml.contains(r#"ln -sfn "$HOME/.workrex-state/.claude.json" "$HOME/.claude.json""#)
         );
     }
 
@@ -631,9 +631,9 @@ mod tests {
         assert!(!yaml.contains("install.determinate.systems/nix"));
         assert!(!yaml.contains("get.jetify.com/devbox"));
 
-        // Should still install agent and workmux
+        // Should still install agent and workrex
         assert!(yaml.contains("claude.ai/install.sh"));
-        assert!(yaml.contains("workmux/main/scripts/install.sh"));
+        assert!(yaml.contains("workrex/main/scripts/install.sh"));
     }
 
     #[test]

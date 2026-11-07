@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn unavailable_lifecycle_hook_executable_is_named_in_error() {
-        let hook_shell = vec!["/workmux/missing/hook-shell".to_string(), "-c".to_string()];
+        let hook_shell = vec!["/workrex/missing/hook-shell".to_string(), "-c".to_string()];
         let error = shell_command_with_env(
             Some(&hook_shell),
             "true",
@@ -264,6 +264,6 @@ mod tests {
         .unwrap_err()
         .to_string();
 
-        assert!(error.contains("/workmux/missing/hook-shell"));
+        assert!(error.contains("/workrex/missing/hook-shell"));
     }
 }

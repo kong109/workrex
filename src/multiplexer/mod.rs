@@ -1,22 +1,14 @@
-//! Multiplexer abstraction layer for terminal multiplexer backends.
-//!
-//! This module provides a trait-based abstraction that allows workmux to work
-//! with different terminal multiplexers (tmux, WezTerm) interchangeably.
+//! Rex terminal operations shared by Workrex workflows.
 
 pub mod agent;
 pub mod conversation;
 pub mod handle;
 pub mod handshake;
-pub mod kitty;
 pub mod rex;
 mod sidebar_host;
-pub mod tmux;
 pub mod types;
 pub mod util;
-pub mod wezterm;
-pub mod zellij;
 
-use crate::bin_name::BIN;
 use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -27,39 +19,67 @@ use std::time::Duration;
 pub use handle::MuxHandle;
 pub use handshake::PaneHandshake;
 pub(crate) use sidebar_host::*;
-pub use tmux::TmuxBackend;
 pub use types::*;
 
 use crate::config::{Config, PaneConfig, SplitDirection, WindowPlacement};
+use util::EnvSyntax;
 
-pub const STATUS_TARGET_BACKEND_ENV: &str = "WORKMUX_STATUS_BACKEND";
-pub const STATUS_TARGET_INSTANCE_ENV: &str = "WORKMUX_STATUS_INSTANCE";
-pub const STATUS_TARGET_PANE_ENV: &str = "WORKMUX_STATUS_PANE_ID";
+pub const STATUS_TARGET_BACKEND_ENV: &str = "WORKREX_STATUS_BACKEND";
+pub const STATUS_TARGET_INSTANCE_ENV: &str = "WORKREX_STATUS_INSTANCE";
+pub const STATUS_TARGET_PANE_ENV: &str = "WORKREX_STATUS_PANE_ID";
 
-/// A shell statement that puts `dir` first on the pane shell's `PATH`.
-fn export_path_prefix(dir: &Path) -> String {
-    format!(
-        "export PATH={}:\"$PATH\"",
-        agent::shell_quote(&dir.to_string_lossy())
-    )
+/// The line typed into a pane's `shell` to run `command`. A node's pane
+/// first puts `path_prefix` first on `PATH`, and with `clear_screen` clears
+/// the screen and scrollback the line was typed into. The leading space
+/// keeps that line out of shell history where the shell honors it.
+fn pane_line(
+    shell: &str,
+    command: String,
+    path_prefix: Option<&Path>,
+    clear_screen: bool,
+) -> String {
+    let command = match path_prefix {
+        Some(dir) => format!("{}; {command}", EnvSyntax::of(shell).prepend_path(dir)),
+        None => command,
+    };
+    if clear_screen {
+        format!(" printf '\\033[H\\033[2J\\033[3J'; {command}")
+    } else {
+        command
+    }
 }
 
+/// Prefix `command` with statements that set the status target in the
+/// pane's `shell`. A statement, rather than an `env` prefix, keeps the
+/// command's first word subject to the shell's aliases. A shell with no
+/// known statement gets the `env` prefix.
 fn command_with_status_target(
     command: &str,
+    shell: &str,
     backend: &str,
     instance: &str,
     pane_id: &str,
 ) -> String {
-    format!(
-        "env {}={} {}={} {}={} {}",
-        STATUS_TARGET_BACKEND_ENV,
-        agent::shell_quote(backend),
-        STATUS_TARGET_INSTANCE_ENV,
-        agent::shell_quote(instance),
-        STATUS_TARGET_PANE_ENV,
-        agent::shell_quote(pane_id),
-        command
-    )
+    let vars = [
+        (STATUS_TARGET_BACKEND_ENV, backend),
+        (STATUS_TARGET_INSTANCE_ENV, instance),
+        (STATUS_TARGET_PANE_ENV, pane_id),
+    ];
+    let syntax = EnvSyntax::of(shell);
+    let statements: Option<Vec<String>> = vars
+        .iter()
+        .map(|(name, value)| syntax.set(name, value))
+        .collect();
+    match statements {
+        Some(statements) => format!("{}; {command}", statements.join("; ")),
+        None => {
+            let assignments: Vec<String> = vars
+                .iter()
+                .map(|(name, value)| format!("{name}={}", crate::shell::shell_quote(value)))
+                .collect();
+            format!("env {} {command}", assignments.join(" "))
+        }
+    }
 }
 
 fn adoption_targets(
@@ -128,11 +148,11 @@ fn adoption_targets(
     candidates
 }
 
-/// Main trait for terminal multiplexer backends.
+/// Rex terminal operations used by workflows and deterministic test fakes.
 ///
 /// Implementations must be Send + Sync to allow sharing via Arc<dyn Multiplexer>.
 pub trait Multiplexer: Send + Sync {
-    /// Returns the name of this backend (e.g., "tmux", "wezterm")
+    /// Returns `rex`.
     fn name(&self) -> &'static str;
 
     // === Server/Session ===
@@ -182,7 +202,7 @@ pub trait Multiplexer: Send + Sync {
         ))
     }
 
-    /// Get the current pane ID from environment (TMUX_PANE or WEZTERM_PANE)
+    /// Get the current Rex block ID from REX_BLOCK
     fn current_pane_id(&self) -> Option<String>;
 
     /// Query the active pane ID directly from the multiplexer.
@@ -196,17 +216,15 @@ pub trait Multiplexer: Send + Sync {
     // === Window/Tab Management ===
 
     /// Create a new window/tab with the given parameters.
-    /// Returns: Window identifier (pane ID for tmux/WezTerm, tab name for Zellij)
+    /// Returns the immutable block ID of the new Rex window.
     fn create_window(&self, params: CreateWindowParams) -> Result<String>;
 
     /// Create a new session with the given parameters.
     /// Returns the initial pane ID of the new session.
-    /// For backends that don't support sessions (e.g., WezTerm), this may create a workspace.
     fn create_session(&self, params: CreateSessionParams) -> Result<String>;
 
     /// Create a new window within an existing session.
     /// Returns the pane ID of the new window's initial pane.
-    /// Only supported by backends with session support (tmux).
     fn create_window_in_session(&self, params: CreateWindowInSessionParams) -> Result<String> {
         let _ = params;
         Err(anyhow!(
@@ -267,8 +285,7 @@ pub trait Multiplexer: Send + Sync {
     }
 
     /// Switch to a session by prefix and name.
-    /// For tmux, this switches the client to the session.
-    /// For WezTerm, this may switch to a workspace.
+    /// Rex.app selects the requested session.
     fn switch_to_session(&self, prefix: &str, name: &str) -> Result<()>;
 
     /// Drop any reads this backend keeps for reuse, so the next read sees a
@@ -301,7 +318,7 @@ pub trait Multiplexer: Send + Sync {
     /// Rename a window from its full name to a new full name.
     ///
     /// Default implementation returns an error. Backends that support
-    /// rename (tmux) override this.
+    /// rename (rex) override this.
     fn rename_window(&self, old_full_name: &str, new_full_name: &str) -> Result<()> {
         let _ = (old_full_name, new_full_name);
         Err(anyhow!(
@@ -321,7 +338,7 @@ pub trait Multiplexer: Send + Sync {
     /// Rename a session from its full name to a new full name.
     ///
     /// Default implementation returns an error. Backends that support
-    /// rename (tmux) override this.
+    /// rename (rex) override this.
     fn rename_session(&self, old_full_name: &str, new_full_name: &str) -> Result<()> {
         let _ = (old_full_name, new_full_name);
         Err(anyhow!(
@@ -365,7 +382,7 @@ pub trait Multiplexer: Send + Sync {
     }
 
     /// Run a deferred script in the background (for cleanup operations).
-    /// For tmux, this uses `run-shell`. For other backends, may use different mechanisms.
+    /// For rex, this uses `run-shell`. For other backends, may use different mechanisms.
     fn run_deferred_script(&self, script: &str) -> Result<()>;
 
     /// Generate a shell command string to select/focus a window by full name.
@@ -503,20 +520,18 @@ pub trait Multiplexer: Send + Sync {
     fn select_pane(&self, pane_id: &str) -> Result<()>;
 
     /// Zoom (fullscreen) a pane by ID.
-    /// Only supported by tmux. Other backends silently ignore this.
+    /// Rex stores the zoomed block on its window.
     fn zoom_pane(&self, _pane_id: &str) -> Result<()> {
         Ok(())
     }
 
     /// Switch to a pane (may also switch windows/tabs as needed).
     ///
-    /// `window_hint` provides the window/tab name for backends that need it
-    /// (e.g., Zellij can't look up a pane by ID alone). Backends that can
-    /// switch by pane ID directly (tmux, WezTerm) ignore this parameter.
+    /// Rex resolves a block ID to its owning session and window.
     fn switch_to_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()>;
 
     /// Focuses the first pane of a session `add` just created for the
-    /// worktree `handle`. tmux moves the caller's client there. A backend
+    /// worktree `handle`. rex moves the caller's client there. A backend
     /// that cannot tell which session the user's view shows only focuses the
     /// pane in its session and returns a line that tells the user how to get
     /// there.
@@ -536,7 +551,7 @@ pub trait Multiplexer: Send + Sync {
     fn dashboard_quit(&self) {}
 
     /// Show a pane while the dashboard keeps the keyboard. Defaults to a
-    /// switch, which a tmux popup survives.
+    /// switch, which a rex popup survives.
     fn peek_pane(&self, pane_id: &str, window_hint: Option<&str>) -> Result<()> {
         self.switch_to_pane(pane_id, window_hint)
     }
@@ -593,7 +608,7 @@ pub trait Multiplexer: Send + Sync {
     }
 
     /// Whether this backend requires focusing a pane before sending input to it.
-    /// Defaults to false. Backends like Zellij that can't target unfocused panes
+    /// Defaults to false. Backends like Rex that can't target unfocused panes
     /// override this to return true.
     fn requires_focus_for_input(&self) -> bool {
         false
@@ -690,7 +705,7 @@ pub trait Multiplexer: Send + Sync {
     // === Pane Setup ===
 
     /// Split a pane, returning the new pane ID.
-    /// Returns: Pane identifier (accurate for tmux/WezTerm, tab name for Zellij)
+    /// Returns the immutable Rex block ID of the new split.
     fn split_pane(
         &self,
         target_pane_id: &str,
@@ -718,6 +733,7 @@ pub trait Multiplexer: Send + Sync {
     ) -> Result<PaneSetupResult> {
         if panes.is_empty() {
             return Ok(PaneSetupResult {
+                pane_ids: vec![initial_pane_id.to_string()],
                 focus_pane_id: initial_pane_id.to_string(),
                 zoom_pane_id: None,
             });
@@ -849,7 +865,7 @@ pub trait Multiplexer: Send + Sync {
                                 let vm_name = options.lima_vm_name.ok_or_else(|| {
                                     anyhow!(
                                         "Lima VM name missing despite sandbox wrap request. \
-                                         This is a bug in workmux."
+                                         This is a bug in workrex."
                                     )
                                 })?;
                                 crate::sandbox::wrap_for_lima(
@@ -879,25 +895,10 @@ pub trait Multiplexer: Send + Sync {
                     resolved.render_command()
                 };
 
-                let final_command = match options.path_prefix {
-                    Some(dir) => format!("{}; {final_command}", export_path_prefix(dir)),
-                    None => final_command,
-                };
-
-                // Only a node passes a supervisor. Its command lines name
-                // pinned binaries and supervisor arguments; clear the screen
-                // and scrollback they were typed into so the pane starts
-                // clean. The leading space keeps the line out of shell
-                // history where the shell honors that.
-                let final_command = if options.sandbox_supervisor.is_some() {
-                    format!(" printf '\\033[H\\033[2J\\033[3J'; {final_command}")
-                } else {
-                    final_command
-                };
-
-                let final_command = if is_agent_pane && self.name() == "zellij" {
+                let final_command = if is_agent_pane {
                     command_with_status_target(
                         &final_command,
+                        &shell,
                         self.name(),
                         &self.instance_id(),
                         &spawned_id,
@@ -905,6 +906,16 @@ pub trait Multiplexer: Send + Sync {
                 } else {
                     final_command
                 };
+
+                // Only a node passes a supervisor. Its command lines name
+                // pinned binaries and supervisor arguments, so the pane
+                // starts clean.
+                let final_command = pane_line(
+                    &shell,
+                    final_command,
+                    options.path_prefix,
+                    options.sandbox_supervisor.is_some(),
+                );
 
                 let _ = self.clear_pane(&spawned_id);
                 self.run_in_shell(&spawned_id, &final_command)?;
@@ -952,7 +963,7 @@ pub trait Multiplexer: Send + Sync {
                     &pane_id,
                     &format!(
                         " {}; printf '\\033[H\\033[2J\\033[3J'",
-                        export_path_prefix(dir)
+                        EnvSyntax::of(&shell).prepend_path(dir)
                     ),
                 )?;
             }
@@ -977,34 +988,36 @@ pub trait Multiplexer: Send + Sync {
             }
         }
 
+        let focus_pane_id = focus_pane_id.unwrap_or_else(|| pane_ids[0].clone());
         Ok(PaneSetupResult {
-            focus_pane_id: focus_pane_id.unwrap_or_else(|| pane_ids[0].clone()),
+            pane_ids,
+            focus_pane_id,
             zoom_pane_id,
         })
     }
 
     // === Multi-Session/Workspace Support ===
 
-    /// Get the current session/workspace name, if determinable.
+    /// Get the current Rex session name, if determinable.
     ///
     /// Returns None if not running inside the multiplexer.
-    /// For tmux, this is the session name. For WezTerm, this is the workspace name.
+    /// The label is read from the owning Rex session.
     #[allow(dead_code)] // Reserved for future multi-session features
     fn current_session(&self) -> Option<String> {
         None // Default: can't determine
     }
 
-    /// Get the session/workspace displayed by the active client.
+    /// Get the Rex session displayed by the active client.
     ///
     /// Backends without distinct client context use the current session.
     fn client_session(&self) -> Option<String> {
         self.current_session()
     }
 
-    /// Get all window names across ALL sessions/workspaces.
+    /// Get all window names across ALL Rex sessions.
     ///
     /// Default implementation returns same as get_all_window_names() (single session).
-    /// WezTerm overrides this to return windows from all workspaces.
+    /// Rex lists tabs across every session on its server.
     #[allow(dead_code)] // Reserved for future multi-session features
     fn get_all_window_names_all_sessions(&self) -> Result<HashSet<String>> {
         self.get_all_window_names()
@@ -1015,10 +1028,9 @@ pub trait Multiplexer: Send + Sync {
     /// Get the backend instance identifier (socket path, mux ID, etc.).
     ///
     /// This is used to create unique state file paths when multiple instances
-    /// of the same backend are running (e.g., multiple tmux servers).
+    /// of the same backend are running (e.g., multiple rex servers).
     ///
-    /// For tmux: socket path or "default" for standard socket
-    /// For WezTerm: mux domain ID or workspace name
+    /// Rex uses its resolved server address as the instance identity.
     fn instance_id(&self) -> String;
 
     /// Resolve the backend instance identifier without a fallback identity.
@@ -1075,7 +1087,7 @@ pub trait Multiplexer: Send + Sync {
         Ok(None)
     }
 
-    /// The backend's own sidebar, for backends that run it without tmux.
+    /// The backend's own sidebar, for backends that run it without rex.
     fn sidebar(&self) -> Option<&dyn SidebarHost> {
         None
     }
@@ -1083,7 +1095,7 @@ pub trait Multiplexer: Send + Sync {
     /// Validate if an agent is still alive and should be kept in the dashboard.
     ///
     /// Called when a pane is not found in the batched `get_all_live_pane_info()` result.
-    /// Backends can implement custom validation logic (e.g., Zellij checks pane existence
+    /// Backends can implement custom validation logic (e.g., Rex checks pane existence
     /// and command matching). Default implementation queries the pane individually.
     fn validate_agent_alive(&self, state: &crate::state::AgentState) -> Result<bool> {
         let live_pane = self.get_live_pane_info(&state.pane_key.pane_id)?;
@@ -1112,130 +1124,46 @@ pub(crate) fn pane_runs_agent(
     }
 }
 
-/// Detect which backend to use based on environment.
-///
-/// Checks `$WORKMUX_BACKEND` first for an explicit override, then auto-detects
-/// from multiplexer environment variables. Session-specific variables (set only
-/// when inside the multiplexer) are checked before ambient variables (inherited
-/// from the parent terminal):
-///
-/// 1. `$WORKMUX_BACKEND` set → use that backend
-/// 2. `$TMUX` set → tmux
-/// 3. `$WEZTERM_PANE` set → WezTerm
-/// 4. `$ZELLIJ`, `$ZELLIJ_PANE_ID`, or `$ZELLIJ_SESSION_NAME` set → Zellij
-/// 5. `$KITTY_WINDOW_ID` set → Kitty
-/// 6. `$REX_BLOCK` set (and not empty) → Rex
-/// 7. None → defaults to tmux (for backward compatibility)
-///
-/// This ordering ensures that running tmux inside kitty (or wezterm) correctly
-/// selects the innermost multiplexer.
+/// Rex is the only terminal backend.
 pub fn detect_backend() -> BackendType {
-    if let Ok(val) = std::env::var("WORKMUX_BACKEND") {
-        match val.parse() {
-            Ok(bt) => return bt,
-            Err(_) => {
-                eprintln!(
-                    "{BIN}: invalid WORKMUX_BACKEND={val:?}, expected {}",
-                    BackendType::expected_names()
-                );
-            }
-        }
-    }
-
-    detect_backend_from_environment()
+    BackendType::Rex
 }
 
-/// Detect the backend while rejecting an invalid explicit override.
+/// Reject an explicit selector for an unsupported terminal.
 pub fn detect_backend_strict() -> Result<BackendType> {
-    if let Ok(value) = std::env::var("WORKMUX_BACKEND")
+    if let Ok(value) = std::env::var("WORKREX_BACKEND")
         && !value.trim().is_empty()
     {
-        return value.parse().map_err(|_| {
-            anyhow!(
-                "invalid WORKMUX_BACKEND={value:?}, expected {}",
-                BackendType::expected_names()
-            )
-        });
+        return value
+            .parse()
+            .map_err(|_| anyhow!("invalid WORKREX_BACKEND={value:?}; Workrex requires Rex"));
     }
-
-    Ok(detect_backend_from_environment())
+    Ok(BackendType::Rex)
 }
 
-/// Which multiplexers the environment says we are running inside.
-#[derive(Debug, Default, Clone, Copy)]
-struct BackendSignals {
-    tmux: bool,
-    wezterm: bool,
-    zellij: bool,
-    kitty: bool,
-    rex: bool,
-}
-
-fn detect_backend_from_environment() -> BackendType {
-    resolve_backend(BackendSignals {
-        tmux: std::env::var("TMUX").is_ok(),
-        wezterm: std::env::var("WEZTERM_PANE").is_ok(),
-        zellij: std::env::var("ZELLIJ").is_ok()
-            || std::env::var("ZELLIJ_PANE_ID").is_ok()
-            || std::env::var("ZELLIJ_SESSION_NAME").is_ok(),
-        kitty: std::env::var("KITTY_WINDOW_ID").is_ok(),
-        rex: rex::in_rex_terminal(),
-    })
-}
-
-/// Pure auto-detection logic, separated for testability.
-fn resolve_backend(signals: BackendSignals) -> BackendType {
-    if signals.tmux {
-        return BackendType::Tmux;
-    }
-
-    if signals.wezterm {
-        return BackendType::WezTerm;
-    }
-
-    if signals.zellij {
-        return BackendType::Zellij;
-    }
-
-    if signals.kitty {
-        return BackendType::Kitty;
-    }
-
-    // Last, because every terminal started from a Rex pane inherits
-    // REX_BLOCK: any other multiplexer seen here is nested inside Rex
-    if signals.rex {
-        return BackendType::Rex;
-    }
-
-    BackendType::Tmux
-}
-
-/// Create a backend instance based on the backend type.
-pub fn create_backend(backend_type: BackendType) -> Arc<dyn Multiplexer> {
-    match backend_type {
-        BackendType::Tmux => Arc::new(TmuxBackend::new()),
-        BackendType::WezTerm => Arc::new(wezterm::WezTermBackend::new()),
-        BackendType::Kitty => Arc::new(kitty::KittyBackend::new()),
-        BackendType::Zellij => Arc::new(zellij::ZellijBackend::new()),
-        BackendType::Rex => Arc::new(rex::RexBackend::new()),
-    }
+/// Connect to the configured Rex server.
+pub fn create_backend(_backend_type: BackendType) -> Arc<dyn Multiplexer> {
+    Arc::new(rex::RexBackend::new())
 }
 
 pub fn create_backend_for_instance(
-    backend_type: BackendType,
+    _backend_type: BackendType,
     instance: &str,
 ) -> Arc<dyn Multiplexer> {
-    match backend_type {
-        BackendType::Tmux => Arc::new(TmuxBackend::for_socket(instance)),
-        BackendType::Zellij => Arc::new(zellij::ZellijBackend::for_session(instance)),
-        BackendType::Rex => Arc::new(rex::RexBackend::for_server(instance)),
-        _ => create_backend(backend_type),
-    }
+    Arc::new(rex::RexBackend::for_server(instance))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rex_is_the_only_backend_and_the_default() {
+        assert_eq!(BackendType::default(), BackendType::Rex);
+        assert_eq!(BackendType::ALL, [BackendType::Rex]);
+        assert_eq!("rex".parse::<BackendType>().unwrap(), BackendType::Rex);
+        assert!("unsupported".parse::<BackendType>().is_err());
+    }
 
     fn ownership_record(
         window_id: &str,
@@ -1262,14 +1190,14 @@ mod tests {
         std::fs::create_dir_all(&subdir).unwrap();
         std::fs::create_dir_all(&other).unwrap();
         let records = vec![
-            ownership_record("@1", "wm-work", "main", None, &subdir),
-            ownership_record("@2", "wm-work-2", "main", None, &worktree),
-            ownership_record("@3", "wm-work", "other", None, &worktree),
-            ownership_record("@4", "wm-work", "main", None, &other),
-            ownership_record("@5", "wm-work-3", "main", Some("another"), &worktree),
+            ownership_record("@1", "wr-work", "main", None, &subdir),
+            ownership_record("@2", "wr-work-2", "main", None, &worktree),
+            ownership_record("@3", "wr-work", "other", None, &worktree),
+            ownership_record("@4", "wr-work", "main", None, &other),
+            ownership_record("@5", "wr-work-3", "main", Some("another"), &worktree),
         ];
 
-        let targets = adoption_targets(records, "wm-work", Some("main"), &worktree);
+        let targets = adoption_targets(records, "wr-work", Some("main"), &worktree);
 
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].target.window_id.as_deref(), Some("@1"));
@@ -1284,198 +1212,206 @@ mod tests {
         let worktree = temp.path().join("worktree");
         std::fs::create_dir_all(&worktree).unwrap();
         let records = vec![
-            ownership_record("@1", "wm-work", "one", None, &worktree),
-            ownership_record("@2", "wm-work", "two", None, &worktree),
+            ownership_record("@1", "wr-work", "one", None, &worktree),
+            ownership_record("@2", "wr-work", "two", None, &worktree),
         ];
 
-        assert!(adoption_targets(records, "wm-work", None, &worktree).is_empty());
+        assert!(adoption_targets(records, "wr-work", None, &worktree).is_empty());
     }
 
     #[test]
-    fn status_target_command_quotes_identity_values() {
-        assert_eq!(
-            command_with_status_target(
-                "claude --continue",
-                "zellij",
-                "session with spaces",
-                "terminal_7",
-            ),
-            "env WORKMUX_STATUS_BACKEND=zellij WORKMUX_STATUS_INSTANCE='session with spaces' \
-             WORKMUX_STATUS_PANE_ID=terminal_7 claude --continue"
+    fn status_target_preserves_shell_aliases_and_exports_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::test_support::write_script(
+            &dir.path().join("workrex-test-agent"),
+            "#!/bin/sh\nprintf '%s\\n' \"$WORKREX_STATUS_INSTANCE\" \"$WORKREX_STATUS_PANE_ID\" \"$@\"\n",
         );
+        let path = format!(
+            "{}:{}",
+            dir.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let launch = command_with_status_target(
+            "workrex-test-agent prompt",
+            "/bin/sh",
+            "rex",
+            "unix:///tmp/a b's.sock",
+            "block:test",
+        );
+        let script = format!(
+            "if [ -n \"${{BASH_VERSION:-}}\" ]; then shopt -s expand_aliases; fi\nalias workrex-test-agent='workrex-test-agent aliased'\neval {}\n",
+            agent::shell_quote(&launch)
+        );
+        for shell in ["bash", "zsh"] {
+            let Ok(shell_path) = which::which(shell) else {
+                continue;
+            };
+            let output = std::process::Command::new(shell_path)
+                .args(["-c", &script])
+                .env("PATH", &path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{shell}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                "unix:///tmp/a b's.sock\nblock:test\naliased\nprompt\n",
+                "{shell}"
+            );
+        }
     }
 
     #[test]
-    fn no_env_defaults_to_tmux() {
+    fn status_target_preserves_nushell_aliases_and_exports_identity() {
+        let Ok(nu) = which::which("nu") else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        crate::test_support::write_script(
+            &dir.path().join("workrex-test-agent"),
+            "#!/bin/sh\nprintf '%s\\n' \"$WORKREX_STATUS_INSTANCE\" \"$WORKREX_STATUS_PANE_ID\" \"$@\"\n",
+        );
+        let path = format!(
+            "{}:{}",
+            dir.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let instance = r#"unix:///tmp/a b's "q" \ $x (y).sock"#;
+        let launch = command_with_status_target(
+            "workrex-test-agent prompt",
+            &nu.to_string_lossy(),
+            "rex",
+            instance,
+            "block:test",
+        );
+        let script = format!("alias workrex-test-agent = workrex-test-agent aliased\n{launch}\n");
+        let output = std::process::Command::new(nu)
+            .args(["--no-config-file", "-c", &script])
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(
-            resolve_backend(BackendSignals::default()),
-            BackendType::Tmux
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{instance}\nblock:test\naliased\nprompt\n")
         );
     }
 
-    #[test]
-    fn tmux_only() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                tmux: true,
-                ..Default::default()
-            }),
-            BackendType::Tmux
+    /// An agent that prints the status identity it inherited and its args.
+    fn identity_echo_agent(dir: &Path) -> String {
+        crate::test_support::write_script(
+            &dir.join("workrex-test-agent"),
+            "#!/bin/sh\nprintf '%s\\n' \"$WORKREX_STATUS_INSTANCE\" \"$WORKREX_STATUS_PANE_ID\" \"$@\"\n",
         );
+        format!(
+            "{}:{}",
+            dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
     }
 
     #[test]
-    fn wezterm_only() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                wezterm: true,
-                ..Default::default()
-            }),
-            BackendType::WezTerm
-        );
+    fn status_target_reaches_the_agent_in_csh_family_shells() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = identity_echo_agent(dir.path());
+        for shell in ["/bin/tcsh", "/bin/csh"] {
+            if !Path::new(shell).exists() {
+                continue;
+            }
+            let launch = command_with_status_target(
+                "workrex-test-agent prompt",
+                shell,
+                "rex",
+                "unix:///tmp/a b's.sock",
+                "block:test",
+            );
+            let script =
+                format!("alias workrex-test-agent 'workrex-test-agent aliased'\n{launch}\n");
+            let output = std::process::Command::new(shell)
+                .args(["-f", "-c", &script])
+                .env("PATH", &path)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "unix:///tmp/a b's.sock\nblock:test\naliased\nprompt\n",
+                "{shell}: {launch}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]
-    fn zellij_only() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                zellij: true,
-                ..Default::default()
-            }),
-            BackendType::Zellij
+    fn status_target_for_an_unknown_shell_is_an_env_prefix_any_shell_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = identity_echo_agent(dir.path());
+        let launch = command_with_status_target(
+            "workrex-test-agent prompt",
+            "/usr/local/bin/pwsh",
+            "rex",
+            "unix:///tmp/a b.sock",
+            "block:test",
         );
+        for shell in ["/bin/sh", "/bin/tcsh"] {
+            if !Path::new(shell).exists() {
+                continue;
+            }
+            let output = std::process::Command::new(shell)
+                .args(["-c", &launch])
+                .env("PATH", &path)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "unix:///tmp/a b.sock\nblock:test\nprompt\n",
+                "{shell}: {launch}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]
-    fn kitty_only() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                kitty: true,
-                ..Default::default()
-            }),
-            BackendType::Kitty
+    fn a_node_agent_line_runs_in_every_shell_it_names() {
+        let bin = tempfile::tempdir().unwrap();
+        crate::test_support::write_script(
+            &bin.path().join("workrex-test-agent"),
+            "#!/bin/sh\necho \"started $WORKREX_STATUS_PANE_ID $*\"\n",
         );
-    }
-
-    #[test]
-    fn tmux_inside_kitty() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                tmux: true,
-                kitty: true,
-                ..Default::default()
-            }),
-            BackendType::Tmux
-        );
-    }
-
-    #[test]
-    fn tmux_inside_wezterm() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                tmux: true,
-                wezterm: true,
-                ..Default::default()
-            }),
-            BackendType::Tmux
-        );
-    }
-
-    #[test]
-    fn tmux_inside_zellij() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                tmux: true,
-                zellij: true,
-                ..Default::default()
-            }),
-            BackendType::Tmux
-        );
-    }
-
-    #[test]
-    fn wezterm_inside_kitty() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                wezterm: true,
-                kitty: true,
-                ..Default::default()
-            }),
-            BackendType::WezTerm
-        );
-    }
-
-    #[test]
-    fn zellij_inside_kitty() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                zellij: true,
-                kitty: true,
-                ..Default::default()
-            }),
-            BackendType::Zellij
-        );
-    }
-
-    #[test]
-    fn all_env_vars_set() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                tmux: true,
-                wezterm: true,
-                zellij: true,
-                kitty: true,
-                ..Default::default()
-            }),
-            BackendType::Tmux
-        );
-    }
-
-    #[test]
-    fn wezterm_inside_rex() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                wezterm: true,
-                rex: true,
-                ..Default::default()
-            }),
-            BackendType::WezTerm
-        );
-    }
-
-    #[test]
-    fn kitty_inside_rex() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                kitty: true,
-                rex: true,
-                ..Default::default()
-            }),
-            BackendType::Kitty
-        );
-    }
-
-    #[test]
-    fn rex_only() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                rex: true,
-                ..Default::default()
-            }),
-            BackendType::Rex
-        );
-    }
-
-    #[test]
-    fn tmux_inside_rex() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                tmux: true,
-                rex: true,
-                ..Default::default()
-            }),
-            BackendType::Tmux
-        );
+        let shells = ["sh", "bash", "zsh", "fish", "nu", "tcsh", "csh"];
+        for shell in shells.iter().filter_map(|shell| which::which(shell).ok()) {
+            let shell = shell.to_string_lossy();
+            let command = command_with_status_target(
+                "workrex-test-agent prompt",
+                &shell,
+                "rex",
+                "unix:///tmp/s.sock",
+                "block:test",
+            );
+            let line = pane_line(&shell, command, Some(bin.path()), true);
+            let mut run = std::process::Command::new(&*shell);
+            if EnvSyntax::of(&shell) == EnvSyntax::Nu {
+                run.arg("--no-config-file");
+            }
+            // The agent is found only through the line's own PATH entry.
+            let output = run
+                .args(["-c", &line])
+                .env("PATH", "/usr/bin:/bin")
+                .output()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&output.stdout).ends_with("started block:test prompt\n"),
+                "{shell}: {line}\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     fn pane_with(pid: Option<u32>, command: Option<&str>) -> Option<LivePaneInfo> {
@@ -1485,13 +1421,13 @@ mod tests {
             PathBuf::from("/private/tmp"),
             "",
             "main".to_string(),
-            "wm-work".to_string(),
+            "wr-work".to_string(),
         ))
     }
 
     fn agent_with(pane_pid: u32, command: &str) -> crate::state::AgentState {
         serde_json::from_value(serde_json::json!({
-            "pane_key": { "backend": "tmux", "instance": "default", "pane_id": "%1" },
+            "pane_key": { "backend": "rex", "instance": "default", "pane_id": "%1" },
             "workdir": "/private/tmp",
             "pane_pid": pane_pid,
             "command": command,
@@ -1546,7 +1482,7 @@ mod tests {
     #[test]
     fn only_a_rex_agent_matches_a_command_by_its_kind() {
         let mut agent = rex_agent("claude.exe", Some("claude"));
-        agent.pane_key.backend = "tmux".to_string();
+        agent.pane_key.backend = "foreign-backend".to_string();
         assert!(!pane_runs_agent(pane_with(Some(7), Some("claude")), &agent));
     }
 
@@ -1596,17 +1532,5 @@ mod tests {
             pane_with(None, None),
             &agent_with(7, "node")
         ));
-    }
-
-    #[test]
-    fn zellij_inside_rex() {
-        assert_eq!(
-            resolve_backend(BackendSignals {
-                zellij: true,
-                rex: true,
-                ..Default::default()
-            }),
-            BackendType::Zellij
-        );
     }
 }

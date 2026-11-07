@@ -243,6 +243,7 @@ pub struct DiffView {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteDiff {
+    pub agent_kind: Option<String>,
     pub at: crate::multiplexer::RemoteRef,
     /// The title without a note on the diff's age.
     pub title: String,

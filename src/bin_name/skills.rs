@@ -1,7 +1,4 @@
-//! Manifest of the skill files this binary wrote, so uninstall removes only those.
-//!
-//! The bundled skills share upstream workmux's names, and some are byte-identical
-//! to upstream's copies, so content alone cannot tell whose file a path holds.
+//! Manifest of the skill files Workrex wrote, so uninstall removes only those.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

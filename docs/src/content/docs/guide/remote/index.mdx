@@ -6,12 +6,17 @@ description: Run individual agents on an SSH-reachable Linux server while others
 import RemoteDemo from "../../../../components/RemoteDemo.astro";
 
 :::note[Experimental]
-Remote servers are experimental. Try them out, and if something doesn't work or a workflow you need is missing, [open an issue on GitHub](https://github.com/kong109/workrex/issues).
+Remote servers are experimental. Keep the relevant `remote doctor` output and a reproducible command when reporting a failure.
 :::
 
-workrex can run an agent on a Linux server you reach over SSH, such as a home server, a Proxmox VM or a cloud VM, while your other agents stay on the local machine. Each remote agent still gets a normal tmux or Rex window on the local machine, or with `terminal: rex` a session on the server's Rex server that Rex.app shows, and shows up in the dashboard, the sidebar, `workrex status` and `workrex list` like a local one.
+Workrex runs agents on an SSH-reachable Linux server while other agents stay
+local. Each remote workspace owns a native session on the server's Rex instance, with its configured terminal blocks.
+Rex.app shows those terminals directly; the dashboard, sidebar, `status`, and
+`list` show them alongside local agents.
 
-The agent keeps running while the local machine sleeps, loses its network or closes the window. When you come back, the window reconnects by itself. When the work is done, `workrex merge` brings it home and merges it on the local machine.
+Agents keep running when your machine sleeps or disconnects. Reconnect Rex.app
+and use `workrex open <handle>` to show a workspace again. `workrex merge`
+brings its commits home and merges locally.
 
 <RemoteDemo caption="An agent starts on devbox, keeps working while the local machine sleeps, and merges home." />
 
@@ -25,7 +30,7 @@ If you only want to isolate agents on the local machine, use the [sandbox](/guid
 
 ## How it fits together
 
-- The worktree, its panes and the agent run on the server, either directly or in a Docker container. The local window is a live view of them.
+- The worktree, its panes and the agent run on the server, either directly or in a Docker container. Rex.app connects directly to the server's Rex instance.
 - The local machine stays the source of truth for Git. A new workspace starts from a local commit, unpushed commits included, and its work comes back with `merge` or `remote pull`. The server never talks to your Git hosting.
 - workrex installs and updates its own copy on the server. You don't install workrex there yourself.
 - Remote agents appear in every view labelled `handle@remote`, for example `my-feature@devbox`.
@@ -35,13 +40,13 @@ If you only want to isolate agents on the local machine, use the [sandbox](/guid
 Add the server to your global config:
 
 ```yaml
-# ~/.config/workmux/config.yaml
+# ~/.config/workrex/config.yaml
 remotes:
   devbox: # the name you use on the command line
     host: devbox # an ~/.ssh/config alias or user@host
 ```
 
-These paths keep their workmux names, so an existing workmux config works. See [configuration](/guide/configuration/).
+These are the Workrex configuration paths. See [configuration](/guide/configuration/).
 
 Then, from your project:
 
@@ -52,7 +57,7 @@ workrex remote login devbox claude # log the agent in on the server
 workrex add my-feature --remote devbox -p "Implement the parser"
 ```
 
-The window opens on the local machine as usual. When the agent is done:
+The native session appears under the server in Rex.app. When the agent is done:
 
 ```bash
 workrex merge my-feature
@@ -65,7 +70,7 @@ workrex merge my-feature
 ## Differences from local agents
 
 - Agents run directly on the server unless the sandbox is enabled. See [server or Docker](/guide/remote/setup/#server-or-docker).
-- Remote agents need the tmux or Rex backend, and they don't support an explicit session mode or `windows:` configs. The dashboard can't create them.
+- The server must run Rex and be reachable by Rex.app. Remote layout options are described in the setup guide.
 - Agents on the server can't push. Bring the work home and push from the local machine.
 - Files ignored by Git, such as `node_modules` or build output, don't come home.
 - `rename`, `path`, `run` and `sync-files` don't work on remote workspaces.

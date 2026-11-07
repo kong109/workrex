@@ -1,7 +1,7 @@
 //! Rex session labels are not stable. Rex's Claude Code hook tells the agent
 //! to rename its session on the first request, so a managed session is
 //! tracked by the ID it was created with, in a small registry under the
-//! workmux state directory. The registry also keeps the session each managed
+//! workrex state directory. The registry also keeps the session each managed
 //! session was opened from, which Rex does not remember for us.
 
 use anyhow::{Context, Result, anyhow};
@@ -506,8 +506,7 @@ impl RexBackend {
         session: &SessionId,
         preferred: Option<&str>,
     ) -> Result<String> {
-        let exe = std::env::current_exe()
-            .context(crate::rebrand!("Failed to locate the workmux executable"))?;
+        let exe = std::env::current_exe().context("Failed to locate the workrex executable")?;
         let mut words = vec!["env".to_string()];
         for var in Self::INHERITED_SCOPE_VARS {
             words.extend(["-u".to_string(), var.to_string()]);
@@ -573,7 +572,7 @@ mod tests {
     #[test]
     fn the_destination_is_the_preferred_session_then_the_origin() {
         let sessions = summaries(&[
-            ("session:closing", "wm-a"),
+            ("session:closing", "wr-a"),
             ("session:home", "home"),
             ("session:origin", "work"),
         ]);
@@ -586,7 +585,7 @@ mod tests {
         );
         // A preferred session that is gone, or is the closing one, yields to the origin.
         assert_eq!(pick(Some("gone"), origin()), origin());
-        assert_eq!(pick(Some("wm-a"), origin()), origin());
+        assert_eq!(pick(Some("wr-a"), origin()), origin());
         assert_eq!(pick(None, origin()), origin());
         // An origin that is gone, or is the closing session, is no destination.
         assert_eq!(pick(None, Some(SessionId("session:gone".into()))), None);
@@ -594,8 +593,8 @@ mod tests {
         assert_eq!(pick(None, None), None);
     }
 
-    /// The caller's pane is in `session:b`, labeled `wm-a`, which is about
-    /// to close; `home`, second once `wm-a` is gone, is where an app showing
+    /// The caller's pane is in `session:b`, labeled `wr-a`, which is about
+    /// to close; `home`, second once `wr-a` is gone, is where an app showing
     /// it should land.
     fn closing_fake() -> FakeRex {
         FakeRex::new(&[
@@ -605,7 +604,7 @@ mod tests {
                 "session.list",
                 &session_list(&[
                     ("session:first", "first"),
-                    (CALLER_SESSION, "wm-a"),
+                    (CALLER_SESSION, "wr-a"),
                     ("session:home", "home"),
                 ]),
             ),
@@ -647,12 +646,12 @@ mod tests {
     #[test]
     fn closing_puts_the_destination_first_for_the_destroy_and_then_back() {
         let fake = closing_fake();
-        fake.rex.close_session_to("wm-a", Some("home")).unwrap();
+        fake.rex.close_session_to("wr-a", Some("home")).unwrap();
         assert_destination_leads_the_destroy(&fake);
 
         let mut outside = closing_fake();
         outside.rex.caller = Default::default();
-        outside.rex.close_session_to("wm-a", Some("home")).unwrap();
+        outside.rex.close_session_to("wr-a", Some("home")).unwrap();
         assert_destination_leads_the_destroy(&outside);
     }
 
@@ -661,7 +660,7 @@ mod tests {
         let fake = closing_fake();
         let script = fake
             .rex
-            .shell_close_session_named_cmd("wm-a", Some("home"))
+            .shell_close_session_named_cmd("wr-a", Some("home"))
             .unwrap();
         assert!(steps(&fake).is_empty(), "scheduling moves nothing");
         let exe = std::env::current_exe().unwrap();
@@ -693,7 +692,7 @@ mod tests {
     #[test]
     fn closing_without_a_destination_only_destroys() {
         let fake = closing_fake();
-        fake.rex.close_session_to("wm-a", None).unwrap();
+        fake.rex.close_session_to("wr-a", None).unwrap();
         assert!(fake.calls("session move").is_empty());
         assert_eq!(fake.calls("session.destroy").len(), 1);
     }
@@ -707,12 +706,12 @@ mod tests {
                 "session.list",
                 &session_list(&[
                     ("session:first", "first"),
-                    (CALLER_SESSION, "wm-a"),
+                    (CALLER_SESSION, "wr-a"),
                     ("session:home", "home"),
                 ]),
             ),
         ]);
-        let error = fake.rex.close_session_to("wm-a", Some("home")).unwrap_err();
+        let error = fake.rex.close_session_to("wr-a", Some("home")).unwrap_err();
         assert!(format!("{error:#}").contains("destroy failed"), "{error:#}");
         let steps = steps(&fake);
         assert_eq!(steps.len(), 3, "{steps:#?}");
@@ -742,13 +741,13 @@ mod tests {
                 "session.list",
                 &session_list(&[
                     ("session:first", "first"),
-                    (CALLER_SESSION, "wm-a"),
+                    (CALLER_SESSION, "wr-a"),
                     ("session:home", "home"),
                 ]),
             ),
         ]);
         fake.rex.registry = Some(registry);
-        fake.rex.close_session_to("wm-a", Some("home")).unwrap();
+        fake.rex.close_session_to("wr-a", Some("home")).unwrap();
         let left: Registry =
             serde_json::from_str(&std::fs::read_to_string(&seen).unwrap()).unwrap();
         assert_eq!(
@@ -779,7 +778,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        fake.rex.close_session_to("wm-a", None).unwrap();
+        fake.rex.close_session_to("wr-a", None).unwrap();
         let steps = steps(&fake);
         assert_eq!(steps[0], "session move session:home --before session:first");
         assert!(steps[1].contains("session.destroy"), "{steps:#?}");
@@ -854,12 +853,12 @@ mod tests {
                 "session.list",
                 &session_list(&[
                     ("session:first", "first"),
-                    (CALLER_SESSION, "wm-a"),
+                    (CALLER_SESSION, "wr-a"),
                     ("session:home", "home"),
                 ]),
             ),
         ]);
-        fake.rex.close_session_to("wm-a", Some("home")).unwrap();
+        fake.rex.close_session_to("wr-a", Some("home")).unwrap();
         let steps = steps(&fake);
         assert_eq!(steps.len(), 2, "{steps:#?}");
         assert_eq!(steps[0], "session move session:home --index 1");
@@ -883,7 +882,7 @@ mod tests {
                 "session.list",
                 &session_list(&[
                     ("session:first", "first"),
-                    (CALLER_SESSION, "wm-a"),
+                    (CALLER_SESSION, "wr-a"),
                     ("session:home", "home"),
                 ]),
             ),
@@ -899,7 +898,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        fake.rex.close_session_to("wm-a", Some("home")).unwrap();
+        fake.rex.close_session_to("wr-a", Some("home")).unwrap();
         let steps = steps(&fake);
         assert_eq!(steps.len(), 2, "{steps:#?}");
         assert_eq!(steps[0], "session move session:home --after session:first");
@@ -943,14 +942,14 @@ mod tests {
                 "session.list",
                 &session_list(&[
                     ("session:first", "first"),
-                    ("session:a", "wm-a"),
-                    ("session:b", "wm-b"),
+                    ("session:a", "wr-a"),
+                    ("session:b", "wr-b"),
                     ("session:home", "home"),
                 ]),
             ),
         ]);
         std::thread::scope(|scope| {
-            for name in ["wm-a", "wm-b"] {
+            for name in ["wr-a", "wr-b"] {
                 let rex = &fake.rex;
                 scope.spawn(move || rex.close_session_to(name, Some("home")).unwrap());
             }
@@ -978,16 +977,16 @@ mod tests {
         let fake = closing_fake();
         fake.rex
             .update_records(|records| {
-                records.names.insert(CALLER_SESSION.into(), "wm-a".into());
+                records.names.insert(CALLER_SESSION.into(), "wr-a".into());
                 Ok(())
             })
             .unwrap();
         fake.rex
-            .shell_close_session_named_cmd("wm-a", None)
+            .shell_close_session_named_cmd("wr-a", None)
             .unwrap();
         assert_eq!(
             fake.rex.records().names.get(CALLER_SESSION).unwrap(),
-            "wm-a"
+            "wr-a"
         );
     }
 
@@ -1054,7 +1053,7 @@ mod tests {
         let add = |fake: &FakeRex, name: &str| {
             fake.rex
                 .create_managed_session(CreateSessionParams {
-                    prefix: "wm-",
+                    prefix: "wr-",
                     name,
                     cwd: &cwd,
                     initial_window_name: None,
@@ -1070,14 +1069,14 @@ mod tests {
             scope.spawn(|| add(&b, "b"));
         });
         let names = a.rex.records().names;
-        assert_eq!(names.get("session:a").map(String::as_str), Some("wm-a"));
-        assert_eq!(names.get("session:b").map(String::as_str), Some("wm-b"));
+        assert_eq!(names.get("session:a").map(String::as_str), Some("wr-a"));
+        assert_eq!(names.get("session:b").map(String::as_str), Some("wr-b"));
     }
 
     #[test]
     fn retain_live_drops_dead_sessions_and_dead_origins() {
         let mut records = ServerRecords::default();
-        for (id, name) in [("session:a", "wm-a"), ("session:b", "wm-b")] {
+        for (id, name) in [("session:a", "wr-a"), ("session:b", "wr-b")] {
             records.names.insert(id.into(), name.into());
         }
         records
@@ -1167,15 +1166,15 @@ esac
         let mut fake = ordered_fake(&[
             ("session:first", "first"),
             ("session:home", "home"),
-            ("session:t", "wm-t"),
-            ("session:u", "wm-u"),
-            ("session:v", "wm-v"),
+            ("session:t", "wr-t"),
+            ("session:u", "wr-u"),
+            ("session:v", "wr-v"),
         ]);
         let dir = fake.dir.path().to_path_buf();
         std::fs::write(dir.join("stall"), "").unwrap();
-        fake.rex.close_session_to("wm-t", Some("home")).unwrap();
-        fake.rex.close_session_to("wm-u", Some("home")).unwrap();
-        assert_eq!(labels(&fake), ["first", "home", "wm-v"]);
+        fake.rex.close_session_to("wr-t", Some("home")).unwrap();
+        fake.rex.close_session_to("wr-u", Some("home")).unwrap();
+        assert_eq!(labels(&fake), ["first", "home", "wr-v"]);
 
         std::fs::remove_file(dir.join("stall")).unwrap();
         let landed = std::process::Command::new("sh")
@@ -1187,11 +1186,11 @@ esac
         reopen(&mut fake);
         assert_eq!(
             labels(&fake),
-            ["home", "first", "wm-v"],
+            ["home", "first", "wr-v"],
             "the late move landed"
         );
 
-        fake.rex.close_session_to("wm-v", Some("home")).unwrap();
+        fake.rex.close_session_to("wr-v", Some("home")).unwrap();
         assert_eq!(labels(&fake), ["first", "home"]);
         assert!(
             fake.rex.records().restore.is_some(),
@@ -1246,16 +1245,16 @@ esac
         let mut fake = ordered_fake(&[
             ("session:first", "first"),
             ("session:home", "home"),
-            ("session:t", "wm-t"),
-            ("session:u", "wm-u"),
-            ("session:v", "wm-v"),
+            ("session:t", "wr-t"),
+            ("session:u", "wr-u"),
+            ("session:v", "wr-v"),
         ]);
         let dir = fake.dir.path().to_path_buf();
         std::fs::write(dir.join("stall"), "").unwrap();
-        fake.rex.close_session_to("wm-t", Some("home")).unwrap();
-        fake.rex.close_session_to("wm-u", Some("home")).unwrap();
+        fake.rex.close_session_to("wr-t", Some("home")).unwrap();
+        fake.rex.close_session_to("wr-u", Some("home")).unwrap();
         std::fs::remove_file(dir.join("stall")).unwrap();
-        assert_eq!(labels(&fake), ["first", "home", "wm-v"]);
+        assert_eq!(labels(&fake), ["first", "home", "wr-v"]);
 
         fake.rex
             .close_session_with_id("session:gone", None)
@@ -1275,7 +1274,7 @@ esac
         fake.rex
             .close_session_with_id("session:gone", None)
             .unwrap();
-        assert_eq!(labels(&fake), ["first", "home", "wm-v"], "put back");
+        assert_eq!(labels(&fake), ["first", "home", "wr-v"], "put back");
     }
 
     /// The dashboard keeps one backend for its whole run, and its poll
@@ -1286,7 +1285,7 @@ esac
         let mut fake = ordered_fake(&[
             ("session:first", "first"),
             ("session:home", "home"),
-            ("session:v", "wm-v"),
+            ("session:v", "wr-v"),
         ])
         .reusing();
         fake.rex
@@ -1303,7 +1302,7 @@ esac
                 Ok(())
             })
             .unwrap();
-        assert_eq!(labels(&fake), ["first", "home", "wm-v"], "the poll's read");
+        assert_eq!(labels(&fake), ["first", "home", "wr-v"], "the poll's read");
         let landed = std::process::Command::new("sh")
             .arg(fake.dir.path().join("order.sh"))
             .args(["move", "session", "move", "session:home", "--index", "1"])
@@ -1317,7 +1316,7 @@ esac
         reopen(&mut fake);
         assert_eq!(
             labels(&fake),
-            ["first", "home", "wm-v"],
+            ["first", "home", "wr-v"],
             "the late landing was put back"
         );
     }
@@ -1331,8 +1330,8 @@ esac
         let mut fake = ordered_fake(&[
             ("session:first", "first"),
             ("session:home", "home"),
-            ("session:v", "wm-v"),
-            ("session:w", "wm-w"),
+            ("session:v", "wr-v"),
+            ("session:w", "wr-w"),
         ])
         .reusing();
         let order = |args: &[&str]| {
@@ -1346,7 +1345,7 @@ esac
         order(&["move", "session", "move", "session:home", "--index", "1"]);
         assert_eq!(
             labels(&fake),
-            ["home", "first", "wm-v", "wm-w"],
+            ["home", "first", "wr-v", "wr-w"],
             "the poll's read"
         );
         order(&["destroy", r#"{"session_id":"session:w"}"#]);
@@ -1359,7 +1358,7 @@ esac
             "session:first",
         ]);
 
-        fake.rex.close_session_to("wm-v", Some("home")).unwrap();
+        fake.rex.close_session_to("wr-v", Some("home")).unwrap();
         reopen(&mut fake);
         assert_eq!(labels(&fake), ["first", "home"]);
     }

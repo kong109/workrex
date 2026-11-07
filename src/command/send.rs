@@ -7,11 +7,12 @@ use crate::multiplexer::{create_backend, detect_backend};
 use crate::workflow;
 
 pub fn run(name: &str, text: Option<&str>, file: Option<&str>) -> Result<()> {
-    let cfg = config::Config::load(None).unwrap_or_default();
     if let Some(record) = crate::remote::agents::find_target(name) {
+        let (cfg, _) = record.creator_config()?;
         let content = read_content(text, file)?;
         return crate::remote::agents::send(&cfg, &record, &content);
     }
+    let cfg = config::Config::load(None).unwrap_or_default();
     let mux = create_backend(detect_backend());
     let (_path, agent) = workflow::resolve_worktree_agent(name, mux.as_ref())?;
     let content = read_content(text, file)?;

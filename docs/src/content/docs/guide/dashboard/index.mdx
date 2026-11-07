@@ -3,20 +3,11 @@ title: "Dashboard"
 description: A TUI for monitoring agents, reviewing changes, staging hunks, and sending commands
 ---
 
-import Screenshot from "../../../../components/Screenshot.astro";
-import screenshot from "../../../../assets/screenshots/dashboard.webp";
-
 When you run agents in many worktrees across several projects, the dashboard shows what each one is doing in one place. It is a TUI for monitoring agents, reviewing their changes, staging hunks and sending commands.
 
 :::note[Optional feature]
 You do not need the dashboard to use workrex. It helps most when you run several agents across several projects.
 :::
-
-<div style="display: flex; justify-content: center; max-width: 45rem; margin: 1.5rem 0;">
-
-<Screenshot src={screenshot} alt="workrex dashboard" framed={false} />
-
-</div>
 
 For an always-visible, non-intrusive alternative, see the [sidebar](/guide/sidebar/).
 
@@ -26,21 +17,9 @@ For an always-visible, non-intrusive alternative, see the [sidebar](/guide/sideb
 The dashboard lists agents that report their status. Configure [status tracking hooks](/guide/status-tracking/), or no agents appear. Under Rex, Claude Code reports its status to Rex without hooks. See [Rex program status](/guide/status-tracking/#rex-program-status).
 :::
 
-### Open it in tmux
-
-Add this binding to your `~/.tmux.conf`:
-
-```bash
-bind C-s display-popup -h 30 -w 100 -E "workrex dashboard"
-```
-
-Then press `prefix + Ctrl-s` to open the dashboard as a tmux popup. Feel free to adjust the keybinding and popup dimensions (`-h` and `-w`) as needed.
-
-To open the dashboard without the tmux prefix, bind it to a key in your terminal emulator, such as `Cmd+E` or `Ctrl+E`.
-
 ### Open it in Rex
 
-In Rex, the dashboard opens in a floating layer over the current tab, the Rex counterpart of a tmux popup. Load `workrex.lua` from your Rex `init.lua`, then press `Shift+Cmd+D`. See [Rex: Dashboard](/guide/rex/#dashboard) for the setup.
+In Rex, the dashboard opens in a floating layer over the current tab. Load `workrex.lua` from your Rex `init.lua`, then press `Shift+Cmd+D`. See [Rex: Dashboard](/guide/rex/#dashboard) for the setup.
 
 These keys behave differently in the Rex layer:
 
@@ -133,7 +112,7 @@ released when the dashboard exits.
 - **PR** (`pr`): Pull request number and check status, shown once an agent has one
 - **PR Title** (`pr_title`): Pull request title (opt-in)
 - **PR Issues** (`pr_issues`): GitHub closing issue references (opt-in)
-- **Win** (`window`): Multiplexer window index, blank when the backend does not expose one
+- **Win** (`window`): Window order when available from Rex
 - **Status** (`status`): Agent status icon (🤖 working, 💬 waiting, ✅ done, or "stale")
 - **Time** (`time`): Time since last status change
 - **Title** (`title`): Claude Code session title (auto-generated summary)
@@ -159,7 +138,7 @@ Press `s` to cycle through sort modes:
 - **Priority** (default): Waiting > Done > Working > Stale
 - **Project**: Group by project name, then by priority within each project
 - **Recency**: Most recently updated first
-- **Natural**: Original tmux order (by pane creation)
+- **Natural**: Rex terminal order
 
 Your sort preference persists across dashboard sessions. To change the default used when no preference has been persisted yet, set `dashboard.sort_mode` in your config:
 
@@ -174,7 +153,7 @@ Press `F` to toggle the session filter. When active, only agents in the current 
 
 ## Stale filter
 
-Press `f` to toggle between showing all agents or hiding stale ones. The filter state persists across dashboard sessions within the same tmux server.
+Press `f` to toggle between showing all agents or hiding stale ones. The filter state persists across dashboard sessions within the same Rex server.
 
 ## Sweep
 

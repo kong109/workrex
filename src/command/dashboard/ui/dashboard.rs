@@ -54,7 +54,7 @@ fn render_tab_header(f: &mut Frame, app: &App, area: Rect) {
         let tip_line = Line::from(vec![
             Span::styled("New: ", tip_new),
             Span::styled("Check out ", tip_text),
-            Span::styled(crate::rebrand!("workmux sidebar "), tip_accent),
+            Span::styled("workrex sidebar ", tip_accent),
         ]);
         let tip_width = 32u16;
         let cols = Layout::horizontal([Constraint::Fill(1), Constraint::Length(tip_width)])
@@ -71,7 +71,7 @@ fn render_tab_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The footer's status message, cut at a word boundary to fit the width.
-fn render_status(f: &mut Frame, msg: &str, p: &ThemePalette, area: Rect) {
+pub(super) fn render_status(f: &mut Frame, msg: &str, p: &ThemePalette, area: Rect) {
     let msg = format::fit_words(msg, usize::from(area.width).saturating_sub(2));
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
@@ -1076,10 +1076,8 @@ mod tests {
 
     #[test]
     fn a_long_status_message_ends_at_a_word() {
-        let msg = crate::rebrand!(
-            "Rex.app did not switch: Remote Control is off. \
-             Turn it on in Rex Settings so workmux can switch the app."
-        );
+        let msg = "Rex.app did not switch: Remote Control is off. \
+             Turn it on in Rex Settings so workrex can switch the app.";
         assert_eq!(
             render_footer(msg, 80).trim_end(),
             "  Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings so…"

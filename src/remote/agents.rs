@@ -1,5 +1,5 @@
-//! Remote agents as local views and commands see them: one row per agent
-//! the node reports, whether or not a local window relays it.
+//! Native remote agents in local views and commands: observations supply rows;
+//! recorded server and block identities route terminal actions.
 
 use crate::bin_name::BIN;
 use std::collections::HashMap;
@@ -20,6 +20,7 @@ use super::observe::{self, Observation};
 use super::protocol::{self, DiffMode, DiffRequest, DiffResponse};
 use crate::config::Config;
 use crate::multiplexer::{AgentPane, EndReason, RemoteAgent, RemoteRef};
+use crate::multiplexer::{Multiplexer, rex::RexBackend};
 
 /// The remote workspace `target` names: a handle or branch of this
 /// repository (local worktrees win), or `project:handle`.
@@ -41,20 +42,15 @@ pub fn find_target(target: &str) -> Option<WorkspaceRecord> {
     cache::find_here(target)
 }
 
-/// Placeholder pane id of a remote agent no local pane relays; no
-/// multiplexer resolves it.
+/// Stable view key; terminal actions resolve the scoped [`RemoteRef`] instead.
 pub fn detached_pane_id(ws_id: &str, pane: usize) -> String {
     format!("%remote-{ws_id}-{pane}")
 }
 
-/// Rows for the agents of `records`. `attached` are the reconciled rows of
-/// local attach panes; they stand in for the agents they relay. An agent
-/// the node no longer reports is not listed, attached or not; a workspace
-/// that was never observed shows its attach panes, or one row without a
-/// status.
+/// Native rows come from the owned records and node observations. A workspace
+/// that has not been observed yet shows one row without a status.
 pub fn rows(
     records: &[WorkspaceRecord],
-    attached: &[AgentPane],
     observations: &HashMap<String, Observation>,
     hosts: &HashMap<String, String>,
     now: u64,
@@ -73,7 +69,7 @@ pub fn rows(
             status
         });
         let connected = observation.is_some_and(|o| o.is_connected(now));
-        let remote = |pane: usize, attached: bool| RemoteAgent {
+        let remote = |pane: usize| RemoteAgent {
             at: RemoteRef {
                 remote: record.remote.clone(),
                 ws_id: record.ws_id.clone(),
@@ -83,78 +79,38 @@ pub fn rows(
             handle: record.handle.clone(),
             project_root: record.project_root.clone(),
             host: hosts.get(&record.remote).cloned().unwrap_or_default(),
-            attached,
+            attached: false,
             connected,
             connecting: !connected && observe::connecting(&record.remote, observation, now),
             last_seen: observation.and_then(|o| o.last_seen),
             git: git.clone(),
             ended: observed.and_then(|o| o.ended),
         };
-        let local = |pane: usize| {
-            attached.iter().find(|row| {
-                row.remote.as_ref().is_some_and(|r| {
-                    r.at.remote == record.remote
-                        && r.at.ws_id == record.ws_id
-                        && r.at.ex_id == execution.ex_id
-                        && r.at.pane == pane
-                })
-            })
-        };
         let Some(observed) = observed else {
-            let mut panes: Vec<&AgentPane> = execution
-                .panes
-                .iter()
-                .filter_map(|&pane| local(pane))
-                .collect();
-            if panes.is_empty() {
-                rows.push(detached_row(
-                    record,
-                    None,
-                    None,
-                    remote(execution.panes.first().copied().unwrap_or(0), false),
-                ));
-                continue;
-            }
-            panes.sort_by_key(|row| row.remote.as_ref().map(|r| r.at.pane));
-            for row in panes {
-                let pane = row.remote.as_ref().map_or(0, |r| r.at.pane);
-                rows.push(AgentPane {
-                    remote: Some(remote(pane, true)),
-                    ..row.clone()
-                });
-            }
+            rows.push(detached_row(
+                record,
+                None,
+                None,
+                remote(execution.panes.first().copied().unwrap_or(0)),
+            ));
             continue;
         };
         // An execution that ended has no agents left; one row says so.
         if observed.ended.is_some() {
             let pane = execution.panes.first().copied().unwrap_or(0);
-            rows.push(match local(pane) {
-                Some(row) => AgentPane {
-                    remote: Some(remote(pane, true)),
-                    status: None,
-                    ..row.clone()
-                },
-                None => detached_row(record, None, observation, remote(pane, false)),
-            });
+            rows.push(detached_row(record, None, observation, remote(pane)));
             continue;
         }
         for pane in &observed.panes {
             let Some(agent) = &pane.agent else {
                 continue;
             };
-            let row = match local(pane.index) {
-                // The relay pane carries the remote pane's title, which is the
-                // node's hostname until the agent sets one; the observation
-                // has the agent's title without it.
-                Some(row) => AgentPane {
-                    pane_title: agent.title.clone(),
-                    agent_kind: agent.agent_kind.clone().or_else(|| row.agent_kind.clone()),
-                    remote: Some(remote(pane.index, true)),
-                    ..row.clone()
-                },
-                None => detached_row(record, Some(agent), observation, remote(pane.index, false)),
-            };
-            rows.push(row);
+            rows.push(detached_row(
+                record,
+                Some(agent),
+                observation,
+                remote(pane.index),
+            ));
         }
     }
     rows
@@ -218,12 +174,12 @@ fn detached_row(
     }
 }
 
-/// `agents`, reconciled with the panes that relay remote agents, as views
-/// list them: local agents followed by every remote workspace's agents,
-/// attach panes standing in for the agents they relay. Starts observing the
-/// remotes of those workspaces.
+/// Local rows followed by native remote rows, with observations kept current.
 pub fn for_views(config: &Config, agents: Vec<AgentPane>, now: u64) -> Vec<AgentPane> {
-    let (mut local, attached) = crate::state::store::split_remote(agents);
+    let mut local: Vec<_> = agents
+        .into_iter()
+        .filter(|agent| agent.remote.is_none())
+        .collect();
     let mut records = cache::all();
     records.retain(|record| !record.cleanup_pending());
     if records.is_empty() {
@@ -231,19 +187,8 @@ pub fn for_views(config: &Config, agents: Vec<AgentPane>, now: u64) -> Vec<Agent
     }
     observe::spawn(config, &remotes_in_use(&records));
     let observations = observations(config, &records, false);
-    local.extend(rows(
-        &records,
-        &attached,
-        &observations,
-        &hosts(config),
-        now,
-    ));
+    local.extend(rows(&records, &observations, &hosts(config), now));
     local
-}
-
-/// Whether `agent` is a remote agent no local pane relays.
-pub fn is_detached(agent: &AgentPane) -> bool {
-    agent.remote.as_ref().is_some_and(|remote| !remote.attached)
 }
 
 /// The worktree label of a remote agent: `handle@remote`.
@@ -256,9 +201,7 @@ pub fn label(worktree: &str, remote: &str) -> String {
 pub fn connectivity(remote: &RemoteAgent, now: u64) -> Option<String> {
     if remote.connected {
         return remote.ended.map(|reason| match reason {
-            EndReason::HostReboot => {
-                crate::rebrand!("exited · host rebooted · `workmux open` resumes").to_string()
-            }
+            EndReason::HostReboot => "exited · host rebooted · `workrex open` resumes".to_string(),
         });
     }
     if remote.connecting {
@@ -295,26 +238,76 @@ pub fn row_title(remote: &RemoteAgent, now: u64, title: Option<&str>) -> Option<
     })
 }
 
-/// Open a window relaying the workspace of `remote` with `workmux open`,
-/// which attaches to its running agents.
+/// Show this exact configured block on its recorded Rex server.
 pub fn open_window(remote: &RemoteAgent) -> Result<()> {
-    let exe = std::env::current_exe()?;
-    let output = std::process::Command::new(exe)
-        .args(["open", &remote.handle])
-        .current_dir(&remote.project_root)
-        .stdin(std::process::Stdio::null())
-        .output()?;
-    if output.status.success() {
-        return Ok(());
+    let record = current_record(&remote.at)?;
+    let (config, _) = record.creator_config()?;
+    let spec = RemoteSpec::resolve(&config, &record.remote)?;
+    observe::ensure_background(&spec, &record.project_root)?;
+    super::rex_jump::select_pane(&config, &record, remote.at.pane)
+}
+
+fn current_record(at: &RemoteRef) -> Result<WorkspaceRecord> {
+    cache::all()
+        .into_iter()
+        .find(|record| {
+            record.remote == at.remote
+                && record.ws_id == at.ws_id
+                && record
+                    .execution
+                    .as_ref()
+                    .is_some_and(|execution| execution.ex_id == at.ex_id)
+        })
+        .ok_or_else(|| anyhow!("The selected remote execution is no longer current"))
+}
+
+/// Resolve the row's immutable block on its owning server. Never substitute
+/// another configured pane, a user split, or a later workspace execution.
+fn native_target(at: &RemoteRef) -> Result<(RexBackend, String)> {
+    let record = current_record(at)?;
+    if !super::rex_jump::is_open(&record)? {
+        anyhow::bail!("The selected remote execution has closed");
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(anyhow!(
-        "{}",
-        stderr
-            .lines()
-            .rfind(|line| !line.trim().is_empty())
-            .unwrap_or(crate::rebrand!("workmux open failed"))
-    ))
+    let placement = record.execution.unwrap().rex.unwrap();
+    let block = placement
+        .blocks
+        .get(&at.pane)
+        .ok_or_else(|| anyhow!("Configured pane {} has no recorded Rex block", at.pane))?
+        .clone();
+    Ok((RexBackend::for_server(&placement.host_label), block))
+}
+
+pub fn send_key(at: &RemoteRef, key: &str) -> Result<()> {
+    let (server, block) = native_target(at)?;
+    server.send_key(&block, key)
+}
+
+pub fn paste_text(at: &RemoteRef, text: &str) -> Result<()> {
+    let (server, block) = native_target(at)?;
+    server.paste_text(&block, text)
+}
+
+pub fn send_keys_to_agent(at: &RemoteRef, keys: &str, agent_kind: Option<&str>) -> Result<()> {
+    let (server, block) = native_target(at)?;
+    server.send_keys_to_agent(&block, keys, agent_kind)
+}
+
+pub fn kill_pane(at: &RemoteRef) -> Result<()> {
+    let (server, block) = native_target(at)?;
+    server.kill_pane(&block)
+}
+
+pub fn capture_native(at: &RemoteRef, lines: u16) -> Result<String> {
+    let (server, block) = native_target(at)?;
+    server
+        .capture_pane(&block, lines)
+        .ok_or_else(|| anyhow!("Failed to capture the selected remote Rex pane"))
+}
+
+pub fn fetch_diff_for(at: &RemoteRef, mode: DiffMode) -> Result<CachedDiff> {
+    let record = current_record(at)?;
+    let (config, _) = record.creator_config()?;
+    fetch_diff(&config, &at.remote, &at.ws_id, mode)
 }
 
 /// ssh destinations of the configured remotes, for display.
@@ -493,6 +486,113 @@ mod tests {
     use crate::remote::node::observe::{ObservedPane, ObservedWorkspace};
     use std::path::PathBuf;
 
+    #[test]
+    fn native_input_uses_the_selected_block_and_rejects_stale_identity() {
+        use crate::remote::protocol::RexPlacement;
+        use crate::test_support::{ISOLATED_TEST_CANARY, is_isolated_child, run_isolated_test};
+        use std::os::unix::fs::PermissionsExt;
+
+        const NAME: &str = "remote::agents::tests::native_input_uses_the_selected_block_and_rejects_stale_identity";
+        if !is_isolated_child(NAME) {
+            let temp = tempfile::tempdir().unwrap();
+            run_isolated_test(
+                NAME,
+                temp.path(),
+                &[
+                    ("REX_BIN_DIR", temp.path()),
+                    ("XDG_STATE_HOME", temp.path()),
+                    ("REX_SESSION", std::path::Path::new("session:local")),
+                    ("REX_BLOCK", std::path::Path::new("block:local")),
+                ],
+            );
+            return;
+        }
+        let dir = std::env::current_dir().unwrap();
+        let version: serde_json::Value = serde_json::from_str(include_str!(
+            "../multiplexer/testdata/rex_server_version_mac.json"
+        ))
+        .unwrap();
+        let process: serde_json::Value =
+            serde_json::from_str(include_str!("../multiplexer/testdata/rex_process.json")).unwrap();
+        let mut answer = serde_json::json!({
+            "version": version, "status": {"instance_id": "instance"},
+            "reads": {"session:owned": {
+                "session": {"session_id": "session:owned", "label": "agent"},
+                "blocks": {"block:selected": {
+                    "window": {"window_id": "window:owned", "label": "agent"},
+                    "process": process
+                }}
+            }}
+        });
+        let read_path = dir.join("read.json");
+        std::fs::write(&read_path, answer.to_string()).unwrap();
+        let program = dir.join("rex");
+        std::fs::write(&program, r#"#!/bin/sh
+test -z "$REX_SESSION$REX_BLOCK" || exit 1
+case "$*" in
+  *" do -e "*) cat "$REX_BIN_DIR/read.json" ;;
+  *"api call target.resolve"*) echo '{"results":[{"status":"resolved","target":{"session_id":"session:owned"}}]}' ;;
+  *"block call -b block:selected format"*) echo '{"content":"selected pane output"}' ;;
+  *"send-key -b block:selected "*|*"block call -b block:selected write"*|*"api call block.event"*|*"api call block.close"*)
+    printf '%s\n' "$*" >> "$REX_BIN_DIR/mutations"
+    cat >> "$REX_BIN_DIR/mutations"
+    printf '\n' >> "$REX_BIN_DIR/mutations"
+    echo '{}' ;;
+  *) echo "Unexpected target: $*" >&2; exit 1 ;;
+esac
+"#).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut record = record();
+        record.project_root = dir.clone();
+        record.execution.as_mut().unwrap().rex = Some(RexPlacement {
+            host_label: "node.example".into(),
+            instance_id: "instance".into(),
+            sessions: [(0, "session:owned".into()), (1, "session:owned".into())].into(),
+            blocks: [(0, "block:closed".into()), (1, "block:selected".into())].into(),
+            shells: Default::default(),
+        });
+        record.save().unwrap();
+        let at = RemoteRef {
+            remote: "box".into(),
+            ws_id: "w1".into(),
+            ex_id: "x1".into(),
+            pane: 1,
+        };
+        send_key(&at, "Enter").unwrap();
+        paste_text(&at, "pasted").unwrap();
+        send_keys_to_agent(&at, "commit", None).unwrap();
+        assert_eq!(capture_native(&at, 20).unwrap(), "selected pane output");
+        kill_pane(&at).unwrap();
+        let mutations = std::fs::read_to_string(dir.join("mutations")).unwrap();
+        assert!(mutations.contains("-S node.example"), "{mutations}");
+        assert!(mutations.contains("block:selected"), "{mutations}");
+        assert!(
+            mutations.contains("pasted") && mutations.contains("commit"),
+            "{mutations}"
+        );
+        assert!(
+            !mutations.contains("block:closed") && !mutations.contains("block:local"),
+            "{mutations}"
+        );
+
+        let mut invalid = at.clone();
+        invalid.pane = 2;
+        assert!(send_key(&invalid, "Enter").is_err());
+        answer["status"]["instance_id"] = serde_json::json!("replacement");
+        std::fs::write(&read_path, answer.to_string()).unwrap();
+        assert!(send_key(&at, "Enter").is_err());
+        answer["status"]["instance_id"] = serde_json::json!("instance");
+        std::fs::write(&read_path, answer.to_string()).unwrap();
+        record.execution.as_mut().unwrap().ex_id = "x2".into();
+        record.save().unwrap();
+        assert!(send_key(&at, "Enter").is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("mutations")).unwrap(),
+            mutations
+        );
+        println!("{ISOLATED_TEST_CANARY}");
+    }
+
     fn record() -> WorkspaceRecord {
         let mut record = WorkspaceRecord::new(
             "w1".into(),
@@ -503,13 +603,13 @@ mod tests {
             "feat",
             "0".repeat(40),
             None,
-            "wm-feat".into(),
+            "wr-feat".into(),
             PathBuf::from("/src/app__worktrees/feat"),
         );
         record.execution = Some(ExecutionRecord {
             ex_id: "x1".into(),
             panes: vec![0, 1],
-            node_bin: "workmux-1".into(),
+            node_bin: "workrex-1".into(),
             rex: None,
         });
         record
@@ -557,7 +657,7 @@ mod tests {
         remote.handle = String::new();
         AgentPane {
             session: "main".into(),
-            window_name: "wm-feat".into(),
+            window_name: "wr-feat".into(),
             pane_id: "%7".into(),
             window_id: "@3".into(),
             window_index: Some(2),
@@ -580,6 +680,58 @@ mod tests {
     }
 
     #[test]
+    fn native_observations_discard_stale_local_remote_rows() {
+        use crate::test_support::{ISOLATED_TEST_CANARY, is_isolated_child, run_isolated_test};
+        const NAME: &str =
+            "remote::agents::tests::native_observations_discard_stale_local_remote_rows";
+        if !is_isolated_child(NAME) {
+            let temp = tempfile::tempdir().unwrap();
+            run_isolated_test(NAME, temp.path(), &[("XDG_STATE_HOME", temp.path())]);
+            return;
+        }
+        let rec = record();
+        rec.save().unwrap();
+        let owner = cache::lock_file("box", "observer-owner.v4.lock").unwrap();
+        owner.lock().unwrap();
+        let stream = cache::lock_file("box", "observer.v4.lock").unwrap();
+        stream.lock().unwrap();
+        let observation = observation(1000, vec![agent_pane(1, AgentStatus::Working)]);
+        std::fs::write(
+            cache::remote_dir("box").unwrap().join("observed.v4.json"),
+            serde_json::to_vec(&observation).unwrap(),
+        )
+        .unwrap();
+        let config = Config {
+            remotes: [(
+                "box".into(),
+                crate::config::RemoteConfig {
+                    host: "example".into(),
+                    path: None,
+                    isolation: None,
+                    binary: None,
+                    terminal: None,
+                    rex_client: None,
+                },
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let stale = attach_row(0);
+        let mut local = stale.clone();
+        local.remote = None;
+        local.pane_id = "block:local".into();
+        let result = for_views(&config, vec![stale, local], 1001);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].pane_id, "block:local");
+        assert_eq!(result[1].pane_id, detached_pane_id("w1", 1));
+        assert_eq!(result[1].status, Some(AgentStatus::Working));
+        assert_eq!(result[1].pane_title.as_deref(), Some("Fixing"));
+        assert_eq!(result[1].remote.as_ref().unwrap().at.pane, 1);
+        assert!(!result[1].remote.as_ref().unwrap().attached);
+        println!("{ISOLATED_TEST_CANARY}");
+    }
+
+    #[test]
     fn detached_agents_get_rows_from_the_observation() {
         let observations = HashMap::from([(
             "box".to_string(),
@@ -595,7 +747,7 @@ mod tests {
                 ],
             ),
         )]);
-        let rows = rows(&[record()], &[], &observations, &hosts(), 1005);
+        let rows = rows(&[record()], &observations, &hosts(), 1005);
         let [row] = rows.as_slice() else {
             panic!("{rows:?}")
         };
@@ -609,59 +761,47 @@ mod tests {
         assert_eq!(remote.handle, "feat");
 
         // Stale: still listed, disconnected since the last answer.
-        let rows = super::rows(&[record()], &[], &observations, &hosts(), 1100);
+        let rows = super::rows(&[record()], &observations, &hosts(), 1100);
         let remote = rows[0].remote.as_ref().unwrap();
         assert!(!remote.connected);
         assert_eq!(remote.last_seen, Some(1000));
     }
 
     #[test]
-    fn attach_panes_stand_in_for_their_agents() {
+    fn native_rows_preserve_the_observed_pane_identity() {
         let observations = HashMap::from([(
             "box".to_string(),
             observation(1000, vec![agent_pane(0, AgentStatus::Done)]),
         )]);
-        let rows = rows(
-            &[record()],
-            &[attach_row(0), attach_row(1)],
-            &observations,
-            &hosts(),
-            1001,
-        );
+        let rows = rows(&[record()], &observations, &hosts(), 1001);
         let [row] = rows.as_slice() else {
             panic!("{rows:?}")
         };
-        assert_eq!(row.pane_id, "%7");
+        assert_eq!(row.pane_id, detached_pane_id("w1", 0));
         assert_eq!(row.pane_title.as_deref(), Some("Fixing"));
         assert_eq!(row.agent_kind.as_deref(), Some("claude"));
-        assert!(row.remote.as_ref().unwrap().attached);
+        assert!(!row.remote.as_ref().unwrap().attached);
 
-        // An untitled agent's relay pane carries the node's hostname.
+        // A missing observed title stays missing.
         let mut untitled = agent_pane(0, AgentStatus::Done);
         untitled.agent.as_mut().unwrap().title = None;
         let observations = HashMap::from([("box".to_string(), observation(1000, vec![untitled]))]);
-        let mut relay = attach_row(0);
-        relay.pane_title = Some("node-1".into());
-        let rows = super::rows(&[record()], &[relay], &observations, &hosts(), 1001);
+        let rows = super::rows(&[record()], &observations, &hosts(), 1001);
         assert_eq!(rows[0].pane_title, None);
     }
 
     #[test]
     fn unobserved_workspaces_still_show() {
-        let rows_without = rows(&[record()], &[], &HashMap::new(), &hosts(), 5);
+        let rows_without = rows(&[record()], &HashMap::new(), &hosts(), 5);
         let [row] = rows_without.as_slice() else {
             panic!("{rows_without:?}")
         };
         assert_eq!(row.status, None);
         assert!(!row.remote.as_ref().unwrap().connected);
 
-        let with_pane = rows(&[record()], &[attach_row(1)], &HashMap::new(), &hosts(), 5);
-        assert_eq!(with_pane.len(), 1);
-        assert_eq!(with_pane[0].pane_id, "%7");
-
         let mut ended = record();
         ended.execution = None;
-        assert!(rows(&[ended], &[], &HashMap::new(), &hosts(), 5).is_empty());
+        assert!(rows(&[ended], &HashMap::new(), &hosts(), 5).is_empty());
     }
 
     #[test]
@@ -677,13 +817,13 @@ mod tests {
                 ..Default::default()
             },
         )]);
-        let rows_now = rows(&[watched], &[], &observations, &hosts(), 1002);
+        let rows_now = rows(&[watched], &observations, &hosts(), 1002);
         let remote = rows_now[0].remote.as_ref().unwrap();
         assert!(remote.connecting && !remote.connected);
         assert_eq!(connectivity(remote, 1002).as_deref(), Some("connecting"));
 
         // A remote no view of this process observes is just disconnected.
-        let unwatched = rows(&[record()], &[], &observations, &hosts(), 1002);
+        let unwatched = rows(&[record()], &observations, &hosts(), 1002);
         assert!(!unwatched[0].remote.as_ref().unwrap().connecting);
     }
 
@@ -702,14 +842,14 @@ mod tests {
                 ..Default::default()
             },
         )]);
-        let rows_now = rows(&[watched], &[], &observations, &hosts(), 1002);
+        let rows_now = rows(&[watched], &observations, &hosts(), 1002);
         let remote = rows_now[0].remote.as_ref().unwrap();
         assert!(remote.connected && !remote.connecting);
     }
 
     #[test]
     fn rows_keep_the_title_beside_connectivity() {
-        let rows = rows(&[record()], &[], &HashMap::new(), &hosts(), 5);
+        let rows = rows(&[record()], &HashMap::new(), &hosts(), 5);
         let mut remote = rows[0].remote.clone().unwrap();
         remote.last_seen = Some(1000);
         assert_eq!(

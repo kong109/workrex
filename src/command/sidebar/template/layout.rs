@@ -5,7 +5,7 @@ use ratatui::text::Span;
 
 use super::parser::{Token, TokenId};
 use super::row::TemplateRow;
-use crate::tmux_style::apply_tmux_directives;
+use crate::terminal_style::apply_terminal_directives;
 use crate::util::{display_width, truncate_with_ellipsis};
 
 /// Optional layout constraints applied while rendering a template line.
@@ -278,7 +278,7 @@ fn render_common_token(
         }
         Token::Fill => false,
         Token::Style(directive) => {
-            *user_style = apply_tmux_directives(*user_style, directive, Style::default());
+            *user_style = apply_terminal_directives(*user_style, directive, Style::default());
             false
         }
         Token::Field(_) => true,
@@ -296,7 +296,7 @@ fn render_with_layout(
     let mut used_width = 0;
     let mut first_flex_assigned = false;
     let mut slack: usize = 0;
-    // User-supplied tmux-style overlay accumulated as we scan tokens. Stale
+    // User-supplied rex-style overlay accumulated as we scan tokens. Stale
     // rows ignore this overlay so state signaling stays authoritative.
     let mut user_style = Style::default();
 
@@ -507,7 +507,7 @@ mod tests {
     fn test_agent(name: &str) -> AgentPane {
         AgentPane {
             session: "session".to_string(),
-            window_name: format!("wm-{}", name),
+            window_name: format!("wr-{}", name),
             pane_id: "%1".to_string(),
             window_id: "@1".to_string(),
             window_index: None,

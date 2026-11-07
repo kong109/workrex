@@ -3,11 +3,12 @@
 from pathlib import Path
 from typing import Any
 
-from ..conftest import MuxEnvironment, install_fake_gh_cli
+from ..conftest import install_fake_gh_cli
+from ..rex_env import RexEnvironment
 
 
 def setup_pr_remote(
-    env: MuxEnvironment,
+    env: RexEnvironment,
     repo_path: Path,
     remote_repo_path: Path,
 ) -> None:
@@ -29,7 +30,7 @@ def setup_pr_remote(
 
 
 def commit_file(
-    env: MuxEnvironment,
+    env: RexEnvironment,
     repo_path: Path,
     relative_path: str,
     content: str,
@@ -44,7 +45,7 @@ def commit_file(
 
 
 def setup_pr_remote_and_branch(
-    env: MuxEnvironment,
+    env: RexEnvironment,
     repo_path: Path,
     remote_repo_path: Path,
     branch_name: str,
@@ -104,7 +105,7 @@ def pr_view_json(
 
 
 def install_fake_pr_view(
-    env: MuxEnvironment,
+    env: RexEnvironment,
     *,
     number: int = 123,
     branch: str = "feature-branch",
