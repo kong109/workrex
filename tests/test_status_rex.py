@@ -1,7 +1,10 @@
 """Agent status from Rex program status (OSC 7501), falling back to hooks."""
 
 import json
+import os
+import shlex
 import shutil
+import signal
 import subprocess
 import textwrap
 import time
@@ -334,6 +337,100 @@ def test_a_status_target_recalled_on_another_server_reports_that_servers_pane(
 
     assert window_label(rex, agent) == get_window_name("recalled-away")
     assert window_label(other_server, caller) == f"💬\u2002{caller_window}"
+
+
+def counted_rex(env, tmp_path) -> tuple[Path, Path]:
+    """A `rex` shim that logs each call's arguments, which name its server."""
+    shim_dir = tmp_path / "rex-shim"
+    shim_dir.mkdir(exist_ok=True)
+    log = tmp_path / "rex-calls.log"
+    log.write_text("")
+    shim = shim_dir / "rex"
+    shim.write_text(
+        f'#!/bin/sh\necho "$*" >> {shlex.quote(str(log))}\n'
+        f'exec {shlex.quote(env.rex)} "$@"\n'
+    )
+    shim.chmod(0o755)
+    return shim_dir, log
+
+
+@pytest.fixture
+def stopped_server(tmp_path):
+    """A Rex server that accepts connections but never answers."""
+    (tmp_path / "stopped").mkdir()
+    stopped = RexEnvironment(tmp_path / "stopped")
+    stopped.start_server()
+    os.kill(stopped.server.pid, signal.SIGSTOP)
+    yield stopped
+    os.kill(stopped.server.pid, signal.SIGCONT)
+    stopped.stop_server()
+
+
+@pytest.mark.parametrize("target", ["live", "closed"])
+def test_a_recalled_line_reports_its_pane_when_rex_server_names_another_server(
+    rex, workrex_exe_path, repo_path, other_server, target
+):
+    # Panes of a server started with `--listen` inherit the REX_SERVER of
+    # the shell that started it, so REX_SERVER can name another live server
+    # than the one holding the caller's pane.
+    agent = start_fake_agent(rex, workrex_exe_path, repo_path, "recalled-here")
+    if target == "closed":
+        rex.kill_window(get_window_name("recalled-here"))
+    caller = rex.runner_block_id
+    caller_window = window_label(rex, caller)
+
+    report_waiting(
+        rex,
+        workrex_exe_path,
+        repo_path,
+        agent,
+        REX_BLOCK=caller,
+        REX_SERVER=other_server.server_url,
+    )
+
+    assert window_label(rex, caller) == f"💬\u2002{caller_window}"
+    if target == "live":
+        assert window_label(rex, agent) == get_window_name("recalled-here")
+
+
+def test_a_hook_in_its_own_pane_does_not_wait_on_a_hung_rex_server(
+    rex, workrex_exe_path, repo_path, stopped_server, tmp_path
+):
+    agent = start_fake_agent(rex, workrex_exe_path, repo_path, "own-pane")
+    shim_dir, log = counted_rex(rex, tmp_path)
+
+    report_waiting(
+        rex,
+        workrex_exe_path,
+        repo_path,
+        agent,
+        REX_BLOCK=agent,
+        REX_SERVER=stopped_server.server_url,
+        REX_BIN_DIR=str(shim_dir),
+    )
+
+    assert window_label(rex, agent) == f"💬\u2002{get_window_name('own-pane')}"
+    calls = log.read_text().splitlines()
+    assert not [c for c in calls if stopped_server.server_url in c], "\n".join(calls)
+
+
+def test_a_hung_server_costs_a_hook_one_version_check(
+    stopped_server, workrex_exe_path, repo_path, tmp_path
+):
+    shim_dir, log = counted_rex(stopped_server, tmp_path)
+    block = stopped_server.runner_block_id
+
+    report_waiting(
+        stopped_server,
+        workrex_exe_path,
+        repo_path,
+        block,
+        REX_BLOCK=block,
+        REX_BIN_DIR=str(shim_dir),
+    )
+
+    calls = log.read_text().splitlines()
+    assert len([c for c in calls if "server.version" in c]) == 1, "\n".join(calls)
 
 
 def test_a_window_prefix_ending_in_a_space_keeps_its_window(
