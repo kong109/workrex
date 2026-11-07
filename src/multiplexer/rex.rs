@@ -772,7 +772,9 @@ pub fn same_server(server: Option<&str>, address: &str) -> bool {
 /// one server compares equal. Unset (`None`) is the local server's default
 /// socket; `None` comes back only when that socket can't be named.
 fn canonical_endpoint(server: Option<&str>) -> Option<String> {
-    match server.map(str::trim).filter(|server| !server.is_empty()) {
+    // Rex takes `-S` as it is, so only a blank REX_SERVER, which
+    // `RexBackend::new` treats as unset, is trimmed away.
+    match server.filter(|server| !server.trim().is_empty()) {
         Some(server) => Some(canonical_address(server)),
         None => default_socket(
             std::env::var_os("REX_RUNTIME_DIR").as_deref(),
@@ -901,8 +903,8 @@ fn linux_runtime_dir(dir: &Path, uid: u32) -> RuntimeDir {
 }
 
 /// `unix://` addresses, in any case, with the path percent-decoded and
-/// symlinks, `.` and repeated slashes resolved, so every spelling of one
-/// socket compares equal. Rex refuses a relative path.
+/// spelled as `unix_endpoint` spells it, so every spelling of one socket
+/// compares equal. Rex refuses a relative path.
 fn canonical_unix_endpoint(address: &str) -> Option<String> {
     let (scheme, path) = address.split_once("://")?;
     if !scheme.eq_ignore_ascii_case("unix") {
@@ -916,10 +918,12 @@ fn canonical_unix_endpoint(address: &str) -> Option<String> {
     path.is_absolute().then(|| unix_endpoint(&path))
 }
 
+/// Rex drops `.` and `..` from a socket path before it connects, so `L/..`
+/// is the directory holding `L` even when `L` is a symlink. Symlinks are
+/// resolved only after that.
 fn unix_endpoint(path: &Path) -> String {
-    let path = path
-        .canonicalize()
-        .unwrap_or_else(|_| crate::util::normalize_path(path));
+    let path = crate::util::normalize_path(path);
+    let path = path.canonicalize().unwrap_or(path);
     format!("unix://{}", path.display())
 }
 
@@ -2849,6 +2853,53 @@ mod tests {
             Some("rex.tail4e96ed.ts.net"),
             "rex.tail4e96ed.ts.net"
         ));
+    }
+
+    #[test]
+    fn a_dotdot_after_a_symlink_names_the_directory_holding_the_link() {
+        let root = tempfile::tempdir().unwrap();
+        let (a, b) = (root.path().join("a"), root.path().join("b"));
+        std::fs::create_dir_all(a.join("sub")).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        std::os::unix::fs::symlink(a.join("sub"), b.join("L")).unwrap();
+        for dir in [&a, &b] {
+            std::fs::write(dir.join("server.sock"), "").unwrap();
+        }
+        let endpoint = |dir: &Path| {
+            format!(
+                "unix://{}",
+                dir.join("server.sock").canonicalize().unwrap().display()
+            )
+        };
+        let dotdot = b.join("L/../server.sock").display().to_string();
+        for spelling in [dotdot.clone(), format!("unix://{dotdot}")] {
+            assert!(same_server(Some(&spelling), &endpoint(&b)), "{spelling}");
+            assert!(!same_server(Some(&spelling), &endpoint(&a)), "{spelling}");
+        }
+        assert_eq!(
+            unix_endpoint(
+                &default_socket(Some(b.join("L/..").as_os_str()), None, || None).unwrap()
+            ),
+            endpoint(&b)
+        );
+    }
+
+    #[test]
+    fn rex_server_is_compared_as_rex_receives_it() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("s.sock");
+        std::fs::write(&socket, "").unwrap();
+        let exported = format!("unix://{}", socket.canonicalize().unwrap().display());
+        assert!(!same_server(
+            Some(&format!("{} ", socket.display())),
+            &exported
+        ));
+        assert!(!same_server(
+            Some(&format!(" {}", socket.display())),
+            &exported
+        ));
+        // A blank REX_SERVER is unset, as `RexBackend::new` reads it.
+        assert_eq!(canonical_endpoint(Some("  ")), canonical_endpoint(None));
     }
 
     #[test]
