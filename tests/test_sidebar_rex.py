@@ -216,25 +216,50 @@ def has_one_root_sidebar(window: dict) -> bool:
     return sidebar_of(window) is not None and sidebar_count(window) == 1
 
 
-def settles_to_one_sidebar_each(env: SidebarRex, session_id: str) -> bool:
-    """Whether every window of the session settles to exactly one sidebar,
-    at its root, within 5 s, and still has exactly one 0.5 s later.
+# How long a window may show two sidebars. Repairing a nested sidebar
+# places the root one before it closes the nested one, which takes about
+# 20-90 ms.
+MAX_DOUBLE_SIDEBAR = 0.25
+
+
+def assert_settles_to_one_sidebar_each(env: SidebarRex, session_id: str) -> None:
+    """Every window of the session settles to exactly one sidebar, at its
+    root, within 5 s, still has exactly one 0.5 s later, and never shows
+    more than one for longer than `MAX_DOUBLE_SIDEBAR`.
 
     A split that lands between the daemon's read and its placement nests the
     sidebar. The next pass places a root sidebar, then closes the nested one,
     so the window shows two for a moment before it settles."""
-    if not poll_until(
-        lambda: all(has_one_root_sidebar(w) for w in windows(env, session_id).values()),
+    doubled_since: dict[str, float] = {}
+
+    def read() -> dict:
+        now = time.monotonic()
+        current = windows(env, session_id)
+        for window_id, window in current.items():
+            if sidebar_count(window) < 2:
+                doubled_since.pop(window_id, None)
+                continue
+            since = doubled_since.setdefault(window_id, now)
+            assert now - since <= MAX_DOUBLE_SIDEBAR, (
+                f"{window.get('label')} showed {sidebar_count(window)} sidebars "
+                f"for {now - since:.2f} s",
+                layers(env, session_id),
+            )
+        return current
+
+    assert poll_until(
+        lambda: all(has_one_root_sidebar(w) for w in read().values()),
         timeout=5.0,
         poll_interval=0.02,
-    ):
-        return False
+    ), (layouts(env, session_id), layers(env, session_id))
     deadline = time.monotonic() + 0.5
     while time.monotonic() < deadline:
-        if not all(has_one_root_sidebar(w) for w in windows(env, session_id).values()):
-            return False
+        current = read()
+        assert all(has_one_root_sidebar(w) for w in current.values()), (
+            layouts(env, session_id),
+            layers(env, session_id),
+        )
         time.sleep(0.02)
-    return True
 
 
 def layers(env: SidebarRex, session_id: str) -> dict:
@@ -309,10 +334,7 @@ def test_add_gets_a_sidebar_in_either_mode(rex, _template_git_repo, mode):
             for w in windows(env, session_id).values()
             if w.get("label") == get_window_name(branch)
         ]
-    assert settles_to_one_sidebar_each(env, session_id), (
-        layouts(env, session_id),
-        layers(env, session_id),
-    )
+    assert_settles_to_one_sidebar_each(env, session_id)
     assert len(tiled(windows(env, session_id)[added["window_id"]])["blocks"]) == 3
 
 
