@@ -32,6 +32,7 @@ from .support.agent_hooks import (
     copilot_format,
     drop_registration,
     fire,
+    runs_for,
 )
 from .support.agent_state import list_agent_state_files, read_agent_state
 from .support.setup import install_status_hooks, update_status_hooks
@@ -49,6 +50,15 @@ MUSE = HookedAgent(
     register="SessionStart",
     events={"working": "UserPromptSubmit", "waiting": "Notification", "done": "Stop"},
     env={"MUSE_SESSION_ID": SESSION},
+    payloads={
+        "SessionStart": {"source": "startup"},
+        **{
+            event: {"tool_name": "Bash", "tool_use_id": "toolu_01"}
+            for event in ["ToolUseStart", "PostToolUse", "PostToolUseFailure"]
+        },
+    },
+    tool_events=["ToolUseStart", "PostToolUse", "PostToolUseFailure"],
+    ending_events=["Interrupt", "SessionEnd"],
 )
 GROK = HookedAgent(
     kind="grok",
@@ -58,6 +68,13 @@ GROK = HookedAgent(
     read=claude_format,
     register="SessionStart",
     events={"working": "UserPromptSubmit", "waiting": "Notification", "done": "Stop"},
+    payloads={
+        "SessionStart": {"source": "startup"},
+        "PostToolUse": {"tool_name": "run_terminal_cmd"},
+        "SessionEnd": {"reason": "exit"},
+    },
+    tool_events=["PostToolUse"],
+    ending_events=["SessionEnd"],
 )
 COPILOT = HookedAgent(
     kind="copilot",
@@ -68,6 +85,11 @@ COPILOT = HookedAgent(
     register="sessionStart",
     # Copilot's hooks have no permission event, so it never waits.
     events={"working": "userPromptSubmitted", "done": "agentStop"},
+    payloads={
+        "sessionStart": {"source": "new"},
+        "postToolUse": {"toolName": "bash", "toolArgs": "{}"},
+    },
+    tool_events=["postToolUse"],
 )
 AGY = HookedAgent(
     kind="agy",
@@ -87,6 +109,17 @@ GEMINI = HookedAgent(
     read=claude_format,
     register="SessionStart",
     events={"working": "BeforeAgent", "waiting": "Notification", "done": "AfterAgent"},
+    payloads={
+        "SessionStart": {"source": "startup"},
+        "Notification": {
+            "notification_type": "ToolPermission",
+            "message": "Allow run_shell_command?",
+        },
+        "AfterTool": {"tool_name": "run_shell_command"},
+        "SessionEnd": {"reason": "exit"},
+    },
+    tool_events=["AfterTool"],
+    ending_events=["SessionEnd"],
 )
 CODEX = HookedAgent(
     kind="codex",
@@ -100,6 +133,14 @@ CODEX = HookedAgent(
         "waiting": "PermissionRequest",
         "done": "Stop",
     },
+    payloads={
+        "SessionStart": {"source": "startup"},
+        "PermissionRequest": {"tool_name": "Bash"},
+        "PostToolUse": {"tool_name": "Bash"},
+        "SubagentStart": {"agent_id": "a1", "agent_type": "worker"},
+        "SubagentStop": {"agent_id": "a1", "agent_type": "worker"},
+    },
+    tool_events=["PostToolUse", "SubagentStart", "SubagentStop"],
 )
 AGENTS = [MUSE, AGY, GROK, COPILOT, GEMINI, CODEX]
 
@@ -118,7 +159,7 @@ class Running:
         self.env, self.exe, self.repo, self.agent = env, exe, repo, agent
         (env.home_path / agent.config_dir).mkdir(parents=True, exist_ok=True)
         install_status_hooks(env, exe)
-        self.commands = agent.commands(env.home_path)
+        self.hooks = agent.hooks(env.home_path)
         binary = build_native_agent(env.tmp_path / "agent-bin", agent.process)
         write_workrex_config(repo, panes=[{"focus": True}])
         run_workrex_add(env, exe, repo, branch)
@@ -131,15 +172,25 @@ class Running:
             lambda: foreground_name(env, self.block) == agent.process, timeout=10
         ), foreground_name(env, self.block)
 
-    def fire(self, event: str, **payload):
-        commands = self.commands.get(event)
-        assert commands, f"setup installed no {event} hook: {self.commands}"
-        for command in commands:
+    def fire(self, event: str, **fields):
+        """Fire `event` with the agent's payload for it, plus `fields`, through
+        every installed hook whose matcher the payload matches."""
+        payload = {
+            "session_id": SESSION,
+            "hook_event_name": event,
+            **self.agent.payloads.get(event, {}),
+            **fields,
+        }
+        hooks = self.hooks.get(event)
+        assert hooks, f"setup installed no {event} hook: {self.hooks}"
+        runs = [hook for hook in hooks if runs_for(hook, event, payload)]
+        assert runs, f"no installed {event} hook matches {payload}: {hooks}"
+        for hook in runs:
             fire(
                 self.env,
                 self.exe,
-                command,
-                {"session_id": SESSION, "hook_event_name": event, **payload},
+                hook.command,
+                payload,
                 block=self.block,
                 cwd=self.worktree,
                 extra_env=self.agent.env,
@@ -202,6 +253,49 @@ def test_installed_hooks_drive_the_agents_status(
         assert running.status() == status, (event, running.agent_record())
         if status in ICONS:
             assert running.label() == f"{ICONS[status]}{SEPARATOR}{running.window}"
+
+
+TOOL_EVENTS = [(agent, event) for agent in AGENTS for event in agent.tool_events]
+
+
+@pytest.mark.parametrize(
+    ("agent", "event"),
+    TOOL_EVENTS,
+    ids=[f"{agent.kind}-{event}" for agent, event in TOOL_EVENTS],
+)
+def test_a_tool_call_mid_turn_keeps_the_agent_working(
+    rex, workrex_exe_path, repo_path, agent: HookedAgent, event: str
+):
+    running = Running(rex, workrex_exe_path, repo_path, agent, f"tool-{agent.kind}")
+    running.fire(agent.register)
+    running.fire(agent.events["working"], prompt="fix the bug")
+    running.fire(event)
+    assert running.status() == "working"
+    if "waiting" in agent.events:
+        # A tool call after a permission prompt means the user answered it.
+        running.fire(agent.events["waiting"])
+        assert running.status() == "waiting"
+        running.fire(event)
+        assert running.status() == "working"
+
+
+ENDING_EVENTS = [(agent, event) for agent in AGENTS for event in agent.ending_events]
+
+
+@pytest.mark.parametrize(
+    ("agent", "event"),
+    ENDING_EVENTS,
+    ids=[f"{agent.kind}-{event}" for agent, event in ENDING_EVENTS],
+)
+def test_the_end_of_a_turn_or_session_leaves_the_agent_done(
+    rex, workrex_exe_path, repo_path, agent: HookedAgent, event: str
+):
+    running = Running(rex, workrex_exe_path, repo_path, agent, f"end-{agent.kind}")
+    running.fire(agent.register)
+    running.fire(agent.events["working"], prompt="fix the bug")
+    running.fire(event)
+    assert running.status() == "done"
+    assert running.label() == f"✅{SEPARATOR}{running.window}"
 
 
 @pytest.fixture
@@ -339,8 +433,8 @@ def test_setup_updates_hooks_an_older_build_installed(
     drop_registration(hooks_file)
 
     update_status_hooks(rex, workrex_exe_path, "update available", "register-agent")
-    commands = agent.commands(rex.home_path)
-    assert any("register-agent" in c for c in commands[agent.register]), commands
+    hooks = agent.hooks(rex.home_path)
+    assert any("register-agent" in h.command for h in hooks[agent.register]), hooks
 
 
 AGENT_DIR = re.compile(r"[A-Z][A-Z0-9_]*_(?:HOME|DIR|CONFIG)")

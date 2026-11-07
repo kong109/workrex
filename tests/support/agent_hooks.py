@@ -6,6 +6,7 @@ actually wrote, with the payload each agent sends on stdin.
 """
 
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -16,31 +17,65 @@ import pytest
 
 from ..rex_env import RexEnvironment
 
-Commands = dict[str, list[str]]
+
+@dataclass(frozen=True)
+class Hook:
+    command: str
+    matcher: str | None = None
+    """A regex the event's subject must match in full; none runs always."""
 
 
-def claude_format(config: dict) -> Commands:
-    """`{"hooks": {Event: [{"hooks": [{"command": ...}]}]}}`, the format
-    Claude Code set and Muse, Grok, Gemini and Codex follow."""
+Hooks = dict[str, list[Hook]]
+
+# The payload field an event's matcher tests, in Claude Code's format and
+# the agents that follow it.
+MATCHED_FIELDS = {
+    "SessionStart": "source",
+    "SessionEnd": "reason",
+    "Notification": "notification_type",
+    "PreToolUse": "tool_name",
+    "PostToolUse": "tool_name",
+    "PostToolUseFailure": "tool_name",
+    "PermissionRequest": "tool_name",
+    "BeforeTool": "tool_name",
+    "AfterTool": "tool_name",
+}
+
+
+def runs_for(hook: Hook, event: str, payload: dict) -> bool:
+    """Whether the agent runs `hook` for `event` with `payload`."""
+    if hook.matcher in (None, "", "*"):
+        return True
+    subject = str(payload.get(MATCHED_FIELDS.get(event, ""), ""))
+    return re.fullmatch(hook.matcher, subject) is not None
+
+
+def claude_format(config: dict) -> Hooks:
+    """`{"hooks": {Event: [{"matcher": ..., "hooks": [{"command": ...}]}]}}`,
+    the format Claude Code set and Muse, Grok, Gemini and Codex follow."""
     return {
-        event: [hook["command"] for group in groups for hook in group["hooks"]]
+        event: [
+            Hook(hook["command"], group.get("matcher"))
+            for group in groups
+            for hook in group["hooks"]
+        ]
         for event, groups in config["hooks"].items()
     }
 
 
-def copilot_format(config: dict) -> Commands:
+def copilot_format(config: dict) -> Hooks:
     """`{"hooks": {event: [{"bash": ...}]}}`."""
     return {
-        event: [hook["bash"] for hook in hooks]
+        event: [Hook(hook["bash"]) for hook in hooks]
         for event, hooks in config["hooks"].items()
     }
 
 
-def agy_format(config: dict) -> Commands:
+def agy_format(config: dict) -> Hooks:
     """`{"workrex-status": {Event: [{"command": ...}]}}`, one named group in
     Antigravity's shared hooks file."""
     return {
-        event: [hook["command"] for hook in hooks]
+        event: [Hook(hook["command"], hook.get("matcher")) for hook in hooks]
         for event, hooks in config["workrex-status"].items()
     }
 
@@ -55,7 +90,7 @@ class HookedAgent:
     """Created under HOME so setup detects the agent."""
     hooks_file: str
     """Where setup installs the hooks, relative to HOME."""
-    read: Callable[[dict], Commands]
+    read: Callable[[dict], Hooks]
     register: str = "SessionStart"
     """The event whose hook registers the agent."""
     events: dict[str, str] = field(default_factory=dict)
@@ -63,7 +98,14 @@ class HookedAgent:
     env: dict[str, str] = field(default_factory=dict)
     """Variables the agent sets for the hooks it runs."""
 
-    def commands(self, home: Path) -> Commands:
+    payloads: dict[str, dict] = field(default_factory=dict)
+    """Event -> the fields the agent sends with it."""
+    tool_events: list[str] = field(default_factory=list)
+    """Events the agent sends for a tool call inside a turn."""
+    ending_events: list[str] = field(default_factory=list)
+    """Events besides the `done` one that end the turn or the session."""
+
+    def hooks(self, home: Path) -> Hooks:
         return self.read(json.loads((home / self.hooks_file).read_text()))
 
 
