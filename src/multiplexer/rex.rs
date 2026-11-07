@@ -761,15 +761,60 @@ fn drain(
 /// cannot be mistaken for any server's.
 const UNRESOLVED_INSTANCE: &str = "unresolved";
 
-/// `unix://` addresses with the path percent-decoded and symlinks, `.` and
-/// repeated slashes resolved, so every spelling of one socket compares equal.
-/// Whether two server addresses name one server, comparing Unix sockets by
-/// their canonical path.
-pub fn same_server(a: &str, b: &str) -> bool {
-    let canonical = |address: &str| canonical_unix_endpoint(address).unwrap_or(address.into());
-    canonical(a) == canonical(b)
+/// Whether `server`, as REX_SERVER spells it (`None` when unset), names the
+/// server at `address`.
+pub fn same_server(server: Option<&str>, address: &str) -> bool {
+    canonical_endpoint(server).is_some_and(|server| server == canonical_address(address))
 }
 
+/// The server `rex -S server` reaches, spelled one way, so every spelling of
+/// one server compares equal. Unset (`None`) is the local server's default
+/// socket; `None` comes back only when that socket can't be named.
+fn canonical_endpoint(server: Option<&str>) -> Option<String> {
+    match server.map(str::trim).filter(|server| !server.is_empty()) {
+        Some(server) => Some(canonical_address(server)),
+        None => default_socket(
+            std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+            home::home_dir().as_deref(),
+        )
+        .map(|socket| unix_endpoint(&socket)),
+    }
+}
+
+/// Rex reads a bare path as a Unix socket and `host:port` as an HTTP
+/// address. Any other address, such as a host's label, stays as it is.
+fn canonical_address(address: &str) -> String {
+    if let Some(endpoint) = canonical_unix_endpoint(address) {
+        endpoint
+    } else if address.starts_with('/') {
+        unix_endpoint(Path::new(address))
+    } else if !address.contains("://")
+        && address
+            .rsplit_once(':')
+            .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
+    {
+        format!("http://{address}")
+    } else {
+        address.to_string()
+    }
+}
+
+/// Where rex looks for the local server when REX_SERVER is unset: under an
+/// absolute XDG_RUNTIME_DIR, else on macOS under Application Support. Rex's
+/// fallback elsewhere isn't known, so it isn't named.
+fn default_socket(runtime_dir: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Option<PathBuf> {
+    let runtime_dir = runtime_dir.map(Path::new).filter(|dir| dir.is_absolute());
+    if let Some(dir) = runtime_dir {
+        return Some(dir.join("rex").join("server.sock"));
+    }
+    if cfg!(target_os = "macos") {
+        return home.map(|home| home.join("Library/Application Support/rex/server.sock"));
+    }
+    None
+}
+
+/// `unix://` addresses with the path percent-decoded and symlinks, `.` and
+/// repeated slashes resolved, so every spelling of one socket compares equal.
 fn canonical_unix_endpoint(address: &str) -> Option<String> {
     let path = address.strip_prefix("unix://")?;
     let path = PathBuf::from(
@@ -777,10 +822,14 @@ fn canonical_unix_endpoint(address: &str) -> Option<String> {
             .decode_utf8_lossy()
             .into_owned(),
     );
+    Some(unix_endpoint(&path))
+}
+
+fn unix_endpoint(path: &Path) -> String {
     let path = path
         .canonicalize()
-        .unwrap_or_else(|_| crate::util::normalize_path(&path));
-    Some(format!("unix://{}", path.display()))
+        .unwrap_or_else(|_| crate::util::normalize_path(path));
+    format!("unix://{}", path.display())
 }
 
 pub fn in_rex_terminal() -> bool {
@@ -1018,9 +1067,7 @@ impl RexBackend {
     }
 
     fn verdict_key(&self) -> Option<String> {
-        self.server
-            .as_deref()
-            .map(|server| canonical_unix_endpoint(server).unwrap_or_else(|| server.to_string()))
+        canonical_endpoint(self.server.as_deref())
     }
 
     /// Keeps the verdict on a `server.version` answer read some other way,
@@ -2667,6 +2714,45 @@ mod tests {
             assert_eq!(rex.resolve_instance_id().unwrap(), canonical, "{spelling}");
         }
         assert_eq!(canonical_unix_endpoint("rex.tail4e96ed.ts.net"), None);
+    }
+
+    #[test]
+    fn every_spelling_rex_accepts_names_one_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("server.sock");
+        std::fs::write(&socket, "").unwrap();
+        let exported = format!("unix://{}", socket.canonicalize().unwrap().display());
+        let path = socket.display().to_string();
+        for spelling in [exported.clone(), format!("unix://{path}"), path.clone()] {
+            assert!(same_server(Some(&spelling), &exported), "{spelling}");
+        }
+        assert!(!same_server(Some("/tmp/other.sock"), &exported));
+
+        assert!(same_server(Some("127.0.0.1:7600"), "http://127.0.0.1:7600"));
+        assert!(same_server(Some("[::1]:7600"), "http://[::1]:7600"));
+        assert!(!same_server(
+            Some("127.0.0.1:7600"),
+            "http://127.0.0.1:7601"
+        ));
+        assert!(same_server(
+            Some("rex.tail4e96ed.ts.net"),
+            "rex.tail4e96ed.ts.net"
+        ));
+    }
+
+    #[test]
+    fn an_unset_server_is_the_default_socket() {
+        let runtime = Path::new("/run/user/501");
+        assert_eq!(
+            default_socket(Some(runtime.as_os_str()), Some(Path::new("/home/u"))),
+            Some(runtime.join("rex/server.sock"))
+        );
+        let home = Path::new("/Users/u");
+        let fallback = cfg!(target_os = "macos")
+            .then(|| home.join("Library/Application Support/rex/server.sock"));
+        // Rex ignores a relative runtime directory.
+        assert_eq!(default_socket(Some("run".as_ref()), Some(home)), fallback);
+        assert_eq!(default_socket(None, Some(home)), fallback);
     }
 
     #[test]

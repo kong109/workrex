@@ -189,13 +189,8 @@ fn run_for_status_target(
         if live_or_warn(&*target_mux, own, "caller pane") {
             return update(&*target_mux, own);
         }
-        let own_server = std::env::var("REX_SERVER")
-            .ok()
-            .filter(|server| !server.trim().is_empty());
-        if own_server
-            .as_deref()
-            .is_none_or(|server| !rex::same_server(server, &target.instance))
-        {
+        let own_server = std::env::var("REX_SERVER").ok();
+        if !rex::same_server(own_server.as_deref(), &target.instance) {
             let own_mux = create_backend(target.backend);
             if live_or_warn(&*own_mux, own, "caller pane") {
                 return update(&*own_mux, own);
