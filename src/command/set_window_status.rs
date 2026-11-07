@@ -85,16 +85,16 @@ pub fn run(cmd: SetWindowStatusCommand) -> Result<()> {
 
     let config = Config::load(None)?;
     let hook = read_hook_input();
-    let in_muse = std::env::var_os("MUSE_SESSION_ID").is_some();
-    if hook
-        .as_ref()
-        .is_some_and(|hook| hook.is_stale_muse_event(&cmd, in_muse))
-    {
+    let muse_session = std::env::var("MUSE_SESSION_ID").ok();
+    let in_muse = muse_session.is_some();
+    if hook.as_ref().is_some_and(|hook| {
+        hook.is_stale_muse_event(&cmd, in_muse) || hook.is_idle_notification(&cmd)
+    }) {
         return Ok(());
     }
     let only_clears_waiting = hook
         .as_ref()
-        .is_some_and(|hook| hook.only_clears_waiting(in_muse));
+        .is_some_and(|hook| hook.only_clears_waiting(muse_session.as_deref()));
     run_for_status_target(hook.as_ref(), |mux, pane_id| {
         if only_clears_waiting
             && crate::state::agent_status(mux, pane_id) != Some(AgentStatus::Waiting)
@@ -347,6 +347,9 @@ struct HookInput {
     /// Set by Muse on events it sends after the turn's `Stop`.
     #[serde(default, deserialize_with = "lenient_bool")]
     post_stop: Option<bool>,
+    /// Grok sends this beside its camelCase `notificationType`.
+    #[serde(default, deserialize_with = "lenient_string")]
+    notification_type: Option<String>,
 }
 
 fn lenient_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -409,10 +412,29 @@ impl HookInput {
     }
 
     /// Muse runs `ToolUseStart` hooks only asynchronously, so one can land
-    /// after the turn's `Stop` or `Interrupt`. Its only job is to clear
-    /// `waiting` once the user answers an approval.
-    fn only_clears_waiting(&self, in_muse: bool) -> bool {
-        in_muse && self.hook_event_name.as_deref() == Some("ToolUseStart")
+    /// after the turn's `Stop` or `Interrupt`. Muse also reports tool calls
+    /// from side sessions of its own, such as the reminder check it runs
+    /// around each turn, under their own `session_id`, and only their
+    /// `ToolUseStart` is marked `post_stop`. Neither kind is the pane's agent
+    /// at work, so their only job is to clear `waiting` once the user answers
+    /// an approval.
+    fn only_clears_waiting(&self, muse_session: Option<&str>) -> bool {
+        let Some(main) = muse_session else {
+            return false;
+        };
+        self.hook_event_name.as_deref() == Some("ToolUseStart")
+            || self.session_id().is_some_and(|session| session != main)
+    }
+
+    /// Grok sends `idle_prompt` about a minute after any turn ends and
+    /// `task_complete` when one completes. Neither asks for input, so neither
+    /// sets `waiting`. Claude Code's hook matcher already leaves them out.
+    fn is_idle_notification(&self, cmd: &SetWindowStatusCommand) -> bool {
+        matches!(cmd, SetWindowStatusCommand::Waiting)
+            && matches!(
+                self.notification_type.as_deref(),
+                Some("idle_prompt" | "task_complete")
+            )
     }
 
     fn transcript_path(&self) -> Option<&Path> {
@@ -908,11 +930,52 @@ mod tests {
     fn only_muse_tool_use_start_is_limited_to_clearing_waiting() {
         let start =
             parse_hook_input(r#"{"hook_event_name":"ToolUseStart","session_id":"s"}"#).unwrap();
-        assert!(start.only_clears_waiting(true));
-        assert!(!start.only_clears_waiting(false));
+        assert!(start.only_clears_waiting(Some("s")));
+        assert!(!start.only_clears_waiting(None));
         let done =
             parse_hook_input(r#"{"hook_event_name":"PostToolUse","session_id":"s"}"#).unwrap();
-        assert!(!done.only_clears_waiting(true));
+        assert!(!done.only_clears_waiting(Some("s")));
+    }
+
+    #[test]
+    fn muse_side_session_tools_only_clear_waiting() {
+        // Muse's reminder check after Stop marks only its ToolUseStart as
+        // post_stop; the matching PostToolUse carries the side session's id.
+        let side = parse_hook_input(
+            r#"{"hook_event_name":"PostToolUse","tool_name":"submit_reminder_decision","tool_use_id":"call_2","session_id":"side"}"#,
+        )
+        .unwrap();
+        assert!(side.only_clears_waiting(Some("main")));
+        assert!(!side.only_clears_waiting(None));
+        let agent = parse_hook_input(
+            r#"{"hook_event_name":"PostToolUse","tool_name":"edit_file","session_id":"main"}"#,
+        )
+        .unwrap();
+        assert!(!agent.only_clears_waiting(Some("main")));
+        let no_session = parse_hook_input(r#"{"hook_event_name":"PostToolUse"}"#).unwrap();
+        assert!(!no_session.only_clears_waiting(Some("main")));
+    }
+
+    #[test]
+    fn grok_idle_notifications_do_not_mean_waiting() {
+        let waiting = SetWindowStatusCommand::Waiting;
+        for payload in [
+            r#"{"hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"s"}"#,
+            r#"{"hook_event_name":"Notification","hookEventName":"notification","notification_type":"task_complete","notificationType":"task_complete","session_id":"s"}"#,
+        ] {
+            let hook = parse_hook_input(payload).unwrap();
+            assert!(hook.is_idle_notification(&waiting), "{payload}");
+            assert!(!hook.is_idle_notification(&SetWindowStatusCommand::Done), "{payload}");
+        }
+        for payload in [
+            r#"{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s"}"#,
+            r#"{"notification_type":"ToolPermission","session_id":"s"}"#,
+            r#"{"hook_event_name":"Notification","session_id":"s"}"#,
+            r#"{"notification_type":7,"session_id":"s"}"#,
+        ] {
+            let hook = parse_hook_input(payload).unwrap();
+            assert!(!hook.is_idle_notification(&waiting), "{payload}");
+        }
     }
 
     #[test]
@@ -1245,6 +1308,7 @@ mod tests {
             initial_prompt: None,
             tool_use_id: None,
             post_stop: None,
+            notification_type: None,
             hook_event_name: None,
         };
 
@@ -1272,6 +1336,7 @@ mod tests {
             initial_prompt: None,
             tool_use_id: None,
             post_stop: None,
+            notification_type: None,
             hook_event_name: None,
         };
         assert!(!continuation_owns_ancestry_pane(
