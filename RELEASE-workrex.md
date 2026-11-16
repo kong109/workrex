@@ -2,8 +2,8 @@
 
 Fork releases are tagged `v<upstream version>-rex.<n>`, for example
 `v0.1.278-rex.1`. A plain `v0.1.278` is upstream's tag, which the fork already
-carries. The release workflow builds `workrex-darwin-arm64` and
-`workrex-linux-amd64` as `.tar.gz` plus `.sha256` and publishes them on
+carries. The release workflow builds `workrex-darwin-arm64`,
+`workrex-linux-amd64` and `workrex-linux-arm64` as `.tar.gz` plus `.sha256` and publishes them on
 kong109/workrex. It does not publish to crates.io or Homebrew. It fails unless
 the tag has the `-rex.<n>` suffix and equals `v<Cargo.toml version>`
 (`scripts/check-release-tag.sh`).

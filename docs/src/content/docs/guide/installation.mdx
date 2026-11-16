@@ -5,8 +5,8 @@ description: Install workrex from a release binary or from source, and set up sh
 
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 
-workrex ships prebuilt binaries for macOS on Apple Silicon (`darwin-arm64`) and
-Linux on x86_64 (`linux-amd64`). On other platforms,
+workrex ships prebuilt binaries for macOS on Apple Silicon (`darwin-arm64`),
+Linux on x86_64 (`linux-amd64`) and Linux on ARM64 (`linux-arm64`). On other platforms,
 [build from source](#build-from-source).
 
 Workrex needs a running Rex server and the `rex` CLI on your PATH. See the
@@ -36,7 +36,7 @@ environment variables. See [Configuration](/guide/configuration/).
 
 Each [release](https://github.com/kong109/workrex/releases) has a
 `workrex-<platform>.tar.gz` and a matching `.sha256` file. This example installs
-the macOS build. For Linux, use `workrex-linux-amd64` and `sha256sum -c`.
+the macOS build. For Linux, use `workrex-linux-amd64` or `workrex-linux-arm64` and `sha256sum -c`.
 
 ```bash
 curl -fsSLO https://github.com/kong109/workrex/releases/latest/download/workrex-darwin-arm64.tar.gz
