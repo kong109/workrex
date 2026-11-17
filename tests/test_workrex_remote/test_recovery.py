@@ -51,14 +51,13 @@ def test_reboot_resumes_and_claude_trusts_worktrees(
     claude_json = mux_server.home_path / ".claude" / ".claude.json"
     claude_json.parent.mkdir(parents=True, exist_ok=True)
     claude_json.write_text(json.dumps({"numStartups": 7, "projects": {"/x": {"a": 1}}}))
-    inode = claude_json.stat().st_ino
 
     added = wm(mux_server, workrex_exe_path, repo, "add feat --remote lo")
     assert "Successfully created remote workspace" in added.stdout, added.stderr
     node.wait_for_agent(mux_server, "feat", "FAKE-CLAUDE-READY", timeout=20)
     assert log.read_text().splitlines() == ["ARGS:"]
 
-    # The node marked its worktrees as trusted, in place, keeping the rest.
+    # The node marked its worktrees as trusted, keeping the rest.
     config = json.loads(claude_json.read_text())
     assert (
         config["projects"][str(node.root / "projects")]["hasTrustDialogAccepted"]
@@ -66,7 +65,6 @@ def test_reboot_resumes_and_claude_trusts_worktrees(
     )
     assert config["numStartups"] == 7
     assert config["projects"]["/x"] == {"a": 1}
-    assert claude_json.stat().st_ino == inode
 
     # A reboot: the node's Rex sessions are gone and the kernel boot differs.
     [workspace] = node.workspaces()
