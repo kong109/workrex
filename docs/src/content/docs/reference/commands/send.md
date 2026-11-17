@@ -21,6 +21,8 @@ workrex send <name> --file <file>
 | ------------------- | -------------------------- |
 | `-f, --file <file>` | Read the text from a file. |
 
+`send` also reaches an agent that workrex launched before the agent reports any status, so you can answer a prompt that holds a `stalled` agent. It fails when the agent's pane is back at its shell, because the shell would run the text as a command.
+
 `send` removes trailing newlines from the text. It fails when the text is empty, and when you give no text and stdin is a terminal.
 
 For a workspace on a [remote server](/guide/remote/), `send` delivers the text to the remote agent. See [commands on remote workspaces](/guide/remote/usage/#commands-on-remote-workspaces).

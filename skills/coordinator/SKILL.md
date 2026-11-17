@@ -113,7 +113,7 @@ workrex wait agent-a agent-b --status working --timeout 120
 ```
 
 Exit codes: 0 = reached target, 1 = timeout, 2 = worktree not found, 3 = agent
-exited unexpectedly.
+exited unexpectedly, 4 = agent stalled.
 
 ### Resume Waiting After Interruptions
 
@@ -290,7 +290,9 @@ remaining handles. Keep finished handles out of subsequent wait commands.
    session. If placement is ambiguous, retry with `--parent-session` as described
    above.
 3. **Always confirm agents started** with `workrex wait --status working` before
-   waiting for completion.
+   waiting for completion. If an agent shows `stalled` (wait exit 4), it is
+   held before it could report status, often at a prompt. Run
+   `workrex capture` on it and answer any prompt with `workrex send`.
 4. **Keep waiting across interruptions.** Track every unprocessed agent until it
    is merged or removed. After handling any intervening user request, check the
    full tracked set and resume `workrex wait` for all agents that are still

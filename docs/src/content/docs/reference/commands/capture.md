@@ -19,6 +19,8 @@ workrex capture <name> [--lines <n>]
 | ----------------- | ----------------------------------------- |
 | `-n, --lines <n>` | Number of lines to print. Default: `200`. |
 
+`capture` works on an agent that workrex launched before the agent reports any status, so you can see a prompt that holds a `stalled` agent.
+
 `capture` strips ANSI escape codes and trailing blank lines before it keeps the last `<n>` lines.
 
 For a workspace on a [remote server](/guide/remote/), `capture` reads the remote agent's pane.
