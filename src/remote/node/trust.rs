@@ -32,11 +32,13 @@ fn ensure(root: &NodeRoot, workspace: &Workspace, config: &Config, store: &Store
         dirs.extend(with_canonical(&root.path.join("projects")));
     }
     match workspace.isolation {
-        // A container sees Claude's sandbox config and the codex home
-        // mounted from the host; the other agents' stores are not mounted.
+        // A container sees Claude's sandbox config (a file mounted on its
+        // own, so rewritten in place) and the codex home (a directory)
+        // mounted from the host. Grok and Muse stores are not mounted, and
+        // agy has no container mount, so those get nothing here.
         RemoteIsolation::Container => match store.kind {
             "claude" => match crate::sandbox::SandboxPaths::new() {
-                Some(paths) => agent_trust::ensure_trusted(
+                Some(paths) => agent_trust::ensure_trusted_in_place(
                     &paths.config_file,
                     &dirs,
                     crate::sandbox::CLAUDE_ONBOARDING_JSON,
@@ -49,10 +51,7 @@ fn ensure(root: &NodeRoot, workspace: &Workspace, config: &Config, store: &Store
             },
             _ => Ok(()),
         },
-        RemoteIsolation::None => match host_path(root, workspace, config, store) {
-            Some(path) => store.trust(&path, &dirs),
-            None => Ok(()),
-        },
+        RemoteIsolation::None => store.trust(&host_path(root, workspace, config, store)?, &dirs),
     }
 }
 
@@ -66,10 +65,9 @@ pub fn forget_for_removal(root: &NodeRoot, workspace: &Workspace, config: &Confi
     if workspace.isolation == RemoteIsolation::Container {
         return;
     }
-    let Some(path) = host_path(root, workspace, config, store) else {
-        return;
-    };
-    if let Err(err) = store.forget(&path, &workspace.worktree_path) {
+    let result = host_path(root, workspace, config, store)
+        .and_then(|path| store.forget(&path, &workspace.worktree_path));
+    if let Err(err) = result {
         eprintln!("{BIN}: could not drop the worktree's trust entry: {err:#}");
     }
 }
@@ -93,7 +91,7 @@ fn host_path(
     workspace: &Workspace,
     config: &Config,
     store: &Store,
-) -> Option<std::path::PathBuf> {
+) -> Result<std::path::PathBuf> {
     store.path(
         |name| host_env(root, workspace, config, store.kind, name),
         workspace.working_dir(),
@@ -238,7 +236,8 @@ mod tests {
                 &workspace,
                 &config,
                 agent_trust::store("codex").unwrap()
-            ),
+            )
+            .ok(),
             Some(workspace.working_dir().join(".codex-state/config.toml"))
         );
     }

@@ -12,7 +12,7 @@
 //!   removes the worktree.
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -89,30 +89,38 @@ pub fn store(kind: &str) -> Option<&'static Store> {
 
 impl Store {
     /// The store's file, reading the config-directory override through
-    /// `env` (unquoted, with `~/` expanded, relative to `working_dir`).
+    /// `env` (unquoted, with `~` and `~/` expanded, relative to
+    /// `working_dir`). An override that needs more shell expansion than
+    /// that is an error: the agent reads whatever the shell makes of it,
+    /// so neither the literal path nor the default is the right file.
     pub fn path(
         &self,
         env: impl Fn(&str) -> Option<String>,
         working_dir: &Path,
-    ) -> Option<PathBuf> {
-        let home = home::home_dir()?;
+    ) -> Result<PathBuf> {
+        let home = home::home_dir().context("Could not determine the home directory")?;
         let from_env = self.dir_env.and_then(|(name, sub)| {
             env(name)
-                .filter(|dir| !dir.is_empty())
-                .map(|dir| (dir, sub))
+                .filter(|value| !value.is_empty())
+                .map(|value| (name, value, sub))
         });
         let dir = match from_env {
-            Some((dir, sub)) => {
-                let dir = dir.trim_matches(['"', '\'']);
-                match dir.strip_prefix("~/") {
-                    Some(rest) => home.join(rest),
-                    None => working_dir.join(dir),
-                }
-                .join(sub)
+            Some((name, value, sub)) => {
+                let dir = value.trim_matches(['"', '\'']);
+                let dir = if dir == "~" {
+                    home
+                } else if let Some(rest) = dir.strip_prefix("~/") {
+                    home.join(rest)
+                } else if dir.starts_with('~') || dir.contains(['$', '`']) {
+                    bail!("{name}={value} needs shell expansion; not guessing where it points");
+                } else {
+                    working_dir.join(dir)
+                };
+                dir.join(sub)
             }
             None => home.join(self.home_dir),
         };
-        Some(dir.join(self.file))
+        Ok(dir.join(self.file))
     }
 
     /// The folders to mark: the repository or the worktree, as the agent
@@ -137,7 +145,7 @@ impl Store {
     /// other entry and an explicit "not trusted" decision.
     pub fn trust(&self, path: &Path, dirs: &[String]) -> Result<()> {
         match self.kind {
-            "claude" => ensure_trusted(path, dirs, "{}"),
+            "claude" => ensure_claude_trusted(path, dirs, "{}", WriteMode::Replace),
             "codex" => ensure_codex_trusted(path, dirs),
             "grok" => ensure_grok_trusted(path, dirs),
             "muse" => ensure_muse_trusted(path, dirs),
@@ -147,19 +155,27 @@ impl Store {
     }
 
     /// Drop the entries for `worktree` and the folders inside it from the
-    /// store at `path`. Only stores keyed by worktree hold such entries; a
-    /// missing file stays missing.
+    /// store at `path`. Only stores keyed by worktree hold such entries. A
+    /// file that never mentions the worktree is not locked or parsed, so
+    /// removing a worktree no other agent ran in touches nothing.
     pub fn forget(&self, path: &Path, worktree: &Path) -> Result<()> {
-        if self.key != Key::Worktree || !path.exists() {
+        if self.key != Key::Worktree {
             return Ok(());
         }
-        let roots: Vec<PathBuf> = with_canonical(worktree)
-            .into_iter()
-            .map(PathBuf::from)
-            .collect();
+        let roots = with_canonical(worktree);
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                return Err(err).with_context(|| format!("Failed to read {}", path.display()));
+            }
+        };
+        if !roots.iter().any(|root| text.contains(root.as_str())) {
+            return Ok(());
+        }
         let inside = |dir: &str| roots.iter().any(|root| Path::new(dir).starts_with(root));
         match self.kind {
-            "muse" => edit_json(path, "{}", |object| {
+            "muse" => edit_json(path, "{}", WriteMode::Replace, |object| {
                 let Some(projects) = object.get_mut("projects") else {
                     return Ok(false);
                 };
@@ -170,7 +186,7 @@ impl Store {
                 projects.retain(|dir, _| !inside(dir));
                 Ok(projects.len() != before)
             }),
-            "agy" => edit_json(path, "{}", |object| {
+            "agy" => edit_json(path, "{}", WriteMode::Replace, |object| {
                 let Some(list) = object.get_mut(AGY_KEY) else {
                     return Ok(false);
                 };
@@ -233,13 +249,13 @@ pub fn ensure_local(
         return;
     };
     let env = |name: &str| std::env::var(name).ok();
-    let Some(path) = store.path(
-        |name| agent_env(Some(&selected.command), name, env),
-        working_dir,
-    ) else {
-        return;
-    };
-    if let Err(err) = store.trust(&path, &store.dirs(repo, worktree, working_dir)) {
+    let result = store
+        .path(
+            |name| agent_env(Some(&selected.command), name, env),
+            working_dir,
+        )
+        .and_then(|path| store.trust(&path, &store.dirs(repo, worktree, working_dir)));
+    if let Err(err) = result {
         eprintln!("{BIN}: could not mark the worktree as trusted: {err:#}");
     }
 }
@@ -254,10 +270,10 @@ pub fn forget_local(worktree: &Path) {
 /// paths `env` resolves.
 pub fn forget_everywhere(worktree: &Path, env: impl Fn(&str) -> Option<String>) {
     for store in STORES.iter().filter(|store| store.key == Key::Worktree) {
-        let Some(path) = store.path(&env, worktree) else {
-            continue;
-        };
-        if let Err(err) = store.forget(&path, worktree) {
+        let result = store
+            .path(&env, worktree)
+            .and_then(|path| store.forget(&path, worktree));
+        if let Err(err) = result {
             eprintln!("{BIN}: could not drop the worktree's trust entry: {err:#}");
         }
     }
@@ -275,13 +291,30 @@ pub fn with_canonical(path: &Path) -> Vec<String> {
     dirs
 }
 
+/// How a changed file is written back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteMode {
+    /// A temporary file renamed over the original, so a reader never sees
+    /// half of it.
+    Replace,
+    /// The same file rewritten, for a file bind-mounted on its own, whose
+    /// mount would keep showing the old inode after a rename.
+    InPlace,
+}
+
+/// Mark each of `dirs` as trusted in a Claude config that is bind-mounted
+/// into a container (see [`WriteMode::InPlace`]). A missing file starts
+/// from `seed`.
+pub fn ensure_trusted_in_place(path: &Path, dirs: &[String], seed: &str) -> Result<()> {
+    ensure_claude_trusted(path, dirs, seed, WriteMode::InPlace)
+}
+
 /// Mark each of `dirs` as trusted in the Claude config at `path`. Reads
 /// first and writes only when an entry is missing, keeping every other key.
-/// The file is rewritten in place, so a bind mount of it keeps seeing the
-/// new contents. A missing file starts from `seed`; an empty one from `{}`.
-/// A file that is not a JSON object is left untouched.
-pub fn ensure_trusted(path: &Path, dirs: &[String], seed: &str) -> Result<()> {
-    edit_json(path, seed, |object| {
+/// A missing file starts from `seed`. An empty file, or one that is not a
+/// JSON object, is left untouched.
+fn ensure_claude_trusted(path: &Path, dirs: &[String], seed: &str, mode: WriteMode) -> Result<()> {
+    edit_json(path, seed, mode, |object| {
         let projects = object
             .entry("projects")
             .or_insert_with(|| Value::Object(Map::new()))
@@ -306,26 +339,31 @@ pub fn ensure_trusted(path: &Path, dirs: &[String], seed: &str) -> Result<()> {
 /// Give each of `dirs` `decision = "trusted"` under `projects` in Muse's
 /// `trust.json`, unless it already has a decision.
 fn ensure_muse_trusted(path: &Path, dirs: &[String]) -> Result<()> {
-    edit_json(path, r#"{"schema_version":1}"#, |object| {
-        let projects = object
-            .entry("projects")
-            .or_insert_with(|| Value::Object(Map::new()))
-            .as_object_mut()
-            .context("`projects` is not an object")?;
-        let mut changed = false;
-        for dir in dirs {
-            let entry = projects
-                .entry(dir.clone())
+    edit_json(
+        path,
+        r#"{"schema_version":1}"#,
+        WriteMode::Replace,
+        |object| {
+            let projects = object
+                .entry("projects")
                 .or_insert_with(|| Value::Object(Map::new()))
                 .as_object_mut()
-                .with_context(|| format!("`projects[{dir:?}]` is not an object"))?;
-            if !entry.contains_key("decision") {
-                entry.insert("decision".into(), Value::from("trusted"));
-                changed = true;
+                .context("`projects` is not an object")?;
+            let mut changed = false;
+            for dir in dirs {
+                let entry = projects
+                    .entry(dir.clone())
+                    .or_insert_with(|| Value::Object(Map::new()))
+                    .as_object_mut()
+                    .with_context(|| format!("`projects[{dir:?}]` is not an object"))?;
+                if !entry.contains_key("decision") {
+                    entry.insert("decision".into(), Value::from("trusted"));
+                    changed = true;
+                }
             }
-        }
-        Ok(changed)
-    })
+            Ok(changed)
+        },
+    )
 }
 
 const AGY_KEY: &str = "trustedWorkspaces";
@@ -333,7 +371,7 @@ const AGY_KEY: &str = "trustedWorkspaces";
 /// Add each of `dirs` to `trustedWorkspaces` in Antigravity's
 /// `settings.json`.
 fn ensure_agy_trusted(path: &Path, dirs: &[String]) -> Result<()> {
-    edit_json(path, "{}", |object| {
+    edit_json(path, "{}", WriteMode::Replace, |object| {
         let list = object
             .entry(AGY_KEY)
             .or_insert_with(|| Value::Array(Vec::new()))
@@ -351,22 +389,16 @@ fn ensure_agy_trusted(path: &Path, dirs: &[String]) -> Result<()> {
 }
 
 /// Apply `edit` to the JSON object in `path` and write it back when it
-/// reports a change. A missing file starts from `seed`, an empty one from
-/// `{}`; a file that is not a JSON object, or whose shape `edit` rejects, is
-/// left untouched.
+/// reports a change. A missing file starts from `seed`; a file that is not
+/// a JSON object, or whose shape `edit` rejects, is left untouched.
 fn edit_json(
     path: &Path,
     seed: &str,
+    mode: WriteMode,
     edit: impl FnOnce(&mut Map<String, Value>) -> Result<bool>,
 ) -> Result<()> {
-    let existed = path.exists();
-    edit_locked(path, |text| {
-        let source = match text.trim() {
-            "" if existed => "{}",
-            "" => seed,
-            _ => text,
-        };
-        let mut document: Value = serde_json::from_str(source)
+    edit_locked(path, mode, |text| {
+        let mut document: Value = serde_json::from_str(text.unwrap_or(seed))
             .with_context(|| format!("{} is not valid JSON; not changing it", path.display()))?;
         let Some(object) = document.as_object_mut() else {
             bail!("{} is not a JSON object; not changing it", path.display());
@@ -427,14 +459,15 @@ fn ensure_grok_trusted(path: &Path, dirs: &[String]) -> Result<()> {
 }
 
 /// Apply `edit` to the TOML document in `path`, keeping the rest of the
-/// file as written. A missing or empty file starts empty; a file that is
-/// not valid TOML, or whose shape `edit` rejects, is left untouched.
+/// file as written. A missing file starts empty; a file that is not valid
+/// TOML, or whose shape `edit` rejects, is left untouched.
 fn edit_toml(
     path: &Path,
     edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<bool>,
 ) -> Result<()> {
-    edit_locked(path, |text| {
+    edit_locked(path, WriteMode::Replace, |text| {
         let mut document: toml_edit::DocumentMut = text
+            .unwrap_or("")
             .parse()
             .with_context(|| format!("{} is not valid TOML; not changing it", path.display()))?;
         let changed = edit(&mut document).with_context(|| {
@@ -477,44 +510,111 @@ fn mark_toml(
     Ok(changed)
 }
 
-/// Read `path` under the lock, and write back what `edit` returns, if
-/// anything. The file is rewritten in place, so a bind mount of it keeps
-/// seeing the new contents.
-fn edit_locked(path: &Path, edit: impl FnOnce(&str) -> Result<Option<String>>) -> Result<()> {
-    let mut file = open_locked(path)?;
-    let mut text = String::new();
-    file.read_to_string(&mut text)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
-    let Some(text) = edit(&text)? else {
+/// Read `path` (through any symlink) while holding the lock on its
+/// directory, and write back what `edit` returns, if anything. `edit` gets
+/// `None` for a missing file. An existing file that reads empty is left
+/// alone: its agent may be partway through rewriting it.
+fn edit_locked(
+    path: &Path,
+    mode: WriteMode,
+    edit: impl FnOnce(Option<&str>) -> Result<Option<String>>,
+) -> Result<()> {
+    let target = match path.canonicalize() {
+        Ok(target) => target,
+        Err(_) if path.symlink_metadata().is_ok_and(|meta| meta.is_symlink()) => {
+            bail!("{} is a broken symlink; not changing it", path.display());
+        }
+        Err(_) => path.to_path_buf(),
+    };
+    let dir = target
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("Failed to create {}", dir.display()))?;
+    let _lock = lock_dir(dir)?;
+    let text = match std::fs::read_to_string(&target) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => {
+            return Err(err).with_context(|| format!("Failed to read {}", path.display()));
+        }
+    };
+    if text.as_deref().is_some_and(|text| text.trim().is_empty()) {
+        bail!("{} is empty; not changing it", path.display());
+    }
+    let Some(text) = edit(text.as_deref())? else {
         return Ok(());
     };
-    file.seek(SeekFrom::Start(0))?;
-    file.write_all(text.as_bytes())
-        .with_context(|| format!("Failed to write {}", path.display()))?;
-    file.set_len(text.len() as u64)?;
-    file.sync_all()?;
-    Ok(())
+    match mode {
+        WriteMode::Replace => replace(&target, &text),
+        WriteMode::InPlace => write_in_place(&target, &text),
+    }
+    .with_context(|| format!("Failed to write {}", path.display()))
 }
 
-/// Open `path` for reading and writing, creating it private when missing,
-/// and hold an advisory lock so concurrent workrex writers take turns.
-fn open_locked(path: &Path) -> Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
+/// Write `text` to a temporary file beside `target` and rename it over
+/// `target`, keeping its permissions (private for a new file).
+fn replace(target: &Path, text: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mode = match std::fs::metadata(target) {
+        Ok(meta) => meta.permissions().mode() & 0o7777,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0o600,
+        Err(err) => return Err(err),
+    };
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let temp = target.with_file_name(format!(".{name}.{BIN}-{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(text.as_bytes())?;
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        file.sync_all()?;
+        std::fs::rename(&temp, target)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
     }
-    let file = OpenOptions::new()
-        .read(true)
+    result
+}
+
+/// Rewrite `target` itself, creating it private when missing.
+fn write_in_place(target: &Path, text: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .open(path)
-        .with_context(|| format!("Failed to open {}", path.display()))?;
-    file.lock()
-        .with_context(|| format!("Failed to lock {}", path.display()))?;
-    Ok(file)
+        .open(target)?;
+    file.write_all(text.as_bytes())?;
+    file.set_len(text.len() as u64)?;
+    file.sync_all()
+}
+
+/// Hold an advisory lock on `dir` so concurrent workrex writers of a file in
+/// it take turns. The directory is locked rather than the file because a
+/// replaced file is a new inode. Gives up after about two seconds rather
+/// than hold up a launch or removal.
+fn lock_dir(dir: &Path) -> Result<File> {
+    const ATTEMPTS: u32 = 40;
+    const PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+    let file = File::open(dir).with_context(|| format!("Failed to open {}", dir.display()))?;
+    for attempt in 1..=ATTEMPTS {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if attempt < ATTEMPTS => {
+                std::thread::sleep(PAUSE);
+            }
+            Err(std::fs::TryLockError::WouldBlock) => break,
+            Err(std::fs::TryLockError::Error(err)) => {
+                return Err(err).with_context(|| format!("Failed to lock {}", dir.display()));
+            }
+        }
+    }
+    bail!("{} is locked by another writer; not waiting", dir.display())
 }
 #[cfg(test)]
 mod tests {
@@ -535,42 +635,84 @@ mod tests {
         value["projects"]["/node/projects"]["hasTrustDialogAccepted"] == Value::Bool(true)
     }
 
+    fn claude(path: &Path) -> Result<()> {
+        store("claude").unwrap().trust(path, &dirs())
+    }
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().mode() & 0o7777
+    }
+
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
     fn missing_file_starts_from_the_seed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".claude-sandbox.json");
-        ensure_trusted(&path, &dirs(), SEED).unwrap();
+        ensure_trusted_in_place(&path, &dirs(), SEED).unwrap();
         let value = read(&path);
         assert!(trusted(&value));
         assert_eq!(value["hasCompletedOnboarding"], Value::Bool(true));
+        assert_eq!(mode(&path), 0o600);
     }
 
     #[test]
-    fn empty_file_starts_from_an_empty_object() {
+    fn existing_empty_files_are_left_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".claude.json");
         std::fs::write(&path, "  \n").unwrap();
-        ensure_trusted(&path, &dirs(), SEED).unwrap();
-        let value = read(&path);
-        assert!(trusted(&value));
-        assert!(value.get("hasCompletedOnboarding").is_none());
+        assert!(claude(&path).is_err());
+        assert!(ensure_trusted_in_place(&path, &dirs(), SEED).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "  \n");
+
+        let muse = dir.path().join("trust.json");
+        std::fs::write(&muse, "").unwrap();
+        assert!(store("muse").unwrap().trust(&muse, &dirs()).is_err());
+        assert_eq!(std::fs::read_to_string(&muse).unwrap(), "");
+
+        let codex = dir.path().join("config.toml");
+        std::fs::write(&codex, "\n").unwrap();
+        assert!(ensure_codex_trusted(&codex, &dirs()).is_err());
+        assert_eq!(std::fs::read_to_string(&codex).unwrap(), "\n");
     }
 
     #[test]
-    fn keeps_other_keys_and_the_inode() {
+    fn replaces_the_file_keeping_other_keys_and_permissions() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".claude.json");
         let original = r#"{"oauthAccount":{"x":1},"projects":{"/other":{"allowedTools":["a"]},"/node/projects":{"history":[1]}},"numStartups":3}"#;
         std::fs::write(&path, original).unwrap();
-        let inode = std::fs::metadata(&path).unwrap().ino();
-        ensure_trusted(&path, &dirs(), SEED).unwrap();
-        assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        claude(&path).unwrap();
         let value = read(&path);
         assert!(trusted(&value));
         assert_eq!(value["oauthAccount"]["x"], 1);
         assert_eq!(value["numStartups"], 3);
         assert_eq!(value["projects"]["/other"]["allowedTools"][0], "a");
         assert_eq!(value["projects"]["/node/projects"]["history"][0], 1);
+        assert_eq!(mode(&path), 0o640);
+        assert_eq!(entries(dir.path()), [".claude.json"]);
+    }
+
+    #[test]
+    fn in_place_keeps_the_inode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".claude-sandbox.json");
+        std::fs::write(&path, r#"{"numStartups":3}"#).unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+        ensure_trusted_in_place(&path, &dirs(), SEED).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+        let value = read(&path);
+        assert!(trusted(&value));
+        assert_eq!(value["numStartups"], 3);
     }
 
     #[test]
@@ -579,7 +721,7 @@ mod tests {
         let path = dir.path().join(".claude.json");
         let original = "{\"projects\": {\"/node/projects\": {\"hasTrustDialogAccepted\": true}}}";
         std::fs::write(&path, original).unwrap();
-        ensure_trusted(&path, &dirs(), SEED).unwrap();
+        claude(&path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
@@ -589,21 +731,39 @@ mod tests {
         let path = dir.path().join(".claude.json");
         for original in ["{not json", "[1, 2]", r#"{"projects": []}"#] {
             std::fs::write(&path, original).unwrap();
-            assert!(ensure_trusted(&path, &dirs(), SEED).is_err(), "{original}");
+            assert!(claude(&path).is_err(), "{original}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         }
+        assert_eq!(entries(dir.path()), [".claude.json"]);
     }
 
     #[test]
     fn writes_through_a_symlinked_dotfile() {
         let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("dotfiles-claude.json");
+        let dotfiles = dir.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).unwrap();
+        let target = dotfiles.join("claude.json");
         std::fs::write(&target, "{}").unwrap();
         let link = dir.path().join(".claude.json");
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        ensure_trusted(&link, &dirs(), SEED).unwrap();
+        claude(&link).unwrap();
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
         assert!(trusted(&read(&target)));
+        assert_eq!(entries(&dotfiles), ["claude.json"]);
+    }
+
+    #[test]
+    fn a_held_lock_gives_up_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".claude.json");
+        std::fs::write(&path, "{}").unwrap();
+        let holder = File::open(dir.path()).unwrap();
+        holder.lock().unwrap();
+        assert!(claude(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        holder.unlock().unwrap();
+        claude(&path).unwrap();
+        assert!(trusted(&read(&path)));
     }
 
     const REPO: &str = "/node/projects/app-0123456789ab/repo";
@@ -621,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_missing_and_empty_files_get_an_entry() {
+    fn codex_missing_file_gets_an_entry() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("codex/config.toml");
         ensure_codex_trusted(&path, &codex_dirs()).unwrap();
@@ -630,21 +790,15 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             format!("[projects.\"{REPO}\"]\ntrust_level = \"trusted\"\n")
         );
-
-        std::fs::write(&path, "\n").unwrap();
-        ensure_codex_trusted(&path, &codex_dirs()).unwrap();
-        assert_eq!(codex_trust(&path).as_deref(), Some("trusted"));
     }
 
     #[test]
-    fn codex_keeps_the_rest_of_the_file_and_the_inode() {
+    fn codex_keeps_the_rest_of_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let original = "# my settings\nmodel = \"o3\"  # pinned\n\n[features]\nhooks = true\n\n[projects.\"/other\"]\ntrust_level = \"trusted\"\n";
         std::fs::write(&path, original).unwrap();
-        let inode = std::fs::metadata(&path).unwrap().ino();
         ensure_codex_trusted(&path, &codex_dirs()).unwrap();
-        assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with(original), "{text}");
         assert_eq!(codex_trust(&path).as_deref(), Some("trusted"));
@@ -894,6 +1048,33 @@ mod tests {
             path("agy", &set),
             home.join(".gemini/antigravity-cli/settings.json")
         );
+        let tilde = |_: &str| Some("~".to_string());
+        assert_eq!(path("muse", &tilde), home.join("muse/trust.json"));
+    }
+
+    #[test]
+    fn overrides_needing_shell_expansion_resolve_to_no_store() {
+        let wd = Path::new("/work/tree");
+        for value in ["$HOME/.config", "${XDG}/x", "~other/.config", "`pwd`/x"] {
+            let env = |_: &str| Some(value.to_string());
+            assert!(store("muse").unwrap().path(env, wd).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn forget_skips_files_that_never_mention_the_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let jsonc =
+            "// comments make this invalid JSON\n{\"trustedWorkspaces\": [\"/elsewhere\"]}\n";
+        std::fs::write(&path, jsonc).unwrap();
+        store("agy").unwrap().forget(&path, Path::new(WT)).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), jsonc);
+
+        let mentions = format!("// note\n{{\"trustedWorkspaces\": [\"{WT}\"]}}\n");
+        std::fs::write(&path, &mentions).unwrap();
+        assert!(store("agy").unwrap().forget(&path, Path::new(WT)).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), mentions);
     }
 
     #[test]
