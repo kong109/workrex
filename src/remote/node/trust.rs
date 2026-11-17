@@ -4,9 +4,10 @@
 //! there, even with permission checks skipped, and wait for an answer nobody
 //! is there to give.
 //!
-//! - Claude trusts a folder when its config marks that folder or a parent as
-//!   accepted, so one entry for `<root>/projects` covers every worktree the
-//!   node creates.
+//! - Claude records trust for a worktree under the main repository it
+//!   belongs to, and current versions no longer honor a parent's entry, so
+//!   each project's node repository gets an entry. `<root>/projects` keeps
+//!   one too, for older versions that do.
 //! - Codex looks up only the working directory and the main repository a
 //!   worktree belongs to, so each project's node repository gets an entry.
 
@@ -51,7 +52,9 @@ fn ensure_claude(root: &NodeRoot, workspace: &Workspace, config: &Config) -> Res
             }
         }
     };
-    ensure_trusted(&path, &with_canonical(&root.path.join("projects")), seed)
+    let mut dirs = with_canonical(&root.path.join("projects"));
+    dirs.extend(with_canonical(&workspace.repo_path));
+    ensure_trusted(&path, &dirs, seed)
 }
 
 /// Codex's `config.toml` in the codex home the agent uses: the one mounted
@@ -476,6 +479,40 @@ mod tests {
             );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         }
+    }
+
+    #[test]
+    fn claude_trusts_the_workspace_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("claude-home");
+        let root = NodeRoot {
+            path: dir.path().join("node"),
+        };
+        let mut workspace = Workspace::new(
+            &root,
+            crate::remote::protocol::WorkspaceIdentity {
+                ws_id: "w0123456789ab".into(),
+                project_id: "app-0123456789ab".into(),
+                handle: "feature".into(),
+                branch: "feature".into(),
+                base_sha: "a".repeat(40),
+            },
+            RemoteIsolation::None,
+        );
+        let path = home.join(".claude.json");
+        let config: Config = serde_yaml::from_str(&format!(
+            "agents:\n  cl:\n    command: claude\n    type: claude\n    env:\n      CLAUDE_CONFIG_DIR: {}\n",
+            home.display()
+        ))
+        .unwrap();
+        workspace.agent = Some("cl".into());
+        ensure_claude(&root, &workspace, &config).unwrap();
+        let value = read(&path);
+        let repo = workspace.repo_path.to_string_lossy().into_owned();
+        assert_eq!(
+            value["projects"][repo.as_str()]["hasTrustDialogAccepted"],
+            Value::Bool(true)
+        );
     }
 
     #[test]
