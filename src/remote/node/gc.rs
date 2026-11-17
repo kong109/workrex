@@ -717,7 +717,8 @@ fn unused_pins(
 }
 
 /// The executable of every process: from `/proc` on Linux, else from `ps`,
-/// whose `comm` is the executable's path on macOS.
+/// whose `comm` on macOS is the path the process was started with. Pins are
+/// always started by absolute path, so that path is the pin's.
 fn running_executables() -> std::result::Result<Vec<PathBuf>, String> {
     if cfg!(target_os = "linux") {
         return Ok(read_dir(Path::new("/proc"))

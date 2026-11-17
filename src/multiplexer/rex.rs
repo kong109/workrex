@@ -850,7 +850,8 @@ pub(crate) const MACOS_REX_CLI: &str = "Library/Application Support/com.superlog
 
 /// The rex to run: REX_BIN_DIR's, which Rex sets only in its own
 /// terminals, else the app bundle's under `macos_home`, else `rex` on PATH.
-/// An ssh command on a Mac has neither REX_BIN_DIR nor rex on its PATH.
+/// The caller passes `macos_home` only when PATH has no rex, as for an ssh
+/// command on a Mac, so a rex the user put on PATH still wins.
 fn rex_program(rex_bin_dir: Option<&OsStr>, macos_home: Option<&Path>) -> String {
     rex_bin_dir
         .map(|dir| Path::new(dir).join("rex"))
@@ -1049,7 +1050,10 @@ impl RexBackend {
     }
 
     fn with_server(server: Option<String>) -> Self {
-        let macos_home = cfg!(target_os = "macos").then(home::home_dir).flatten();
+        let macos_home = cfg!(target_os = "macos")
+            .then(home::home_dir)
+            .flatten()
+            .filter(|_| which::which("rex").is_err());
         let program = rex_program(
             std::env::var_os("REX_BIN_DIR").as_deref(),
             macos_home.as_deref(),

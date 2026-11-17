@@ -40,11 +40,13 @@ fi
 if [ -d /run/systemd/system ]; then fact systemd yes; else fact systemd no; fi
 "#;
 
-/// [`FACTS_SCRIPT`] with `$rex` set to the rex the node runs over ssh: the
-/// Rex app bundle's on a Mac, else `rex` on PATH.
+/// [`FACTS_SCRIPT`] with `$rex` set to the rex the node runs over ssh: `rex`
+/// on PATH, else the Rex app bundle's on a Mac.
 fn facts_script() -> String {
     let bundled = format!("\"$HOME\"/{}", crate::shell::shell_quote(MACOS_REX_CLI));
-    format!("rex=rex\nif [ -x {bundled} ]; then rex={bundled}; fi\n{FACTS_SCRIPT}")
+    format!(
+        "rex=rex\nif ! command -v rex >/dev/null 2>&1 && [ -x {bundled} ]; then rex={bundled}; fi\n{FACTS_SCRIPT}"
+    )
 }
 
 const RUNTIME_FACTS_SCRIPT: &str = r#"if command -v docker >/dev/null 2>&1; then
