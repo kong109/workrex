@@ -43,10 +43,14 @@ fn a_pin_a_process_runs_is_kept() {
     let (running, idle) = (format!("{BIN}-0.1.277"), format!("{BIN}-0.1.276"));
     fs::copy(which::which("sleep").unwrap(), bin.join(&running)).unwrap();
     fs::write(bin.join(&idle), "").unwrap();
-    let mut child = std::process::Command::new(bin.join(&running))
-        .arg("30")
-        .spawn()
-        .unwrap();
+    let mut command = std::process::Command::new(bin.join(&running));
+    // Linux reads the executable from /proc, so argv[0] can name `sleep` for
+    // a multi-call coreutils (as in Nix), which picks its program by argv[0].
+    // macOS `ps` reports argv[0], so it keeps the pin's path there.
+    if cfg!(target_os = "linux") {
+        std::os::unix::process::CommandExt::arg0(&mut command, "sleep");
+    }
+    let mut child = command.arg("30").spawn().unwrap();
 
     let pins = unused_pins(&root, &GcRequest::default(), &[], None);
     child.kill().unwrap();
