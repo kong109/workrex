@@ -83,7 +83,7 @@ detect_platform() {
 	esac
 
 	case "${os}-${arch}" in
-	linux-arm64 | darwin-amd64)
+	darwin-amd64)
 		log_error "no workrex build for ${os}-${arch}; build from source with cargo install --git https://github.com/kong109/workrex --bin workrex"
 		exit 1
 		;;
