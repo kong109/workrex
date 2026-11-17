@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build this workrex tree on a Linux remote and fetch the binary, for use as
+# Build this workrex tree on a remote and fetch the binary, for use as
 # `remotes.<name>.binary` when no release matches the local build.
 #
 # Usage: scripts/remote-dev-binary HOST [HANDLE]
