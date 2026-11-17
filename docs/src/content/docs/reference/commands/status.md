@@ -20,11 +20,12 @@ workrex status [WORKTREE ...] [--all] [--json] [--git]
 
 Worktree arguments support `project:handle` syntax for cross-project queries.
 
-The status is `working`, `waiting` or `done`, as the agent reports it. An
-agent that workrex launched lists before it reports, with status `-`. If it
-was launched with a prompt and reports nothing within 30 seconds, its status
-is `stalled`: it is often held at a prompt, such as a folder-trust dialog. Run
-[`capture`](/reference/commands/capture/) to see it.
+The status, in the table and in the `status` field of `--json` output, is
+`working`, `waiting` or `done`, as the agent reports it. An agent that workrex
+launched with its status hooks installed lists before it reports, with status
+`-`. If it was launched with a prompt and reports nothing within 30 seconds,
+its status is `stalled`: it is often held at a prompt, such as a folder-trust
+dialog. Run [`capture`](/reference/commands/capture/) to see it.
 
 The table includes `PROJECT` and `SESSION` columns when the results are not
 limited to one repository: with `--all`, outside a Git repository, or when

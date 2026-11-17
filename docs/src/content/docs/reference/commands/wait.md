@@ -34,7 +34,9 @@ workrex wait <worktree>... [--status <status>] [--timeout <seconds>] [--any]
 
 `wait` keeps waiting for an agent that has not started yet. Use `--timeout` to bound that.
 
-An agent that workrex launched with a prompt and that reports no status within 30 seconds is `stalled`. It is often held at a prompt that appears before its status hooks load, such as a folder-trust dialog or a login screen. Run [`capture`](/reference/commands/capture/) to see its screen and answer the prompt with [`send`](/reference/commands/send/).
+An agent that workrex launched with a prompt and that reports no status within 30 seconds is `stalled`. It is often held at a prompt that appears before its status hooks load, such as a folder-trust dialog or a login screen. Run [`capture`](/reference/commands/capture/) to see its screen and answer the prompt with [`send`](/reference/commands/send/). If the screen shows no prompt, the agent's status hooks may not work, for example because they were removed after launch: run `workrex setup`.
+
+With `--any`, a worktree that reaches the status wins over a stalled agent found in the same check.
 
 ## Examples
 
