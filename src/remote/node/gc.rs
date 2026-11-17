@@ -694,9 +694,8 @@ fn unused_pins(
         used.insert(name);
     }
     let bin = root.path.join("bin");
-    for entry in read_dir(Path::new("/proc")) {
-        if let Ok(exe) = fs::read_link(entry.join("exe"))
-            && exe.parent() == Some(bin.as_path())
+    for exe in running_executables()? {
+        if exe.parent() == Some(bin.as_path())
             && let Some(name) = exe.file_name()
         {
             used.insert(
@@ -715,6 +714,28 @@ fn unused_pins(
         .collect();
     pins.sort();
     Ok(pins)
+}
+
+/// The executable of every process: from `/proc` on Linux, else from `ps`,
+/// whose `comm` is the executable's path on macOS.
+fn running_executables() -> std::result::Result<Vec<PathBuf>, String> {
+    if cfg!(target_os = "linux") {
+        return Ok(read_dir(Path::new("/proc"))
+            .into_iter()
+            .filter_map(|entry| fs::read_link(entry.join("exe")).ok())
+            .collect());
+    }
+    let output = std::process::Command::new("ps")
+        .args(["-axww", "-o", "comm="])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .ok_or("cannot list running processes")?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| PathBuf::from(line.trim()))
+        .collect())
 }
 
 fn read_dir(dir: &Path) -> Vec<PathBuf> {
