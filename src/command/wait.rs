@@ -4,9 +4,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 
+use crate::bin_name::BIN;
 use crate::config::Config;
 use crate::git;
-use crate::multiplexer::{AgentStatus, create_backend, detect_backend};
+use crate::multiplexer::{
+    AgentStatus, FIRST_HOOK_GRACE_SECS, Launch, PaneStatus, create_backend, detect_backend,
+};
 use crate::remote::{self, cache::WorkspaceRecord, node::observe::ObservedAgent};
 use crate::state::StateStore;
 use crate::util;
@@ -112,6 +115,7 @@ pub fn run(
                 RemoteProgress::Running => {
                     seen_agent.insert(name.clone());
                 }
+                RemoteProgress::Stalled => exit_stalled(name),
                 RemoteProgress::Reached => {
                     seen_agent.insert(name.clone());
                     let elapsed = util::format_elapsed_duration(start.elapsed());
@@ -147,6 +151,7 @@ pub fn run(
         // Load current agent state
         let agent_panes =
             StateStore::new().and_then(|store| store.load_reconciled_agents(mux.as_ref()))?;
+        let now = remote::cache::now();
 
         for (name, wt_path) in &worktree_paths {
             if reached.contains(name) {
@@ -168,6 +173,11 @@ pub fn run(
                     if any {
                         return Ok(());
                     }
+                } else if matching
+                    .iter()
+                    .any(|a| a.pane_status(now) == Some(PaneStatus::Stalled))
+                {
+                    exit_stalled(name);
                 }
             } else if seen_agent.contains(name) {
                 // Agent was previously running but disappeared
@@ -200,11 +210,24 @@ pub fn run(
     }
 }
 
+/// Exit for an agent that fired no status hook within the grace window:
+/// it may wait at a prompt that only its screen shows.
+fn exit_stalled(name: &str) -> ! {
+    eprintln!(
+        "{name}: stalled: no status hook {FIRST_HOOK_GRACE_SECS}s after launch. \
+         Run `{BIN} capture {name}` to see its screen, and answer any prompt with \
+         `{BIN} send {name}`"
+    );
+    std::process::exit(4);
+}
+
 /// Where a remote workspace's agents stand, from the latest observation.
 enum RemoteProgress {
     /// The remote is not observed right now; keep waiting.
     Unknown,
     Running,
+    /// An agent fired no status hook within the grace window.
+    Stalled,
     Reached,
     /// No agent runs in the workspace.
     Gone,
@@ -244,8 +267,19 @@ fn remote_progress(record: &WorkspaceRecord, target: AgentStatus) -> RemoteProgr
     let reached = |agent: &ObservedAgent| {
         agent.status == Some(target) && fence.is_none_or(|turn| turn.admits(agent))
     };
+    let stalled = |agent: &ObservedAgent| {
+        agent.launched.is_some_and(|launch| {
+            Launch {
+                at: observation.local_ts(launch.at),
+                ..launch
+            }
+            .stalled(remote::cache::now())
+        })
+    };
     if agents.iter().any(|agent| reached(agent)) {
         RemoteProgress::Reached
+    } else if agents.iter().any(|agent| stalled(agent)) {
+        RemoteProgress::Stalled
     } else if agents.is_empty() {
         RemoteProgress::Gone
     } else {

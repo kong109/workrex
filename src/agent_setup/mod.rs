@@ -63,6 +63,11 @@ impl Agent {
         }
     }
 
+    /// The agent whose profile name is `kind`, if it has status hooks.
+    pub fn from_kind(kind: &str) -> Option<Agent> {
+        serde_json::from_value(serde_json::Value::from(kind)).ok()
+    }
+
     /// All known agent variants. Used by uninstall to attempt cleanup
     /// even when the agent CLI is no longer detected.
     pub fn all() -> Vec<Agent> {

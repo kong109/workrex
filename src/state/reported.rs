@@ -19,7 +19,7 @@ use crate::multiplexer::{AgentPane, AgentStatus, LivePaneInfo, Multiplexer, Repo
 use super::{AgentState, PaneKey, StateStore};
 
 #[cfg(test)]
-mod fake_mux;
+pub(crate) mod fake_mux;
 #[cfg(test)]
 pub(crate) mod tests;
 

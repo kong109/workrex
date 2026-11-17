@@ -201,6 +201,7 @@ impl AgentState {
             agent_kind: self.agent_kind.clone(),
             prompt: self.prompt.clone(),
             remote: self.remote.clone().map(RemoteAgent::new),
+            launched: None,
         }
     }
 }

@@ -16,7 +16,7 @@ use super::{ExecutionState, NodeRoot, Origin, Workspace, refuse, validate_id};
 use crate::config::RemoteIsolation;
 use crate::git::{GitStatus, GitStatusCache};
 use crate::multiplexer::{
-    AgentPane, AgentStatus, EndReason, LivePaneInfo, Multiplexer, rex::RexBackend,
+    AgentPane, AgentStatus, EndReason, Launch, LivePaneInfo, Multiplexer, rex::RexBackend,
 };
 use crate::remote::protocol::{WorkspaceIdentity, code, session_name};
 use crate::state::{AgentStateCache, StateStore};
@@ -121,6 +121,10 @@ pub struct ObservedAgent {
     pub title: Option<String>,
     pub agent_kind: Option<String>,
     pub prompt: Option<String>,
+    /// Set while the agent has fired no status hook since the node
+    /// launched it (node clock).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched: Option<Launch>,
 }
 
 /// `send`: type `text` into an agent. Without `pane`, the lowest pane of
@@ -381,6 +385,7 @@ fn build_snapshot(
                                 .or_else(|| execution.agent_kind.clone())
                                 .or_else(|| ws.agent.clone()),
                             prompt: agent.prompt.as_deref().and_then(clean_text),
+                            launched: agent.launched,
                         });
                     ObservedPane {
                         index: pane.index,
@@ -653,8 +658,10 @@ pub fn send(root: &NodeRoot, request: SendRequest) -> Result<SendResponse> {
         return Err(refuse(code::BAD_REQUEST, "text is too long"));
     }
     let mut target = target(root, &request.ws_id, request.pane)?;
+    let launched = target.agent.as_ref().and_then(|agent| agent.launched);
     let ready = target
         .started
+        .or(launched.map(|launch| launch.at))
         .map(|started| started + AGENT_STARTUP.as_secs());
     if let Some(left) = ready
         .and_then(|ready| ready.checked_sub(now()))
@@ -675,6 +682,12 @@ pub fn send(root: &NodeRoot, request: SendRequest) -> Result<SendResponse> {
         target = self::target(root, &request.ws_id, request.pane)?;
     }
     let agent = target.agent.unwrap_or_default();
+    if agent.launched.is_some_and(|launch| launch.at_shell) {
+        return Err(refuse(
+            code::NOT_FOUND,
+            "the agent is not running: its pane's shell has the foreground",
+        ));
+    }
     let baseline = !same_second(&agent, now());
     let kind = send_kind(root, &request.ws_id, agent.agent_kind);
     target
@@ -777,6 +790,7 @@ mod tests {
             agent_kind: None,
             prompt: Some("fix\nit".into()),
             remote: None,
+            launched: None,
         }
     }
 

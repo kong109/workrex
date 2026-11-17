@@ -11,7 +11,7 @@ use tabled::{
 };
 
 use crate::git;
-use crate::multiplexer::{AgentPane, AgentStatus, create_backend, detect_backend_strict};
+use crate::multiplexer::{AgentPane, PaneStatus, create_backend, detect_backend_strict};
 use crate::remote::{self, cache::WorkspaceRecord};
 use crate::state::StateStore;
 use crate::state::store::ReconciledAgentReport;
@@ -173,15 +173,6 @@ fn sessions_match_projects(entries: &[StatusEntry]) -> bool {
     entries.iter().all(|e| e.session == e.project)
 }
 
-fn status_label(status: Option<AgentStatus>) -> String {
-    match status {
-        Some(AgentStatus::Working) => "working".to_string(),
-        Some(AgentStatus::Waiting) => "waiting".to_string(),
-        Some(AgentStatus::Done) => "done".to_string(),
-        None => "-".to_string(),
-    }
-}
-
 fn optional_name(name: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
@@ -208,8 +199,14 @@ fn status_entry(
         branch,
         project,
         project_path,
-        status: status_label(agent.status),
-        elapsed_secs: agent.status_ts.map(|ts| now.saturating_sub(ts)),
+        status: agent
+            .pane_status(now)
+            .map_or("-", PaneStatus::label)
+            .to_string(),
+        elapsed_secs: agent
+            .status_ts
+            .or(agent.launched.map(|launch| launch.at))
+            .map(|ts| now.saturating_sub(ts)),
         title: agent.pane_title.clone(),
         pane_id: agent.pane_id.clone(),
         workdir: agent.path.clone(),
@@ -615,6 +612,44 @@ mod tests {
             git: None,
             remote: None,
         }
+    }
+
+    #[test]
+    fn a_prompted_launch_without_a_hook_shows_stalled_after_the_grace_window() {
+        use crate::multiplexer::{FIRST_HOOK_GRACE_SECS, Launch};
+        let agent = AgentPane {
+            session: "main".to_string(),
+            window_name: "wr-wt".to_string(),
+            pane_id: "block:a".to_string(),
+            window_id: String::new(),
+            window_index: None,
+            path: PathBuf::from("/repo/wt"),
+            pane_title: None,
+            status: None,
+            status_ts: None,
+            activity_ts: None,
+            updated_ts: None,
+            window_cmd: None,
+            agent_command: None,
+            agent_kind: Some("gemini".to_string()),
+            prompt: None,
+            remote: None,
+            launched: Some(Launch {
+                at: 1_000,
+                prompted: true,
+                at_shell: false,
+            }),
+        };
+        let shown = |now| {
+            let entry = status_entry(&agent, "wt".into(), "wt".into(), (None, None), now, None);
+            (entry.status, entry.elapsed_secs)
+        };
+
+        assert_eq!(shown(1_010), ("-".to_string(), Some(10)));
+        assert_eq!(
+            shown(1_000 + FIRST_HOOK_GRACE_SECS),
+            ("stalled".to_string(), Some(FIRST_HOOK_GRACE_SECS))
+        );
     }
 
     #[test]

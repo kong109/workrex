@@ -74,6 +74,56 @@ pub enum AgentStatus {
     Done,
 }
 
+/// How long an agent workrex launched gets to fire its first status hook
+/// before readers call it stalled. In one machine's log, 35 of 46 agents
+/// `workrex add` launched fired theirs within 10 seconds; the rest took 34
+/// seconds or more, held at prompts such as folder trust.
+pub const FIRST_HOOK_GRACE_SECS: u64 = 30;
+
+/// An agent workrex launched that has fired no status hook yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Launch {
+    /// When workrex launched it (Unix seconds).
+    pub at: u64,
+    /// The launch carried a prompt, so the agent's first turn starts at
+    /// once, and every agent with hooks reports a turn. Without one, some
+    /// agents (Codex, Antigravity, Muse) report nothing until prompted.
+    pub prompted: bool,
+    /// The pane's foreground program is the shell the agent was typed
+    /// into: the agent has not started yet, or it exited.
+    pub at_shell: bool,
+}
+
+impl Launch {
+    /// Whether a prompted agent went [`FIRST_HOOK_GRACE_SECS`] without a
+    /// hook.
+    pub fn stalled(&self, now: u64) -> bool {
+        self.prompted && now.saturating_sub(self.at) >= FIRST_HOOK_GRACE_SECS
+    }
+}
+
+/// The status readers show for an agent pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneStatus {
+    /// What the agent's hooks reported.
+    Agent(AgentStatus),
+    /// Workrex launched the agent, which fired no hook within
+    /// [`FIRST_HOOK_GRACE_SECS`]: it may wait at a prompt or a login
+    /// screen, or have exited.
+    Stalled,
+}
+
+impl PaneStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            PaneStatus::Agent(AgentStatus::Working) => "working",
+            PaneStatus::Agent(AgentStatus::Waiting) => "waiting",
+            PaneStatus::Agent(AgentStatus::Done) => "done",
+            PaneStatus::Stalled => "stalled",
+        }
+    }
+}
+
 /// What an agent reported to the multiplexer itself, such as Rex program
 /// status. It wins over the status hooks reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +184,10 @@ pub struct AgentPane {
     /// Set when the agent runs in a remote workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteAgent>,
+    /// Set while the agent workrex launched in this pane has fired no
+    /// status hook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched: Option<Launch>,
 }
 
 /// The pane of a remote workspace a local attach pane relays.
@@ -221,6 +275,15 @@ impl AgentPane {
         self.activity_ts
             .or(self.status_ts)
             .or_else(|| self.status.is_none().then_some(self.updated_ts).flatten())
+    }
+
+    /// The status to show at `now`, if any.
+    pub fn pane_status(&self, now: u64) -> Option<PaneStatus> {
+        match (self.status, self.launched) {
+            (Some(status), _) => Some(PaneStatus::Agent(status)),
+            (None, Some(launch)) if launch.stalled(now) => Some(PaneStatus::Stalled),
+            (None, _) => None,
+        }
     }
 }
 
