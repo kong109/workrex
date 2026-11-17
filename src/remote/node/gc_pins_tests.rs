@@ -41,7 +41,7 @@ fn a_pin_a_process_runs_is_kept() {
     let bin = root.path.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let (running, idle) = (format!("{BIN}-0.1.277"), format!("{BIN}-0.1.276"));
-    fs::copy("/bin/sleep", bin.join(&running)).unwrap();
+    fs::copy(which::which("sleep").unwrap(), bin.join(&running)).unwrap();
     fs::write(bin.join(&idle), "").unwrap();
     let mut child = std::process::Command::new(bin.join(&running))
         .arg("30")

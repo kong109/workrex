@@ -890,7 +890,7 @@ esac
     fn facts_with_fake_rex(rex: &std::path::Path, home: &std::path::Path, path: &str) -> Facts {
         std::fs::create_dir_all(rex.parent().unwrap()).unwrap();
         crate::test_support::write_script(rex, FAKE_REX);
-        let output = std::process::Command::new("sh")
+        let output = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(facts_script())
             .env("HOME", home)
@@ -903,10 +903,16 @@ esac
     #[test]
     fn facts_probe_finds_rex_in_the_mac_app_bundle_off_path() {
         let home = tempfile::TempDir::new().unwrap();
+        // A PATH with the probe's tools and no rex, as over ssh on a Mac.
+        let tools = home.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        for tool in ["grep", "tr", "uname", "id"] {
+            std::os::unix::fs::symlink(which::which(tool).unwrap(), tools.join(tool)).unwrap();
+        }
         let facts = facts_with_fake_rex(
             &home.path().join(MACOS_REX_CLI),
             home.path(),
-            "/usr/bin:/bin:/usr/sbin:/sbin",
+            tools.to_str().unwrap(),
         );
         assert_eq!(rex_row(fact(&facts, "rex")).detail, "rex 0.0.1-gabc");
         assert_eq!(rex_server_row(fact(&facts, "rex_server")).level, Level::Ok);
