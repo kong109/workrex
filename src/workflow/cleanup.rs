@@ -473,6 +473,7 @@ fn cleanup_impl(
             context.main_worktree_root.display()
         ));
     }
+    crate::agent_trust::forget_local(worktree_path);
     let (expected_identity, missing_admin_identity) =
         match capture_worktree_identity(worktree_path, &context.git_common_dir) {
             Ok(identity) => (identity, None),

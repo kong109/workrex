@@ -59,6 +59,9 @@ pub fn remove(root: &NodeRoot, request: RemoveRequest) -> Result<RemoveResponse>
 
     quiesce(root, &mut workspace)?;
 
+    if let Ok((config, _)) = crate::frozen_config::load(&config_path) {
+        super::trust::forget_for_removal(root, &workspace, &config);
+    }
     let repo = &workspace.repo_path;
     if repo.join(".git").is_dir() {
         let _project = root.lock_project(&workspace.identity.project_id)?;

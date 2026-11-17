@@ -314,6 +314,7 @@ fn remove(root: &NodeRoot, id: &str) -> Result<()> {
             let project = name.split('/').next().unwrap_or_default();
             let _lock = root.lock_project(project)?;
             let repo = root.repo_path(project);
+            super::trust::forget_orphan(&path);
             if repo.join(".git").is_dir() {
                 let _ = git(
                     &repo,

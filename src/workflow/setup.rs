@@ -126,6 +126,13 @@ pub fn setup_environment(
     )?;
     let effective_working_dir = provisioned.working_directory.as_path();
     let hooks_run = provisioned.post_create_hooks_run;
+    crate::agent_trust::ensure_local(
+        config,
+        agent,
+        project_root,
+        worktree_path,
+        effective_working_dir,
+    );
 
     // Build window plans: normalize windows/panes config into a list of window configs.
     // In window mode, we always use a single window from panes config.
