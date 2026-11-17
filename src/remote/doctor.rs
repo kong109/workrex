@@ -120,12 +120,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
 
     let os = fact(facts, "os");
     rows.push(match install::release_platform(os, fact(facts, "arch")) {
-        Ok(platform) if os == "Linux" => Row::new("arch", Level::Ok, platform),
-        Ok(_) => Row::new(
-            "arch",
-            Level::Fail,
-            format!("remote runs {os}; remote nodes require Linux"),
-        ),
+        Ok(platform) => Row::new("arch", Level::Ok, platform),
         Err(err) => Row::new("arch", Level::Fail, err.to_string()),
     });
 
@@ -817,14 +812,31 @@ mod tests {
     fn missing_tools_fail() {
         let mut facts = healthy_facts();
         facts.insert("git".into(), "".into());
-        facts.insert("os".into(), "Darwin".into());
+        facts.insert("os".into(), "FreeBSD".into());
         let (rows, _) = rows_for(
             &facts,
             RemoteIsolation::Container,
             NodeStatus::Ready(Hello::local()),
         );
         assert_eq!(row(&rows, "git").level, Level::Fail);
-        assert_eq!(row(&rows, "arch").level, Level::Fail);
+        let arch = row(&rows, "arch");
+        assert_eq!(arch.level, Level::Fail);
+        assert!(arch.detail.contains("FreeBSD"), "{arch:?}");
+    }
+
+    #[test]
+    fn macos_arm64_is_a_supported_node() {
+        let mut facts = healthy_facts();
+        facts.insert("os".into(), "Darwin".into());
+        facts.insert("arch".into(), "arm64".into());
+        let (rows, _) = rows_for(
+            &facts,
+            RemoteIsolation::None,
+            NodeStatus::Ready(Hello::local()),
+        );
+        let arch = row(&rows, "arch");
+        assert_eq!(arch.level, Level::Ok, "{arch:?}");
+        assert_eq!(arch.detail, "darwin-arm64");
     }
 
     #[test]
