@@ -336,6 +336,13 @@ pub fn check(root: &NodeRoot, request: CredentialsRequest) -> Result<Credentials
             .filter(|name| holds_login(&dir.join(name)))
             .map(|name| dir.join(name).to_string_lossy().into_owned())
             .collect();
+        if let Some(service) = auth.keychain
+            && found.is_empty()
+            && cfg!(target_os = "macos")
+            && keychain_holds(service)
+        {
+            found.push(format!("the login Keychain ({service})"));
+        }
         if agent == "claude" && token {
             found.push("the setup token".into());
         }
@@ -345,6 +352,18 @@ pub fn check(root: &NodeRoot, request: CredentialsRequest) -> Result<Credentials
         });
     }
     Ok(CredentialsResponse { agents })
+}
+
+/// Whether the login Keychain has a generic password for `service`. The
+/// lookup reads the item's attributes only, never its secret.
+fn keychain_holds(service: &str) -> bool {
+    Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", service])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// A credential file holds a login when it is a JSON object with at least
@@ -370,6 +389,12 @@ mod tests {
         assert_eq!(clean_token("  \n").unwrap(), None);
         assert!(clean_token("two words").is_err());
         assert!(clean_token("a\x07b").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_without_the_item_holds_no_login() {
+        assert!(!keychain_holds("workrex-test-no-such-service"));
     }
 
     #[test]
