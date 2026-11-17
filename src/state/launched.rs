@@ -19,6 +19,14 @@ use crate::multiplexer::{AgentPane, Launch, LivePaneInfo, Multiplexer};
 
 use super::{PaneKey, StateStore};
 
+/// How old a record must be before a reader may prune it, so a reader
+/// holding a pane snapshot taken before the launch keeps a fresh record.
+const PRUNE_AFTER_SECS: u64 = 10;
+
+/// Age past which a record is pruned whatever its instance, so records of
+/// retired Rex servers do not pile up.
+const RECORD_TTL_SECS: u64 = 24 * 60 * 60;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LaunchRecord {
     pub pane_key: PaneKey,
@@ -91,9 +99,11 @@ impl StateStore {
     }
 
     /// Agent panes of `backend` `instance` launched by workrex whose agents
-    /// fired no hook: none of `hooked` names them. With `prune`, records of
-    /// hooked panes, of panes gone from `live_panes` and of recycled pane
-    /// IDs are removed.
+    /// fired no hook: none of `hooked` names them. With `prune`, records
+    /// older than [`PRUNE_AFTER_SECS`] of hooked panes, of panes gone from
+    /// `live_panes` and of recycled pane IDs are removed, as are records of
+    /// any instance older than [`RECORD_TTL_SECS`]. Unreadable records and
+    /// failed removals are skipped, never failing the load.
     pub(crate) fn unhooked_launches(
         &self,
         backend: &str,
@@ -101,41 +111,55 @@ impl StateStore {
         hooked: &HashSet<String>,
         live_panes: &HashMap<String, LivePaneInfo>,
         prune: bool,
-    ) -> Result<Vec<AgentPane>> {
+    ) -> Vec<AgentPane> {
         let entries = match fs::read_dir(self.launched_dir()) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Vec::new(),
+            Err(error) => {
+                warn!(%error, "failed to read agent launch records");
+                return Vec::new();
+            }
         };
+        let now = crate::remote::cache::now();
         let mut panes = Vec::new();
         for entry in entries {
-            let path = entry?.path();
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(error) => {
+                    warn!(%error, "failed to read an agent launch record");
+                    continue;
+                }
+            };
             let Some(record) = fs::read(&path)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<LaunchRecord>(&bytes).ok())
             else {
                 continue;
             };
+            let age = now.saturating_sub(record.at);
             let key = &record.pane_key;
-            if key.backend != backend || key.instance != instance {
-                continue;
-            }
+            let ours = key.backend == backend && key.instance == instance;
             let live = live_panes
                 .get(&key.pane_id)
-                .filter(|live| !recycled(&record, live));
+                .filter(|live| ours && !recycled(&record, live));
             match live {
+                _ if prune && age >= RECORD_TTL_SECS => remove(&path),
                 Some(live) if !hooked.contains(&key.pane_id) => panes.push(pane(&record, live)),
-                _ if prune => match fs::remove_file(&path) {
-                    Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                        return Err(error.into());
-                    }
-                    _ => {}
-                },
+                _ if prune && ours && age >= PRUNE_AFTER_SECS => remove(&path),
                 _ => {}
             }
         }
         panes.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
-        Ok(panes)
+        panes
+    }
+}
+
+fn remove(path: &Path) {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            warn!(%error, path = %path.display(), "failed to remove an agent launch record");
+        }
+        _ => {}
     }
 }
 
@@ -193,16 +217,22 @@ mod tests {
         }
     }
 
-    /// A store holding the launch of a `gemini` agent into `block:a`, whose
-    /// shell has the foreground at launch.
-    fn launched(prompted: bool) -> (tempfile::TempDir, StateStore, u64) {
+    /// A store holding the launch, `age` seconds ago, of a `gemini` agent
+    /// into `block:a`, whose shell had the foreground at launch.
+    fn launched(prompted: bool, age: u64) -> (tempfile::TempDir, StateStore, u64) {
         let dir = tempfile::tempdir().unwrap();
         let store = StateStore::with_path(dir.path().to_path_buf()).unwrap();
+        let record = record(prompted, age);
+        store.write_launch(&record).unwrap();
+        (dir, store, record.at)
+    }
+
+    fn record(prompted: bool, age: u64) -> LaunchRecord {
         let at_launch = FakeMux {
             fresh: HashMap::from([("block:a".to_string(), pane(7, "zsh"))]),
             ..FakeMux::default()
         };
-        let record = LaunchRecord::of(
+        let mut record = LaunchRecord::of(
             &at_launch,
             "block:a",
             Path::new("/repo/wt"),
@@ -210,8 +240,8 @@ mod tests {
             prompted,
         );
         assert_eq!(record.pane_key.instance, INSTANCE);
-        store.write_launch(&record).unwrap();
-        (dir, store, record.at)
+        record.at -= age;
+        record
     }
 
     fn running(command: &str) -> FakeMux {
@@ -225,9 +255,13 @@ mod tests {
         store.load_all_reconciled_agents(mux).unwrap()
     }
 
+    fn records(store: &StateStore) -> usize {
+        fs::read_dir(store.launched_dir()).unwrap().count()
+    }
+
     #[test]
     fn a_launched_agent_is_an_agent_before_its_first_hook() {
-        let (_dir, store, at) = launched(true);
+        let (_dir, store, at) = launched(true, 0);
 
         let found = agents(&store, &running("gemini"));
 
@@ -247,7 +281,7 @@ mod tests {
 
     #[test]
     fn an_unprompted_agent_never_stalls() {
-        let (_dir, store, at) = launched(false);
+        let (_dir, store, at) = launched(false, 0);
 
         let found = agents(&store, &running("gemini"));
 
@@ -257,7 +291,7 @@ mod tests {
 
     #[test]
     fn a_pane_back_at_its_shell_is_marked() {
-        let (_dir, store, _) = launched(true);
+        let (_dir, store, _) = launched(true, 0);
 
         let found = agents(&store, &running("zsh"));
 
@@ -266,7 +300,7 @@ mod tests {
 
     #[test]
     fn the_first_hook_replaces_the_launch() {
-        let (_dir, store, at) = launched(true);
+        let (_dir, store, at) = launched(true, PRUNE_AFTER_SECS);
         let state = hooked("block:a", AgentStatus::Working, at);
         store.upsert_agent(&state).unwrap();
         let mux = running("claude");
@@ -289,9 +323,51 @@ mod tests {
                 ..FakeMux::default()
             },
         ] {
-            let (_dir, store, _) = launched(true);
+            let (_dir, store, _) = launched(true, PRUNE_AFTER_SECS);
             assert!(agents(&store, &mux).is_empty());
             assert!(agents(&store, &running("gemini")).is_empty());
         }
+    }
+
+    #[test]
+    fn a_reader_whose_snapshot_misses_a_fresh_launch_keeps_it() {
+        let (_dir, store, _) = launched(true, PRUNE_AFTER_SECS - 1);
+
+        assert!(agents(&store, &FakeMux::default()).is_empty());
+
+        assert_eq!(agents(&store, &running("gemini")).len(), 1);
+    }
+
+    #[test]
+    fn records_of_any_instance_expire() {
+        let (_dir, store, _) = launched(true, RECORD_TTL_SECS - 1);
+        let mut retired = record(true, RECORD_TTL_SECS);
+        retired.pane_key.instance = "unix:///tmp/retired.sock".to_string();
+        store.write_launch(&retired).unwrap();
+        let mut current = record(true, RECORD_TTL_SECS);
+        current.pane_key.pane_id = "block:b".to_string();
+        store.write_launch(&current).unwrap();
+        let mux = FakeMux {
+            live: HashMap::from([
+                ("block:a".to_string(), pane(7, "gemini")),
+                ("block:b".to_string(), pane(7, "gemini")),
+            ]),
+            ..FakeMux::default()
+        };
+
+        let found = agents(&store, &mux);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pane_id, "block:a");
+        assert_eq!(records(&store), 1);
+    }
+
+    #[test]
+    fn an_unreadable_launch_directory_does_not_fail_the_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::with_path(dir.path().to_path_buf()).unwrap();
+        fs::write(store.launched_dir(), "not a directory").unwrap();
+
+        assert!(agents(&store, &running("gemini")).is_empty());
     }
 }

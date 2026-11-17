@@ -1583,7 +1583,7 @@ impl StateStore {
             &hooked,
             live_panes,
             prune_stale,
-        )?);
+        ));
         Ok(valid_agents)
     }
 }
