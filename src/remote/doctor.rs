@@ -175,32 +175,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
 
     rows.push(rex_row(fact(facts, "rex")));
     rows.push(rex_server_row(fact(facts, "rex_server")));
-
-    let linger = match fact(facts, "linger") {
-        "yes" => Row::new("linger", Level::Ok, format!("enabled for {user}")),
-        "no" => Row::new(
-            "linger",
-            Level::Fail,
-            format!("disabled for {user}: agents stop when your last ssh session ends"),
-        )
-        .fix(format!("sudo loginctl enable-linger {user}")),
-        "unavailable" => Row::new("linger", Level::Warn, "loginctl not found; cannot check")
-            .fix("make sure user processes survive logout"),
-        other => Row::new(
-            "linger",
-            Level::Warn,
-            format!("unknown linger state {other:?}"),
-        )
-        .fix(format!("sudo loginctl enable-linger {user}")),
-    };
-    rows.push(wsl::linger_row(
-        linger,
-        fact(facts, "kernel"),
-        fact(facts, "linger"),
-        fact(facts, "linger_error"),
-        fact(facts, "systemd") == "yes",
-        user,
-    ));
+    rows.push(linger_row(facts, os, user));
 
     rows.push(Row::new(
         "agents",
@@ -218,6 +193,43 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
     let (row, runtime) = runtime_row(facts, cx);
     rows.push(row);
     (rows, runtime)
+}
+
+/// Linger is systemd-logind's; on macOS agents run under the Rex server,
+/// which outlives the ssh session.
+fn linger_row(facts: &Facts, os: &str, user: &str) -> Row {
+    if os == "Darwin" {
+        return Row::new(
+            "linger",
+            Level::Skip,
+            "not needed on macOS: agents run under the Rex server",
+        );
+    }
+    let linger = match fact(facts, "linger") {
+        "yes" => Row::new("linger", Level::Ok, format!("enabled for {user}")),
+        "no" => Row::new(
+            "linger",
+            Level::Fail,
+            format!("disabled for {user}: agents stop when your last ssh session ends"),
+        )
+        .fix(format!("sudo loginctl enable-linger {user}")),
+        "unavailable" => Row::new("linger", Level::Warn, "loginctl not found; cannot check")
+            .fix("make sure user processes survive logout"),
+        other => Row::new(
+            "linger",
+            Level::Warn,
+            format!("unknown linger state {other:?}"),
+        )
+        .fix(format!("sudo loginctl enable-linger {user}")),
+    };
+    wsl::linger_row(
+        linger,
+        fact(facts, "kernel"),
+        fact(facts, "linger"),
+        fact(facts, "linger_error"),
+        fact(facts, "systemd") == "yes",
+        user,
+    )
 }
 
 /// Remote agents run in docker; podman is reported but not used.
@@ -845,6 +857,23 @@ mod tests {
         let arch = row(&rows, "arch");
         assert_eq!(arch.level, Level::Ok, "{arch:?}");
         assert_eq!(arch.detail, "darwin-arm64");
+    }
+
+    #[test]
+    fn macos_skips_linger() {
+        let mut facts = healthy_facts();
+        facts.insert("os".into(), "Darwin".into());
+        facts.insert("arch".into(), "arm64".into());
+        facts.insert("linger".into(), "unavailable".into());
+        let (rows, _) = rows_for(
+            &facts,
+            RemoteIsolation::None,
+            NodeStatus::Ready(Hello::local()),
+        );
+        let linger = row(&rows, "linger");
+        assert_eq!(linger.level, Level::Skip, "{linger:?}");
+        assert!(linger.fix.is_none());
+        assert!(rows.iter().all(|row| row.level != Level::Fail), "{rows:?}");
     }
 
     const FAKE_REX: &str = r#"#!/bin/sh
