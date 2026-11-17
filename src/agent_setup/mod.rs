@@ -68,6 +68,27 @@ impl Agent {
         serde_json::from_value(serde_json::Value::from(kind)).ok()
     }
 
+    /// Whether this agent's status hooks are installed where its
+    /// environment looks for them. Each check reads files only.
+    pub fn hooks_installed(self) -> bool {
+        let check = match self {
+            Agent::Antigravity => antigravity::check(),
+            Agent::Claude => claude::check(),
+            Agent::Codex => codex::check(),
+            Agent::Copilot => copilot::check(),
+            Agent::Gemini => gemini::check(),
+            Agent::Grok => grok::check(),
+            Agent::Muse => muse::check(),
+            Agent::OpenCode => opencode::check(),
+            Agent::Pi => pi::check(),
+            Agent::Omp => omp::check(),
+        };
+        matches!(
+            check,
+            Ok(StatusCheck::Installed | StatusCheck::UpdateAvailable)
+        )
+    }
+
     /// All known agent variants. Used by uninstall to attempt cleanup
     /// even when the agent CLI is no longer detected.
     pub fn all() -> Vec<Agent> {

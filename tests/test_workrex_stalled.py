@@ -16,7 +16,9 @@ from .conftest import (
     write_workrex_config,
 )
 from .rex_env import RexEnvironment
-from .support.agent_state import get_state_dir
+from .support.agent_state import get_state_dir, start_active_agent
+
+GEMINI_HOOKS = Path(__file__).parent.parent / "resources" / "gemini" / "settings.json"
 
 # Stands in for an agent held at a prompt before its hooks load: it asks a
 # question, fires no hook, and echoes the answer.
@@ -30,12 +32,22 @@ PROMPTING_AGENT = (
 BRANCH = "feature-held"
 
 
+def install_gemini_hooks(env: RexEnvironment) -> None:
+    gemini_dir = env.home_path / ".gemini"
+    gemini_dir.mkdir()
+    (gemini_dir / "settings.json").write_text(GEMINI_HOOKS.read_text())
+
+
 def launch_held_agent(
     env: RexEnvironment,
     workrex_exe_path: Path,
     repo_path: Path,
     installer: FakeAgentInstaller,
+    *,
+    hooks: bool = True,
 ) -> str:
+    if hooks:
+        install_gemini_hooks(env)
     shim = installer.install("gemini", PROMPTING_AGENT)
     write_workrex_config(repo_path, panes=[{"command": "<agent>"}], agent=str(shim))
     run_workrex_command(
@@ -46,9 +58,13 @@ def launch_held_agent(
     return window
 
 
+def launch_records(env: RexEnvironment) -> list[Path]:
+    return list((get_state_dir(env) / "launched").glob("*.json"))
+
+
 def age_launch(env: RexEnvironment, seconds: int) -> None:
     """Move the launch back in time, as if the agent had sat at its prompt."""
-    records = list((get_state_dir(env) / "launched").glob("*.json"))
+    records = launch_records(env)
     assert len(records) == 1, records
     record = json.loads(records[0].read_text())
     record["at"] = int(time.time()) - seconds
@@ -110,3 +126,45 @@ def test_held_agent_shows_stalled_and_wait_returns_early(
     assert waited.exit_code == 4
     assert "stalled" in waited.stderr
     assert f"capture {BRANCH}" in waited.stderr
+
+
+def test_agent_without_installed_hooks_is_not_tracked_as_launched(
+    mux_server: RexEnvironment,
+    workrex_exe_path: Path,
+    mux_repo_path: Path,
+    fake_agent_installer: FakeAgentInstaller,
+):
+    """Without hooks the agent would never report, so it is never stalled."""
+    env = mux_server
+    launch_held_agent(
+        env, workrex_exe_path, mux_repo_path, fake_agent_installer, hooks=False
+    )
+
+    assert launch_records(env) == []
+    status = run_workrex_command(
+        env, workrex_exe_path, mux_repo_path, f"status {BRANCH} --json"
+    )
+    assert json.loads(status.stdout)["agents"] == []
+
+
+def test_wait_any_prefers_a_finished_agent_over_a_stalled_one(
+    mux_server: RexEnvironment,
+    workrex_exe_path: Path,
+    mux_repo_path: Path,
+    fake_agent_installer: FakeAgentInstaller,
+):
+    env = mux_server
+    start_active_agent(
+        env, workrex_exe_path, mux_repo_path, "feature-done", status="done"
+    )
+    launch_held_agent(env, workrex_exe_path, mux_repo_path, fake_agent_installer)
+    age_launch(env, 120)
+
+    waited = run_workrex_command(
+        env,
+        workrex_exe_path,
+        mux_repo_path,
+        f"wait {BRANCH} feature-done --any --timeout 30",
+    )
+    assert waited.exit_code == 0
+    assert "feature-done: done" in waited.stderr
