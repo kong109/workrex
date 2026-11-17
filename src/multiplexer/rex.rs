@@ -844,6 +844,25 @@ fn macos_default_socket(xdg_runtime_dir: Option<&OsStr>, home: Option<&Path>) ->
     }
 }
 
+/// The Rex CLI inside the Rex app's server bundle, relative to the home
+/// directory. `Current` follows Rex updates.
+pub(crate) const MACOS_REX_CLI: &str = "Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex";
+
+/// The rex to run: REX_BIN_DIR's, which Rex sets only in its own
+/// terminals, else the app bundle's under `macos_home`, else `rex` on PATH.
+/// An ssh command on a Mac has neither REX_BIN_DIR nor rex on its PATH.
+fn rex_program(rex_bin_dir: Option<&OsStr>, macos_home: Option<&Path>) -> String {
+    rex_bin_dir
+        .map(|dir| Path::new(dir).join("rex"))
+        .into_iter()
+        .chain(macos_home.map(|home| home.join(MACOS_REX_CLI)))
+        .find(|path| path.is_file())
+        .map_or_else(
+            || "rex".to_string(),
+            |path| path.to_string_lossy().into_owned(),
+        )
+}
+
 /// How Linux rex judges a runtime directory.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RuntimeDir {
@@ -1030,11 +1049,11 @@ impl RexBackend {
     }
 
     fn with_server(server: Option<String>) -> Self {
-        let program = std::env::var_os("REX_BIN_DIR")
-            .map(|dir| PathBuf::from(dir).join("rex"))
-            .filter(|path| path.is_file())
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "rex".to_string());
+        let macos_home = cfg!(target_os = "macos").then(home::home_dir).flatten();
+        let program = rex_program(
+            std::env::var_os("REX_BIN_DIR").as_deref(),
+            macos_home.as_deref(),
+        );
         Self {
             program,
             reads: Mutex::default(),
@@ -2913,6 +2932,32 @@ mod tests {
         assert_eq!(socket(Some("..")), None);
         assert_eq!(socket(Some("")), platform());
         assert_eq!(socket(None), platform());
+    }
+
+    #[test]
+    fn rex_program_prefers_rex_bin_dir_then_the_app_bundle() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin_dir = dir.path().join("bin");
+        let home = dir.path().join("home");
+        let bundled = home.join(MACOS_REX_CLI);
+        let program =
+            |bin: Option<&Path>, home: Option<&Path>| rex_program(bin.map(Path::as_os_str), home);
+        assert_eq!(program(Some(&bin_dir), Some(&home)), "rex");
+
+        std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, "").unwrap();
+        assert_eq!(
+            program(Some(&bin_dir), Some(&home)),
+            bundled.to_string_lossy()
+        );
+        assert_eq!(program(Some(&bin_dir), None), "rex");
+
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(bin_dir.join("rex"), "").unwrap();
+        assert_eq!(
+            program(Some(&bin_dir), Some(&home)),
+            bin_dir.join("rex").to_string_lossy()
+        );
     }
 
     #[test]
