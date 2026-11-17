@@ -1,6 +1,6 @@
 ---
 title: "Remote servers"
-description: Run individual agents on an SSH-reachable Linux server while others stay on your machine
+description: Run individual agents on an SSH-reachable Linux or macOS server while others stay on your machine
 ---
 
 import RemoteDemo from "../../../../components/RemoteDemo.astro";
@@ -9,7 +9,7 @@ import RemoteDemo from "../../../../components/RemoteDemo.astro";
 Remote servers are experimental. Keep the relevant `remote doctor` output and a reproducible command when reporting a failure.
 :::
 
-Workrex runs agents on an SSH-reachable Linux server while other agents stay
+Workrex runs agents on an SSH-reachable Linux or macOS server while other agents stay
 local. Each remote workspace owns a native session on the server's Rex instance, with its configured terminal blocks.
 Rex.app shows those terminals directly; the dashboard, sidebar, `status`, and
 `list` show them alongside local agents.

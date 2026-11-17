@@ -123,7 +123,7 @@ placement: devbox
 | `remotes.<name>.host`       | SSH destination: an alias from `~/.ssh/config` or `user@host`                                                                                                          | required                  |
 | `remotes.<name>.path`       | Node root on the remote: `~`, a path starting with `~/` (expanded on the remote), or an absolute path                                                                  | `~/.workrex-node`         |
 | `remotes.<name>.isolation`  | `container` forces Docker; `none` forces host execution. See [server or Docker](/guide/remote/setup/#server-or-docker)                                                 | follows `sandbox.enabled` |
-| `remotes.<name>.binary`     | Local path to a Linux `workrex` binary to install instead of the matching release. Releases exist for linux-amd64 only, so an ARM64 server needs this                  | none                      |
+| `remotes.<name>.binary`     | Local path to a `workrex` binary built for the remote, to install instead of the matching release. Releases exist for linux-amd64, linux-arm64 and darwin-arm64        | none                      |
 | `remotes.<name>.terminal`   | Terminal host for remote agents; the only supported value is `rex`. See [agent terminals on the server's Rex](/guide/remote/setup/#agent-terminals-on-the-servers-rex) | `rex`                     |
 | `remotes.<name>.rex_client` | Label of the Rex.app client `workrex open` switches when several are connected to the server's Rex server                                                              | the only one              |
 

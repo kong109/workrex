@@ -22,8 +22,8 @@ workrex update
 
 ## Platforms
 
-Releases include binaries for macOS on Apple Silicon (`darwin-arm64`) and Linux
-on x86_64 (`linux-amd64`). On any other platform, `workrex update` stops and
+Releases include binaries for macOS on Apple Silicon (`darwin-arm64`), Linux on
+x86_64 (`linux-amd64`) and Linux on ARM64 (`linux-arm64`). On any other platform, `workrex update` stops and
 tells you to build from source:
 
 ```bash

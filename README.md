@@ -3,7 +3,7 @@
 Workrex runs coding agents in parallel inside [Rex](https://www.superlogical.com/rex).
 Each task gets a Git worktree, branch, and Rex session. The dashboard and sidebar
 show agent status, terminal output, and changes across projects. Agents can also
-run on a configured Linux server over SSH and appear in Rex.app.
+run on a configured Linux or macOS server over SSH and appear in Rex.app.
 
 ## Install
 
@@ -116,7 +116,7 @@ Codex discovers them in `~/.agents/skills`; invoke them with `$workrex` and so o
 
 ## Run agents on a remote server
 
-Prepare a Linux server with Git, Rex, and noninteractive SSH access. Its Rex
+Prepare a Linux or macOS server with Git, Rex, and noninteractive SSH access. Its Rex
 server must be reachable by Rex.app. Add it to your global configuration:
 
 ```yaml
