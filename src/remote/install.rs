@@ -72,8 +72,8 @@ impl Pin {
     pub fn mismatch_hint(&self, spec: &RemoteSpec) -> String {
         match self.source {
             PinSource::Release => format!(
-                "This {BIN} is not the v{} release; point remotes.{}.binary at a Linux \
-                 build of it (see `just remote-dev-binary`)",
+                "This {BIN} is not the v{} release; point remotes.{}.binary at a build \
+                 of it for the remote (see `just remote-dev-binary`)",
                 env!("CARGO_PKG_VERSION"),
                 spec.name
             ),
@@ -380,7 +380,7 @@ fn staged_failure(spec: &RemoteSpec, pin: &Pin, platform: &str, failure: HelloFa
     match failure {
         HelloFailure::PredatesNodes => format!(
             "{source} predates remote nodes (it has no `{BIN} node` command). Point \
-             remotes.{}.binary at a Linux build of this {BIN} (see `just remote-dev-binary`)",
+             remotes.{}.binary at a {platform} build of this {BIN} (see `just remote-dev-binary`)",
             spec.name
         ),
         HelloFailure::NotANode { detail } => format!(

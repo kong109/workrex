@@ -27,6 +27,9 @@ pub struct AgentAuth {
     /// Files in the agent's directory that hold its logins; empty when they
     /// live in a database with other state.
     pub files: &'static [&'static str],
+    /// Service of the macOS login-Keychain item that holds its login on a
+    /// Mac, where it keeps none in `files`.
+    pub keychain: Option<&'static str>,
 }
 
 pub const AGENTS: &[AgentAuth] = &[
@@ -36,6 +39,7 @@ pub const AGENTS: &[AgentAuth] = &[
         callbacks: &[],
         hint: "Open the URL it prints on this machine, then paste the code back here.",
         files: &[".credentials.json"],
+        keychain: Some("Claude Code-credentials"),
     },
     AgentAuth {
         agent: "codex",
@@ -44,6 +48,7 @@ pub const AGENTS: &[AgentAuth] = &[
         hint: "Open the URL it prints on this machine; the browser returns through a \
                forwarded port. Without a browser here, pass `-- --device-auth`.",
         files: &["auth.json"],
+        keychain: None,
     },
     AgentAuth {
         agent: "gemini",
@@ -52,6 +57,7 @@ pub const AGENTS: &[AgentAuth] = &[
         hint: "Choose \"Sign in with Google\", open the URL on this machine and paste \
                the code back. Leave with /quit once it is done.",
         files: &["oauth_creds.json", "google_accounts.json"],
+        keychain: None,
     },
     AgentAuth {
         agent: "opencode",
@@ -62,6 +68,7 @@ pub const AGENTS: &[AgentAuth] = &[
         ],
         hint: "Pick a provider; browser logins return through a forwarded port.",
         files: &["auth.json"],
+        keychain: None,
     },
     AgentAuth {
         agent: "pi",
@@ -74,6 +81,7 @@ pub const AGENTS: &[AgentAuth] = &[
         hint: "Type /login and pick a provider; browser logins return through a \
                forwarded port (or paste the redirect URL). Leave with /quit.",
         files: &["auth.json"],
+        keychain: None,
     },
     AgentAuth {
         agent: "omp",
@@ -87,6 +95,7 @@ pub const AGENTS: &[AgentAuth] = &[
         hint: "Pick a provider (or name one: `-- anthropic`); browser logins return \
                through a forwarded port.",
         files: &[],
+        keychain: None,
     },
 ];
 

@@ -3,7 +3,7 @@ title: "remote"
 description: Set up, check and manage SSH remotes that run agents
 ---
 
-Commands for [remote servers](/guide/remote/): SSH-reachable Linux machines that run individual agents. Remotes are defined under `remotes:` in the global config (see [configuration](/guide/configuration/#remotes)). Create a remote agent with [`workrex add --remote`](/reference/commands/add/).
+Commands for [remote servers](/guide/remote/): SSH-reachable Linux or macOS machines that run individual agents. Remotes are defined under `remotes:` in the global config (see [configuration](/guide/configuration/#remotes)). Create a remote agent with [`workrex add --remote`](/reference/commands/add/).
 
 ## remote
 
@@ -45,20 +45,20 @@ workrex remote doctor <name>
 
 Prints one row per check, with a fix for each failing row:
 
-| Check       | What it checks                                                                                            |
-| ----------- | --------------------------------------------------------------------------------------------------------- |
-| `ssh`       | The SSH connection works without a prompt                                                                 |
-| `arch`      | The remote runs Linux on a supported architecture                                                         |
-| `node`      | The node binary is installed and speaks this workrex's protocol                                           |
-| `git`       | Git is installed                                                                                          |
-| `rex`       | Rex is installed and its server is reachable                                                              |
-| `linger`    | systemd linger is enabled, so agents survive logout                                                       |
-| `agents`    | Resolved mode and deciding setting; in host mode, default CLI required and other configured CLIs optional |
-| `container` | Docker works for the SSH user (Docker mode only)                                                          |
-| `hooks`     | workrex's status hooks are installed for each agent                                                       |
-| `path`      | `~/.local/bin/workrex` runs this version's node binary, which exists, in login shells (server mode only)  |
-| logins      | One row per configured agent, with the credential files found on the remote                               |
-| `image`     | The sandbox image of the default agent can be pulled (it is pulled as part of the check)                  |
+| Check       | What it checks                                                                                             |
+| ----------- | ---------------------------------------------------------------------------------------------------------- |
+| `ssh`       | The SSH connection works without a prompt                                                                  |
+| `arch`      | The remote runs Linux or macOS on a supported architecture                                                 |
+| `node`      | The node binary is installed and speaks this workrex's protocol                                            |
+| `git`       | Git is installed                                                                                           |
+| `rex`       | Rex is installed and its server is reachable                                                               |
+| `linger`    | systemd linger is enabled, so agents survive logout (skipped on macOS)                                     |
+| `agents`    | Resolved mode and deciding setting; in host mode, default CLI required and other configured CLIs optional  |
+| `container` | Docker works for the SSH user (Docker mode only)                                                           |
+| `hooks`     | workrex's status hooks are installed for each agent                                                        |
+| `path`      | `~/.local/bin/workrex` runs this version's node binary, which exists, in login shells (server mode only)   |
+| logins      | One row per configured agent, with the credential files found on the remote, or on macOS the Keychain item |
+| `image`     | The sandbox image of the default agent can be pulled (it is pulled as part of the check)                   |
 
 Uses the current directory's effective config, like `add`; outside a project, uses global config. See [server or Docker](/guide/remote/setup/#server-or-docker). Exits with status 1 when any check fails. Missing logins are warnings, not failures.
 

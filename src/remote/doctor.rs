@@ -13,6 +13,7 @@ use super::install::{self, NodeStatus, Pin};
 use super::protocol::{self, HelloFailure};
 use super::transport::{Input, Transport};
 use crate::config::{Config, RemoteIsolation};
+use crate::multiplexer::rex::MACOS_REX_CLI;
 
 mod wsl;
 
@@ -27,8 +28,8 @@ fact arch "$(uname -m)"
 fact user "$(id -un)"
 fact hostname "$(uname -n)"
 fact kernel "$(uname -r)"
-fact rex "$(rex version 2>/dev/null)"
-fact rex_server "$(rex --autostart=false server status --json 2>/dev/null | tr -d '\n')"
+fact rex "$("$rex" version 2>/dev/null)"
+fact rex_server "$("$rex" --autostart=false server status --json 2>/dev/null | tr -d '\n')"
 fact git "$(git --version 2>/dev/null)"
 if command -v loginctl >/dev/null 2>&1; then
   fact linger "$(loginctl show-user "$(id -un)" --property=Linger --value 2>/dev/null)"
@@ -38,6 +39,15 @@ else
 fi
 if [ -d /run/systemd/system ]; then fact systemd yes; else fact systemd no; fi
 "#;
+
+/// [`FACTS_SCRIPT`] with `$rex` set to the rex the node runs over ssh: `rex`
+/// on PATH, else the Rex app bundle's on a Mac.
+fn facts_script() -> String {
+    let bundled = format!("\"$HOME\"/{}", crate::shell::shell_quote(MACOS_REX_CLI));
+    format!(
+        "rex=rex\nif ! command -v rex >/dev/null 2>&1 && [ -x {bundled} ]; then rex={bundled}; fi\n{FACTS_SCRIPT}"
+    )
+}
 
 const RUNTIME_FACTS_SCRIPT: &str = r#"if command -v docker >/dev/null 2>&1; then
   out=$(docker info --format '{{.ServerVersion}}' 2>&1 </dev/null)
@@ -120,12 +130,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
 
     let os = fact(facts, "os");
     rows.push(match install::release_platform(os, fact(facts, "arch")) {
-        Ok(platform) if os == "Linux" => Row::new("arch", Level::Ok, platform),
-        Ok(_) => Row::new(
-            "arch",
-            Level::Fail,
-            format!("remote runs {os}; remote nodes require Linux"),
-        ),
+        Ok(platform) => Row::new("arch", Level::Ok, platform),
         Err(err) => Row::new("arch", Level::Fail, err.to_string()),
     });
 
@@ -172,32 +177,7 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
 
     rows.push(rex_row(fact(facts, "rex")));
     rows.push(rex_server_row(fact(facts, "rex_server")));
-
-    let linger = match fact(facts, "linger") {
-        "yes" => Row::new("linger", Level::Ok, format!("enabled for {user}")),
-        "no" => Row::new(
-            "linger",
-            Level::Fail,
-            format!("disabled for {user}: agents stop when your last ssh session ends"),
-        )
-        .fix(format!("sudo loginctl enable-linger {user}")),
-        "unavailable" => Row::new("linger", Level::Warn, "loginctl not found; cannot check")
-            .fix("make sure user processes survive logout"),
-        other => Row::new(
-            "linger",
-            Level::Warn,
-            format!("unknown linger state {other:?}"),
-        )
-        .fix(format!("sudo loginctl enable-linger {user}")),
-    };
-    rows.push(wsl::linger_row(
-        linger,
-        fact(facts, "kernel"),
-        fact(facts, "linger"),
-        fact(facts, "linger_error"),
-        fact(facts, "systemd") == "yes",
-        user,
-    ));
+    rows.push(linger_row(facts, os, user));
 
     rows.push(Row::new(
         "agents",
@@ -215,6 +195,43 @@ pub fn evaluate(facts: &Facts, cx: &Context) -> (Vec<Row>, Option<&'static str>)
     let (row, runtime) = runtime_row(facts, cx);
     rows.push(row);
     (rows, runtime)
+}
+
+/// Linger is systemd-logind's; on macOS agents run under the Rex server,
+/// which outlives the ssh session.
+fn linger_row(facts: &Facts, os: &str, user: &str) -> Row {
+    if os == "Darwin" {
+        return Row::new(
+            "linger",
+            Level::Skip,
+            "not needed on macOS: agents run under the Rex server",
+        );
+    }
+    let linger = match fact(facts, "linger") {
+        "yes" => Row::new("linger", Level::Ok, format!("enabled for {user}")),
+        "no" => Row::new(
+            "linger",
+            Level::Fail,
+            format!("disabled for {user}: agents stop when your last ssh session ends"),
+        )
+        .fix(format!("sudo loginctl enable-linger {user}")),
+        "unavailable" => Row::new("linger", Level::Warn, "loginctl not found; cannot check")
+            .fix("make sure user processes survive logout"),
+        other => Row::new(
+            "linger",
+            Level::Warn,
+            format!("unknown linger state {other:?}"),
+        )
+        .fix(format!("sudo loginctl enable-linger {user}")),
+    };
+    wsl::linger_row(
+        linger,
+        fact(facts, "kernel"),
+        fact(facts, "linger"),
+        fact(facts, "linger_error"),
+        fact(facts, "systemd") == "yes",
+        user,
+    )
 }
 
 /// Remote agents run in docker; podman is reported but not used.
@@ -355,9 +372,9 @@ pub fn run(spec: &RemoteSpec, config: &Config) -> Result<bool> {
         return Ok(false);
     }
     let script = if spec.isolation == RemoteIsolation::Container {
-        format!("{FACTS_SCRIPT}{RUNTIME_FACTS_SCRIPT}")
+        format!("{}{RUNTIME_FACTS_SCRIPT}", facts_script())
     } else {
-        FACTS_SCRIPT.to_string()
+        facts_script()
     };
     let output = transport.run(&script, Input::Null, Some(PROBE_TIMEOUT))?;
     let facts = parse_facts(&output.stdout_text());
@@ -817,43 +834,96 @@ mod tests {
     fn missing_tools_fail() {
         let mut facts = healthy_facts();
         facts.insert("git".into(), "".into());
-        facts.insert("os".into(), "Darwin".into());
+        facts.insert("os".into(), "FreeBSD".into());
         let (rows, _) = rows_for(
             &facts,
             RemoteIsolation::Container,
             NodeStatus::Ready(Hello::local()),
         );
         assert_eq!(row(&rows, "git").level, Level::Fail);
-        assert_eq!(row(&rows, "arch").level, Level::Fail);
+        let arch = row(&rows, "arch");
+        assert_eq!(arch.level, Level::Fail);
+        assert!(arch.detail.contains("FreeBSD"), "{arch:?}");
     }
 
     #[test]
-    fn facts_probe_keeps_multiline_rex_server_status() {
-        let dir = tempfile::TempDir::new().unwrap();
-        crate::test_support::write_script(
-            &dir.path().join("rex"),
-            r#"#!/bin/sh
+    fn macos_arm64_is_a_supported_node() {
+        let mut facts = healthy_facts();
+        facts.insert("os".into(), "Darwin".into());
+        facts.insert("arch".into(), "arm64".into());
+        let (rows, _) = rows_for(
+            &facts,
+            RemoteIsolation::None,
+            NodeStatus::Ready(Hello::local()),
+        );
+        let arch = row(&rows, "arch");
+        assert_eq!(arch.level, Level::Ok, "{arch:?}");
+        assert_eq!(arch.detail, "darwin-arm64");
+    }
+
+    #[test]
+    fn macos_skips_linger() {
+        let mut facts = healthy_facts();
+        facts.insert("os".into(), "Darwin".into());
+        facts.insert("arch".into(), "arm64".into());
+        facts.insert("linger".into(), "unavailable".into());
+        let (rows, _) = rows_for(
+            &facts,
+            RemoteIsolation::None,
+            NodeStatus::Ready(Hello::local()),
+        );
+        let linger = row(&rows, "linger");
+        assert_eq!(linger.level, Level::Skip, "{linger:?}");
+        assert!(linger.fix.is_none());
+        assert!(rows.iter().all(|row| row.level != Level::Fail), "{rows:?}");
+    }
+
+    const FAKE_REX: &str = r#"#!/bin/sh
 case "$*" in
   version) printf 'rex 0.0.1-gabc\ncommit: abc\n';;
   *--version*) printf 'Error: unknown flag: --version\n' >&2; exit 1;;
   *) printf '{\n  "tailscale": {\n    "state": "running",\n    "dns_name": "node.example.ts.net"\n  }\n}\n';;
 esac
-"#,
-        );
-        let output = std::process::Command::new("sh")
+"#;
+
+    /// Facts from a probe with a fake rex at `rex`, HOME at `home`, and `path`.
+    fn facts_with_fake_rex(rex: &std::path::Path, home: &std::path::Path, path: &str) -> Facts {
+        std::fs::create_dir_all(rex.parent().unwrap()).unwrap();
+        crate::test_support::write_script(rex, FAKE_REX);
+        let output = std::process::Command::new("/bin/sh")
             .arg("-c")
-            .arg(FACTS_SCRIPT)
-            .env(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    dir.path().display(),
-                    std::env::var("PATH").unwrap()
-                ),
-            )
+            .arg(facts_script())
+            .env("HOME", home)
+            .env("PATH", path)
             .output()
             .unwrap();
-        let facts = parse_facts(&String::from_utf8_lossy(&output.stdout));
+        parse_facts(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    #[test]
+    fn facts_probe_finds_rex_in_the_mac_app_bundle_off_path() {
+        let home = tempfile::TempDir::new().unwrap();
+        // A PATH with the probe's tools and no rex, as over ssh on a Mac.
+        let tools = home.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        for tool in ["grep", "tr", "uname", "id"] {
+            std::os::unix::fs::symlink(which::which(tool).unwrap(), tools.join(tool)).unwrap();
+        }
+        let facts = facts_with_fake_rex(
+            &home.path().join(MACOS_REX_CLI),
+            home.path(),
+            tools.to_str().unwrap(),
+        );
+        assert_eq!(rex_row(fact(&facts, "rex")).detail, "rex 0.0.1-gabc");
+        assert_eq!(rex_server_row(fact(&facts, "rex_server")).level, Level::Ok);
+    }
+
+    #[test]
+    fn facts_probe_keeps_multiline_rex_server_status() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        let facts = facts_with_fake_rex(&bin.join("rex"), dir.path(), &path);
         let rex = rex_row(fact(&facts, "rex"));
         assert_eq!(rex.level, Level::Ok);
         assert_eq!(rex.detail, "rex 0.0.1-gabc");
@@ -869,7 +939,7 @@ esac
     fn facts_script_runs_locally() {
         let output = std::process::Command::new("sh")
             .arg("-c")
-            .arg(FACTS_SCRIPT)
+            .arg(facts_script())
             .output()
             .unwrap();
         let facts = parse_facts(&String::from_utf8_lossy(&output.stdout));
@@ -917,7 +987,7 @@ esac
             .unwrap();
             let output = std::process::Command::new("sh")
                 .arg("-c")
-                .arg(FACTS_SCRIPT)
+                .arg(facts_script())
                 .env("PATH", &path)
                 .output()
                 .unwrap();

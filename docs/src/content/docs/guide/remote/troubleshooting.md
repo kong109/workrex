@@ -7,7 +7,7 @@ description: Upgrade, clean up and retire remote servers, and fix common problem
 
 After you upgrade workrex on the local machine, the next command that reaches a server installs the matching version there. Running agents keep the version they started with.
 
-If you run workrex built from source, the server needs a Linux build of the same source: point [`remotes.<name>.binary`](/guide/configuration/#remotes) at it.
+If you run workrex built from source, the server needs a build of the same source for its platform: point [`remotes.<name>.binary`](/guide/configuration/#remotes) at it.
 
 ## Cleaning up a server
 
@@ -56,7 +56,7 @@ If the server is already gone, `workrex remove --force <handle>` forgets its wor
 
 **A merge requested from a remote pane failed.** The pane prints a `workrex remote logs` command. Run it on the local machine to see the full output.
 
-**Protocol mismatch.** The server's workrex doesn't match your local one. This happens with builds from source; point `binary` at a Linux build of the same source.
+**Protocol mismatch.** The server's workrex doesn't match your local one. This happens with builds from source; point `binary` at a build of the same source for the server's platform.
 
 **Something is left over on the server.** Run `workrex remote gc <remote> --dry-run`.
 

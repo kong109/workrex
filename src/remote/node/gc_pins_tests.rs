@@ -31,3 +31,25 @@ fn own_pins_are_collected_unless_the_status_wrapper_or_shim_runs_them_and_upstre
     let pins = unused_pins(&root, &GcRequest::default(), &[], Some(&shim)).unwrap();
     assert_eq!(pins, vec![shimmed, old, dev]);
 }
+
+#[test]
+fn a_pin_a_process_runs_is_kept() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = NodeRoot {
+        path: tmp.path().canonicalize().unwrap(),
+    };
+    let bin = root.path.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let (running, idle) = (format!("{BIN}-0.1.277"), format!("{BIN}-0.1.276"));
+    fs::copy(which::which("sleep").unwrap(), bin.join(&running)).unwrap();
+    fs::write(bin.join(&idle), "").unwrap();
+    let mut child = std::process::Command::new(bin.join(&running))
+        .arg("30")
+        .spawn()
+        .unwrap();
+
+    let pins = unused_pins(&root, &GcRequest::default(), &[], None);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(pins.unwrap(), vec![idle]);
+}

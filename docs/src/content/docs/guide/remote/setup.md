@@ -1,14 +1,14 @@
 ---
 title: "Setting up a server"
-description: Prepare a Linux server, add it to your config and choose how its agents run
+description: Prepare a Linux or macOS server, add it to your config and choose how its agents run
 ---
 
 ## Requirements
 
-- Linux on x86-64. workrex publishes release builds for linux-amd64 only. For an ARM64 server, build a Linux ARM64 `workrex` yourself and point [`remotes.<name>.binary`](/guide/configuration/#remotes) at it.
+- Linux on x86-64 or ARM64, or macOS on Apple Silicon. workrex publishes release builds for linux-amd64, linux-arm64 and darwin-arm64. For another platform, build `workrex` for it yourself and point [`remotes.<name>.binary`](/guide/configuration/#remotes) at it.
 - SSH that works without a prompt. workrex never asks for a password or to accept a host key, so use a key loaded in your SSH agent or one without a passphrase, and run `ssh <host>` once yourself. Aliases from `~/.ssh/config`, including `ProxyJump`, `Port` and `User`, work.
 - Git and a running Rex server reachable by Rex.app.
-- systemd linger for the SSH user, so agents survive the end of the SSH session:
+- On Linux, systemd linger for the SSH user, so agents survive the end of the SSH session:
 
   ```bash
   sudo loginctl enable-linger <user>
@@ -16,7 +16,7 @@ description: Prepare a Linux server, add it to your config and choose how its ag
 
 - Network access to the APIs your agents use.
 
-The server doesn't need access to GitHub. The local machine downloads `workrex-linux-amd64.tar.gz` from the [kong109/workrex releases](https://github.com/kong109/workrex/releases), checks it against its `.sha256` file and uploads it. What else the server needs depends on [where agents run](#server-or-docker).
+The server doesn't need access to GitHub. The local machine downloads the server's release archive, such as `workrex-linux-amd64.tar.gz`, from the [kong109/workrex releases](https://github.com/kong109/workrex/releases), checks it against its `.sha256` file and uploads it. What else the server needs depends on [where agents run](#server-or-docker).
 
 ## Add the server to your config
 
@@ -104,9 +104,20 @@ A Linux distro in Windows Subsystem for Linux works as a server. Run sshd inside
 
 `workrex remote doctor wsl` names the WSL fix when the connection fails: Windows OpenSSH answering on the configured port, or nothing answering because the distro or its `ssh.socket` is down. It also names the systemd fix when systemd is not running in the distro, and `loginctl enable-linger` when systemd runs but linger is off.
 
+## A macOS server
+
+A Mac on Apple Silicon works as a server. Agents run under its Rex server, which outlives the SSH session, so it needs no linger. workrex finds the Rex CLI inside Rex.app, so `rex` doesn't need to be on the `PATH`.
+
+1. Turn on Remote Login in System Settings > General > Sharing, and check that `ssh <host>` logs in without a prompt.
+2. Install Rex.app on the Mac and run its server on your tailnet, so Rex.app on your machine can reach it.
+3. Install the agent CLIs and add their directories to the `PATH` in `~/.zprofile`. workrex looks for agents on the login `PATH`, and a login shell over SSH doesn't read `~/.zshrc`.
+4. Keep the Mac's user logged in. The Rex server runs in that login session.
+
+A Claude Code login in the Mac's login Keychain counts as a login, so `remote doctor` reports it without a `~/.claude/.credentials.json` file.
+
 ## Agent terminals on the server's Rex
 
-All remote terminals run in Rex. Install Rex on the Linux server if needed:
+All remote terminals run in Rex. On a Mac, Rex.app provides it. Install Rex on a Linux server if needed:
 
 ```bash
 curl -fsSL https://pkgs.superlogical.com/rex/install.sh | sh -s -- --tarball
