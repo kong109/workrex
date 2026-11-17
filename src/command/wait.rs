@@ -106,6 +106,9 @@ pub fn run(
             std::process::exit(1);
         }
 
+        // A stalled agent ends the wait only after this pass, so that with
+        // `--any` a worktree that reached the target wins.
+        let mut stalled: Option<&str> = None;
         for (name, record) in &remote_targets {
             if reached.contains(name) {
                 continue;
@@ -115,7 +118,10 @@ pub fn run(
                 RemoteProgress::Running => {
                     seen_agent.insert(name.clone());
                 }
-                RemoteProgress::Stalled => exit_stalled(name),
+                RemoteProgress::Stalled => {
+                    seen_agent.insert(name.clone());
+                    stalled.get_or_insert(name);
+                }
                 RemoteProgress::Reached => {
                     seen_agent.insert(name.clone());
                     let elapsed = util::format_elapsed_duration(start.elapsed());
@@ -144,6 +150,9 @@ pub fn run(
             return Ok(());
         }
         if worktree_paths.is_empty() {
+            if let Some(name) = stalled {
+                exit_stalled(name);
+            }
             thread::sleep(Duration::from_secs(2));
             continue;
         }
@@ -177,7 +186,7 @@ pub fn run(
                     .iter()
                     .any(|a| a.pane_status(now) == Some(PaneStatus::Stalled))
                 {
-                    exit_stalled(name);
+                    stalled.get_or_insert(name);
                 }
             } else if seen_agent.contains(name) {
                 // Agent was previously running but disappeared
@@ -205,6 +214,9 @@ pub fn run(
         if reached.len() == worktree_names.len() {
             return Ok(());
         }
+        if let Some(name) = stalled {
+            exit_stalled(name);
+        }
 
         thread::sleep(Duration::from_secs(2));
     }
@@ -216,7 +228,8 @@ fn exit_stalled(name: &str) -> ! {
     eprintln!(
         "{name}: stalled: no status hook {FIRST_HOOK_GRACE_SECS}s after launch. \
          Run `{BIN} capture {name}` to see its screen, and answer any prompt with \
-         `{BIN} send {name}`"
+         `{BIN} send {name}`. If it shows no prompt, its status hooks may not be \
+         installed: run `{BIN} setup`"
     );
     std::process::exit(4);
 }
