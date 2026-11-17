@@ -19,7 +19,7 @@ use super::node::observe::{
 use super::observe::{self, Observation};
 use super::protocol::{self, DiffMode, DiffRequest, DiffResponse};
 use crate::config::Config;
-use crate::multiplexer::{AgentPane, EndReason, RemoteAgent, RemoteRef};
+use crate::multiplexer::{AgentPane, EndReason, Launch, RemoteAgent, RemoteRef};
 use crate::multiplexer::{Multiplexer, rex::RexBackend};
 
 /// The remote workspace `target` names: a handle or branch of this
@@ -171,6 +171,10 @@ fn detached_row(
         agent_kind: agent.and_then(|agent| agent.agent_kind.clone()),
         prompt: agent.and_then(|agent| agent.prompt.clone()),
         remote: Some(remote),
+        launched: agent.and_then(|agent| agent.launched).map(|launch| Launch {
+            at: local_ts(launch.at),
+            ..launch
+        }),
     }
 }
 
@@ -643,6 +647,7 @@ esac
                 title: Some("Fixing".into()),
                 agent_kind: Some("claude".into()),
                 prompt: None,
+                launched: None,
             }),
         }
     }
@@ -672,6 +677,7 @@ esac
             agent_kind: None,
             prompt: None,
             remote: Some(remote),
+            launched: None,
         }
     }
 
@@ -765,6 +771,37 @@ esac
         let remote = rows[0].remote.as_ref().unwrap();
         assert!(!remote.connected);
         assert_eq!(remote.last_seen, Some(1000));
+    }
+
+    #[test]
+    fn a_remote_launch_without_a_hook_stalls_on_the_laptop_clock() {
+        use crate::multiplexer::{FIRST_HOOK_GRACE_SECS, Launch, PaneStatus};
+        let launch = Launch {
+            at: 10,
+            prompted: true,
+            at_shell: false,
+        };
+        let pane = ObservedPane {
+            index: 0,
+            alive: true,
+            agent: Some(ObservedAgent {
+                agent_kind: Some("codex".into()),
+                launched: Some(launch),
+                ..ObservedAgent::default()
+            }),
+        };
+        let observations = HashMap::from([("box".to_string(), observation(1000, vec![pane]))]);
+        let rows = rows(&[record()], &observations, &hosts(), 1001);
+        let [row] = rows.as_slice() else {
+            panic!("{rows:?}")
+        };
+
+        assert_eq!(row.launched, Some(Launch { at: 110, ..launch }));
+        assert_eq!(row.pane_status(110 + FIRST_HOOK_GRACE_SECS - 1), None);
+        assert_eq!(
+            row.pane_status(110 + FIRST_HOOK_GRACE_SECS),
+            Some(PaneStatus::Stalled)
+        );
     }
 
     #[test]

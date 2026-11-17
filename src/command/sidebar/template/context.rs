@@ -691,6 +691,7 @@ mod tests {
             agent_kind: None,
             prompt: None,
             remote: None,
+            launched: None,
         }
     }
 

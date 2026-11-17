@@ -105,7 +105,8 @@ workrex run <handle> -- cargo test
 ```
 
 `workrex wait` waits for `done` by default. Exit codes are 0 for the requested
-status, 1 for timeout, 2 for an unknown worktree, and 3 for an exited agent.
+status, 1 for timeout, 2 for an unknown worktree, 3 for an exited agent, and 4
+for a stalled agent: capture it and answer any prompt with `send`.
 An interrupted wait leaves its agents running. Resume monitoring any task you
 remain responsible for.
 

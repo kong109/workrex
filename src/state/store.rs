@@ -405,6 +405,11 @@ impl StateStore {
         self.base_path.join("reported")
     }
 
+    /// Path to the agents workrex launched that have not fired a hook.
+    pub(crate) fn launched_dir(&self) -> PathBuf {
+        self.base_path.join("launched")
+    }
+
     /// Path to containers directory.
     fn containers_dir(&self) -> PathBuf {
         self.base_path.join("containers")
@@ -1437,6 +1442,13 @@ impl StateStore {
         let backend = mux.name();
         let mut reports = super::reported::Reports::new(mux, instance);
         let mut valid_agents = Vec::new();
+        let mut hooked: HashSet<String> = all_agents
+            .iter()
+            .filter(|state| {
+                state.pane_key.backend == backend && state.pane_key.instance == instance
+            })
+            .map(|state| state.pane_key.pane_id.clone())
+            .collect();
 
         for state in all_agents {
             // Skip agents from other backends/instances
@@ -1559,10 +1571,19 @@ impl StateStore {
             }
         }
 
-        valid_agents.extend(reports.adopt(live_panes, current_boot_id));
+        let adopted = reports.adopt(live_panes, current_boot_id);
+        hooked.extend(adopted.iter().map(|agent| agent.pane_id.clone()));
+        valid_agents.extend(adopted);
         if prune_stale {
             reports.persist(self, live_panes)?;
         }
+        valid_agents.extend(self.unhooked_launches(
+            backend,
+            instance,
+            &hooked,
+            live_panes,
+            prune_stale,
+        ));
         Ok(valid_agents)
     }
 }

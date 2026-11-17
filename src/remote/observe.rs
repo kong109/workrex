@@ -627,6 +627,7 @@ mod tests {
                         title: None,
                         agent_kind: Some("claude".into()),
                         prompt: None,
+                        launched: None,
                     }),
                 }],
                 git: None,

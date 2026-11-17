@@ -2,6 +2,7 @@
 //!
 //! State belongs to a Rex server instance and immutable block ID.
 
+mod launched;
 pub(crate) mod reported;
 pub mod run;
 pub mod store;
@@ -16,6 +17,7 @@ use tracing::warn;
 use crate::agent_identity::classify_agent_kind;
 use crate::multiplexer::{AgentStatus, Multiplexer, RemoteRef};
 
+pub use launched::record_launch;
 pub use store::StateStore;
 pub(crate) use store::{AgentStateCache, AgentStateSource, ResurrectionAgentState};
 pub use types::{AgentState, LastDoneCycleState, PaneKey, RuntimeState};

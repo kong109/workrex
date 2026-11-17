@@ -2,6 +2,7 @@ use std::io::{IsTerminal, Read};
 
 use anyhow::{Result, anyhow};
 
+use crate::bin_name::BIN;
 use crate::config;
 use crate::multiplexer::{create_backend, detect_backend};
 use crate::workflow;
@@ -15,6 +16,13 @@ pub fn run(name: &str, text: Option<&str>, file: Option<&str>) -> Result<()> {
     let cfg = config::Config::load(None).unwrap_or_default();
     let mux = create_backend(detect_backend());
     let (_path, agent) = workflow::resolve_worktree_agent(name, mux.as_ref())?;
+    // Typed into the shell, the text would run as a command.
+    if agent.launched.is_some_and(|launch| launch.at_shell) {
+        return Err(anyhow!(
+            "The agent in '{name}' is not running: its pane's shell has the foreground. \
+             Run `{BIN} capture {name}` to see why"
+        ));
+    }
     let content = read_content(text, file)?;
 
     let agent_identity = agent

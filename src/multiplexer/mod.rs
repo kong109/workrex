@@ -918,6 +918,27 @@ pub trait Multiplexer: Send + Sync {
                 );
 
                 let _ = self.clear_pane(&spawned_id);
+                // An agent whose installed hooks will report status is
+                // recorded before it starts, so readers find its pane before
+                // the first hook. Without hooks it would never leave the
+                // record and would read as stalled forever.
+                if let Some(kind) = resolved
+                    .selected_agent
+                    .as_ref()
+                    .map(|agent| agent.kind())
+                    .filter(|kind| {
+                        crate::agent_setup::Agent::from_kind(kind)
+                            .is_some_and(crate::agent_setup::Agent::hooks_installed)
+                    })
+                {
+                    crate::state::record_launch(
+                        self,
+                        &spawned_id,
+                        working_dir,
+                        kind,
+                        resolved.prompt_injected,
+                    );
+                }
                 self.run_in_shell(&spawned_id, &final_command)?;
 
                 // Set working status for agent panes with injected prompts
