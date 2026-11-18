@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 
@@ -50,8 +51,9 @@ def test_path_fails_for_nonexistent_worktree(
 def test_lane_named_like_the_repo_directory_is_not_the_main_worktree(
     mux_server: RexEnvironment, workrex_exe_path: Path
 ):
-    """A lane named after the repository directory resolves to the lane, and
-    `rm` removes the lane, never the main worktree or its branch."""
+    """A lane named after the repository directory wins that name over the
+    main worktree: `path` and `list` find the lane, and `rm` removes it while
+    main and its branch stay."""
     env = mux_server
     repo = env.tmp_path / "proj"
     repo.mkdir()
@@ -63,6 +65,10 @@ def test_lane_named_like_the_repo_directory_is_not_the_main_worktree(
 
     result = run_workrex_command(env, workrex_exe_path, repo, "path proj")
     assert result.stdout.strip() == str(lane)
+    listed = json.loads(
+        run_workrex_command(env, workrex_exe_path, repo, "list proj --json").stdout
+    )
+    assert [Path(row["path"]) for row in listed] == [lane]
 
     run_workrex_remove(env, workrex_exe_path, repo, "proj", force=True)
     assert not lane.exists()

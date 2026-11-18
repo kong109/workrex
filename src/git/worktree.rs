@@ -312,13 +312,19 @@ pub struct WorktreeListing {
 }
 
 impl WorktreeListing {
-    /// The linked worktree whose directory is `handle`. The main worktree has
-    /// no handle, so a lane named like the repository directory never
-    /// resolves to it.
+    /// The worktree whose directory is `handle`. A lane named like the
+    /// repository directory shares its handle with the main worktree, and the
+    /// lane wins.
     pub fn by_handle(&self, handle: &str) -> Option<&(PathBuf, String)> {
-        self.worktrees.iter().find(|(path, _)| {
-            *path != self.main_path && path.file_name().is_some_and(|dir| dir == handle)
-        })
+        let mut named = self
+            .worktrees
+            .iter()
+            .filter(|(path, _)| path.file_name().is_some_and(|dir| dir == handle));
+        let first = named.next()?;
+        if first.0 != self.main_path {
+            return Some(first);
+        }
+        named.next().or(Some(first))
     }
 }
 
@@ -688,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn a_handle_never_names_the_main_worktree() {
+    fn a_lane_wins_the_handle_it_shares_with_the_main_worktree() {
         let listing = parse_worktree_listing(
             "worktree /code/proj\nHEAD abc\nbranch refs/heads/main\n\nworktree /code/proj__worktrees/proj\nHEAD abc\nbranch refs/heads/proj\n\nworktree /code/proj__worktrees/other\nHEAD abc\nbranch refs/heads/other\n",
         )
@@ -706,7 +712,10 @@ mod tests {
         let only_main =
             parse_worktree_listing("worktree /code/proj\nHEAD abc\nbranch refs/heads/main\n")
                 .unwrap();
-        assert_eq!(only_main.by_handle("proj"), None);
+        assert_eq!(
+            path(only_main.by_handle("proj")),
+            Some(PathBuf::from("/code/proj"))
+        );
     }
 
     #[test]

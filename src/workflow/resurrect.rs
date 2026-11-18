@@ -104,8 +104,9 @@ pub fn plan(store: &StateStore, mux: &dyn Multiplexer) -> Result<ResurrectPlan> 
     // matching the resolution logic in workflow::open
     let default_mode = config.mode();
 
-    // Group agent states by matched worktree handle
-    let mut by_handle: HashMap<String, ResurrectHandleState> = HashMap::new();
+    // Group agent states by matched worktree. The main worktree and a lane
+    // can share a handle, so the path is part of the key.
+    let mut by_worktree: HashMap<(PathBuf, String), ResurrectHandleState> = HashMap::new();
     let mut by_workspace: HashMap<(String, String), Vec<AgentStateSource>> = HashMap::new();
     let mut unmatched_states = 0usize;
 
@@ -135,7 +136,7 @@ pub fn plan(store: &StateStore, mux: &dyn Multiplexer) -> Result<ResurrectPlan> 
             Some((_canon_wt, handle)) if !git::get_worktree_attachment(handle).manages_mux() => {
                 unmatched_states += 1;
             }
-            Some((_canon_wt, handle)) => {
+            Some((canon_wt, handle)) => {
                 info!(
                     pane_id = %agent.pane_key.pane_id,
                     workdir = %agent.workdir.display(),
@@ -145,8 +146,8 @@ pub fn plan(store: &StateStore, mux: &dyn Multiplexer) -> Result<ResurrectPlan> 
                     "resurrect:plan matched agent to worktree"
                 );
                 let mode = git::get_worktree_mode_opt(handle).unwrap_or(default_mode);
-                let entry = by_handle
-                    .entry(handle.clone())
+                let entry = by_worktree
+                    .entry((canon_wt.clone(), handle.clone()))
                     .or_insert_with(|| (mode, None, Vec::new()));
                 update_selected_agent(&mut entry.1, &agent);
                 entry.2.push(source);
@@ -164,13 +165,7 @@ pub fn plan(store: &StateStore, mux: &dyn Multiplexer) -> Result<ResurrectPlan> 
 
     // Determine action per handle
     let mut candidates = Vec::new();
-    for (handle, (mode, agent, pane_keys)) in by_handle {
-        let canon_wt = wt_map
-            .iter()
-            .find(|(_, h)| *h == handle)
-            .map(|(p, _)| p.clone())
-            .unwrap_or_default();
-
+    for ((canon_wt, handle), (mode, agent, pane_keys)) in by_worktree {
         let action = if canon_wt == canon_main {
             ResurrectAction::SkipMain
         } else {
