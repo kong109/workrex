@@ -501,11 +501,8 @@ pub fn find_here(name: &str) -> Option<WorkspaceRecord> {
 }
 
 fn local_handle_exists(project_root: &Path, name: &str) -> bool {
-    crate::git::list_worktrees_in(Some(project_root)).is_ok_and(|worktrees| {
-        worktrees
-            .iter()
-            .any(|(path, _)| path.file_name().is_some_and(|dir| dir == name))
-    })
+    crate::git::list_worktrees_with_main_in(Some(project_root))
+        .is_ok_and(|listing| listing.by_handle(name).is_some())
 }
 
 /// Refuse a command that only works on local worktrees when `name` is a

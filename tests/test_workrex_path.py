@@ -1,9 +1,12 @@
+import subprocess
 from pathlib import Path
 
 from .conftest import (
     get_worktree_path,
     run_workrex_add,
     run_workrex_command,
+    run_workrex_remove,
+    setup_git_repo,
     write_workrex_config,
 )
 from .rex_env import RexEnvironment
@@ -42,3 +45,34 @@ def test_path_fails_for_nonexistent_worktree(
 
     assert result.exit_code != 0
     assert "not found" in result.stderr.lower() or "worktree" in result.stderr.lower()
+
+
+def test_lane_named_like_the_repo_directory_is_not_the_main_worktree(
+    mux_server: RexEnvironment, workrex_exe_path: Path
+):
+    """A lane named after the repository directory resolves to the lane, and
+    `rm` removes the lane, never the main worktree or its branch."""
+    env = mux_server
+    repo = env.tmp_path / "proj"
+    repo.mkdir()
+    setup_git_repo(repo)
+    write_workrex_config(repo)
+    run_workrex_add(env, workrex_exe_path, repo, "proj")
+    lane = get_worktree_path(repo, "proj")
+    assert lane.name == repo.name
+
+    result = run_workrex_command(env, workrex_exe_path, repo, "path proj")
+    assert result.stdout.strip() == str(lane)
+
+    run_workrex_remove(env, workrex_exe_path, repo, "proj", force=True)
+    assert not lane.exists()
+    assert (repo / ".git").exists()
+    branches = subprocess.run(
+        ["git", "branch", "--format=%(refname:short)"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert "main" in branches
+    assert "proj" not in branches
