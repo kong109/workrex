@@ -17,7 +17,7 @@ venv/
 tests/venv
 
 # Documentation
-node_modules/
+node_modules
 docs/.astro/
 docs/dist/
 
