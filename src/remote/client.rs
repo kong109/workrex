@@ -75,11 +75,16 @@ impl Node {
     /// Connect to read from the node without installing anything: the
     /// laptop's pin when it is installed and serves `verb`, else the newest
     /// pin of a recorded execution on the remote that does, since an
-    /// execution keeps the binary that started it.
+    /// execution keeps the binary that started it. A `binary` pin whose
+    /// laptop file is gone (a workspace's frozen config can outlive the dev
+    /// build it names) only drops the laptop's candidate.
     pub fn connect_reader(spec: &RemoteSpec, verb: &str) -> Result<Self> {
         let transport = Transport::open(spec)?;
         transport.connect()?;
-        let mut candidates = vec![Pin::for_spec(spec)?.name];
+        let mut candidates: Vec<String> = Pin::for_spec(spec)
+            .map(|pin| pin.name)
+            .into_iter()
+            .collect();
         let mut records: Vec<_> = super::cache::all()
             .into_iter()
             .filter(|record| record.remote == spec.name)

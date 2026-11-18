@@ -1,6 +1,7 @@
 """Remote status, commands, and observation use native Rex block identities."""
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import List
@@ -198,6 +199,40 @@ def test_remote_status_reaches_native_observation(
     assert block.startswith("block:")
     captured = wm(mux_server, workrex_exe_path, mux_repo_path, "capture st")
     assert "applied-done" in captured.stdout
+
+
+def test_send_and_capture_survive_a_deleted_dev_pin(
+    mux_server, workrex_exe_path, mux_repo_path, node, tmp_path
+):
+    """A workspace's frozen config keeps its `binary` pin after the laptop
+    file is gone; reads fall back to the binary its execution started with."""
+    pinned = tmp_path / "pinned-workrex"
+    shutil.copy2(workrex_exe_path, pinned)
+    config_path = mux_server.home_path / ".config" / "workrex" / "config.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["remotes"]["lo"]["binary"] = str(pinned)
+    config_path.write_text(yaml.dump(config))
+    agent = FakeAgent(tmp_path)
+    setup_agent_project(mux_repo_path, agent)
+    wm(mux_server, workrex_exe_path, mux_repo_path, "add pin --remote lo")
+    node.wait_for_agent(mux_server, "pin", "FAKE-AGENT-READY")
+    pinned.unlink()
+
+    agent.do("working")
+    assert poll_until(
+        lambda: [
+            row["status"]
+            for row in status_rows(mux_server, workrex_exe_path, mux_repo_path)
+        ]
+        == ["working"],
+        timeout=15,
+    )
+    wm(mux_server, workrex_exe_path, mux_repo_path, "send pin pin-gone-42")
+    assert poll_until(
+        lambda: "pin-gone-42"
+        in wm(mux_server, workrex_exe_path, mux_repo_path, "capture pin").stdout,
+        timeout=10,
+    )
 
 
 def test_native_send_capture_and_wait_need_no_local_window(
