@@ -280,19 +280,13 @@ pub fn find_worktree(name: &str) -> Result<(PathBuf, String)> {
 
 /// Find a worktree by handle or branch name in a specific workdir.
 pub fn find_worktree_in(name: &str, workdir: Option<&Path>) -> Result<(PathBuf, String)> {
-    let worktrees = list_worktrees_in(workdir)?;
-
-    // First: try to match by handle (directory name)
-    for (path, branch) in &worktrees {
-        if let Some(dir_name) = path.file_name()
-            && dir_name.to_string_lossy() == name
-        {
-            return Ok((path.clone(), branch.clone()));
-        }
+    let listing = list_worktrees_with_main_in(workdir)?;
+    if let Some(found) = listing.by_handle(name) {
+        return Ok(found.clone());
     }
 
     // Fallback: try to match by branch name
-    for (path, branch) in worktrees {
+    for (path, branch) in listing.worktrees {
         if branch == name {
             return Ok((path, branch));
         }
@@ -315,6 +309,23 @@ pub fn list_worktrees_in(workdir: Option<&Path>) -> Result<Vec<(PathBuf, String)
 pub struct WorktreeListing {
     pub main_path: PathBuf,
     pub worktrees: Vec<(PathBuf, String)>,
+}
+
+impl WorktreeListing {
+    /// The worktree whose directory is `handle`. A lane named like the
+    /// repository directory shares its handle with the main worktree, and the
+    /// lane wins.
+    pub fn by_handle(&self, handle: &str) -> Option<&(PathBuf, String)> {
+        let mut named = self
+            .worktrees
+            .iter()
+            .filter(|(path, _)| path.file_name().is_some_and(|dir| dir == handle));
+        let first = named.next()?;
+        if first.0 != self.main_path {
+            return Some(first);
+        }
+        named.next().or(Some(first))
+    }
 }
 
 fn parse_worktree_listing(output: &str) -> Result<WorktreeListing> {
@@ -680,6 +691,31 @@ mod tests {
                     .all(|(path, _)| *path != listing.main_path)
             );
         }
+    }
+
+    #[test]
+    fn a_lane_wins_the_handle_it_shares_with_the_main_worktree() {
+        let listing = parse_worktree_listing(
+            "worktree /code/proj\nHEAD abc\nbranch refs/heads/main\n\nworktree /code/proj__worktrees/proj\nHEAD abc\nbranch refs/heads/proj\n\nworktree /code/proj__worktrees/other\nHEAD abc\nbranch refs/heads/other\n",
+        )
+        .unwrap();
+        let path = |found: Option<&(PathBuf, String)>| found.map(|(path, _)| path.clone());
+        assert_eq!(
+            path(listing.by_handle("proj")),
+            Some(PathBuf::from("/code/proj__worktrees/proj"))
+        );
+        assert_eq!(
+            path(listing.by_handle("other")),
+            Some(PathBuf::from("/code/proj__worktrees/other"))
+        );
+
+        let only_main =
+            parse_worktree_listing("worktree /code/proj\nHEAD abc\nbranch refs/heads/main\n")
+                .unwrap();
+        assert_eq!(
+            path(only_main.by_handle("proj")),
+            Some(PathBuf::from("/code/proj"))
+        );
     }
 
     #[test]

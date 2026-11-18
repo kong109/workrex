@@ -13,38 +13,29 @@ use super::types::{AgentStatusSummary, WorktreeInfo};
 /// Filter worktrees by handle (directory name) or branch name.
 /// Uses handle-first precedence: if a filter token matches a handle, that takes
 /// priority over branch name matches.
-fn filter_worktrees(
-    worktrees: Vec<(PathBuf, String)>,
-    filter: &[String],
-) -> Vec<(PathBuf, String)> {
+fn filter_worktrees(listing: git::WorktreeListing, filter: &[String]) -> Vec<(PathBuf, String)> {
     if filter.is_empty() {
-        return worktrees;
+        return listing.worktrees;
     }
 
     let mut matched_paths = HashSet::new();
 
     for token in filter {
-        // First: try to match by handle (directory name)
-        let handle_match = worktrees.iter().find(|(path, _)| {
-            path.file_name()
-                .and_then(|s| s.to_str())
-                .is_some_and(|name| name == token)
-        });
-
-        if let Some((path, _)) = handle_match {
+        if let Some((path, _)) = listing.by_handle(token) {
             matched_paths.insert(path.clone());
             continue;
         }
 
         // Fallback: try to match by branch name
-        for (path, branch) in &worktrees {
+        for (path, branch) in &listing.worktrees {
             if branch == token {
                 matched_paths.insert(path.clone());
             }
         }
     }
 
-    worktrees
+    listing
+        .worktrees
         .into_iter()
         .filter(|(path, _)| matched_paths.contains(path))
         .collect()
@@ -73,17 +64,16 @@ pub fn list_in(
     }
 
     let listing = git::list_worktrees_with_main_in(repo)?;
-    let main_worktree_path = listing.main_path;
-    let worktrees_data = listing.worktrees;
+    let main_worktree_path = listing.main_path.clone();
 
-    if worktrees_data.is_empty() {
+    if listing.worktrees.is_empty() {
         return Ok(Vec::new());
     }
 
     let repo_key = git::get_repository_key_in(repo)?;
 
     // Apply filter early before expensive operations
-    let worktrees_data = filter_worktrees(worktrees_data, filter);
+    let worktrees_data = filter_worktrees(listing, filter);
 
     if worktrees_data.is_empty() {
         return Ok(Vec::new());
