@@ -56,6 +56,10 @@ workrex rm --gone -f
 workrex rm --all
 ```
 
+## Detached HEAD worktrees
+
+`workrex remove` removes local detached-HEAD worktrees without trying to delete a branch or prompting for unmerged branch commits. Worktree registration, Rex targets, and directory cleanup run as usual, and the output reports that only the worktree was removed.
+
 ## Remote workspaces
 
 Pass the handle of a workspace on a [remote server](/guide/remote/) to remove its worktree, agent, container and window from the remote. Uncommitted changes on the remote refuse the removal without `--force`, and commits its base doesn't have ask for confirmation, as with a local worktree. `--keep-branch` fetches the branch to your machine before the remote copy goes. `pre_remove` hooks run on the remote.
