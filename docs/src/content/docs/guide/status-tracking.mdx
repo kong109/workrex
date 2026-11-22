@@ -26,7 +26,7 @@ hooks installed by `workrex setup`.
 
 **Notes:**
 
-- **Copilot CLI**: No 💬 waiting state
+- **Copilot CLI**: 💬 waiting state requires Copilot CLI 1.0.18 or later
 - **Pi**: No 💬 waiting state
 - **Codex**: Registration occurs when the first turn begins because its session hook is turn-bound
 - **Antigravity CLI (`agy`)**: No 💬 waiting state; registration occurs when agent execution begins
@@ -257,7 +257,15 @@ curl -o "$copilot_home/hooks/workrex-status.json" \
   https://raw.githubusercontent.com/kong109/workrex/main/resources/copilot/hooks/workrex-status/hooks.json
 ```
 
-Copilot loads personal hooks in every repository. If the repository contains a `.github/hooks/workrex-status` installation, remove that directory to avoid running both copies of the hook. The Copilot CLI hooks API does not support detecting permission prompts, so only working/done states are tracked (no waiting state).
+Copilot loads personal hooks in every repository. If the repository contains a `.github/hooks/workrex-status` installation, remove that directory to avoid running both copies of the hook.
+
+The `notification` hook marks the pane waiting when Copilot shows a permission
+prompt or asks a question. `postToolUse` and `postToolUseFailure` restore working
+when the tool finishes, and `userPromptSubmitted` marks a new prompt working.
+Copilot CLI 1.0.18 or later is required for the waiting state.
+
+Run `workrex setup` to update older workrex hooks, then start a new Copilot session
+to load the changes.
 
 ## Customization
 
