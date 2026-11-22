@@ -18,9 +18,11 @@ use super::node::observe::{
 };
 use super::observe::{self, Observation};
 use super::protocol::{self, DiffMode, DiffRequest, DiffResponse};
+use crate::agent_error::{AgentError, AgentErrorKind};
 use crate::config::Config;
 use crate::multiplexer::{AgentPane, EndReason, Launch, RemoteAgent, RemoteRef};
 use crate::multiplexer::{Multiplexer, rex::RexBackend};
+use crate::state::sent::TurnFence;
 
 /// The remote workspace `target` names: a handle or branch of this
 /// repository (local worktrees win), or `project:handle`.
@@ -45,6 +47,34 @@ pub fn find_target(target: &str) -> Option<WorkspaceRecord> {
 /// Stable view key; terminal actions resolve the scoped [`RemoteRef`] instead.
 pub fn detached_pane_id(ws_id: &str, pane: usize) -> String {
     format!("%remote-{ws_id}-{pane}")
+}
+
+fn parse_detached_pane_id(id: &str) -> Option<(&str, usize)> {
+    let (ws_id, pane) = id.strip_prefix("%remote-")?.rsplit_once('-')?;
+    Some((ws_id, pane.parse().ok()?))
+}
+
+pub fn find_pane(pane_id: &str) -> Option<(WorkspaceRecord, usize)> {
+    let mut records = cache::all()
+        .into_iter()
+        .filter(|record| !record.cleanup_pending());
+    if let Some((ws_id, pane)) = parse_detached_pane_id(pane_id) {
+        return records
+            .find(|record| record.ws_id == ws_id)
+            .map(|record| (record, pane));
+    }
+    records.find_map(|record| {
+        let pane = record
+            .execution
+            .as_ref()?
+            .rex
+            .as_ref()?
+            .blocks
+            .iter()
+            .find(|(_, block)| block.as_str() == pane_id)
+            .map(|(&pane, _)| pane)?;
+        Some((record, pane))
+    })
 }
 
 /// Native rows come from the owned records and node observations. A workspace
@@ -356,39 +386,82 @@ pub fn observations(
         .collect()
 }
 
-/// Type `text` into the workspace's agent through the node, and remember
-/// the agent's state before it so `wait` holds out for the turn it starts.
-pub fn send(config: &Config, record: &WorkspaceRecord, text: &str) -> Result<()> {
+pub fn send(
+    config: &Config,
+    record: &WorkspaceRecord,
+    pane: Option<usize>,
+    text: &str,
+    require_status: bool,
+) -> Result<Option<SentTurn>> {
     let Some(execution) = &record.execution else {
         return Err(no_execution(record));
     };
     let spec = RemoteSpec::resolve(config, &record.remote)?;
     let node = Node::connect_reader(&spec, protocol::SEND)?;
-    let response: SendResponse = node.call(
-        protocol::SEND,
-        &SendRequest {
-            ws_id: record.ws_id.clone(),
-            pane: None,
-            text: text.to_string(),
-        },
-        false,
-    )?;
+    let response: SendResponse = node
+        .call(
+            protocol::SEND,
+            &SendRequest {
+                ws_id: record.ws_id.clone(),
+                pane,
+                text: text.to_string(),
+                require_status,
+            },
+            false,
+        )
+        .map_err(|err| agent_error(config, record, err))?;
     // Nodes from before the baseline report nothing to tell the turn by.
     let turn = response.pane.map(|pane| SentTurn {
         ex_id: execution.ex_id.clone(),
         pane,
-        status: response.status,
-        status_ts: response.status_ts,
-        sent_at: cache::now(),
+        fence: TurnFence {
+            status: response.status,
+            status_ts: response.status_ts,
+            sent_at: cache::now(),
+        },
     });
     if let Err(err) = cache::set_sent_turn(&record.remote, &record.ws_id, turn.as_ref()) {
         tracing::warn!(handle = %record.handle, "failed to record the sent turn: {err:#}");
     }
-    Ok(())
+    Ok(turn)
 }
 
-/// The last `lines` of pane `pane` of the workspace, or of its agent pane,
-/// from the node.
+pub enum SentAgent {
+    Unobserved,
+    Gone,
+    Present(ObservedAgent),
+}
+
+pub fn sent_agent(record: &WorkspaceRecord, turn: &SentTurn) -> SentAgent {
+    let current = cache::all()
+        .into_iter()
+        .find(|r| r.remote == record.remote && r.ws_id == record.ws_id && !r.cleanup_pending());
+    if current
+        .and_then(|current| current.execution)
+        .is_none_or(|execution| execution.ex_id != turn.ex_id)
+    {
+        return SentAgent::Gone;
+    }
+    let Some(observation) = observe::load_connected(&record.remote) else {
+        return SentAgent::Unobserved;
+    };
+    let Some(workspace) = observation.execution(&record.ws_id, &turn.ex_id) else {
+        return SentAgent::Unobserved;
+    };
+    if workspace.ended.is_some() {
+        return SentAgent::Gone;
+    }
+    match workspace
+        .panes
+        .iter()
+        .find(|pane| pane.index == turn.pane)
+        .and_then(|pane| pane.agent.clone())
+    {
+        Some(agent) => SentAgent::Present(agent),
+        None => SentAgent::Gone,
+    }
+}
+
 pub fn capture(
     config: &Config,
     record: &WorkspaceRecord,
@@ -399,6 +472,7 @@ pub fn capture(
         return Err(no_execution(record));
     }
     capture_from(config, &record.remote, &record.ws_id, pane, lines)
+        .map_err(|err| agent_error(config, record, err))
 }
 
 /// [`capture`] of workspace `ws_id` on `remote`.
@@ -421,6 +495,40 @@ pub fn capture_from(
         false,
     )?;
     Ok(response.text)
+}
+
+fn agent_error(config: &Config, record: &WorkspaceRecord, err: anyhow::Error) -> anyhow::Error {
+    let kind = match super::client::error_code(&err) {
+        Some(protocol::code::AGENT_WAITING) => AgentErrorKind::Waiting,
+        Some(protocol::code::NOT_FOUND) => AgentErrorKind::NotFound,
+        Some(protocol::code::AGENT_STATUS_UNKNOWN) => AgentErrorKind::StatusUnknown,
+        Some(protocol::code::AMBIGUOUS_TARGET) => {
+            let pane_ids = pane_ids(config, record);
+            return if pane_ids.len() > 1 {
+                crate::workflow::ambiguous(&record.handle, pane_ids.iter().map(String::as_str))
+            } else {
+                AgentError::error(AgentErrorKind::AmbiguousTarget, err.to_string())
+            };
+        }
+        _ => return err,
+    };
+    AgentError::error(kind, err.to_string())
+}
+
+fn pane_ids(config: &Config, record: &WorkspaceRecord) -> Vec<String> {
+    let observations = HashMap::from([(
+        record.remote.clone(),
+        observe::current(config, &record.remote),
+    )]);
+    rows(
+        std::slice::from_ref(record),
+        &observations,
+        &HashMap::new(),
+        cache::now(),
+    )
+    .into_iter()
+    .map(|row| row.pane_id)
+    .collect()
 }
 
 /// A workspace's diff as its node last returned it.
@@ -475,10 +583,12 @@ pub fn fetch_diff(
 }
 
 fn no_execution(record: &WorkspaceRecord) -> anyhow::Error {
-    anyhow!(
-        "remote workspace '{}' has no running agent; `{BIN} open {}` starts it",
-        record.handle,
-        record.handle
+    AgentError::error(
+        AgentErrorKind::NotFound,
+        format!(
+            "remote workspace '{}' has no running agent; `{BIN} open {}` starts it",
+            record.handle, record.handle
+        ),
     )
 }
 
@@ -884,6 +994,15 @@ esac
         let rows_now = rows(&[watched], &observations, &hosts(), 1002);
         let remote = rows_now[0].remote.as_ref().unwrap();
         assert!(remote.connected && !remote.connecting);
+    }
+
+    #[test]
+    fn detached_pane_ids_round_trip() {
+        let id = detached_pane_id("w0123456789ab", 2);
+        assert_eq!(parse_detached_pane_id(&id), Some(("w0123456789ab", 2)));
+        for other in ["%7", "%remote-w1", "%remote-w1-x", "feature"] {
+            assert_eq!(parse_detached_pane_id(other), None, "{other}");
+        }
     }
 
     #[test]

@@ -120,6 +120,16 @@ pub enum AgentStatus {
     Done,
 }
 
+impl AgentStatus {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Working => "working",
+            Self::Waiting => "waiting",
+            Self::Done => "done",
+        }
+    }
+}
+
 /// How long an agent workrex launched gets to fire its first status hook
 /// before readers call it stalled. In one machine's log, 35 of 46 agents
 /// `workrex add` launched fired theirs within 10 seconds; the rest took 34
@@ -162,9 +172,7 @@ pub enum PaneStatus {
 impl PaneStatus {
     pub fn label(self) -> &'static str {
         match self {
-            PaneStatus::Agent(AgentStatus::Working) => "working",
-            PaneStatus::Agent(AgentStatus::Waiting) => "waiting",
-            PaneStatus::Agent(AgentStatus::Done) => "done",
+            PaneStatus::Agent(status) => status.name(),
             PaneStatus::Stalled => "stalled",
         }
     }
