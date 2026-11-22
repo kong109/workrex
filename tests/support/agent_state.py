@@ -110,26 +110,25 @@ def start_active_agent(
 
 def stabilize_rex_agent(env: RexEnvironment, agent: ActiveAgent) -> None:
     """Keep a synthetic tracked agent live across subsequent test commands."""
-    env.send_keys(agent.window, "exec sleep 30")
-    assert poll_until(
-        lambda: (
-            "sleep"
-            in env.read_blocks(
-                agent.window, ["command"], separator="\t"
-            ).stdout.splitlines()
-        ),
-        timeout=5.0,
-    )
-    pane_id, command, pane_pid = (
-        env.read_blocks(agent.window, ["block_id", "command", "pid"], separator="|")
-        .stdout.strip()
-        .split("|", 2)
-    )
+    stabilize_rex_pane(env, env.read_current("block_id", agent.window).stdout.strip())
+
+
+def stabilize_rex_pane(env: RexEnvironment, block: str) -> None:
+    env.send_keys(block, "exec sleep 30")
+
+    def process() -> tuple[str, int]:
+        report = env.block_call(block, "process", {}) or {}
+        foreground = report.get("foreground") or report.get("child") or {}
+        pid = (report.get("child") or foreground).get("pid", 0)
+        return foreground.get("name", ""), int(pid)
+
+    assert poll_until(lambda: process()[0] == "sleep", timeout=5.0)
+    command, pane_pid = process()
     for state_file in list_agent_state_files(env):
         state = read_agent_state(state_file)
-        if state["pane_key"]["pane_id"] == pane_id:
+        if state["pane_key"]["pane_id"] == block:
             state["command"] = command
-            state["pane_pid"] = int(pane_pid)
+            state["pane_pid"] = pane_pid
             state_file.write_text(json.dumps(state))
             return
-    raise AssertionError(f"No state file found for pane {pane_id}")
+    raise AssertionError(f"No state file found for pane {block}")

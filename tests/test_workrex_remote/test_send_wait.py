@@ -12,9 +12,6 @@ from .test_status import start_workrex, status_rows
 
 
 def turn_agent(directory: Path) -> Path:
-    """An agent that is done, then runs one turn per line typed into it:
-    after a delay it reports `working`, a while later it writes `turn-<n>`
-    and reports `done`. Lines starting with `fast` take no time."""
     path = directory / "turn-agent"
     path.write_text(
         f"""#!/bin/sh
@@ -23,7 +20,7 @@ echo TURN-AGENT-READY
 n=0
 while read -r line; do
   n=$((n + 1))
-  case $line in fast*) ;; *) sleep 4 ;; esac
+  case $line in fast*|prompt*) ;; *) sleep 4 ;; esac
   workrex set-window-status working </dev/null
   case $line in fast*) ;; *) sleep 4 ;; esac
   echo "$line" > {directory}/turn-$n
@@ -119,3 +116,117 @@ def test_send_refuses_an_agent_that_has_not_reported_without_a_container(
     node.wait_for_agent(mux_server, "quiet", "SILENT-READY")
     result = wm(mux_server, exe, repo, "send quiet hello", expect_fail=True)
     assert "no agent is running in workspace 'quiet'" in result.stderr
+
+
+def configure(repo: Path, agent: Path, panes: int = 1) -> None:
+    lines = "  - command: <agent>\n" + "".join(
+        "  - command: <agent>\n    split: horizontal\n" for _ in range(panes - 1)
+    )
+    (repo / ".workrex.yaml").write_text(
+        f"nerdfont: false\nagent: {agent}\npanes:\n{lines}"
+    )
+    git(repo, "add", ".workrex.yaml")
+    git(repo, "commit", "-m", "configure an agent")
+
+
+def test_send_wait_follows_a_remote_turn(
+    mux_server: RexEnvironment,
+    workrex_exe_path: Path,
+    mux_repo_path: Path,
+    node: Node,
+    tmp_path: Path,
+):
+    repo = mux_repo_path
+    exe = workrex_exe_path
+    configure(repo, turn_agent(tmp_path))
+    wm(mux_server, exe, repo, "add sw --remote lo")
+    node.wait_for_agent(mux_server, "sw", "TURN-AGENT-READY")
+    assert poll_until(lambda: statuses(mux_server, exe, repo) == ["done"], timeout=15)
+
+    result = wm(mux_server, exe, repo, "send --wait sw prompt-1")
+    assert (tmp_path / "turn-1").exists(), "returned the previous turn's done"
+    assert "sw: done" in result.stderr
+
+    result = wm(mux_server, exe, repo, "send --wait --until working sw prompt-2")
+    assert "sw: working" in result.stderr
+    assert not (tmp_path / "turn-2").exists()
+
+    result = wm(
+        mux_server,
+        exe,
+        repo,
+        "send --wait --until waiting --timeout 2 sw fast-3",
+        expect_fail=True,
+    )
+    assert result.exit_code == 124, result.stderr
+
+
+def test_send_refuses_a_remote_agent_waiting_on_a_dialog(
+    mux_server: RexEnvironment,
+    workrex_exe_path: Path,
+    mux_repo_path: Path,
+    node: Node,
+    tmp_path: Path,
+):
+    repo = mux_repo_path
+    exe = workrex_exe_path
+    received = tmp_path / "received"
+    agent = tmp_path / "dialog-agent"
+    agent.write_text(
+        "#!/bin/sh\n"
+        "workrex set-window-status waiting </dev/null\n"
+        "echo DIALOG-READY\n"
+        f": > {received}\n"
+        f'while read -r line; do echo "$line" >> {received}; done\n'
+    )
+    agent.chmod(0o755)
+    configure(repo, agent)
+    wm(mux_server, exe, repo, "add dlg --remote lo")
+    node.wait_for_agent(mux_server, "dlg", "DIALOG-READY")
+    assert poll_until(
+        lambda: statuses(mux_server, exe, repo) == ["waiting"], timeout=15
+    )
+
+    result = wm(mux_server, exe, repo, "send dlg must-not-answer", expect_fail=True)
+    assert result.exit_code == 3, result.stderr
+    assert "agent_waiting" in result.stderr
+    time.sleep(1)
+    assert "must-not-answer" not in received.read_text()
+
+
+def test_send_to_one_of_several_remote_agents_takes_its_pane_id(
+    mux_server: RexEnvironment,
+    workrex_exe_path: Path,
+    mux_repo_path: Path,
+    node: Node,
+    tmp_path: Path,
+):
+    repo = mux_repo_path
+    exe = workrex_exe_path
+    configure(repo, turn_agent(tmp_path), panes=2)
+    wm(mux_server, exe, repo, "add two --remote lo")
+    assert poll_until(
+        lambda: statuses(mux_server, exe, repo) == ["done", "done"], timeout=20
+    )
+
+    result = wm(mux_server, exe, repo, "send two fast-1", expect_fail=True)
+    assert result.exit_code == 4, result.stderr
+    assert "ambiguous_target" in result.stderr
+    rows = status_rows(mux_server, exe, repo)
+    for row in rows:
+        assert row["pane_id"] in result.stderr
+    assert not (tmp_path / "turn-1").exists()
+
+    second = next(row for row in rows if row["remote"]["pane"] == 1)
+    result = wm(mux_server, exe, repo, f"send --wait {second['pane_id']} fast-1")
+    assert "done" in result.stderr
+    captured = wm(mux_server, exe, repo, f"capture {second['pane_id']}")
+    assert "fast-1" in captured.stdout
+    first = next(row for row in rows if row["remote"]["pane"] == 0)
+    captured = wm(mux_server, exe, repo, f"capture {first['pane_id']}")
+    assert "fast-1" not in captured.stdout
+
+    block = node.pane(node.workspace("two")["execution"]["ex_id"], 1)
+    wm(mux_server, exe, repo, f"send --wait {block} fast-2")
+    captured = wm(mux_server, exe, repo, f"capture {block}")
+    assert "fast-2" in captured.stdout
