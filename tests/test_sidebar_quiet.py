@@ -1,8 +1,3 @@
-"""Quiet presentation through the real Rex daemon and sidebar.
-
-Run with `--backend=rex`.
-"""
-
 import subprocess
 
 import pytest
@@ -47,7 +42,6 @@ def test_quiet_sidebar_hides_working_timer(rex, nerdfont: bool):  # noqa: F811
     quiet_row = next(line.strip() for line in screen().splitlines() if "Quiet" in line)
     assert quiet_row == "○ Quiet timer="
 
-    # Quiet is presentation only, not successful completion or status clearing.
     state = subprocess.run(
         [str(env.workrex), "status", "--json", "--all"],
         env=env.env,

@@ -16,7 +16,6 @@ use super::super::app::{ResolvedAgentIcons, SidebarApp};
 use super::TokenId;
 use crate::util::display_width;
 
-/// Activity presentation without changing the agent's reported status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarStatus {
     Reported(Option<AgentStatus>),

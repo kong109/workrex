@@ -2536,8 +2536,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn quiet_group_counts_and_stale_buckets_match_row_presentation() {
+    fn all_quiet_group_app() -> SidebarApp {
         let mut app = grouped_compact_app();
         app.collapse_stale = true;
         app.agents.truncate(3);
@@ -2553,6 +2552,12 @@ mod tests {
         }
         app.refresh_stale_pane_ids();
         app.rebuild_rows();
+        app
+    }
+
+    #[test]
+    fn quiet_group_counts_match_row_presentation() {
+        let mut app = all_quiet_group_app();
         let counts = group_status_counts(&app, "api");
         assert_eq!(counts.len(), 1);
         assert_eq!(counts[0].count, 3);
@@ -2563,8 +2568,12 @@ mod tests {
         let lines = rendered(&mut app, 40, 8);
         assert!(lines[0].contains("○3"), "{lines:?}");
         assert_eq!(lines.iter().filter(|line| line.contains('○')).count(), 4);
+    }
 
-        // Stale membership still folds and tallies separately when dimming is off.
+    #[test]
+    fn stale_quiet_agents_fold_and_tally_apart_with_dimming_off() {
+        let mut app = all_quiet_group_app();
+        app.dim_stale = false;
         app.agents[0].activity_ts = Some(1);
         app.refresh_stale_pane_ids();
         app.rebuild_rows();
