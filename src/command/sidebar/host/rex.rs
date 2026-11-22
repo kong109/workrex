@@ -506,6 +506,10 @@ impl<'a> Requests<'a> {
         if self.daemon_running() {
             return Ok(());
         }
+        let _spawn = self.files.lock_daemon_spawn()?;
+        if self.daemon_running() {
+            return Ok(());
+        }
         let socket = daemon::socket_path(&self.instance);
         let _ = std::fs::remove_file(&socket);
         let mut command = Command::new(std::env::current_exe()?);
@@ -542,6 +546,14 @@ fn height_text(height: &crate::config::SidebarHeight) -> String {
         crate::config::SidebarHeight::Absolute(rows) => rows.to_string(),
         crate::config::SidebarHeight::Percent(percent) => format!("{percent}%"),
     }
+}
+
+pub(super) fn lock_daemon_spawn(instance: &str) -> Result<impl Sized> {
+    Files::for_instance(instance)?.lock_daemon_spawn()
+}
+
+pub(super) fn try_lock_daemon_running(instance: &str) -> Result<Option<impl Sized>> {
+    Files::for_instance(instance)?.try_lock_daemon_running()
 }
 
 pub(super) fn sleeping_pane_ids(instance: &str) -> Result<std::collections::HashSet<String>> {
