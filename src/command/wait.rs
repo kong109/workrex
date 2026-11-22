@@ -38,6 +38,16 @@ fn resolve_worktree_path(
     Ok(path)
 }
 
+fn current_worktree_roots_or_removed_self(
+    wt_path: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>> {
+    if wt_path.exists() && git::get_repo_root_if_present_in(Some(wt_path))?.is_some() {
+        Ok(git::list_worktrees_with_main_in(Some(wt_path))?.canonical_paths())
+    } else {
+        Ok(vec![util::canon_or_self(wt_path)])
+    }
+}
+
 fn parse_status(s: &str) -> Result<AgentStatus> {
     match s {
         "working" => Ok(AgentStatus::Working),
@@ -167,7 +177,8 @@ pub fn run(
                 continue;
             }
 
-            let matching = workflow::match_agents_to_worktree(&agent_panes, wt_path);
+            let roots = current_worktree_roots_or_removed_self(wt_path)?;
+            let matching = workflow::match_agents_to_worktree(&agent_panes, wt_path, &roots);
 
             if !matching.is_empty() {
                 seen_agent.insert(name.clone());

@@ -326,6 +326,13 @@ impl WorktreeListing {
         }
         named.next().or(Some(first))
     }
+
+    pub fn canonical_paths(&self) -> Vec<PathBuf> {
+        self.worktrees
+            .iter()
+            .map(|(path, _)| crate::util::canon_or_self(path))
+            .collect()
+    }
 }
 
 fn parse_worktree_listing(output: &str) -> Result<WorktreeListing> {
