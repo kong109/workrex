@@ -1128,7 +1128,10 @@ def test_the_sidebar_keeps_an_agent_that_retitles_itself_after_it_starts(
         before = process_reads()
         time.sleep(10)
         assert process_reads() - before <= 2
-        assert SPINNER.search(env.capture_pane(sidebar) or "")
+        # Twelve silent seconds pass the daemon's inactivity window, so the
+        # row may have turned Quiet; either way the agent keeps its row.
+        screen = env.capture_pane(sidebar) or ""
+        assert SPINNER.search(screen) or "○" in screen, screen
     finally:
         workrex(env, workrex_exe_path, repo_path, "sidebar", "off")
 
