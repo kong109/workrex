@@ -65,10 +65,10 @@ impl Request {
     }
 }
 
-/// Either marker means this command must not operate on local worktrees.
 pub fn in_session() -> bool {
     std::env::var_os(super::spawn::SESSION_ROOT_ENV).is_some()
         || std::env::var_os(super::spawn::SESSION_WORKSPACE_ENV).is_some()
+        || super::spawn::session_parent().is_some()
 }
 
 pub fn validate_names(names: &[String], handle: &str) -> Result<()> {
