@@ -1493,7 +1493,10 @@ mod tests {
             test_support::run_isolated_test(
                 test_name,
                 &repo,
-                &[("WORKREX_TEST_TEMP", temp.path())],
+                &[
+                    ("WORKREX_TEST_TEMP", temp.path()),
+                    ("XDG_STATE_HOME", &temp.path().join("state")),
+                ],
             );
             return None;
         }
