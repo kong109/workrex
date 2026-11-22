@@ -61,7 +61,7 @@ mod hosting;
 mod session;
 mod target;
 
-pub use hosting::{HostedRead, HostedSession};
+pub use hosting::{CreatedHosted, HostedRead, HostedSession};
 
 impl BlockId {
     fn parse(pane_id: &str) -> Result<Self> {
@@ -1398,7 +1398,7 @@ impl RexBackend {
         Ok(self
             .sessions()?
             .into_iter()
-            .filter(|session| session.label == label)
+            .filter(|session| session.session_id.as_str() == label || session.label == label)
             .map(|session| session.session_id)
             .collect())
     }
@@ -1858,6 +1858,47 @@ impl Multiplexer for RexBackend {
             .session
             .as_ref()
             .map(|session| session.0.clone()))
+    }
+
+    fn current_source_tab(&self) -> Result<Option<super::SourceTab>> {
+        let Some(view) = self.current_view()? else {
+            return Ok(None);
+        };
+        let window = self
+            .caller
+            .origin
+            .as_ref()
+            .and_then(|block| view.window_of(block))
+            .or_else(|| {
+                self.caller
+                    .block
+                    .as_ref()
+                    .and_then(|block| view.window_of(block))
+            })
+            .or_else(|| view.active_window());
+        let Some(window) = window else {
+            return Ok(None);
+        };
+        Ok(Some(super::SourceTab {
+            id: window.window_id.0.clone(),
+            label: window.label.clone(),
+            session_id: view.session_id.0.clone(),
+            session_label: view.label.clone(),
+        }))
+    }
+
+    fn source_tab_session_id(&self, source_tab: &super::SourceTab) -> Result<Option<String>> {
+        self.live_source_tab_session_id(source_tab)
+    }
+
+    fn create_window_in_source_tab_session(
+        &self,
+        source_tab: &super::SourceTab,
+        session_label: &str,
+        window_name: &str,
+        cwd: &Path,
+    ) -> Result<(String, String)> {
+        self.create_grouped_window_for_source_tab(source_tab, session_label, window_name, cwd)
     }
 
     fn shell_close_window_by_id_guard_cmd(&self, id: &str) -> Result<String> {

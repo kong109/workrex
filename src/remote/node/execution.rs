@@ -267,6 +267,14 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
 
     let execution = workspace.execution.as_ref().expect("execution recorded");
     host.kill_execution(root, execution);
+    if request.session_group.is_some() {
+        workspace.session_group = request.session_group.clone();
+    }
+    let session_group = request
+        .session_group
+        .as_ref()
+        .or(workspace.session_group.as_ref())
+        .cloned();
     workspace
         .execution
         .as_mut()
@@ -283,6 +291,7 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
         config_path: &config_path,
         spawn_env,
         secrets: &session_secrets,
+        session_group: session_group.as_ref(),
     };
     let created = host.create(root, &spec)?;
     let session = created.rex_session.clone().expect("native session created");
@@ -314,6 +323,8 @@ pub fn start(root: &NodeRoot, request: StartRequest) -> Result<StartResponse> {
         .iter()
         .map(|(index, _)| (*index, session.clone()))
         .collect();
+    placement.window_id = created.rex_window.clone();
+    placement.shared_session = created.shared_session;
     root.save(&workspace)?;
     created.wait_ready()?;
     let panes: Vec<PaneConfig> = plan.iter().map(|(_, pane)| pane.clone()).collect();

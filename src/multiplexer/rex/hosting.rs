@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use super::super::{LivePaneInfo, Multiplexer};
 use super::{
     AppRefused, CallError, ClientId, ClientList, CreatedWindow, ProcessReport, RexBackend,
-    ServerVersion, SessionId, SessionView, WindowView, found, pane_info, shell_block,
+    ServerVersion, SessionId, SessionView, WindowId, WindowView, found, pane_info, shell_block,
 };
 
 /// Reads the env file in `$1`, removes it, replaces the environment the
@@ -250,6 +250,14 @@ pub struct HostedSession {
     pub label: String,
 }
 
+/// Terminal identities returned when creating a hosted Rex session or window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatedHosted {
+    pub session_id: String,
+    pub window_id: String,
+    pub block_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct CreatedSession {
     session_id: SessionId,
@@ -344,14 +352,14 @@ impl RexBackend {
 
     /// Create session `label` with one window `window_label` running the
     /// login shell in `cwd` with the environment in `env_file`; returns the
-    /// session and its block.
+    /// session, window, and initial block IDs.
     pub fn create_hosted_session(
         &self,
         label: &str,
         window_label: &str,
         cwd: &Path,
         env_file: &Path,
-    ) -> Result<(String, String)> {
+    ) -> Result<CreatedHosted> {
         let shell = format!(
             "exec {} -l",
             crate::shell::shell_quote(&self.get_default_shell()?)
@@ -373,8 +381,78 @@ impl RexBackend {
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("Rex created session {label} without a window"))?;
+        let window_id = window.window_id.0;
         let block = self.cache_first_block(window.block_ids, created.session_id.clone())?;
-        Ok((created.session_id.0, block.0))
+        Ok(CreatedHosted {
+            session_id: created.session_id.0,
+            window_id,
+            block_id: block.0,
+        })
+    }
+
+    /// Create window `window_label` inside an existing hosted session `session_id`
+    /// running the login shell in `cwd` with the environment in `env_file`.
+    /// Returns `Ok(None)` when `session_id` no longer exists on the server.
+    pub fn create_hosted_window(
+        &self,
+        session_id: &str,
+        window_label: &str,
+        cwd: &Path,
+        env_file: &Path,
+    ) -> Result<Option<CreatedHosted>> {
+        let shell = format!(
+            "exec {} -l",
+            crate::shell::shell_quote(&self.get_default_shell()?)
+        );
+        let Some(created) = found(self.api::<CreatedWindow>(
+            "session.new_window",
+            json!({
+                "session_id": session_id,
+                "window_label": window_label,
+                "focus": false,
+                "layout": sourcing(cwd, env_file, &shell),
+            }),
+        ))
+        .with_context(|| format!("Failed to create Rex window in session {session_id}"))?
+        else {
+            return Ok(None);
+        };
+        let session = SessionId(session_id.to_string());
+        let block = self.cache_first_block(created.block_ids, session)?;
+        Ok(Some(CreatedHosted {
+            session_id: session_id.to_string(),
+            window_id: created.window_id.0,
+            block_id: block.0,
+        }))
+    }
+
+    /// Close one window inside a hosted session, destroying the session only if
+    /// closing left it empty or if Rex requires destroying the session to close
+    /// its final window.
+    pub fn close_hosted_window(&self, session_id: &str, window_id: &str) -> Result<()> {
+        let session = SessionId(session_id.to_string());
+        let window = WindowId(window_id.to_string());
+        match self.close_window(&session, &window) {
+            Ok(()) => {
+                if let Some(view) = found(self.view(&session))?
+                    && view.windows.is_empty()
+                {
+                    self.destroy_session(&session)?;
+                }
+                Ok(())
+            }
+            Err(err) => {
+                if let Some(view) = found(self.view(&session))?
+                    && view
+                        .windows
+                        .iter()
+                        .all(|existing| existing.window_id == window)
+                {
+                    return self.destroy_session(&session);
+                }
+                Err(err)
+            }
+        }
     }
 
     /// Destroy a session; one already gone is fine.
@@ -489,13 +567,25 @@ impl RexBackend {
     /// Show session `id` of this server on Rex.app: the client labeled
     /// `client`, else the only app connected.
     pub fn select_on_app(&self, client: Option<&str>, id: &str) -> Result<()> {
+        self.select_window_on_app(client, id, None)
+    }
+
+    /// Show session `id` (and optionally `window`) of this server on Rex.app:
+    /// the client labeled `client`, else the only app connected.
+    pub fn select_window_on_app(
+        &self,
+        client: Option<&str>,
+        id: &str,
+        window: Option<&str>,
+    ) -> Result<()> {
         let server = self.server.as_deref().unwrap_or("the local Rex server");
         let clients: ClientList = self.api("client.list", json!({}))?;
         let app = ClientId(pick_app(&clients, client, server)?);
+        let window = window.map(|window_id| WindowId(window_id.to_string()));
         self.ask_app_to_show(
             &app,
             &SessionId(id.to_string()),
-            None,
+            window.as_ref(),
             REMOTE_SELECT_TIMEOUT,
         )
         .map_err(|err| {
@@ -671,6 +761,27 @@ mod tests {
                 "client_id": "client:b",
                 "action": "session.select",
                 "args": { "session_id": "session:hosted" },
+                "timeout_ms": 10000,
+            })
+        );
+
+        let fake_tab = super::super::tests::app_fake("client:a", &apps, "{}");
+        fake_tab
+            .rex
+            .select_window_on_app(Some("studio"), "session:hosted", Some("window:tab-2"))
+            .unwrap();
+        let selects = fake_tab.calls("client.perform");
+        let [select] = &selects[..] else {
+            panic!("{selects:?}")
+        };
+        let (_, request) = select.split_once("client.perform - ").unwrap();
+        let request: Value = serde_json::from_str(request).unwrap();
+        assert_eq!(
+            request,
+            json!({
+                "client_id": "client:b",
+                "action": "session.select",
+                "args": { "session_id": "session:hosted", "window_id": "window:tab-2" },
                 "timeout_ms": 10000,
             })
         );

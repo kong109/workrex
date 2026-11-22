@@ -811,6 +811,8 @@ mod tests {
                 sessions: [(0, "session".into())].into(),
                 blocks: [(0, "block".into())].into(),
                 shells: [("shell".into(), "shell-session".into())].into(),
+                window_id: None,
+                shared_session: false,
             });
             if let Some(agent) = ws.panes[0].agent.as_mut() {
                 agent.title = Some("t".into());

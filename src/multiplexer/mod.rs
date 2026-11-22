@@ -182,6 +182,33 @@ pub trait Multiplexer: Send + Sync {
         Ok(None)
     }
 
+    /// The Rex tab this process was invoked from, when running inside Rex.
+    fn current_source_tab(&self) -> Result<Option<SourceTab>> {
+        Ok(None)
+    }
+
+    /// Look up the live grouped Rex session already associated with `source_tab`, if any.
+    fn source_tab_session_id(&self, source_tab: &SourceTab) -> Result<Option<String>> {
+        let _ = source_tab;
+        Ok(None)
+    }
+
+    /// Create a window inside the shared Rex session for `source_tab`, creating that session
+    /// with `session_label` if it does not yet exist. Returns `(session_id, initial_pane_id)`.
+    fn create_window_in_source_tab_session(
+        &self,
+        source_tab: &SourceTab,
+        session_label: &str,
+        window_name: &str,
+        cwd: &Path,
+    ) -> Result<(String, String)> {
+        let _ = (source_tab, session_label, window_name, cwd);
+        Err(anyhow!(
+            "Source-tab session grouping is not supported by the {} backend",
+            self.name()
+        ))
+    }
+
     fn shell_close_window_by_id_guard_cmd(&self, id: &str) -> Result<String> {
         let _ = id;
         Err(anyhow!(

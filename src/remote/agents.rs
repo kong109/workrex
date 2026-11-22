@@ -554,6 +554,8 @@ esac
             sessions: [(0, "session:owned".into()), (1, "session:owned".into())].into(),
             blocks: [(0, "block:closed".into()), (1, "block:selected".into())].into(),
             shells: Default::default(),
+            window_id: None,
+            shared_session: false,
         });
         record.save().unwrap();
         let at = RemoteRef {

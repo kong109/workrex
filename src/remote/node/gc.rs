@@ -114,11 +114,15 @@ fn survey(
         .collect();
     let live = |ws: &Workspace| {
         ws.execution.as_ref().is_some_and(|execution| {
-            execution.rex.is_some()
-                && rex.as_ref().is_none_or(|rex| {
-                    rex.iter()
-                        .any(|session| session.label.starts_with(&format!("{}-", execution.ex_id)))
+            let Some(placement) = execution.rex.as_ref() else {
+                return false;
+            };
+            rex.as_ref().is_none_or(|rex| {
+                rex.iter().any(|session| {
+                    placement.sessions.values().any(|id| id == &session.id)
+                        || session.label.starts_with(&format!("{}-", execution.ex_id))
                 })
+            })
         })
     };
     let known: HashSet<&str> = request.known.iter().map(String::as_str).collect();

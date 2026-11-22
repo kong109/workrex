@@ -1022,6 +1022,10 @@ pub struct Config {
     /// None means "use default" (Session under Rex, else Window), Some means explicitly set
     pub mode: Option<MuxMode>,
 
+    /// How worktrees are grouped into Rex sessions (default: none).
+    #[serde(default)]
+    pub session_grouping: Option<SessionGrouping>,
+
     /// Session mode only. Session to return to when a workrex-managed session
     /// closes. Not prefixed with `window_prefix`, so it can name a session
     /// workrex does not manage.
@@ -1560,6 +1564,18 @@ pub enum MuxMode {
     /// Create a Rex session for each worktree.
     #[default]
     Session,
+}
+
+/// How worktrees are grouped into Rex sessions.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionGrouping {
+    /// Default: follow `mode` locally; one Rex session per workspace on remote hosts.
+    #[default]
+    None,
+    /// Group worktrees created from the same source Rex tab into one shared Rex session
+    /// per target host (both locally and on each remote host).
+    SourceTab,
 }
 
 /// Strategy for deriving worktree/window names from branch names
@@ -3266,6 +3282,9 @@ impl Config {
         // Special case: mode (project wins if explicitly set)
         merged.mode = project.mode.or(self.mode);
 
+        // Special case: session_grouping (project wins if explicitly set)
+        merged.session_grouping = project.session_grouping.or(self.session_grouping);
+
         // Special case: default_session (project wins if explicitly set)
         merged.default_session = project.default_session.or(self.default_session);
 
@@ -3620,6 +3639,11 @@ impl Config {
         self.window_placement.unwrap_or_default()
     }
 
+    /// Get the Rex session grouping strategy.
+    pub fn session_grouping(&self) -> SessionGrouping {
+        self.session_grouping.unwrap_or_default()
+    }
+
     /// Create an example .workrex.yaml configuration file
     pub fn init() -> anyhow::Result<()> {
         use std::path::PathBuf;
@@ -3727,6 +3751,11 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workrex project configuration
 # - window: Create windows within the current Rex session
 # - session: Create Rex sessions for each worktree
 # mode: session
+
+# Group worktrees created from the same source Rex tab into one shared Rex
+# session per target host (both locally and on each remote host).
+# Options: none (default), source_tab
+# session_grouping: source_tab
 
 # Session mode only. Session to return to when a workrex session is closed or
 # removed, instead of whichever session the client was in previously.
@@ -4986,6 +5015,24 @@ mod tests {
                 "symlink-after".to_string()
             ])
         );
+    }
+
+    #[test]
+    fn session_grouping_parses_and_merges() {
+        use super::SessionGrouping;
+
+        let default = Config::default();
+        assert_eq!(default.session_grouping(), SessionGrouping::None);
+
+        let parsed: Config = serde_yaml::from_str("session_grouping: source_tab").unwrap();
+        assert_eq!(parsed.session_grouping(), SessionGrouping::SourceTab);
+
+        let project: Config = serde_yaml::from_str("session_grouping: none").unwrap();
+        let merged = parsed.clone().merge(project);
+        assert_eq!(merged.session_grouping(), SessionGrouping::None);
+
+        let inherited = parsed.merge(Config::default());
+        assert_eq!(inherited.session_grouping(), SessionGrouping::SourceTab);
     }
 
     #[test]

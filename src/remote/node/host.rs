@@ -14,7 +14,8 @@ use super::{Execution, NodeRoot, refuse, secrets};
 use crate::config::RemoteTerminal;
 use crate::multiplexer::rex::{HostedRead, HostedSession, RexBackend};
 use crate::multiplexer::{LivePaneInfo, Multiplexer};
-use crate::remote::protocol::{RexPlacement, Secrets, code, session_name};
+use crate::remote::protocol::{RexPlacement, Secrets, SessionGroup, code, session_name};
+use serde::{Deserialize, Serialize};
 
 pub enum SessionHost {
     Rex(Box<RexHost>),
@@ -61,6 +62,8 @@ impl SessionHost {
             sessions: Default::default(),
             blocks: Default::default(),
             shells: Default::default(),
+            window_id: None,
+            shared_session: false,
         })
     }
 
@@ -73,13 +76,26 @@ impl SessionHost {
         let Self::Rex(rex) = self;
         let env = block_env(spec, std::env::vars());
         let shell_env = secrets::export_file(root, &format!("{}.shell", spec.name), &env)?;
+        if let Some(group) = spec.session_group {
+            let created =
+                rex.create_in_group(root, group, spec.window_label, spec.cwd, &shell_env)?;
+            return Ok(Created {
+                pane_id: created.block_id,
+                rex_session: Some(created.session_id),
+                rex_window: Some(created.window_id),
+                shared_session: true,
+                _env: vec![shell_env],
+            });
+        }
         let label = rex.label(spec.name);
-        let (session, block) =
+        let created =
             rex.mux
                 .create_hosted_session(&label, spec.window_label, spec.cwd, &shell_env)?;
         Ok(Created {
-            pane_id: block,
-            rex_session: Some(session),
+            pane_id: created.block_id,
+            rex_session: Some(created.session_id),
+            rex_window: Some(created.window_id),
+            shared_session: false,
             _env: vec![shell_env],
         })
     }
@@ -99,6 +115,8 @@ pub struct NewSession<'a> {
     pub config_path: &'a Path,
     pub spawn_env: Option<(&'a Path, &'a str)>,
     pub secrets: &'a Secrets,
+    /// Optional shared Rex session group keyed by the caller's source tab.
+    pub session_group: Option<&'a SessionGroup>,
 }
 
 /// A started session. Holds the env files Rex blocks read until the pane's
@@ -106,6 +124,8 @@ pub struct NewSession<'a> {
 pub struct Created {
     pub pane_id: String,
     pub rex_session: Option<String>,
+    pub rex_window: Option<String>,
+    pub shared_session: bool,
     _env: Vec<TempPath>,
 }
 
@@ -385,9 +405,71 @@ impl RexHost {
         }
     }
 
+    /// Create a tab inside the shared Rex session for `group`, creating the session if none is
+    /// currently live for `(instance_id, group.key)`. Serialized across processes under the
+    /// node's session-groups lock so concurrent starts from the same source tab share one session.
+    fn create_in_group(
+        &self,
+        root: &NodeRoot,
+        group: &SessionGroup,
+        window_label: &str,
+        cwd: &Path,
+        env_file: &Path,
+    ) -> Result<crate::multiplexer::rex::CreatedHosted> {
+        let _lock = root.lock_session_groups()?;
+        let path = root.session_groups_path();
+        let mut groups = read_session_groups(&path);
+        if let Some(session_id) = groups
+            .servers
+            .get(&self.instance_id)
+            .and_then(|map| map.get(&group.key))
+            .cloned()
+            && let Some(created) =
+                self.mux
+                    .create_hosted_window(&session_id, window_label, cwd, env_file)?
+        {
+            return Ok(created);
+        }
+        let created = self
+            .mux
+            .create_hosted_session(&group.label, window_label, cwd, env_file)?;
+        groups
+            .servers
+            .entry(self.instance_id.clone())
+            .or_default()
+            .insert(group.key.clone(), created.session_id.clone());
+        save_session_groups(&path, &groups)?;
+        Ok(created)
+    }
+
     /// Every session `execution` recorded, and every session labeled for it
     /// that no execution records: duplicates a crashed start left.
+    ///
+    /// When `execution` lives in a shared Rex session (`shared_session == true`),
+    /// only this execution's window and dedicated shell sessions are closed so
+    /// sibling workspaces sharing the same session remain untouched.
     fn kill_execution(&self, root: &NodeRoot, execution: &Execution) {
+        if let Some(placement) = execution.rex.as_ref().filter(|placement| {
+            placement.instance_id == self.instance_id && placement.shared_session
+        }) {
+            if let (Some(session_id), Some(window_id)) = (
+                placement.sessions.values().next(),
+                placement.window_id.as_deref(),
+            ) && let Err(err) = self.mux.close_hosted_window(session_id, window_id)
+            {
+                tracing::warn!(
+                    session = %session_id,
+                    window = %window_id,
+                    "failed to close shared Rex window: {err:#}"
+                );
+            }
+            for shell_session in placement.shells.values() {
+                if let Err(err) = self.mux.destroy_hosted_session(shell_session) {
+                    tracing::warn!(session = %shell_session, "failed to destroy shell: {err:#}");
+                }
+            }
+            return;
+        }
         let prefix = format!("{}-", execution.ex_id);
         let own = self.recorded_ids(execution);
         self.kill_owned(root, execution, &own, |label| label.starts_with(&prefix));
@@ -410,13 +492,18 @@ impl RexHost {
             .into_iter()
             .filter_map(|workspace| workspace.execution)
             .collect();
+        let other_recorded: HashSet<&str> = executions
+            .iter()
+            .filter(|other| other.ex_id != execution.ex_id)
+            .flat_map(|other| self.recorded_ids(other))
+            .collect();
         let recorded: HashSet<&str> = executions
             .iter()
             .chain([execution])
             .flat_map(|execution| self.recorded_ids(execution))
             .collect();
         self.kill_where(|session| {
-            own.contains(&session.id.as_str())
+            (own.contains(&session.id.as_str()) && !other_recorded.contains(session.id.as_str()))
                 || (!recorded.contains(session.id.as_str())
                     && self.untagged(&session.label).is_some_and(&labeled))
         });
@@ -437,6 +524,25 @@ impl RexHost {
             })
             .collect()
     }
+}
+
+/// Shared Rex sessions on this node, keyed by Rex server `instance_id` and group key.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct SessionGroups {
+    #[serde(default)]
+    servers: HashMap<String, HashMap<String, String>>,
+}
+
+fn read_session_groups(path: &Path) -> SessionGroups {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_session_groups(path: &Path, groups: &SessionGroups) -> Result<()> {
+    let json = serde_json::to_vec_pretty(groups)?;
+    crate::util::write_atomic(path, &json)
 }
 
 /// Present once the root started an execution on Rex: only then do gc and
@@ -592,6 +698,8 @@ mod tests {
                     .collect(),
                 shells: Default::default(),
                 blocks: Default::default(),
+                window_id: None,
+                shared_session: false,
             }),
         }
     }
@@ -621,6 +729,7 @@ mod tests {
                     config_path: &config_path,
                     spawn_env: Some((&root.path, "w0123456789ab")),
                     secrets: &secrets,
+                    session_group: None,
                 },
             )
             .unwrap();
@@ -637,6 +746,7 @@ mod tests {
                     config_path: &config_path,
                     spawn_env: Some((&root.path, "w0123456789ab")),
                     secrets: &secrets,
+                    session_group: None,
                 },
                 std::env::vars(),
             ),
@@ -711,6 +821,7 @@ mod tests {
             config_path,
             spawn_env: Some((&root.path, "w0123456789ab")),
             secrets: &EMPTY,
+            session_group: None,
         }
     }
 
@@ -1216,6 +1327,7 @@ mod tests {
                 config_path: Path::new("/node/config.json"),
                 spawn_env: Some((root, "w0123456789ab")),
                 secrets: &Secrets::default(),
+                session_group: None,
             },
             std::env::vars(),
         );
@@ -1244,6 +1356,7 @@ mod tests {
                 config_path: Path::new("/node/config.json"),
                 spawn_env: None,
                 secrets: &Secrets::default(),
+                session_group: None,
             },
             [
                 node("PATH", "/usr/bin"),
@@ -1421,6 +1534,107 @@ mod tests {
         assert_eq!(
             panes["session:e"].session.as_deref(),
             Some("x999999999999-1")
+        );
+    }
+
+    #[test]
+    fn grouped_workspaces_share_a_session_per_source_tab_and_close_only_their_window() {
+        let fake = Fake::new(&[
+            (
+                "session.create",
+                r#"{"session_id":"session:shared-a","initial_windows":[{"window_id":"window:w1","block_ids":["block:b1"],"revision":1}]}"#,
+            ),
+            (
+                "session.new_window",
+                r#"{"window_id":"window:w2","block_ids":["block:b2"],"revision":2}"#,
+            ),
+            ("session.close_window", "{}"),
+            (
+                "session.view",
+                r#"{"session_id":"session:shared-a","label":"Tab A","windows":[{"window_id":"window:w2","label":"wt-2","layers":[]}]}"#,
+            ),
+        ]);
+        let root = fake.root();
+        std::fs::create_dir_all(&root.path).unwrap();
+        let config_path = root.path.join("config.json");
+        let group_a = SessionGroup {
+            key: "window:tab-a".into(),
+            label: "Tab A".into(),
+        };
+
+        let first = fake
+            .host
+            .create(
+                &root,
+                &NewSession {
+                    name: "x1-0",
+                    window_label: "wt-1",
+                    cwd: Path::new("/work/1"),
+                    config_path: &config_path,
+                    spawn_env: None,
+                    secrets: &EMPTY,
+                    session_group: Some(&group_a),
+                },
+            )
+            .unwrap();
+        assert_eq!(first.rex_session.as_deref(), Some("session:shared-a"));
+        assert_eq!(first.rex_window.as_deref(), Some("window:w1"));
+        assert!(first.shared_session);
+
+        let second = fake
+            .host
+            .create(
+                &root,
+                &NewSession {
+                    name: "x2-0",
+                    window_label: "wt-2",
+                    cwd: Path::new("/work/2"),
+                    config_path: &config_path,
+                    spawn_env: None,
+                    secrets: &EMPTY,
+                    session_group: Some(&group_a),
+                },
+            )
+            .unwrap();
+        assert_eq!(second.rex_session.as_deref(), Some("session:shared-a"));
+        assert_eq!(second.rex_window.as_deref(), Some("window:w2"));
+        assert!(second.shared_session);
+
+        let calls = fake.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.contains("session.create"))
+                .count(),
+            1,
+            "second workspace in same group must reuse the session: {calls:?}"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.contains("session.new_window"))
+                .count(),
+            1,
+            "second workspace must add a window to the shared session: {calls:?}"
+        );
+
+        let mut exec1 = execution(&[(0, "session:shared-a")], "instance-1");
+        exec1.ex_id = "x1".into();
+        let placement = exec1.rex.as_mut().unwrap();
+        placement.window_id = Some("window:w1".into());
+        placement.shared_session = true;
+        fake.host.kill_execution(&root, &exec1);
+
+        let calls = fake.calls();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("session.close_window") && c.contains("window:w1")),
+            "removing a shared workspace closes only its window: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.contains("session.destroy")),
+            "removing one workspace must not destroy the shared session while sibling tabs remain: {calls:?}"
         );
     }
 }

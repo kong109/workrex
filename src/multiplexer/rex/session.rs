@@ -14,12 +14,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::super::Multiplexer;
-use super::super::types::CreateSessionParams;
+use super::super::types::{CreateSessionParams, SourceTab};
 use super::super::util;
 use crate::bin_name::BIN;
 
 use super::super::agent::shell_quote;
-use super::{CallError, RexBackend, SessionId, SessionSummary, SessionView, found};
+use super::{
+    BlockId, CallError, CreatedWindow, RexBackend, SessionId, SessionSummary, SessionView, found,
+};
 
 const SESSION_MOVE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -35,6 +37,9 @@ struct ServerRecords {
     names: HashMap<String, String>,
     #[serde(default)]
     origins: HashMap<String, String>,
+    /// Shared worktree session per source tab (`source_window_id -> target_session_id`).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    tab_sessions: HashMap<String, String>,
     /// The order a close moved out of place, until that close puts it back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     restore: Option<Restore>,
@@ -130,6 +135,7 @@ impl ServerRecords {
         let live = |id: &String| live.iter().any(|session| session.as_str() == id);
         self.names.retain(|id, _| live(id));
         self.origins.retain(|id, origin| live(id) && live(origin));
+        self.tab_sessions.retain(|_, target| live(target));
     }
 }
 
@@ -228,6 +234,30 @@ fn session_ids(sessions: &[SessionSummary]) -> Vec<SessionId> {
 
 fn matches_id_or_label(session: &SessionSummary, name: &str) -> bool {
     session.session_id.as_str() == name || session.label == name
+}
+
+/// Resolve an already-live shared worktree session for `source_tab`:
+/// if the caller is already inside a grouped worktree session, reuse that session;
+/// otherwise reuse the session previously created for `source_tab.id` if it is still live.
+fn resolve_existing_tab_session(
+    records: &ServerRecords,
+    live: &[SessionSummary],
+    source_tab: &SourceTab,
+) -> Option<String> {
+    let is_live = |id: &str| live.iter().any(|session| session.session_id.as_str() == id);
+    if records
+        .tab_sessions
+        .values()
+        .any(|target| target == &source_tab.session_id)
+        && is_live(&source_tab.session_id)
+    {
+        return Some(source_tab.session_id.clone());
+    }
+    records
+        .tab_sessions
+        .get(&source_tab.id)
+        .filter(|target| is_live(target))
+        .cloned()
 }
 
 impl RexBackend {
@@ -329,6 +359,105 @@ impl RexBackend {
             .next()
             .and_then(|window| window.block_ids.into_iter().next())
             .ok_or_else(|| anyhow!("Rex created a session without a block"))
+    }
+
+    /// Return the live shared worktree session already associated with `source_tab`, if any.
+    /// When the caller is already inside a grouped worktree session, that session is returned.
+    pub(super) fn live_source_tab_session_id(
+        &self,
+        source_tab: &SourceTab,
+    ) -> Result<Option<String>> {
+        let records = self.records();
+        let live = self.raw_sessions()?;
+        Ok(resolve_existing_tab_session(&records, &live, source_tab))
+    }
+
+    /// Create a window in the shared Rex session for `source_tab`, creating the session if none
+    /// is currently live. Serialized under the Rex registry lock so concurrent spawns from the
+    /// same tab share one session.
+    pub(super) fn create_grouped_window_for_source_tab(
+        &self,
+        source_tab: &SourceTab,
+        session_label: &str,
+        window_name: &str,
+        cwd: &Path,
+    ) -> Result<(String, String)> {
+        #[derive(Deserialize)]
+        struct CreatedInitialWindow {
+            block_ids: Vec<BlockId>,
+        }
+        #[derive(Deserialize)]
+        struct CreatedSession {
+            session_id: SessionId,
+            #[serde(default)]
+            initial_windows: Vec<CreatedInitialWindow>,
+        }
+
+        let mut locked = self.lock_records()?;
+        let live = self.raw_sessions()?;
+        let live_ids = session_ids(&live);
+        let existing = {
+            let records = locked.records();
+            records.retain_live(&live_ids);
+            resolve_existing_tab_session(records, &live, source_tab)
+        };
+
+        if let Some(session_id) = existing {
+            let args = json!({
+                "session_id": session_id.as_str(),
+                "window_label": window_name,
+                "focus": false,
+                "layout": self.block_layout(cwd, None)?,
+            });
+            match found(self.api::<CreatedWindow>("session.new_window", args))? {
+                Some(created) => {
+                    locked.save()?;
+                    let block =
+                        self.cache_first_block(created.block_ids, SessionId(session_id.clone()))?;
+                    return Ok((session_id, block.0));
+                }
+                None => {
+                    locked
+                        .records()
+                        .tab_sessions
+                        .retain(|_, target| target != &session_id);
+                }
+            }
+        }
+
+        let created: CreatedSession = self
+            .api(
+                "session.create",
+                json!({
+                    "label": session_label,
+                    "initial_windows": [{
+                        "window_label": window_name,
+                        "layout": self.block_layout(cwd, None)?,
+                    }],
+                }),
+            )
+            .context("Failed to create grouped Rex session")?;
+        let created_id = created.session_id.0.clone();
+        {
+            let records = locked.records();
+            records
+                .tab_sessions
+                .insert(source_tab.id.clone(), created_id.clone());
+            if source_tab.session_id != created_id {
+                records
+                    .origins
+                    .insert(created_id.clone(), source_tab.session_id.clone());
+            }
+        }
+        locked.save()?;
+        let block_ids = created
+            .initial_windows
+            .into_iter()
+            .next()
+            .map(|window| window.block_ids)
+            .ok_or_else(|| anyhow!("Rex created a session without a window"))?;
+        let block = self.cache_first_block(block_ids, created.session_id)?;
+        Ok((created_id, block.0))
     }
 
     pub(super) fn rename_managed_session(
@@ -1361,5 +1490,69 @@ esac
         fake.rex.close_session_to("wr-v", Some("home")).unwrap();
         reopen(&mut fake);
         assert_eq!(labels(&fake), ["first", "home"]);
+    }
+
+    #[test]
+    fn source_tab_grouping_shares_session_per_tab_and_separates_tabs_in_same_session() {
+        let mut records = ServerRecords::default();
+        let live = vec![
+            SessionSummary {
+                session_id: SessionId("session:source".into()),
+                label: "ZovaWorks products".into(),
+            },
+            SessionSummary {
+                session_id: SessionId("session:group-a".into()),
+                label: "ZC 4 Features".into(),
+            },
+        ];
+        records
+            .tab_sessions
+            .insert("window:tab-a".into(), "session:group-a".into());
+        records
+            .tab_sessions
+            .insert("window:tab-stale".into(), "session:gone".into());
+
+        let tab_a = SourceTab {
+            id: "window:tab-a".into(),
+            label: "ZC 4 Features".into(),
+            session_id: "session:source".into(),
+            session_label: "ZovaWorks products".into(),
+        };
+        let tab_b = SourceTab {
+            id: "window:tab-b".into(),
+            label: "ZD Compliance".into(),
+            session_id: "session:source".into(),
+            session_label: "ZovaWorks products".into(),
+        };
+        let inside_group_a = SourceTab {
+            id: "window:wt-1".into(),
+            label: "feat-1".into(),
+            session_id: "session:group-a".into(),
+            session_label: "ZC 4 Features".into(),
+        };
+        let tab_stale = SourceTab {
+            id: "window:tab-stale".into(),
+            label: "Old".into(),
+            session_id: "session:source".into(),
+            session_label: "ZovaWorks products".into(),
+        };
+
+        assert_eq!(
+            resolve_existing_tab_session(&records, &live, &tab_a).as_deref(),
+            Some("session:group-a")
+        );
+        assert_eq!(resolve_existing_tab_session(&records, &live, &tab_b), None);
+        assert_eq!(
+            resolve_existing_tab_session(&records, &live, &inside_group_a).as_deref(),
+            Some("session:group-a")
+        );
+        assert_eq!(
+            resolve_existing_tab_session(&records, &live, &tab_stale),
+            None
+        );
+
+        records.retain_live(&session_ids(&live));
+        assert!(records.tab_sessions.contains_key("window:tab-a"));
+        assert!(!records.tab_sessions.contains_key("window:tab-stale"));
     }
 }

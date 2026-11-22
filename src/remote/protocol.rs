@@ -204,6 +204,15 @@ pub struct ProvisionResponse {
     pub cached_seeds: Vec<String>,
 }
 
+/// Shared Rex session group on a node, keyed by the caller's source tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionGroup {
+    /// Stable identifier of the source tab (e.g., its Rex window ID).
+    pub key: String,
+    /// Human-readable label for the shared Rex session when created.
+    pub label: String,
+}
+
 /// `start-execution`: idempotent per `ex_id`; returns the workspace's live
 /// execution instead when one exists.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +226,10 @@ pub struct StartRequest {
     /// own host whatever this says.
     #[serde(default)]
     pub terminal: RemoteTerminal,
+    /// Optional shared Rex session group so worktrees from the same source tab
+    /// open as tabs inside one Rex session on this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_group: Option<SessionGroup>,
 }
 
 /// Where a Rex-hosted execution's sessions are, on the node's own Rex
@@ -236,6 +249,12 @@ pub struct RexPlacement {
     /// Additional interactive shells keyed by their request identity.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub shells: BTreeMap<String, String>,
+    /// Window ID of this workspace's tab when hosted in a Rex session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<String>,
+    /// True when `sessions` is a shared Rex session that may host other workspaces' tabs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared_session: bool,
 }
 
 /// Pane-indexed maps with the indices as JSON object keys, read through
@@ -565,6 +584,8 @@ mod tests {
             sessions: BTreeMap::from([(0, "session:a".into()), (2, "session:b".into())]),
             shells: BTreeMap::new(),
             blocks: BTreeMap::new(),
+            window_id: None,
+            shared_session: false,
         };
         let text = serde_json::to_string(&placement).unwrap();
         assert_eq!(

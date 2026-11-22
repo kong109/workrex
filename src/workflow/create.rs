@@ -157,7 +157,10 @@ fn create_impl(
         }
 
         context.ensure_mux_running()?;
-        if options.mode == MuxMode::Window && options.window_session_name.is_none() {
+        if options.mode == MuxMode::Window
+            && options.window_session_name.is_none()
+            && options.source_tab_group.is_none()
+        {
             placement_window_id =
                 setup::resolve_window_placement_target(context.mux.as_ref(), &context.config)?;
         }
@@ -177,7 +180,20 @@ fn create_impl(
             &context.prefix,
             requested_target_name,
         );
-        let mut target_exists = target.exists()?;
+        let mut target_exists = if let Some(group) = &options.source_tab_group {
+            match context.mux.source_tab_session_id(&group.tab)? {
+                Some(session_id) => context
+                    .mux
+                    .get_window_names_in_session(&session_id)?
+                    .contains(&crate::multiplexer::util::prefixed(
+                        &context.prefix,
+                        requested_target_name,
+                    )),
+                None => false,
+            }
+        } else {
+            target.exists()?
+        };
         let mut current_target_name = requested_target_name.to_string();
         if target_exists && !worktree_exists && !is_explicit_name && !explicit_target_name {
             (current_handle, target_exists) = suffix_taken_handle(context, options.mode, handle)?;
@@ -205,6 +221,7 @@ fn create_impl(
                 target_window_name: options.target_window_name.clone(),
                 target_session_name: options.target_session_name.clone(),
                 window_session_name: options.window_session_name.clone(),
+                source_tab_group: options.source_tab_group.clone(),
                 window_token: options.window_token.clone(),
                 primary_window: options.primary_window,
                 resume_mode: options.resume_mode.clone(),
@@ -701,6 +718,14 @@ fn create_impl(
         agent,
         placement_window_id,
     )?;
+    if let Some(session_id) = &result.window_session {
+        git::set_worktree_meta_in(
+            &current_handle,
+            "window-session",
+            session_id,
+            Some(&context.execution_dir),
+        )?;
+    }
     result.base_branch = comparison_base;
     info!(
         branch = branch_name,

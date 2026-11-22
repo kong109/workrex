@@ -344,6 +344,7 @@ pub fn open(
             resolved_handle: base_handle,
             mode,
             view_hint: None,
+            window_session: None,
         });
     }
 
@@ -435,15 +436,37 @@ pub fn open(
         setup::write_prompt_file(Some(&worktree_path), &branch_name, prompt)?;
     }
 
-    let options_with_workdir = SetupOptions {
-        working_dir,
-        config_root,
-        target_window_name: if mode == MuxMode::Window {
-            Some(handle.clone())
-        } else {
-            None
-        },
-        ..options
+    let options_with_workdir = {
+        let mut options = SetupOptions {
+            working_dir,
+            config_root,
+            target_window_name: if mode == MuxMode::Window {
+                Some(handle.clone())
+            } else {
+                None
+            },
+            ..options
+        };
+        if mode == MuxMode::Window
+            && let Some(session) = options.window_session_name.as_deref()
+            && session.starts_with("session:")
+            && !context.mux.session_exists(session)?
+        {
+            options.window_session_name = None;
+            if context.config.session_grouping() == crate::config::SessionGrouping::SourceTab
+                && let Ok(Some(tab)) = context.mux.current_source_tab()
+            {
+                let project_name = context
+                    .main_worktree_root
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let session_label = tab.grouped_session_label(&project_name, true);
+                options.source_tab_group =
+                    Some(super::types::SourceTabGroup { tab, session_label });
+            }
+        }
+        options
     };
 
     // Setup the environment
@@ -458,6 +481,14 @@ pub fn open(
         agent,
         None,
     )?;
+    if let Some(session_id) = &result.window_session {
+        git::set_worktree_meta_in(
+            &base_handle,
+            "window-session",
+            session_id,
+            Some(&context.execution_dir),
+        )?;
+    }
     git::set_worktree_attachment_in(
         &base_handle,
         git::WorktreeAttachment::Multiplexer,

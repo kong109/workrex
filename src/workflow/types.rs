@@ -4,7 +4,7 @@ use crate::config::MuxMode;
 use crate::git::RepositoryIdentity;
 use crate::github::PrSummary;
 use crate::multiplexer::conversation::{ConversationForker, SessionInfo};
-use crate::multiplexer::types::ResumeMode;
+use crate::multiplexer::types::{ResumeMode, SourceTab};
 use crate::multiplexer::{AgentStatus, WindowTarget};
 use crate::prompt::Prompt;
 
@@ -56,6 +56,8 @@ pub struct CreateResult {
     pub mode: MuxMode,
     /// How to reach the new session when the backend left the view alone.
     pub view_hint: Option<String>,
+    /// Rex session ID when created inside a source-tab grouped session.
+    pub window_session: Option<String>,
 }
 
 /// Result of merging a worktree
@@ -125,6 +127,13 @@ pub struct CleanupResult {
     pub deferred_cleanup: Option<DeferredCleanup>,
 }
 
+/// Source-tab grouping target for creating a local worktree tab inside a shared Rex session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceTabGroup {
+    pub tab: SourceTab,
+    pub session_label: String,
+}
+
 /// Options for setting up a worktree environment
 #[derive(Debug, Clone)]
 pub struct SetupOptions {
@@ -148,6 +157,8 @@ pub struct SetupOptions {
     pub target_session_name: Option<String>,
     /// Raw Rex parent session for window mode.
     pub window_session_name: Option<String>,
+    /// Shared Rex session grouping keyed by source tab (local window mode).
+    pub source_tab_group: Option<SourceTabGroup>,
     /// Stable ownership token attached to windows created for this worktree.
     pub window_token: Option<String>,
     /// Whether the created window is the primary worktree window.
@@ -173,6 +184,7 @@ impl SetupOptions {
             target_window_name: None,
             target_session_name: None,
             window_session_name: None,
+            source_tab_group: None,
             window_token: None,
             primary_window: true,
             resume_mode: ResumeMode::default(),
@@ -194,6 +206,7 @@ impl SetupOptions {
             target_window_name: None,
             target_session_name: None,
             window_session_name: None,
+            source_tab_group: None,
             window_token: None,
             primary_window: true,
             resume_mode: ResumeMode::default(),
@@ -221,6 +234,7 @@ impl SetupOptions {
             target_window_name: None,
             target_session_name: None,
             window_session_name: None,
+            source_tab_group: None,
             window_token: None,
             primary_window: true,
             resume_mode: ResumeMode::default(),

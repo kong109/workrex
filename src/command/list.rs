@@ -513,6 +513,8 @@ mod tests {
                 sessions: [(0, "session:owned".into())].into(),
                 blocks: [(0, "block:owned".into())].into(),
                 shells: Default::default(),
+                window_id: None,
+                shared_session: false,
             }),
         });
         let version: serde_json::Value = serde_json::from_str(include_str!(

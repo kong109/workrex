@@ -551,11 +551,33 @@ pub fn run(
     } else {
         None
     };
-    let mode = mode_override.unwrap_or(if remote.is_some() {
+    let mut mode = mode_override.unwrap_or(if remote.is_some() {
         initial_config.remote_mode()
     } else {
         initial_config.mode()
     });
+
+    let source_tab_group = if remote.is_none()
+        && mode_override.is_none()
+        && parent_session.is_none()
+        && initial_config.windows.is_none()
+        && initial_config.session_grouping() == config::SessionGrouping::SourceTab
+    {
+        let mux = create_backend(detect_backend());
+        if let Ok(Some(tab)) = mux.current_source_tab() {
+            let project_name = git::get_main_worktree_root()
+                .ok()
+                .and_then(|root| root.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_default();
+            let session_label = tab.grouped_session_label(&project_name, true);
+            mode = MuxMode::Window;
+            Some(crate::workflow::types::SourceTabGroup { tab, session_label })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Validate layout early to fail fast before any LLM calls
     if let Some(layout_name) = &layout {
@@ -567,6 +589,7 @@ pub fn run(
     options.focus_window = !setup.background;
     options.open_if_exists = setup.open_if_exists;
     options.mode = mode;
+    options.source_tab_group = source_tab_group;
     if continue_session {
         options.resume_mode = crate::multiplexer::types::ResumeMode::Continue;
     }

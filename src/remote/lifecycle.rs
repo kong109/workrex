@@ -162,6 +162,19 @@ pub fn create(
     };
 
     record.window_session = window_session;
+    if record.session_group.is_none()
+        && config.session_grouping() == crate::config::SessionGrouping::SourceTab
+        && let Ok(Some(tab)) = context.mux.current_source_tab()
+    {
+        let project_name = project_root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        record.session_group = Some(protocol::SessionGroup {
+            key: tab.id.clone(),
+            label: tab.grouped_session_label(&project_name, false),
+        });
+    }
     record.local_config = Some(crate::frozen_config::snapshot_document(
         config,
         request.location,
@@ -354,6 +367,7 @@ fn start_execution(
                 use_prompt,
                 run_commands,
                 terminal: node.spec.terminal,
+                session_group: record.session_group.clone(),
             },
             false,
         )

@@ -192,6 +192,7 @@ pub fn setup_environment(
     // Track the focus and zoom pane across all windows
     let mut focus_pane_id: Option<String> = None;
     let mut zoom_pane_id: Option<String> = None;
+    let mut created_window_session: Option<String> = None;
 
     match options.mode {
         MuxMode::Window => {
@@ -199,9 +200,18 @@ pub fn setup_environment(
             let panes = window_plans[0].panes.as_deref().unwrap_or(&[]);
             let resolved_panes = resolve_pane_configuration(panes, config, agent);
 
-            let initial_pane_id = if let Some(parent_session) =
-                options.window_session_name.as_deref()
-            {
+            let initial_pane_id = if let Some(group) = &options.source_tab_group {
+                let (session_id, pane_id) = mux
+                    .create_window_in_source_tab_session(
+                        &group.tab,
+                        &group.session_label,
+                        &mux_target_full_name,
+                        effective_working_dir,
+                    )
+                    .context("Failed to create window in source-tab Rex session")?;
+                created_window_session = Some(session_id);
+                pane_id
+            } else if let Some(parent_session) = options.window_session_name.as_deref() {
                 crate::multiplexer::util::create_window_in_parent_session(
                     mux,
                     parent_session,
@@ -334,7 +344,7 @@ pub fn setup_environment(
             MuxMode::Window => {
                 // Focus the Rex block through the owning server and session.
                 mux.select_pane(&focus_pane_id)?;
-                if options.window_session_name.is_none() {
+                if options.window_session_name.is_none() && options.source_tab_group.is_none() {
                     mux.select_window(prefix, target_window_name)?;
                 }
             }
@@ -364,6 +374,7 @@ pub fn setup_environment(
         mux_target_full_name,
         mode: options.mode,
         view_hint,
+        window_session: created_window_session,
     })
 }
 
@@ -826,6 +837,7 @@ mod tests {
             target_window_name: None,
             target_session_name: None,
             window_session_name: None,
+            source_tab_group: None,
             window_token: None,
             primary_window: true,
             resume_mode: crate::multiplexer::types::ResumeMode::default(),

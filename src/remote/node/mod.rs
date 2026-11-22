@@ -100,8 +100,21 @@ impl NodeRoot {
         self.workspaces_dir().join(format!("{ws_id}.files.gz"))
     }
 
+    pub fn session_groups_path(&self) -> PathBuf {
+        self.path.join("state").join("session-groups.json")
+    }
+
     fn lock_path(&self, ws_id: &str) -> PathBuf {
         self.workspaces_dir().join(format!("{ws_id}.lock"))
+    }
+
+    /// Serialize creation/lookup of shared source-tab Rex sessions on this node.
+    pub fn lock_session_groups(&self) -> Result<File> {
+        let dir = self.path.join("state");
+        fs::create_dir_all(&dir).with_context(|| format!("Failed to create {}", dir.display()))?;
+        let file = open_lock(&dir.join("session-groups.lock"))?;
+        file.lock().context("Failed to lock session groups")?;
+        Ok(file)
     }
 
     fn project_dir(&self, project_id: &str) -> PathBuf {
@@ -230,6 +243,9 @@ pub struct Workspace {
     pub origin: Option<Origin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<operation::Request>,
+    /// Shared Rex session group on this node, when grouped by source tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_group: Option<super::protocol::SessionGroup>,
 }
 
 /// How a workspace a remote agent spawned came about, and what the laptop
@@ -264,6 +280,7 @@ impl Workspace {
             execution: None,
             origin: None,
             operation: None,
+            session_group: None,
         }
     }
 

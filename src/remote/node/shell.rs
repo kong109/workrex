@@ -207,6 +207,7 @@ fn open(
                 config_path: &config_path,
                 spawn_env,
                 secrets: &session_secrets,
+                session_group: None,
             },
         )?;
         let session = created

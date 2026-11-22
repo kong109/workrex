@@ -47,6 +47,52 @@ pub struct WindowOwnershipRecord {
     pub pane_path: PathBuf,
 }
 
+/// The Rex tab a command was invoked from, used to group worktrees into a shared session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceTab {
+    /// Stable Rex window ID (`window:...`).
+    pub id: String,
+    /// Cleaned tab label (without status icons).
+    pub label: String,
+    /// Session ID holding this tab (`session:...`).
+    pub session_id: String,
+    /// Label of the session holding this tab.
+    pub session_label: String,
+}
+
+impl SourceTab {
+    /// Human-readable label for the shared Rex session holding worktrees created from this tab.
+    ///
+    /// Falls back to `project_name` when the tab has Rex's auto-generated `Window <hex>` label
+    /// or an empty label. On the local host, appends ` (worktrees)` when the label would collide
+    /// with the source session's own label.
+    pub fn grouped_session_label(&self, project_name: &str, local: bool) -> String {
+        let trimmed = self.label.trim();
+        let base = if trimmed.is_empty() || is_default_rex_window_label(trimmed) {
+            let project = project_name.trim();
+            if project.is_empty() {
+                self.session_label.trim()
+            } else {
+                project
+            }
+        } else {
+            trimmed
+        };
+        let base = if base.is_empty() { "worktrees" } else { base };
+        if local && base == self.session_label.trim() {
+            format!("{base} (worktrees)")
+        } else {
+            base.to_string()
+        }
+    }
+}
+
+fn is_default_rex_window_label(label: &str) -> bool {
+    label
+        .strip_prefix("Window ")
+        .is_some_and(|hex| hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// How (if at all) to resume an existing agent conversation when launching.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ResumeMode {
@@ -426,4 +472,39 @@ pub struct LivePaneInfo {
 
     /// Zero-based position in the Rex session tab order.
     pub window_index: Option<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_tab_grouped_session_label_uses_tab_or_project_and_avoids_local_collision() {
+        let tab = SourceTab {
+            id: "window:1".into(),
+            label: "ZD Neon BR Compliance Review".into(),
+            session_id: "session:src".into(),
+            session_label: "ZovaWorks products".into(),
+        };
+        assert_eq!(
+            tab.grouped_session_label("ZovaDock", true),
+            "ZD Neon BR Compliance Review"
+        );
+        assert_eq!(
+            tab.grouped_session_label("ZovaDock", false),
+            "ZD Neon BR Compliance Review"
+        );
+
+        let auto_tab = SourceTab {
+            id: "window:2".into(),
+            label: "Window 295a5857".into(),
+            session_id: "session:src".into(),
+            session_label: "workrex".into(),
+        };
+        assert_eq!(
+            auto_tab.grouped_session_label("workrex", true),
+            "workrex (worktrees)"
+        );
+        assert_eq!(auto_tab.grouped_session_label("workrex", false), "workrex");
+    }
 }

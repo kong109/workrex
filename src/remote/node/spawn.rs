@@ -153,6 +153,7 @@ pub fn spawn(root: &NodeRoot, request: SpawnRequest) -> Result<SpawnResponse> {
                     Some(_) => crate::config::RemoteTerminal::Rex,
                     None => crate::config::RemoteTerminal::Rex,
                 },
+                session_group: parent.session_group.clone(),
             },
         )
     });

@@ -124,6 +124,9 @@ pub struct WorkspaceRecord {
     /// finalization on a later observation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub window_pending: bool,
+    /// Shared Rex session group on the remote host, when grouped by source tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_group: Option<crate::remote::protocol::SessionGroup>,
 }
 
 impl WorkspaceRecord {
@@ -164,6 +167,7 @@ impl WorkspaceRecord {
             homecoming: None,
             remote_repo: None,
             window_pending: false,
+            session_group: None,
         }
     }
 

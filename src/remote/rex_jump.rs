@@ -12,9 +12,10 @@ use crate::config::Config;
 use crate::multiplexer::Multiplexer;
 use crate::multiplexer::rex::{HostedRead, RexBackend};
 
-/// Show a live configured session, preserving its current block focus.
+/// Show a live configured session (and its tab when hosted in a shared session),
+/// preserving its current block focus.
 pub fn select(config: &Config, record: &WorkspaceRecord) -> Result<()> {
-    let session = live_session(record)?.ok_or_else(|| {
+    let (session, window) = live_target(record)?.ok_or_else(|| {
         anyhow!(
             "The recorded Rex execution for '{}' has closed",
             record.handle
@@ -25,28 +26,33 @@ pub fn select(config: &Config, record: &WorkspaceRecord) -> Result<()> {
         .as_ref()
         .and_then(|execution| execution.rex.as_ref())
         .expect("a live session has a native placement");
+    let target_window = placement.shared_session.then_some(window).flatten();
     let server = RexBackend::for_server(&placement.host_label);
     let client = super::rex_client(config, &record.remote);
-    server.select_on_app(client.as_deref(), &session)
+    server.select_window_on_app(client.as_deref(), &session, target_window.as_deref())
 }
 
 /// Show the configured pane, even when several blocks share its session.
 pub fn select_pane(config: &Config, record: &WorkspaceRecord, pane: usize) -> Result<()> {
-    if !is_open(record)? {
+    let Some((_, live_window)) = live_target(record)? else {
         bail!(
             "The recorded Rex execution for '{}' has closed",
             record.handle
         );
-    }
+    };
     let placement = record.execution.as_ref().unwrap().rex.as_ref().unwrap();
     let block = placement
         .blocks
         .get(&pane)
         .ok_or_else(|| anyhow!("Configured pane {pane} has no recorded Rex block"))?;
     let session = &placement.sessions[&pane];
+    let window = placement
+        .shared_session
+        .then(|| placement.window_id.as_deref().or(live_window.as_deref()))
+        .flatten();
     let server = RexBackend::for_server(&placement.host_label);
     let client = super::rex_client(config, &record.remote);
-    server.select_on_app(client.as_deref(), session)?;
+    server.select_window_on_app(client.as_deref(), session, window)?;
     server.select_pane(block)
 }
 
@@ -66,10 +72,10 @@ impl std::error::Error for ServerUnavailable {}
 /// Whether any configured terminal block still lives on its recorded server.
 /// A failed read is an error, never evidence that the target closed.
 pub fn is_open(record: &WorkspaceRecord) -> Result<bool> {
-    Ok(live_session(record)?.is_some())
+    Ok(live_target(record)?.is_some())
 }
 
-fn live_session(record: &WorkspaceRecord) -> Result<Option<String>> {
+fn live_target(record: &WorkspaceRecord) -> Result<Option<(String, Option<String>)>> {
     let Some(execution) = &record.execution else {
         return Ok(None);
     };
@@ -103,7 +109,9 @@ fn live_session(record: &WorkspaceRecord) -> Result<Option<String>> {
                 record.handle, record.remote
             )
         })?;
-    target_session(placement, &instance, &reads).map(|session| session.map(str::to_string))
+    target_session_and_window(placement, &instance, &reads).map(|target| {
+        target.map(|(session, window)| (session.to_string(), window.map(str::to_string)))
+    })
 }
 
 fn validate_targets(placement: &RexPlacement) -> Result<()> {
@@ -132,11 +140,11 @@ fn validate_targets(placement: &RexPlacement) -> Result<()> {
     Ok(())
 }
 
-fn target_session<'a>(
+fn target_session_and_window<'a>(
     placement: &'a RexPlacement,
     instance: &str,
-    reads: &HashMap<String, HostedRead>,
-) -> Result<Option<&'a str>> {
+    reads: &'a HashMap<String, HostedRead>,
+) -> Result<Option<(&'a str, Option<&'a str>)>> {
     if instance != placement.instance_id {
         return Ok(None);
     }
@@ -145,11 +153,12 @@ fn target_session<'a>(
         let session = &placement.sessions[index];
         match reads.get(session) {
             Some(HostedRead::Live(panes)) => {
-                if panes
+                if let Some(pane) = panes
                     .get(block)
-                    .is_some_and(|pane| pane.session_id.as_deref() == Some(session.as_str()))
+                    .filter(|pane| pane.session_id.as_deref() == Some(session.as_str()))
                 {
-                    return Ok(Some(session));
+                    let window = pane.window_id.as_deref().or(placement.window_id.as_deref());
+                    return Ok(Some((session, window)));
                 }
             }
             Some(HostedRead::Gone) => {}
@@ -195,7 +204,7 @@ mod tests {
         instance: &str,
         reads: &HashMap<String, HostedRead>,
     ) -> Result<bool> {
-        Ok(target_session(placement, instance, reads)?.is_some())
+        Ok(target_session_and_window(placement, instance, reads)?.is_some())
     }
 
     fn placement() -> RexPlacement {
@@ -205,6 +214,8 @@ mod tests {
             sessions: [(0, "session:owned".into())].into(),
             blocks: [(0, "block:owned".into())].into(),
             shells: Default::default(),
+            window_id: None,
+            shared_session: false,
         }
     }
 
@@ -285,8 +296,8 @@ mod tests {
             )])),
         )]);
         assert_eq!(
-            target_session(&placement, "instance", &reads).unwrap(),
-            Some("session:owned")
+            target_session_and_window(&placement, "instance", &reads).unwrap(),
+            Some(("session:owned", Some("window:owned")))
         );
         placement.sessions.insert(1, "session:second".into());
         let reads = HashMap::from([
@@ -300,8 +311,8 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            target_session(&placement, "instance", &reads).unwrap(),
-            Some("session:second")
+            target_session_and_window(&placement, "instance", &reads).unwrap(),
+            Some(("session:second", Some("window:owned")))
         );
     }
 
@@ -416,6 +427,18 @@ esac
             serde_json::from_slice(&std::fs::read(dir.join("focused.json")).unwrap()).unwrap();
         assert_eq!(focused["session_id"], "session:owned");
         assert_eq!(focused["block_id"], "block:second");
+
+        // Shared-session workspaces select their exact tab in the shared session.
+        let shared = record.execution.as_mut().unwrap().rex.as_mut().unwrap();
+        shared.shared_session = true;
+        shared.window_id = Some("window:owned".into());
+        select(&Config::default(), &record).unwrap();
+        let selected: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("selected.json")).unwrap()).unwrap();
+        assert_eq!(
+            selected["args"],
+            serde_json::json!({"session_id": "session:owned", "window_id": "window:owned"})
+        );
         println!("{ISOLATED_TEST_CANARY}");
     }
 }
