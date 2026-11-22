@@ -88,6 +88,36 @@ Inspect the desired session before choosing its label. Repository paths do not
 identify sessions. Native Rex commands target full session, window, and block
 IDs; see [Rex concepts](/guide/rex/#rex-concepts).
 
+## Source-tab session grouping
+
+Set `session_grouping: source_tab` to group worktrees created from the same
+source Rex tab into one shared Rex session per target host, instead of creating
+a separate Rex session for every worktree:
+
+```yaml
+session_grouping: source_tab
+```
+
+- **Keyed by source tab.** Workrex keys each shared session by the caller's
+  stable Rex window ID (`window:<uuid>`). Two tabs inside the same source
+  session get separate worktree sessions, while repeated `workrex add` calls
+  from the same tab open as tabs inside its shared session.
+- **Local and remote hosts.** Works both locally and with `--remote <host>`: an
+  agent working in a tab on your machine gets one shared session on each remote
+  host it spawns worktrees on, labeled after the source tab (falling back to the
+  project name for default `Window <hex>` tab labels).
+- **Nested and sibling spawns.** Running `workrex add` from inside an existing
+  grouped worktree session locally, or spawning a sibling from a grouped remote
+  agent, adds a tab to that same shared session. Reopening a stopped remote
+  workspace with `workrex open` also rejoins its shared session.
+- **Safe teardown and jumps.** `remove` and `merge` close only that worktree's
+  tab without disturbing sibling worktrees in the same shared session (closing
+  the session only if it was the last tab). `workrex open` and the dashboard
+  jump directly to the worktree's tab inside the shared session.
+- **Overrides.** Passing `--mode session` or `--parent-session` explicitly
+  overrides `session_grouping` for local `workrex add`. Project `.workrex.yaml`
+  can also override the global setting with `session_grouping: none`.
+
 ## Limitations
 
 Session mode creates one session per worktree. `open --new` needs window mode,

@@ -77,9 +77,11 @@ The command's working directory selects the Git repository, not a session.
 ## Remote workspaces
 
 With `--remote`, or when `placement` names a remote, the workspace and agent run
-on the [configured server](/guide/remote/). Their terminals are native sessions
-on that server's Rex instance and are shown directly by Rex.app. SSH carries
-workspace and Git operations.
+on the [configured server](/guide/remote/). Their terminals run natively on that
+server's Rex instance (one session per workspace by default, or grouped as tabs
+into one shared session per source Rex tab when `session_grouping: source_tab`
+is set) and are shown directly by Rex.app. SSH carries workspace and Git
+operations.
 
 The workspace starts from a local commit, including unpushed commits. To start
 from a remote branch reference, fetch it first and pass a new branch name with
@@ -98,7 +100,7 @@ worktree-generation options.
 
 In a [Rex](/guide/rex/) terminal:
 
-- Each worktree gets its own Rex session unless you set `mode: window` or pass `--mode window`.
+- Each worktree gets its own Rex session unless you set `mode: window`, pass `--mode window`, or set [`session_grouping: source_tab`](/guide/session-mode/#source-tab-session-grouping) (which groups worktrees from the same source tab into one shared session per host).
 - `add` never moves Rex.app, because it may run in a background agent's pane. In session mode it prints `Rex.app stays put: to see <handle>, press Enter on its row in workrex dashboard.` With `--background`, it prints nothing.
 - `--parent-session` selects a Rex session label in window mode; `--target-name` labels the managed target.
 - workrex records each Rex session it creates by its session ID, so it still finds the session after an agent renames it.

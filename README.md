@@ -51,8 +51,10 @@ workrex merge fix-login
 
 Workrex defaults to one Rex session per worktree. A Rex CLI window is a tab in
 a session; each terminal pane is a block. Set `mode: window` when tasks should
-open as tabs inside an existing session. `--parent-session <label>` applies
-only to window mode and identifies an explicitly chosen Rex session.
+open as tabs inside an existing session, or `session_grouping: source_tab` to
+group worktrees created from the same source Rex tab into one shared Rex session
+per target host (both locally and on remote servers). `--parent-session <label>`
+applies only to window mode and identifies an explicitly chosen Rex session.
 
 `add` and `open` create or select their managed target on the server without
 moving Rex.app away from the tab you are viewing. Dashboard and sidebar jumps

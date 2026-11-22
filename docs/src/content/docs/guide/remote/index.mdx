@@ -10,9 +10,11 @@ Remote servers are experimental. Keep the relevant `remote doctor` output and a 
 :::
 
 Workrex runs agents on an SSH-reachable Linux or macOS server while other agents stay
-local. Each remote workspace owns a native session on the server's Rex instance, with its configured terminal blocks.
-Rex.app shows those terminals directly; the dashboard, sidebar, `status`, and
-`list` show them alongside local agents.
+local. Each remote workspace runs natively on the server's Rex instance with its
+configured terminal blocks—either in its own Rex session by default, or as a tab
+in one shared Rex session per source tab when `session_grouping: source_tab` is
+set. Rex.app shows those terminals directly; the dashboard, sidebar, `status`,
+and `list` show them alongside local agents.
 
 Agents keep running when your machine sleeps or disconnects. Reconnect Rex.app
 and use `workrex open <handle>` to show a workspace again. `workrex merge`

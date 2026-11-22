@@ -33,7 +33,7 @@ Remote workspaces use the usual commands. Run them from the project on the local
 
 ## Panes on the server
 
-The workspace has one native Rex session with its configured split layout. Ad-hoc shells created by `workrex shell` have separate sessions owned by the same execution. Non-agent panes are shells on the server, or in the container with `sandbox.target: all`.
+By default, each workspace has its own native Rex session with its configured split layout. When [`session_grouping: source_tab`](/guide/session-mode/#source-tab-session-grouping) is configured, workspaces created from the same source Rex tab share one Rex session on each remote host—each workspace opens as its own tab in that session, `remove` and `merge` close only that workspace's tab, sibling spawns and `open` rejoin the same session, and `open` or dashboard jumps focus the workspace's tab directly. Ad-hoc shells created by `workrex shell` still have separate sessions owned by the same execution. Non-agent panes are shells on the server, or in the container with `sandbox.target: all`.
 
 - **On the server directly:** `workrex` works in every pane, including the shell left after the agent exits. It is the server's copy, which knows the pane's workspace.
 - **In Docker:** shell panes on the server have no `workrex`, unless you installed one there yourself. Run workrex commands for the workspace on the local machine. The agent's container has `workrex`, for [`merge` and `rm`](#remove-or-merge-from-a-remote-pane) and [starting agents](#agents-that-start-agents).
