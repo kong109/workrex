@@ -12,9 +12,11 @@ through the dashboard TUI, which calls load_reconciled_agents(). These tests
 verify the state files have the fields needed for reconciliation to work.
 """
 
+import fcntl
 import json
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -583,3 +585,81 @@ def test_set_window_status_ignores_muse_events_outside_a_turn(
     # Outside Muse the user_shell_ prefix means nothing.
     run_status("working", user_shell, target_env)
     assert poll_until(lambda: status() == "working", timeout=5.0)
+
+
+def test_status_snapshot_query_does_not_hold_the_state_lock(
+    mux_server: RexEnvironment, workrex_exe_path: Path, mux_repo_path: Path
+):
+    env = mux_server
+    agent = start_active_agent(
+        env, workrex_exe_path, mux_repo_path, "feature-snapshot-race"
+    )
+    pane_id = read_agent_state(list_agent_state_files(env)[0])["pane_key"]["pane_id"]
+    shim_dir = env.tmp_path / "rex-holding-first-whoami"
+    shim_dir.mkdir()
+    captured = env.tmp_path / "snapshot-captured"
+    release = env.tmp_path / "snapshot-release"
+    snapshot_queries = env.tmp_path / "snapshot-queries"
+    env.install_script(
+        shim_dir / "rex",
+        f"#!{sys.executable}\n"
+        "import os, sys, time\n"
+        "from pathlib import Path\n"
+        f"captured, release = Path({str(captured)!r}), Path({str(release)!r})\n"
+        "if 'whoami' in sys.argv:\n"
+        f"    with open({str(snapshot_queries)!r}, 'a') as log:\n"
+        "        log.write('whoami\\n')\n"
+        "    if not captured.exists():\n"
+        "        captured.touch()\n"
+        "        deadline = time.monotonic() + 20\n"
+        "        while not release.exists():\n"
+        "            if time.monotonic() > deadline: sys.exit(2)\n"
+        "            time.sleep(0.01)\n"
+        f"os.execv({env.rex!r}, [{env.rex!r}, *sys.argv[1:]])\n",
+    )
+    target_env = env.env.copy()
+    target_env.pop("REX_SESSION", None)
+    target_env.pop("REX_BLOCK", None)
+    target_env.update(
+        {
+            "WORKREX_STATUS_BACKEND": "rex",
+            "WORKREX_STATUS_INSTANCE": env.server_url,
+            "WORKREX_STATUS_PANE_ID": pane_id,
+        }
+    )
+    hook_input = env.tmp_path / "hook-input.json"
+    hook_input.write_text("{}")
+    with hook_input.open() as stdin:
+        held = subprocess.Popen(
+            [str(workrex_exe_path), "set-window-status", "waiting"],
+            cwd=agent.worktree,
+            env={**target_env, "REX_BIN_DIR": str(shim_dir)},
+            stdin=stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    try:
+        assert poll_until(captured.exists, timeout=5.0), held.poll()
+
+        lock_path = Path(env.env["XDG_STATE_HOME"]) / "workrex" / "agent-state.lock"
+        with lock_path.open("r+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+        writer = subprocess.run(
+            [str(workrex_exe_path), "set-window-status", "working"],
+            cwd=agent.worktree,
+            env=target_env,
+            input="{}",
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        assert writer.returncode == 0, writer.stderr
+    finally:
+        release.touch()
+        stdout, stderr = held.communicate(timeout=20)
+    assert held.returncode == 0, (stdout, stderr)
+    assert snapshot_queries.read_text().count("whoami") >= 2
+    assert read_agent_state(list_agent_state_files(env)[0])["status"] == "waiting"
