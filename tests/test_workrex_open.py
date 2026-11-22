@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 from typing import cast
 
+import pytest
 import yaml
 
 from .conftest import (
@@ -111,6 +112,46 @@ def test_open_switches_to_existing_window_by_default(
     assert active_window == target_window, (
         f"Expected active window to be '{target_window}', got '{active_window}'"
     )
+
+
+@pytest.mark.parametrize("flag", ["-b", "--background"])
+@pytest.mark.parametrize("state", ["existing", "closed", "new", "session"])
+def test_open_background_preserves_focus(
+    mux_server: RexEnvironment,
+    workrex_exe_path: Path,
+    repo_path: Path,
+    flag: str,
+    state: str,
+):
+    env = mux_server
+    names = ("background-one", "background-two")
+    write_workrex_config(repo_path)
+    for name in names:
+        run_workrex_command(
+            env, workrex_exe_path, repo_path, f"add {name} --background"
+        )
+        if state in ("closed", "session"):
+            env.kill_window(get_window_name(name))
+
+    original = env.get_current_window()
+    extra = {"new": "--new", "session": "--session"}.get(state, "")
+    for _ in range(2 if state == "session" else 1):
+        result = run_workrex_command(
+            env,
+            workrex_exe_path,
+            repo_path,
+            f"open {' '.join(names)} {flag} {extra}",
+        )
+        assert env.get_current_window() == original
+        assert "Switched" not in result.stdout
+
+    for name in names:
+        if state == "session":
+            assert_session_exists(env, get_session_name(name))
+        else:
+            assert get_window_name(name) in env.list_windows()
+            if state == "new":
+                assert get_window_name(name) + "-2" in env.list_windows()
 
 
 def test_open_with_new_flag_creates_duplicate_window(

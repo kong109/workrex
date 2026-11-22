@@ -688,8 +688,13 @@ pub fn open(context: &WorkflowContext, mut record: WorkspaceRecord, focus: bool)
 fn show_on_rex(config: &Config, record: &WorkspaceRecord, focus: bool) -> Result<()> {
     if focus {
         super::rex_jump::select(config, record)?;
+        println!("✓ Switched to remote workspace '{}' on Rex", record.handle);
+    } else {
+        println!(
+            "✓ Kept existing remote workspace '{}' on Rex",
+            record.handle
+        );
     }
-    println!("✓ Switched to remote workspace '{}' on Rex", record.handle);
     Ok(())
 }
 
