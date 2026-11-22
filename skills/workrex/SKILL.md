@@ -100,6 +100,9 @@ workrex status <handle-a> <handle-b>
 workrex capture <handle> -n 80
 workrex send <handle> "Fix the failing check and rerun it"
 workrex send <handle> -f <prompt-file>
+workrex send <pane-id> "Fix the tests"   # one agent of a worktree with several
+workrex send --wait <handle> "Fix it"    # confirm delivery, wait for done/waiting
+workrex send --wait --until working <handle> "Fix it"  # delivery only
 workrex wait <handle-a> <handle-b> --any --timeout 60
 workrex run <handle> -- cargo test
 ```
@@ -110,9 +113,29 @@ for a stalled agent: capture it and answer any prompt with `send`.
 An interrupted wait leaves its agents running. Resume monitoring any task you
 remain responsible for.
 
+`send` refuses an agent waiting on a dialog (Enter would answer it) and a
+worktree or remote workspace with several agents; target one of those by the
+pane ID that `workrex status --json` shows. `send`, `capture`, and `run` take
+that pane ID: a Rex block ID, or `%remote-<ws>-<pane>` for a remote agent, whose
+recorded Rex block ID also works. Failures print a stable error name and exit
+with its code:
+
+| Error                  | Exit | Meaning                                                |
+| ---------------------- | ---- | ------------------------------------------------------ |
+| `agent_waiting`        | 3    | Agent is waiting on a dialog; nothing sent             |
+| `ambiguous_target`     | 4    | Target matches several agents; pane IDs listed         |
+| `agent_not_found`      | 5    | No live agent for the target                           |
+| `send_stalled`         | 6    | `--wait`: idle agent showed no activity within 5s      |
+| `agent_gone`           | 7    | `--wait`: agent exited before its turn settled         |
+| `agent_status_unknown` | 8    | `--wait` on an agent with no reported status; not sent |
+| `timeout`              | 124  | `--wait --timeout` expired                             |
+
+After a `send`, `workrex wait` counts only the agent sent to and only states of
+the turn the send started.
+
 Cross-project commands accept `project:handle` to resolve ambiguous handles.
-Native `rex capture`, `rex send`, and `rex send-key` target Rex block IDs;
-Workrex commands above target managed worktree handles.
+Native `rex capture`, `rex send`, and `rex send-key` also target Rex block IDs,
+but skip these checks.
 
 ## Finish or reopen work
 

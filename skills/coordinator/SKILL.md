@@ -172,7 +172,15 @@ workrex send other-worktree "run the tests"
 
 # Disambiguate with project:handle when names collide
 workrex send myproject:docs-update "also add the API reference"
+
+# Confirm the agent picked up the instruction
+workrex send --wait --until working agent-a "fix the failing tests"
 ```
+
+`send` refuses an agent waiting on a dialog (`agent_waiting`, exit 3): look at
+it with `workrex capture` before answering it yourself. A worktree with several
+agents is refused too (`ambiguous_target`, exit 4); send to one of the listed
+pane IDs instead.
 
 ### Run Commands
 
