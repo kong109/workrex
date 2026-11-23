@@ -4,7 +4,7 @@ description: Release history for the Rex application
 editUrl: https://github.com/kong109/workrex/edit/main/CHANGELOG.md
 ---
 
-## Unreleased
+## v0.1.284-rex.1
 
 <!-- highlight: Rex-only workflows -->
 
@@ -14,6 +14,11 @@ editUrl: https://github.com/kong109/workrex/edit/main/CHANGELOG.md
 - Install the six bundled skills for Codex in `~/.agents/skills`.
 - Group worktrees created from the same source Rex tab into one shared Rex
   session per local or remote host with `session_grouping: source_tab`.
+- Accept `--remote local` in `workrex add` and add offline
+  `workrex remote list [--json]` (`#82`).
+- Detect remote node workspaces from the current working directory so
+  `workrex remove`, `merge`, `close`, and `shell` work from remote Rex tabs
+  (`#83`).
 - Add `--wait`, `--until`, and `--timeout` to `workrex send`, accept pane IDs
   in `send`, `capture`, and `run`, refuse sending into `waiting` dialogs or
   ambiguous multi-agent worktrees with stable exit codes (`3` to `8`, `124`),
