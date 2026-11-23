@@ -13,6 +13,15 @@ pub fn run(
     force: bool,
     keep_branch: bool,
 ) -> Result<()> {
+    if crate::sandbox::guest::is_sandbox_guest() {
+        if gone || all || keep_branch || names.len() > 1 {
+            anyhow::bail!(
+                "a sandboxed agent can only remove its own workspace, without --gone, --all or --keep-branch"
+            );
+        }
+        let name = super::resolve_name(names.first().map(String::as_str))?;
+        return run_via_rpc(&name, force);
+    }
     if crate::remote::node::operation::in_session() {
         if gone || all || keep_branch {
             anyhow::bail!(
@@ -23,15 +32,6 @@ pub fn run(
             &names,
             crate::remote::node::operation::Operation::Remove { force },
         );
-    }
-    if crate::sandbox::guest::is_sandbox_guest() {
-        if gone || all || keep_branch || names.len() > 1 {
-            anyhow::bail!(
-                "a sandboxed agent can only remove its own workspace, without --gone, --all or --keep-branch"
-            );
-        }
-        let name = super::resolve_name(names.first().map(String::as_str))?;
-        return run_via_rpc(&name, force);
     }
     let config = config::Config::load(None)?;
     let confirm_unmerged = config.confirm_unmerged_removal.unwrap_or(true);
