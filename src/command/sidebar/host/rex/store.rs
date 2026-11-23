@@ -182,7 +182,29 @@ impl Files {
         })
     }
 
+    pub fn lock_daemon_spawn(&self) -> Result<Flock<File>> {
+        self.lock("spawn")
+    }
+
+    pub fn try_lock_daemon_running(&self) -> Result<Option<Flock<File>>> {
+        let (file, path) = self.lock_file("running")?;
+        match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+            Ok(lock) => Ok(Some(lock)),
+            Err((_file, nix::errno::Errno::EWOULDBLOCK)) => Ok(None),
+            Err((_file, errno)) => {
+                Err(errno).with_context(|| format!("Failed to lock {}", path.display()))
+            }
+        }
+    }
+
     fn lock(&self, kind: &str) -> Result<Flock<File>> {
+        let (file, path) = self.lock_file(kind)?;
+        Flock::lock(file, FlockArg::LockExclusive)
+            .map_err(|(_file, errno)| errno)
+            .with_context(|| format!("Failed to lock {}", path.display()))
+    }
+
+    fn lock_file(&self, kind: &str) -> Result<(File, PathBuf)> {
         std::fs::create_dir_all(&self.dir)
             .with_context(|| format!("Failed to create {}", self.dir.display()))?;
         let path = self.dir.join(format!("rex-{}-{kind}.lock", self.key));
@@ -193,9 +215,7 @@ impl Files {
             .truncate(false)
             .open(&path)
             .with_context(|| format!("Failed to open {}", path.display()))?;
-        Flock::lock(file, FlockArg::LockExclusive)
-            .map_err(|(_file, errno)| errno)
-            .with_context(|| format!("Failed to lock {}", path.display()))
+        Ok((file, path))
     }
 }
 
@@ -354,6 +374,20 @@ mod tests {
             writer.join().unwrap();
         }
         assert_eq!(files.prefs().global_set(OPTOUT).len(), 8);
+    }
+
+    #[test]
+    fn daemon_running_lock_admits_one_holder_and_spares_daemon_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = Files::at(dir.path().to_path_buf(), "default");
+        let first = files.try_lock_daemon_running().unwrap();
+        assert!(first.is_some());
+        assert!(files.try_lock_daemon_running().unwrap().is_none());
+        files
+            .update_daemon(|daemon| daemon.set_global(DAEMON_PID, Some("1".into())))
+            .unwrap();
+        drop(first);
+        assert!(files.try_lock_daemon_running().unwrap().is_some());
     }
 
     #[test]

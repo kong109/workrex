@@ -506,9 +506,11 @@ fn dashboard_footer_target(app: &App, column: u16) -> MouseTarget {
             agent_footer_target_with_tip(footer, agent_footer_items(app), column)
         }
         DashboardTab::Agents => footer_target_at(footer.x + 2, column, &agent_footer_items(app)),
-        DashboardTab::Worktrees => {
-            footer_target_at(footer.x + 2, column, &worktree_footer_items(app))
-        }
+        DashboardTab::Worktrees => footer_target_at(
+            footer.x + 2,
+            column,
+            &worktree_footer_items(app.worktree_sort_mode.label(), &app.worktree_filter_text),
+        ),
     }
 }
 
@@ -620,23 +622,22 @@ fn agent_footer_items(app: &App) -> Vec<FooterItem> {
     items
 }
 
-fn worktree_footer_items(app: &App) -> Vec<FooterItem> {
+/// Must list the hints `render_worktree_footer_normal` draws, in order.
+fn worktree_footer_items(sort: &str, filter_text: &str) -> Vec<FooterItem> {
     let mut items = vec![
+        FooterItem::action("Enter Open", Action::JumpToSelectedWorktree),
         FooterItem::action("a Add", Action::AddWorktree),
         FooterItem::action("r Remove", Action::RemoveSelectedWorktree),
         FooterItem::action("R Sweep", Action::StartSweep),
         FooterItem::action("c Close", Action::CloseSelectedWorktreeWindow),
         FooterItem::action("o PR", Action::OpenPr),
         FooterItem::label("1-9 Jump"),
-        FooterItem::action(
-            format!("s Sort ({})", app.worktree_sort_mode.label()),
-            Action::CycleWorktreeSortMode,
-        ),
+        FooterItem::action(format!("s Sort ({sort})"), Action::CycleWorktreeSortMode),
         FooterItem::action("p Project", Action::ShowProjectPicker),
     ];
-    if !app.worktree_filter_text.is_empty() {
+    if !filter_text.is_empty() {
         items.push(FooterItem::action(
-            format!("/ {}", app.worktree_filter_text),
+            format!("/ {filter_text}"),
             Action::EnterFilterMode,
         ));
     }
@@ -921,6 +922,38 @@ mod tests {
         assert_eq!(
             footer_target_at(2, 22, &items),
             MouseTarget::Action(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn worktree_footer_hitboxes_cover_the_hints_as_drawn() {
+        for filter in ["", "bug"] {
+            let drawn: Vec<char> = super::super::ui::worktree_footer_text("name", filter)
+                .chars()
+                .collect();
+            let items = worktree_footer_items("name", filter);
+            let mut x = 2;
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    assert_eq!(String::from_iter(&drawn[x..x + 3]), " \u{2502} ");
+                    x += 3;
+                }
+                let width = item.text.chars().count();
+                assert_eq!(String::from_iter(&drawn[x..x + width]), item.text);
+                let expected = item
+                    .action
+                    .clone()
+                    .map_or(MouseTarget::None, MouseTarget::Action);
+                for column in x..x + width {
+                    assert_eq!(footer_target_at(2, column as u16, &items), expected);
+                }
+                x += width;
+            }
+            assert_eq!(drawn.len(), x, "the footer draws hints with no hitbox");
+        }
+        assert_eq!(
+            footer_target_at(2, 2, &worktree_footer_items("name", "")),
+            MouseTarget::Action(Action::JumpToSelectedWorktree)
         );
     }
 
