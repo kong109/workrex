@@ -2,9 +2,11 @@
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::{NodeRoot, validate_id};
+use super::{NodeRoot, validate_id, validate_identity};
 use crate::remote::cache;
 
 pub const TIMEOUT: u64 = 15;
@@ -66,9 +68,102 @@ impl Request {
 }
 
 pub fn in_session() -> bool {
+    if crate::sandbox::guest::is_sandbox_guest() {
+        return false;
+    }
     std::env::var_os(super::spawn::SESSION_ROOT_ENV).is_some()
         || std::env::var_os(super::spawn::SESSION_WORKSPACE_ENV).is_some()
-        || super::spawn::session_parent().is_some()
+        || session_target().is_some()
+}
+
+fn session_target() -> Option<(PathBuf, String)> {
+    session_target_from(
+        std::env::var_os(super::spawn::SESSION_ROOT_ENV),
+        std::env::var_os(super::spawn::SESSION_WORKSPACE_ENV),
+        crate::sandbox::guest::is_sandbox_guest(),
+        || std::env::current_dir().ok(),
+        trusted_node_roots,
+    )
+}
+
+fn session_target_from(
+    root: Option<OsString>,
+    ws_id: Option<OsString>,
+    sandbox_guest: bool,
+    dir: impl FnOnce() -> Option<PathBuf>,
+    roots: impl FnOnce() -> Vec<PathBuf>,
+) -> Option<(PathBuf, String)> {
+    if sandbox_guest {
+        return None;
+    }
+    match (root, ws_id) {
+        (Some(root), Some(ws_id)) => Some((root.into(), ws_id.into_string().ok()?)),
+        (None, None) => workspace_from_dir(&dir()?, &roots()),
+        _ => None,
+    }
+}
+
+fn trusted_node_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(pin) = super::path_shim::shim_path()
+        .ok()
+        .and_then(|shim| super::path_shim::installed_target(&shim))
+    {
+        let pin = PathBuf::from(pin);
+        if let Some(bin_dir) = pin.parent()
+            && bin_dir.file_name() == Some(std::ffi::OsStr::new("bin"))
+            && let Some(root) = bin_dir.parent()
+        {
+            roots.push(root.to_path_buf());
+        }
+    }
+    if let Some(home) = home::home_dir() {
+        let default_root = home.join(crate::bin_name::NODE_ROOT_MARKER);
+        if !roots.contains(&default_root) {
+            roots.push(default_root);
+        }
+    }
+    roots
+}
+
+fn workspace_from_dir(dir: &Path, roots: &[PathBuf]) -> Option<(PathBuf, String)> {
+    let canonical_dir = dir.canonicalize().ok()?;
+    let mut best: Option<(usize, PathBuf, String)> = None;
+    for root in roots {
+        let Ok(canonical_root) = root.canonicalize() else {
+            continue;
+        };
+        if !canonical_dir.starts_with(&canonical_root) {
+            continue;
+        }
+        let Ok(node_root) = NodeRoot::at(root.clone()) else {
+            continue;
+        };
+        for ws in node_root.workspaces() {
+            if validate_identity(&ws.identity).is_err() {
+                continue;
+            }
+            let expected = node_root.worktree_path(&ws.identity.project_id, &ws.identity.handle);
+            let Ok(canonical_expected) = expected.canonicalize() else {
+                continue;
+            };
+            let Ok(canonical_recorded) = ws.worktree_path.canonicalize() else {
+                continue;
+            };
+            if canonical_recorded != canonical_expected
+                || !canonical_expected.starts_with(&canonical_root)
+            {
+                continue;
+            }
+            if canonical_dir.starts_with(&canonical_expected) {
+                let depth = canonical_expected.components().count();
+                if best.as_ref().is_none_or(|(d, _, _)| depth > *d) {
+                    best = Some((depth, root.clone(), ws.identity.ws_id));
+                }
+            }
+        }
+    }
+    best.map(|(_, root, ws_id)| (root, ws_id))
 }
 
 pub fn validate_names(names: &[String], handle: &str) -> Result<()> {
@@ -85,7 +180,7 @@ pub fn validate_names(names: &[String], handle: &str) -> Result<()> {
 /// Request `operation` from a workspace pane and wait for the laptop,
 /// showing its progress.
 pub fn submit(names: &[String], operation: Operation) -> Result<()> {
-    let (path, ws_id) = super::spawn::session_parent().ok_or_else(|| {
+    let (path, ws_id) = session_target().ok_or_else(|| {
         anyhow::anyhow!("incomplete remote workspace session; run this on the local machine")
     })?;
     let root = NodeRoot::at(path)?;
@@ -396,5 +491,155 @@ mod tests {
         assert!(!request.pending(115));
         request.claimed = true;
         assert!(!request.pending(101));
+    }
+
+    fn node_with_workspace(handle: &str) -> (tempfile::TempDir, NodeRoot, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = NodeRoot::at(dir.path().to_path_buf()).unwrap();
+        let identity = crate::remote::protocol::WorkspaceIdentity {
+            ws_id: cache::new_id('w'),
+            project_id: "project".into(),
+            handle: handle.into(),
+            branch: handle.into(),
+            base_sha: "0".repeat(40),
+        };
+        let ws =
+            super::super::Workspace::new(&root, identity, crate::config::RemoteIsolation::None);
+        std::fs::create_dir_all(ws.worktree_path.join("src/deep")).unwrap();
+        root.save(&ws).unwrap();
+        let ws_id = ws.identity.ws_id.clone();
+        (dir, root, ws_id)
+    }
+
+    #[test]
+    fn finds_workspace_from_trusted_root_and_subdirectories() {
+        let (_dir, root, ws_id) = node_with_workspace("mine");
+        let worktree = root.worktree_path("project", "mine");
+        let roots = vec![root.path.clone()];
+        let expected = Some((root.path.clone(), ws_id));
+        assert_eq!(workspace_from_dir(&worktree, &roots), expected);
+        assert_eq!(
+            workspace_from_dir(&worktree.join("src/deep"), &roots),
+            expected
+        );
+    }
+
+    #[test]
+    fn preserves_uncanonicalized_symlinked_node_root() {
+        let (_dir, real_root, _) = node_with_workspace("mine");
+        let link_dir = tempfile::tempdir().unwrap();
+        let symlink_root = link_dir.path().join("node-link");
+        std::os::unix::fs::symlink(&real_root.path, &symlink_root).unwrap();
+
+        let root_via_link = NodeRoot::at(symlink_root.clone()).unwrap();
+        let ws_id = root_via_link.workspaces()[0].identity.ws_id.clone();
+        let worktree = root_via_link.worktree_path("project", "mine");
+
+        assert_eq!(
+            workspace_from_dir(&worktree.join("src"), std::slice::from_ref(&symlink_root)),
+            Some((symlink_root, ws_id))
+        );
+    }
+
+    #[test]
+    fn inner_state_workspaces_dir_in_repo_does_not_shadow_node_root() {
+        let (_dir, root, ws_id) = node_with_workspace("mine");
+        let worktree = root.worktree_path("project", "mine");
+        std::fs::create_dir_all(worktree.join("state/workspaces")).unwrap();
+        let roots = vec![root.path.clone()];
+        assert_eq!(
+            workspace_from_dir(&worktree.join("src/deep"), &roots),
+            Some((root.path.clone(), ws_id))
+        );
+    }
+
+    #[test]
+    fn rejects_untrusted_ancestor_and_forged_worktree_paths() {
+        let (_evil_dir, evil_root, _) = node_with_workspace("evil");
+        let (_trusted_dir, trusted_root, ws_id) = node_with_workspace("mine");
+        let trusted_roots = vec![trusted_root.path.clone()];
+
+        assert_eq!(
+            workspace_from_dir(&evil_root.worktree_path("project", "evil"), &trusted_roots),
+            None
+        );
+
+        let mut forged = trusted_root.load(&ws_id).unwrap().unwrap();
+        forged.worktree_path = PathBuf::from("/");
+        trusted_root.save(&forged).unwrap();
+        assert_eq!(
+            workspace_from_dir(
+                &trusted_root.worktree_path("project", "mine"),
+                &trusted_roots
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_symlinked_worktree_escaping_node_root() {
+        let (_dir, root, ws_id) = node_with_workspace("mine");
+        let outside = tempfile::tempdir().unwrap();
+        let wt = root.worktree_path("project", "mine");
+        std::fs::remove_dir_all(&wt).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &wt).unwrap();
+
+        let mut ws = root.load(&ws_id).unwrap().unwrap();
+        ws.worktree_path = wt.clone();
+        root.save(&ws).unwrap();
+
+        assert_eq!(
+            workspace_from_dir(&wt, std::slice::from_ref(&root.path)),
+            None
+        );
+    }
+
+    #[test]
+    fn partial_env_and_sandbox_guest_never_fall_back_to_cwd() {
+        let (_dir, root, _) = node_with_workspace("mine");
+        let worktree = root.worktree_path("project", "mine");
+        let roots = vec![root.path.clone()];
+
+        assert_eq!(
+            session_target_from(
+                Some(root.path.clone().into()),
+                None,
+                false,
+                || Some(worktree.clone()),
+                || roots.clone(),
+            ),
+            None
+        );
+        assert_eq!(
+            session_target_from(
+                None,
+                Some("w1".into()),
+                false,
+                || Some(worktree.clone()),
+                || roots.clone(),
+            ),
+            None
+        );
+        assert_eq!(
+            session_target_from(
+                None,
+                None,
+                true,
+                || Some(worktree.clone()),
+                || roots.clone(),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn ignores_directories_outside_node_worktrees() {
+        let (_dir, root, _) = node_with_workspace("mine");
+        let local = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.repo_path("project")).unwrap();
+        let roots = vec![root.path.clone()];
+        assert_eq!(workspace_from_dir(local.path(), &roots), None);
+        assert_eq!(workspace_from_dir(&root.repo_path("project"), &roots), None);
+        assert_eq!(workspace_from_dir(&root.path, &roots), None);
     }
 }

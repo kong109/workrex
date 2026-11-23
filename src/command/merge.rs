@@ -17,6 +17,24 @@ pub fn run(
     no_hooks: bool,
     notification: bool,
 ) -> Result<()> {
+    if crate::sandbox::guest::is_sandbox_guest() {
+        if keep && cleanup {
+            bail!("--keep and --cleanup cannot be used together");
+        }
+        let name_to_merge = super::resolve_name(name)?;
+        return run_via_rpc(
+            &name_to_merge,
+            into_branch,
+            rebase,
+            squash,
+            ignore_uncommitted,
+            keep,
+            cleanup,
+            no_verify,
+            no_hooks,
+            notification,
+        );
+    }
     if crate::remote::node::operation::in_session() {
         return crate::remote::node::operation::submit(
             &name.map(str::to_owned).into_iter().collect::<Vec<_>>(),
@@ -35,23 +53,6 @@ pub fn run(
     }
     if keep && cleanup {
         bail!("--keep and --cleanup cannot be used together");
-    }
-
-    // Inside a sandbox guest, route through RPC to the host supervisor
-    if crate::sandbox::guest::is_sandbox_guest() {
-        let name_to_merge = super::resolve_name(name)?;
-        return run_via_rpc(
-            &name_to_merge,
-            into_branch,
-            rebase,
-            squash,
-            ignore_uncommitted,
-            keep,
-            cleanup,
-            no_verify,
-            no_hooks,
-            notification,
-        );
     }
 
     let config = config::Config::load(None)?;

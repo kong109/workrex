@@ -5,14 +5,14 @@ use crate::{config, git, sandbox};
 use anyhow::{Context, Result, anyhow};
 
 pub fn run(name: Option<&str>) -> Result<()> {
+    if crate::sandbox::guest::is_sandbox_guest() {
+        let name_to_close = super::resolve_name(name)?;
+        return run_via_rpc(&name_to_close);
+    }
     if crate::remote::node::operation::in_session() {
         anyhow::bail!(
             "Rex has no session detach operation; select another session to leave this agent running, or run `{BIN} remove <handle>` on the local machine to end it"
         );
-    }
-    if crate::sandbox::guest::is_sandbox_guest() {
-        let name_to_close = super::resolve_name(name)?;
-        return run_via_rpc(&name_to_close);
     }
 
     let remote = match name {
