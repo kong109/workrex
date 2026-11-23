@@ -26,7 +26,7 @@ hooks installed by `workrex setup`.
 
 **Notes:**
 
-- **Copilot CLI**: No 💬 waiting state
+- **Copilot CLI**: 💬 waiting state requires Copilot CLI 1.0.18 or later
 - **Pi**: No 💬 waiting state
 - **Codex**: Registration occurs when the first turn begins because its session hook is turn-bound
 - **Antigravity CLI (`agy`)**: No 💬 waiting state; registration occurs when agent execution begins
@@ -98,17 +98,19 @@ Restart pi for the extension to take effect.
 With a [pi-suba](https://github.com/raine/pi-suba) release that publishes activity
 snapshots, the parent stays working while either the parent or any delegated child
 is active. Waiting children do not count as active. When both the parent and all
-children are inactive, workrex reports done. Resuming a child marks the parent
-working again, even without a new parent turn.
+children are inactive, workrex reports done for a completed parent turn or clears
+the status for an aborted parent turn. Resuming a child marks the parent working
+again, even without a new parent turn.
 
 The extensions communicate through `pi.events`: pi-suba publishes
 `suba:activity` with `{ activeCount: number }`, and workrex requests an initial
 snapshot with `suba:activity:request`. workrex does not read child session files or
 poll child processes.
 
-Without an activity publisher, Pi status behavior is unchanged, including keeping
-aborted turns working for continuation. With a publisher, a settled aborted parent
-is inactive, but active children still keep it working.
+Aborted turns clear the working indicator without showing a completion checkmark
+once Pi has settled and no tracked children remain active. Without an activity
+publisher, only the parent determines status. A new parent turn reports working
+again.
 
 ## Oh My Pi setup
 
@@ -255,7 +257,15 @@ curl -o "$copilot_home/hooks/workrex-status.json" \
   https://raw.githubusercontent.com/kong109/workrex/main/resources/copilot/hooks/workrex-status/hooks.json
 ```
 
-Copilot loads personal hooks in every repository. If the repository contains a `.github/hooks/workrex-status` installation, remove that directory to avoid running both copies of the hook. The Copilot CLI hooks API does not support detecting permission prompts, so only working/done states are tracked (no waiting state).
+Copilot loads personal hooks in every repository. If the repository contains a `.github/hooks/workrex-status` installation, remove that directory to avoid running both copies of the hook.
+
+The `notification` hook marks the pane waiting when Copilot shows a permission
+prompt or asks a question. `postToolUse` and `postToolUseFailure` restore working
+when the tool finishes, and `userPromptSubmitted` marks a new prompt working.
+Copilot CLI 1.0.18 or later is required for the waiting state.
+
+Run `workrex setup` to update older workrex hooks, then start a new Copilot session
+to load the changes.
 
 ## Customization
 

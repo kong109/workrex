@@ -2396,6 +2396,16 @@ mod tests {
     }
 
     #[test]
+    fn test_build_args_copilot_agent_credential_mount() {
+        let args = test_build_run_args_for_agent("copilot", &make_config());
+        assert_agent_credential_mount(
+            &args,
+            Some("/tmp/.copilot"),
+            &["target=/tmp/.claude.json", "target=/tmp/.gemini"],
+        );
+    }
+
+    #[test]
     fn test_build_args_unknown_agent_no_credential_mount() {
         let args = test_build_run_args_for_agent("unknown-agent", &make_config());
         assert_agent_credential_mount(

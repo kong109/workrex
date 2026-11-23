@@ -610,6 +610,7 @@ mod tests {
                 .map(|h| h.join(subpath))
                 .unwrap_or(host_path);
             assert_eq!(mount.guest_path, expected);
+            assert!(!mount.read_only);
         }
     }
 

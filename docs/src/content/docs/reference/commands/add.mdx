@@ -109,7 +109,7 @@ See [Rex session mode](/guide/rex/#session-mode) for the details.
 
 ## Headless worktrees
 
-`--headless` creates and provisions a worktree without a multiplexer, for scripts and agents that manage their own terminals. It needs a local branch name, creates the worktree from the usual base rules, applies file operations and runs `post_create` hooks. No multiplexer has to be running.
+`--headless` creates and provisions a worktree without a multiplexer, for scripts and agents that manage their own terminals. It needs a local branch name or `--pr`, creates the worktree from the usual base rules, applies file operations and runs `post_create` hooks. No multiplexer has to be running.
 
 ```bash
 workrex add feature/api --headless --json
@@ -117,7 +117,9 @@ workrex add feature/api --headless --json
 
 With `--json`, `add` prints one object with `schema_version`, `handle`, `branch`, `worktree_path`, `working_directory`, `base_branch` and `post_create_hooks_run`.
 
-`--headless` rejects options that need a window or an agent: `--pr`, `--auto-name`, `--target-name`, `--parent-session`, `--mode`, `--session`, prompt options, `--no-pane-cmds`, `--background`, `--open-if-exists`, `--sandbox`, the change-moving options, the multi-worktree options, `--layout`, `--fork`, `--wait` and `--dry-run`. It does not resolve remote branch references, and it does not run inside a sandbox.
+`--pr <number|url>` checks out a pull or merge request the same way as without `--headless`. The PR's head branch becomes the local branch unless you give a branch name, and the PR's target branch is the base. PR details print to stderr, so `--json` stdout contains only the receipt.
+
+`--headless` rejects options that need a window or an agent: `--auto-name`, `--target-name`, `--parent-session`, `--mode`, `--session`, prompt options, `--no-pane-cmds`, `--background`, `--open-if-exists`, `--sandbox`, the change-moving options, the multi-worktree options, `--layout`, `--fork`, `--wait` and `--dry-run`. It does not resolve remote branch references, and it does not run inside a sandbox.
 
 ## Resume a session at a recreated worktree path
 
@@ -307,7 +309,7 @@ workrex add feature/ai-session --mode session -p "Implement the new API"
 
 ## AI agent integration
 
-When you provide a prompt via `--prompt`, `--prompt-file`, or `--prompt-editor`, workrex automatically injects the prompt into panes running the configured agent command (e.g., `claude`, `codex`, `opencode`, `gemini`, `agy`, `kiro-cli`, `vibe`, `pi`, `omp`, `grok`, `muse`, or whatever you've set via the `agent` config or `--agent` flag) without requiring any `.workrex.yaml` changes:
+When you provide a prompt via `--prompt`, `--prompt-file`, or `--prompt-editor`, workrex automatically injects the prompt into panes running the configured agent command (e.g., `claude`, `codex`, `copilot`, `opencode`, `gemini`, `agy`, `kiro-cli`, `vibe`, `pi`, `omp`, `grok`, `muse`, or whatever you've set via the `agent` config or `--agent` flag) without requiring any `.workrex.yaml` changes:
 
 - Panes with a command matching the configured agent are automatically started with the given prompt.
 - You can keep your `.workrex.yaml` pane configuration simple (e.g., `panes: [{ command: "<agent>" }]`) and let workrex handle prompt injection at runtime.
