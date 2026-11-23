@@ -285,6 +285,23 @@ def test_remote_lifecycle(
     assert git(Path(workspace["repo_path"]), "branch", "--list", "feat") == ""
 
 
+def test_remote_open_background_skips_the_rex_app_jump(
+    mux_server, workrex_exe_path: Path, mux_repo_path: Path, node: Node
+):
+    repo = mux_repo_path
+    setup_project(repo)
+    wm(mux_server, workrex_exe_path, repo, "add feat --remote lo --background")
+    node.wait_for_agent(mux_server, "feat", "AGENT-READY")
+    [record] = local_records(mux_server)
+    ex_id = record["execution"]["ex_id"]
+    for flag in ("-b", "--background"):
+        opened = wm(mux_server, workrex_exe_path, repo, f"open feat {flag}")
+        assert "Kept existing remote workspace 'feat'" in opened.stdout, opened.stderr
+        assert "Switched" not in opened.stdout
+    assert local_records(mux_server)[0]["execution"]["ex_id"] == ex_id
+    assert node.sessions() == [f"{ex_id}-0"]
+
+
 def test_startup_output_is_preserved_in_the_native_block(
     mux_server, workrex_exe_path, mux_repo_path, node
 ):

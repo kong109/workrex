@@ -248,6 +248,12 @@ fn capture_worktree_identity(
     if repository.common_dir != expected_common_dir {
         anyhow::bail!("Worktree repository identity does not match the expected repository");
     }
+    if repository.is_bare || repository.admin_dir == repository.common_dir {
+        anyhow::bail!(
+            "Worktree path is not a linked worktree: {}",
+            worktree_path.display()
+        );
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -1107,4 +1113,49 @@ pub fn navigate_to_target_and_close(
         "cleanup:scheduled navigation and source close"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn worktree_identity_rejects_a_repository_that_is_not_a_linked_worktree() {
+        let temp = tempfile::tempdir().unwrap();
+        let main = temp.path().join("main");
+        let lane = temp.path().join("lane");
+        std::fs::create_dir(&main).unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&main)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ]);
+        git(&["worktree", "add", "-qb", "lane", lane.to_str().unwrap()]);
+        let common_dir = main.join(".git");
+
+        assert!(capture_worktree_identity(&main, &common_dir).is_err());
+        assert!(
+            capture_worktree_identity(&lane, &common_dir)
+                .unwrap()
+                .is_some()
+        );
+    }
 }

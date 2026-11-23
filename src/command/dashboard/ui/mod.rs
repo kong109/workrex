@@ -27,6 +27,8 @@ fn dim_buffer(f: &mut Frame) {
 }
 
 pub use self::dashboard::render_dashboard;
+#[cfg(test)]
+pub(super) use self::dashboard::worktree_footer_text;
 pub use self::diff::render_diff_view;
 pub use self::help::{
     render_add_worktree, render_base_picker, render_command_palette, render_confirm_kill,

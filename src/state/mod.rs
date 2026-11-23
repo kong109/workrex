@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::warn;
 
 use crate::agent_identity::classify_agent_kind;
-use crate::multiplexer::{AgentStatus, Multiplexer, RemoteRef};
+use crate::multiplexer::{AgentStatus, LivePaneSnapshot, Multiplexer, RemoteRef};
 
 pub use launched::record_launch;
 pub use store::StateStore;
@@ -23,7 +23,7 @@ pub(crate) use store::{AgentStateCache, AgentStateSource, ResurrectionAgentState
 pub use types::{AgentState, LastDoneCycleState, PaneKey, RuntimeState};
 
 /// How a state write changes the agent's latest user prompt.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptUpdate {
     /// Preserve the stored prompt.
     Keep,
@@ -167,29 +167,59 @@ fn persist_agent_snapshot(
     let Ok(store) = StateStore::new() else {
         return;
     };
-    if let Err(error) = store.with_agent_lock(|store| {
-        persist_agent_snapshot_locked(
-            store,
-            mux,
-            pane_id,
-            status,
-            title_override,
-            agent_session_id,
-            prompt,
-            preserve_existing,
-            remote,
-        );
+    let pane_key = PaneKey {
+        backend: mux.name().to_string(),
+        instance: mux.instance_id(),
+        pane_id: pane_id.to_string(),
+    };
+    let result = (|| -> anyhow::Result<()> {
+        const MAX_SNAPSHOT_ATTEMPTS: usize = 3;
+        for _ in 0..MAX_SNAPSHOT_ATTEMPTS {
+            let generation = store.agent_generation()?;
+            let snapshot = match mux.get_live_pane_snapshot(pane_id) {
+                Ok(Some(snapshot)) => snapshot,
+                Ok(None) => {
+                    warn!(%pane_id, "pane not found, skipping state persist");
+                    return Ok(());
+                }
+                Err(error) => {
+                    warn!(%error, "failed to get live pane snapshot, skipping state persist");
+                    return Ok(());
+                }
+            };
+            if store
+                .with_agent_generation(generation, |store| {
+                    persist_agent_snapshot_locked(
+                        store,
+                        pane_key.clone(),
+                        snapshot,
+                        status,
+                        title_override.clone(),
+                        agent_session_id.clone(),
+                        prompt.clone(),
+                        preserve_existing,
+                        remote.clone(),
+                    );
+                    Ok(())
+                })?
+                .is_some()
+            {
+                return Ok(());
+            }
+        }
+        warn!(%pane_id, "agent state changed during every snapshot attempt, skipping state persist");
         Ok(())
-    }) {
-        warn!(%error, "failed to lock agent state persistence");
+    })();
+    if let Err(error) = result {
+        warn!(%error, "failed to persist agent state");
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn persist_agent_snapshot_locked(
     store: &StateStore,
-    mux: &dyn Multiplexer,
-    pane_id: &str,
+    pane_key: PaneKey,
+    snapshot: LivePaneSnapshot,
     status: Option<AgentStatus>,
     title_override: Option<String>,
     agent_session_id: Option<String>,
@@ -197,24 +227,6 @@ fn persist_agent_snapshot_locked(
     preserve_existing: bool,
     remote: Option<RemoteUpdate>,
 ) {
-    let pane_key = PaneKey {
-        backend: mux.name().to_string(),
-        instance: mux.instance_id(),
-        pane_id: pane_id.to_string(),
-    };
-
-    let snapshot = match mux.get_live_pane_snapshot(pane_id) {
-        Ok(Some(info)) => info,
-        Ok(None) => {
-            warn!(%pane_id, "pane not found, skipping state persist");
-            return;
-        }
-        Err(e) => {
-            warn!(error = %e, "failed to get live pane snapshot, skipping state persist");
-            return;
-        }
-    };
-
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -225,7 +237,8 @@ fn persist_agent_snapshot_locked(
     let live_pid = live_info.pid.unwrap_or(0);
 
     if let Some(boot_id) = boot_id.as_deref()
-        && let Err(error) = store.compact_context_locked(mux.name(), &mux.instance_id(), boot_id)
+        && let Err(error) =
+            store.compact_context_locked(&pane_key.backend, &pane_key.instance, boot_id)
     {
         warn!(%error, "failed to compact historical agent state");
         return;

@@ -858,12 +858,17 @@ impl SidebarApp {
         const ANIMATION_INTERVAL: Duration = Duration::from_millis(250);
         const ELAPSED_INTERVAL: Duration = Duration::from_secs(1);
 
+        use super::template::context::SidebarStatus;
+        let status_of = |agent: &AgentPane| {
+            SidebarStatus::for_agent(agent, self.interrupted_pane_ids.contains(&agent.pane_id))
+        };
+
         if !self.has_loaded_snapshot
             || (self.status_icons.working.is_none()
-                && self
-                    .agents
-                    .iter()
-                    .any(|agent| agent.status == Some(crate::multiplexer::AgentStatus::Working)))
+                && self.agents.iter().any(|agent| {
+                    status_of(agent)
+                        == SidebarStatus::Reported(Some(crate::multiplexer::AgentStatus::Working))
+                }))
             || self
                 .check_statuses
                 .values()
@@ -874,7 +879,7 @@ impl SidebarApp {
 
         self.agents
             .iter()
-            .any(|agent| agent.status_ts.is_some())
+            .any(|agent| agent.status_ts.is_some() && status_of(agent) != SidebarStatus::Quiet)
             .then_some(ELAPSED_INTERVAL)
     }
 
@@ -2154,6 +2159,36 @@ mod tests {
         app.agents.push(agent);
 
         assert_eq!(app.refresh_interval(), Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn quiet_working_agents_need_no_periodic_refresh() {
+        for working_icon in [None, Some("working".to_string())] {
+            let mut app = SidebarApp::test_with_template_error(TemplateError {
+                location: String::new(),
+                message: String::new(),
+            });
+            app.status_icons.working = working_icon.clone();
+            let mut agent = selection_agent("%quiet", "@host");
+            agent.status = Some(crate::multiplexer::AgentStatus::Working);
+            agent.status_ts = Some(1);
+            app.agents.push(agent);
+            app.interrupted_pane_ids.insert("%quiet".to_string());
+
+            assert_eq!(app.refresh_interval(), None, "icon {working_icon:?}");
+
+            app.interrupted_pane_ids.clear();
+            let expected = if working_icon.is_some() {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_millis(250)
+            };
+            assert_eq!(
+                app.refresh_interval(),
+                Some(expected),
+                "icon {working_icon:?}"
+            );
+        }
     }
 
     #[test]

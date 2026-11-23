@@ -106,6 +106,14 @@ impl From<HostIdentity> for HostPane {
     }
 }
 
+pub(super) fn lock_daemon_spawn(instance: &str) -> Result<impl Sized> {
+    rex::lock_daemon_spawn(instance)
+}
+
+pub(super) fn try_lock_daemon_running(instance: &str) -> Result<Option<impl Sized>> {
+    rex::try_lock_daemon_running(instance)
+}
+
 pub(super) fn sleeping_pane_ids(
     mux: &dyn Multiplexer,
 ) -> Result<std::collections::HashSet<String>> {

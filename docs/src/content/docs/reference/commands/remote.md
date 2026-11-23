@@ -15,6 +15,29 @@ workrex remote
 
 Shows each remote's name, its SSH host and its status: reachable or not, whether the node is set up, and the workrex version and protocol it runs. The remote that `placement` selects is marked as the default.
 
+## remote list
+
+List where new agents can go, without connecting to any remote.
+
+```bash
+workrex remote list [--json]
+```
+
+**Options:**
+
+- `--json` - Print a JSON array instead of a table
+
+Lists `local` and each configured remote with its SSH host. The entry that `placement` selects, the one `add` uses without `--remote` or `--local`, comes first and is marked as the default. Remotes follow in name order. When `placement` names no configured remote, no entry is marked. Each name works as `workrex add --remote <name>`, `local` included. Reads the current directory's effective config, so a project's `placement` counts.
+
+With `--json`, each entry has `name`, `host` (`null` for `local`), `is_local` and `is_default`:
+
+```json
+[
+  { "name": "box", "host": "box.lan", "is_local": false, "is_default": true },
+  { "name": "local", "host": null, "is_local": true, "is_default": false }
+]
+```
+
 ## remote setup
 
 Install the node on a remote.

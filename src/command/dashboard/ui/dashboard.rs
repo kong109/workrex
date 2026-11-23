@@ -830,6 +830,18 @@ fn render_pinned_footer(
     bold_text: Style,
     pipe_style: Style,
 ) {
+    let cols = Layout::horizontal([Constraint::Fill(1), Constraint::Length(FOOTER_HELP_WIDTH)])
+        .split(area);
+    f.render_widget(
+        Paragraph::new(pinned_footer_line(items, pipe_style)),
+        cols[0],
+    );
+    render_right_help(f, area, dimmed, bold_text);
+}
+
+/// The footer hints joined by pipes after a two-column indent. The mouse
+/// hit-testing in `mouse.rs` walks the same layout.
+fn pinned_footer_line(items: &[Vec<Span<'static>>], pipe_style: Style) -> Line<'static> {
     let mut s: Vec<Span<'static>> = vec![Span::raw("  ")];
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
@@ -837,11 +849,7 @@ fn render_pinned_footer(
         }
         s.extend(item.iter().cloned());
     }
-
-    let cols = Layout::horizontal([Constraint::Fill(1), Constraint::Length(FOOTER_HELP_WIDTH)])
-        .split(area);
-    f.render_widget(Paragraph::new(Line::from(s)), cols[0]);
-    render_right_help(f, area, dimmed, bold_text);
+    Line::from(s)
 }
 
 /// Render the agents footer hints. With `with_tip`, the remote servers tip
@@ -933,15 +941,35 @@ fn render_worktree_footer_filter<'a>(app: &'a App) -> Paragraph<'a> {
 /// Worktree normal mode footer
 fn render_worktree_footer_normal(f: &mut Frame, app: &App, area: Rect) {
     let p = &app.palette;
-
     let dimmed = Style::default().fg(p.dimmed);
     let bold_text = Style::default().fg(p.text).add_modifier(Modifier::BOLD);
     let pipe_style = Style::default().fg(p.border);
+    let items = worktree_footer_hints(p, app.worktree_sort_mode.label(), &app.worktree_filter_text);
+    render_pinned_footer(f, area, &items, dimmed, bold_text, pipe_style);
+}
+
+/// The worktree footer text as drawn, for checking the mouse hitboxes.
+#[cfg(test)]
+pub(in crate::command::dashboard) fn worktree_footer_text(sort: &str, filter_text: &str) -> String {
+    let p = ThemePalette::from_config(
+        &crate::config::ThemeConfig::default(),
+        crate::config::ThemeMode::Dark,
+    );
+    let items = worktree_footer_hints(&p, sort, filter_text);
+    pinned_footer_line(&items, Style::default()).to_string()
+}
+
+fn worktree_footer_hints(
+    p: &ThemePalette,
+    sort: &str,
+    filter_text: &str,
+) -> Vec<Vec<Span<'static>>> {
+    let dimmed = Style::default().fg(p.dimmed);
+    let bold_text = Style::default().fg(p.text).add_modifier(Modifier::BOLD);
     let active_style = Style::default().fg(p.accent);
 
-    let sort = app.worktree_sort_mode.label();
-
     let mut items: Vec<Vec<Span<'static>>> = vec![
+        footer_cmd("Enter", "Open", dimmed, bold_text),
         footer_cmd("a", "Add", dimmed, bold_text),
         footer_cmd("r", "Remove", dimmed, bold_text),
         footer_cmd("R", "Sweep", dimmed, bold_text),
@@ -951,18 +979,12 @@ fn render_worktree_footer_normal(f: &mut Frame, app: &App, area: Rect) {
         footer_toggle("s", "Sort", sort, true, dimmed, bold_text, active_style),
         footer_cmd("p", "Project", dimmed, bold_text),
     ];
-    if !app.worktree_filter_text.is_empty() {
-        items.push(footer_cmd(
-            "/",
-            &app.worktree_filter_text,
-            dimmed,
-            bold_text,
-        ));
+    if !filter_text.is_empty() {
+        items.push(footer_cmd("/", filter_text, dimmed, bold_text));
     }
     items.push(footer_cmd("Tab", "Agents", dimmed, bold_text));
     items.push(footer_cmd("q", "Quit", dimmed, bold_text));
-
-    render_pinned_footer(f, area, &items, dimmed, bold_text, pipe_style);
+    items
 }
 
 #[cfg(test)]

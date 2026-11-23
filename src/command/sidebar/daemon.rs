@@ -1950,7 +1950,6 @@ fn spawn_config_watcher(
 /// - New pane output or an RPC update clears interrupted state.
 /// - After clearing, the agent gets a fresh timeout window before it can
 ///   be marked interrupted again.
-/// - Interrupted agents show no icon and no timer in the sidebar.
 /// - When an agent resumes, the timer resets to zero.
 struct InactivityTracker {
     /// pane_id -> (server lifecycle, pane PID)
@@ -2224,10 +2223,31 @@ impl Scheduler {
     }
 }
 
+fn wait_for_previous_daemon_exit(
+    instance_id: &str,
+    timeout: Duration,
+) -> Result<Option<impl Sized>> {
+    let start = Instant::now();
+    loop {
+        if let Some(lock) = super::host::try_lock_daemon_running(instance_id)? {
+            return Ok(Some(lock));
+        }
+        if start.elapsed() >= timeout {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Run the sidebar daemon (headless, no TUI).
 pub fn run() -> Result<()> {
     let mux = create_backend(detect_backend());
     let instance_id = mux.instance_id();
+    let Some(_daemon_lock) = wait_for_previous_daemon_exit(&instance_id, Duration::from_secs(2))?
+    else {
+        tracing::info!(instance_id = %instance_id, "sidebar daemon already running");
+        return Ok(());
+    };
     let host_io = super::host::daemon_io(mux.as_ref())?;
     let config = Arc::new(Mutex::new(Config::load(None)?));
     let mut view_projects = super::view::ProjectCache::default();

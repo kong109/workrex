@@ -114,8 +114,9 @@ pub struct RescueArgs {
 
 #[derive(clap::Args, Debug, Default)]
 pub struct PlacementArgs {
-    /// Create the agent on a configured remote (default: the `placement` remote,
-    /// or the only configured remote)
+    /// Create the agent on a configured remote, or on this machine with
+    /// `--remote local` (default: the `placement` remote, or the only
+    /// configured remote)
     #[arg(long, value_name = "REMOTE", num_args = 0..=1, conflicts_with = "local")]
     pub remote: Option<Option<String>>,
 
