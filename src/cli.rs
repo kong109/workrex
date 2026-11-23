@@ -1416,9 +1416,16 @@ pub fn run() -> Result<()> {
 
 /// Refuse `command` for names that are remote workspaces.
 fn reject_remote<'a>(command: &str, names: impl IntoIterator<Item = &'a String>) -> Result<()> {
-    names
-        .into_iter()
-        .try_for_each(|name| crate::remote::cache::reject_remote_handle(name, command))
+    names.into_iter().try_for_each(|name| {
+        if crate::remote::agents::is_remote_pane(name) {
+            anyhow::bail!(
+                "'{name}' is the pane of a remote agent; `{} {command}` takes a local \
+                 worktree or Rex block ID",
+                crate::bin_name::BIN
+            );
+        }
+        crate::remote::cache::reject_remote_handle(name, command)
+    })
 }
 
 fn prune_claude_config() -> Result<()> {
@@ -1501,6 +1508,13 @@ fn print_fish_dynamic_completion() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_refuses_a_remote_pane_id_by_name() {
+        let err = reject_remote("run", [&"%remote-w0123456789ab-2".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("remote agent"), "{err}");
+        assert_eq!(crate::agent_error::kind_of(&err), None);
+    }
 
     #[test]
     fn remote_notice_only_follows_human_facing_commands() {

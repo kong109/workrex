@@ -8,21 +8,24 @@ use crate::bin_name::BIN;
 use crate::config::Config;
 use crate::git;
 use crate::multiplexer::{
-    AgentStatus, FIRST_HOOK_GRACE_SECS, Launch, PaneStatus, create_backend, detect_backend,
+    AgentPane, AgentStatus, FIRST_HOOK_GRACE_SECS, Launch, PaneStatus, create_backend,
+    detect_backend,
 };
 use crate::remote::{self, cache::WorkspaceRecord, node::observe::ObservedAgent};
 use crate::state::{PaneKey, StateStore};
 use crate::util;
 use crate::workflow;
 
-/// Resolve a worktree name to its path, trying local git first then global agents.
+/// Resolve a worktree name to its path, trying local git first then the
+/// agents `load_agents` returns.
 ///
 /// Local resolution is preferred because it works even before an agent starts
 /// (the worktree directory exists from `workrex add`). Global resolution requires
-/// a running agent.
+/// a running agent. Its errors lose their agent error kind: `wait` exits 1
+/// on a bad target and keeps its own exit codes, such as 4 for stalled.
 fn resolve_worktree_path(
     name: &str,
-    mux: &dyn crate::multiplexer::Multiplexer,
+    load_agents: impl FnOnce() -> Result<Vec<AgentPane>>,
 ) -> Result<std::path::PathBuf> {
     // Try local git resolution first (supports waiting for unstarted agents)
     if git::is_git_repo().unwrap_or(false) {
@@ -34,7 +37,8 @@ fn resolve_worktree_path(
     }
 
     // Fall back to global agent resolution
-    let (path, _agents) = workflow::resolve_worktree_agents(name, mux)?;
+    let (path, _agents) = workflow::resolve_worktree_agents_from_snapshot(name, &load_agents()?)
+        .map_err(|err| anyhow!("{err}"))?;
     Ok(path)
 }
 
@@ -67,7 +71,12 @@ pub fn run(
     for name in worktree_names {
         match remote::agents::find_target(name) {
             Some(record) => remote_targets.push((name.clone(), record)),
-            None => worktree_paths.push((name.clone(), resolve_worktree_path(name, mux.as_ref())?)),
+            None => worktree_paths.push((
+                name.clone(),
+                resolve_worktree_path(name, || {
+                    StateStore::new()?.load_reconciled_agents(mux.as_ref())
+                })?,
+            )),
         }
     }
     let config = if remote_targets.is_empty() {
@@ -85,12 +94,11 @@ pub fn run(
 
     let mut reached: HashSet<String> = HashSet::new();
     let mut seen_agent: HashSet<String> = HashSet::new();
-    let store = StateStore::new()?;
-    let instance = mux.instance_id();
-    let pane_key = |pane_id: &str| PaneKey {
-        backend: mux.name().to_string(),
-        instance: instance.clone(),
-        pane_id: pane_id.to_string(),
+    // A wait on remote workspaces only never touches the local server.
+    let local = if worktree_paths.is_empty() {
+        None
+    } else {
+        Some((StateStore::new()?, mux.instance_id()))
     };
 
     loop {
@@ -156,13 +164,18 @@ pub fn run(
         if reached.len() == worktree_names.len() {
             return Ok(());
         }
-        if worktree_paths.is_empty() {
+        let Some((store, instance)) = &local else {
             if let Some(name) = stalled {
                 exit_stalled(name);
             }
             thread::sleep(Duration::from_secs(2));
             continue;
-        }
+        };
+        let pane_key = |pane_id: &str| PaneKey {
+            backend: mux.name().to_string(),
+            instance: instance.clone(),
+            pane_id: pane_id.to_string(),
+        };
 
         // Load current agent state
         let agent_panes = store.load_reconciled_agents(mux.as_ref())?;
@@ -319,5 +332,35 @@ fn remote_progress(record: &WorkspaceRecord, target: AgentStatus) -> RemoteProgr
         RemoteProgress::Gone
     } else {
         RemoteProgress::Running
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent_at(path: &std::path::Path, pane_id: &str) -> AgentPane {
+        serde_json::from_value(serde_json::json!({
+            "session": "test",
+            "window_name": "wr-feature",
+            "pane_id": pane_id,
+            "path": path,
+        }))
+        .unwrap()
+    }
+
+    /// `wait` exits 4 for a stalled agent, so a target it cannot resolve
+    /// must not carry the agent error kind that `main` maps to exit 4 or 5.
+    #[test]
+    fn an_unresolvable_wait_target_is_a_plain_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let panes = vec![
+            agent_at(&temp.path().join("alpha/feature"), "%1"),
+            agent_at(&temp.path().join("beta/feature"), "%2"),
+        ];
+        for name in ["nosuch:feature", "absent:wr-nothing-here"] {
+            let err = resolve_worktree_path(name, || Ok(panes.clone())).unwrap_err();
+            assert_eq!(crate::agent_error::kind_of(&err), None, "{err}");
+        }
     }
 }

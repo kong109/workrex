@@ -54,6 +54,12 @@ fn parse_detached_pane_id(id: &str) -> Option<(&str, usize)> {
     Some((ws_id, pane.parse().ok()?))
 }
 
+/// Whether `id` names the pane of a remote agent: its `%remote-` view key
+/// or the Rex block a laptop view recorded for it.
+pub fn is_remote_pane(id: &str) -> bool {
+    parse_detached_pane_id(id).is_some() || find_pane(id).is_some()
+}
+
 pub fn find_pane(pane_id: &str) -> Option<(WorkspaceRecord, usize)> {
     let mut records = cache::all()
         .into_iter()
@@ -451,14 +457,24 @@ pub fn sent_agent(record: &WorkspaceRecord, turn: &SentTurn) -> SentAgent {
     if workspace.ended.is_some() {
         return SentAgent::Gone;
     }
-    match workspace
-        .panes
-        .iter()
-        .find(|pane| pane.index == turn.pane)
-        .and_then(|pane| pane.agent.clone())
-    {
-        Some(agent) => SentAgent::Present(agent),
-        None => SentAgent::Gone,
+    pane_agent(
+        workspace
+            .panes
+            .iter()
+            .find(|pane| pane.index == turn.pane)
+            .and_then(|pane| pane.agent.clone()),
+    )
+}
+
+/// What a wait sees of the observed agent of the pane a turn went to. An
+/// agent back at its launch shell has exited, though its launch record
+/// outlives its state.
+fn pane_agent(agent: Option<ObservedAgent>) -> SentAgent {
+    match agent {
+        Some(agent) if !agent.launched.is_some_and(|launch| launch.at_shell) => {
+            SentAgent::Present(agent)
+        }
+        _ => SentAgent::Gone,
     }
 }
 
@@ -883,6 +899,29 @@ esac
         let remote = rows[0].remote.as_ref().unwrap();
         assert!(!remote.connected);
         assert_eq!(remote.last_seen, Some(1000));
+    }
+
+    #[test]
+    fn a_waited_agent_back_at_its_shell_is_gone() {
+        use crate::multiplexer::Launch;
+        let launched = |at_shell| ObservedAgent {
+            launched: Some(Launch {
+                at: 10,
+                prompted: true,
+                at_shell,
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(pane_agent(Some(launched(true))), SentAgent::Gone));
+        assert!(matches!(pane_agent(None), SentAgent::Gone));
+        assert!(matches!(
+            pane_agent(Some(launched(false))),
+            SentAgent::Present(_)
+        ));
+        assert!(matches!(
+            pane_agent(Some(ObservedAgent::default())),
+            SentAgent::Present(_)
+        ));
     }
 
     #[test]

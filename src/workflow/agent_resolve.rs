@@ -57,16 +57,8 @@ pub fn find_worktree_root(path: &Path) -> Option<PathBuf> {
 /// 4. Global resolution matches by worktree root directory name, with
 ///    disambiguation on ambiguity
 ///
-/// Returns the worktree path and matching agent panes (may be empty if no agent is running).
-pub fn resolve_worktree_agents(
-    name: &str,
-    mux: &dyn Multiplexer,
-) -> Result<(PathBuf, Vec<AgentPane>)> {
-    let agent_panes = StateStore::new().and_then(|store| store.load_reconciled_agents(mux))?;
-    resolve_worktree_agents_from_snapshot(name, &agent_panes)
-}
-
-/// Resolve a worktree name against one reconciled agent snapshot.
+/// Returns the worktree path and matching agent panes of one reconciled
+/// snapshot (may be empty if no agent is running).
 pub fn resolve_worktree_agents_from_snapshot(
     name: &str,
     agent_panes: &[AgentPane],

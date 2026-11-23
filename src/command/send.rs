@@ -44,7 +44,7 @@ pub fn run(
         }
         AgentTarget::Local(agent) => {
             let cfg = config::Config::load(None).unwrap_or_default();
-            send_local(&cfg, mux.as_ref(), agent, &content, wait.is_some())?
+            send_local(&cfg, mux.as_ref(), agent.pane_id, &content, wait.is_some())?
         }
     };
     let (Some(wait), Some(mut sent)) = (wait, sent) else {
@@ -70,22 +70,12 @@ enum Seen {
 fn send_local<'a>(
     cfg: &config::Config,
     mux: &'a dyn Multiplexer,
-    agent: AgentPane,
+    pane_id: String,
     content: &str,
     wait: bool,
 ) -> Result<Option<Sent<'a>>> {
     let store = StateStore::new()?;
-    let pane_id = agent.pane_id.clone();
-    check_sendable(&agent, wait)?;
-    let mut agent = agent;
-    for _ in 0..3 {
-        if !same_second(agent.status, agent.status_ts, cache::now()) {
-            break;
-        }
-        sleep_to_next_second();
-        agent = reload(&store, mux, &pane_id)?.ok_or_else(|| gone(&pane_id))?;
-    }
-    check_sendable(&agent, wait)?;
+    let agent = sendable_agent(&pane_id, wait, || reload(&store, mux, &pane_id))?;
     let baseline = !same_second(agent.status, agent.status_ts, cache::now());
     let agent_identity = agent
         .agent_kind
@@ -112,17 +102,45 @@ fn send_local<'a>(
     let observe_fence = fence.clone();
     Ok(Some(Sent {
         fence,
-        observe: Box::new(move || {
-            Ok(match reload(&store, mux, &pane_id)? {
-                None => Seen::Gone,
-                Some(agent) => Seen::Agent(
-                    agent
-                        .status
-                        .filter(|_| observe_fence.admits(agent.status, agent.status_ts)),
-                ),
-            })
-        }),
+        observe: Box::new(move || Ok(seen(reload(&store, mux, &pane_id)?, &observe_fence))),
     }))
+}
+
+/// The agent's current state, once it may take a prompt. `reload` reads it
+/// fresh: the target was resolved before the content was read, which can
+/// block on stdin while the agent exits or opens a dialog. A `done` or
+/// `waiting` state from the current second is left behind first, so every
+/// status the prompt causes carries a later timestamp.
+fn sendable_agent(
+    pane_id: &str,
+    wait: bool,
+    mut reload: impl FnMut() -> Result<Option<AgentPane>>,
+) -> Result<AgentPane> {
+    let mut agent = reload()?.ok_or_else(|| not_found(pane_id))?;
+    check_sendable(&agent, wait)?;
+    for _ in 0..3 {
+        if !same_second(agent.status, agent.status_ts, cache::now()) {
+            break;
+        }
+        sleep_to_next_second();
+        agent = reload()?.ok_or_else(|| not_found(pane_id))?;
+    }
+    check_sendable(&agent, wait)?;
+    Ok(agent)
+}
+
+/// What a wait sees of the agent a turn went to. An agent back at its
+/// launch shell has exited, though its launch record outlives its state.
+fn seen(agent: Option<AgentPane>, fence: &TurnFence) -> Seen {
+    match agent {
+        None => Seen::Gone,
+        Some(agent) if agent.launched.is_some_and(|launch| launch.at_shell) => Seen::Gone,
+        Some(agent) => Seen::Agent(
+            agent
+                .status
+                .filter(|_| fence.admits(agent.status, agent.status_ts)),
+        ),
+    }
 }
 
 fn reload(store: &StateStore, mux: &dyn Multiplexer, pane_id: &str) -> Result<Option<AgentPane>> {
@@ -164,10 +182,10 @@ fn check_sendable(agent: &AgentPane, wait: bool) -> Result<()> {
     Ok(())
 }
 
-fn gone(pane_id: &str) -> anyhow::Error {
+fn not_found(pane_id: &str) -> anyhow::Error {
     AgentError::error(
-        AgentErrorKind::Gone,
-        format!("the agent in pane {pane_id} exited"),
+        AgentErrorKind::NotFound,
+        format!("the agent in pane {pane_id} exited; nothing sent"),
     )
 }
 
@@ -299,6 +317,88 @@ mod tests {
     }
 
     const SETTLED: &[AgentStatus] = &[AgentStatus::Done, AgentStatus::Waiting];
+
+    fn agent(status: Option<AgentStatus>, at_shell: Option<bool>) -> AgentPane {
+        AgentPane {
+            session: String::new(),
+            window_name: String::new(),
+            pane_id: "block:a".into(),
+            window_id: String::new(),
+            window_index: None,
+            path: Default::default(),
+            pane_title: None,
+            status,
+            status_ts: Some(1),
+            activity_ts: None,
+            updated_ts: None,
+            window_cmd: None,
+            agent_command: None,
+            agent_kind: None,
+            prompt: None,
+            remote: None,
+            launched: at_shell.map(|at_shell| crate::multiplexer::Launch {
+                at: 1,
+                prompted: true,
+                at_shell,
+            }),
+        }
+    }
+
+    /// `sendable_agent` over `states`, read one per reload.
+    fn sendable(states: Vec<Option<AgentPane>>) -> Result<AgentPane> {
+        let mut states = states.into_iter();
+        sendable_agent("block:a", false, || Ok(states.next().unwrap()))
+    }
+
+    #[test]
+    fn a_send_judges_the_agent_as_it_is_after_the_content_is_read() {
+        let error_kind =
+            |result: Result<AgentPane>| crate::agent_error::kind_of(&result.unwrap_err()).unwrap();
+        // The target resolved while the agent was done; by the time stdin
+        // was read it had opened a dialog, exited to its shell, or left.
+        assert_eq!(
+            error_kind(sendable(vec![Some(agent(
+                Some(AgentStatus::Waiting),
+                None
+            ))])),
+            AgentErrorKind::Waiting
+        );
+        assert_eq!(
+            error_kind(sendable(vec![Some(agent(None, Some(true)))])),
+            AgentErrorKind::NotFound
+        );
+        assert_eq!(error_kind(sendable(vec![None])), AgentErrorKind::NotFound);
+        let fresh = sendable(vec![Some(agent(Some(AgentStatus::Working), None))]).unwrap();
+        assert_eq!(fresh.status, Some(AgentStatus::Working));
+    }
+
+    #[test]
+    fn an_agent_that_leaves_during_the_same_second_wait_was_never_sent_to() {
+        let mut now_done = agent(Some(AgentStatus::Done), None);
+        now_done.status_ts = Some(cache::now() + 5);
+        assert_eq!(
+            crate::agent_error::kind_of(&sendable(vec![Some(now_done), None]).unwrap_err()),
+            Some(AgentErrorKind::NotFound)
+        );
+    }
+
+    #[test]
+    fn a_waited_agent_back_at_its_shell_is_gone() {
+        let fence = TurnFence {
+            status: Some(AgentStatus::Done),
+            status_ts: Some(1),
+            sent_at: 1,
+        };
+        assert!(matches!(
+            seen(Some(agent(None, Some(true))), &fence),
+            Seen::Gone
+        ));
+        assert!(matches!(seen(None, &fence), Seen::Gone));
+        assert!(matches!(
+            seen(Some(agent(None, Some(false))), &fence),
+            Seen::Agent(None)
+        ));
+    }
 
     #[test]
     fn the_wait_ends_at_the_first_until_status_of_the_turn() {

@@ -115,10 +115,11 @@ remain responsible for.
 
 `send` refuses an agent waiting on a dialog (Enter would answer it) and a
 worktree or remote workspace with several agents; target one of those by the
-pane ID that `workrex status --json` shows. `send`, `capture`, and `run` take
-that pane ID: a Rex block ID, or `%remote-<ws>-<pane>` for a remote agent, whose
-recorded Rex block ID also works. Failures print a stable error name and exit
-with its code:
+pane ID that `workrex status --json` shows. `send` and `capture` take that
+pane ID: a Rex block ID, or `%remote-<ws>-<pane>` for a remote agent, whose
+recorded Rex block ID also works. `run` takes only a local worktree name or a
+local Rex block ID; it refuses remote workspaces and `%remote-` pane IDs.
+Failures print a stable error name and exit with its code:
 
 | Error                  | Exit | Meaning                                                |
 | ---------------------- | ---- | ------------------------------------------------------ |

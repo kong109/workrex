@@ -660,6 +660,17 @@ fn same_second(baseline: &ObservedAgent, now: u64) -> bool {
 }
 
 fn check_sendable(agent: Option<&ObservedAgent>, require_status: bool, handle: &str) -> Result<()> {
+    if agent
+        .and_then(|agent| agent.launched)
+        .is_some_and(|launch| launch.at_shell)
+    {
+        return Err(refuse(
+            code::NOT_FOUND,
+            format!(
+                "the agent in workspace '{handle}' is not running: its pane's shell has the foreground"
+            ),
+        ));
+    }
     let status = agent.and_then(|agent| agent.status);
     if status == Some(AgentStatus::Waiting) {
         return Err(refuse(
@@ -723,12 +734,6 @@ pub fn send(root: &NodeRoot, request: SendRequest) -> Result<SendResponse> {
         &target.handle,
     )?;
     let agent = target.agent.unwrap_or_default();
-    if agent.launched.is_some_and(|launch| launch.at_shell) {
-        return Err(refuse(
-            code::NOT_FOUND,
-            "the agent is not running: its pane's shell has the foreground",
-        ));
-    }
     let baseline = !same_second(&agent, now());
     let kind = send_kind(root, &request.ws_id, agent.agent_kind);
     target
@@ -1012,6 +1017,32 @@ mod tests {
             code_of(check_sendable(None, true, "f")),
             code::AGENT_STATUS_UNKNOWN
         );
+    }
+
+    #[test]
+    fn send_refuses_an_agent_back_at_its_shell_before_anything_else() {
+        let dead = |status| ObservedAgent {
+            status,
+            launched: Some(crate::multiplexer::Launch {
+                at: now(),
+                prompted: true,
+                at_shell: true,
+            }),
+            ..Default::default()
+        };
+        for (status, require_status) in [
+            (None, true),
+            (None, false),
+            (Some(AgentStatus::Waiting), false),
+        ] {
+            let err = check_sendable(Some(&dead(status)), require_status, "f").unwrap_err();
+            assert_eq!(
+                err.downcast::<crate::remote::protocol::NodeError>()
+                    .unwrap()
+                    .code,
+                code::NOT_FOUND
+            );
+        }
     }
 
     #[test]
