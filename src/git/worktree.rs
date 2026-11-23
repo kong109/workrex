@@ -231,10 +231,32 @@ pub fn prune_worktrees_in(git_common_dir: &Path) -> Result<()> {
 
 /// Parse the output of `git worktree list --porcelain`
 pub(super) fn parse_worktree_list_porcelain(output: &str) -> Result<Vec<(PathBuf, String)>> {
+    Ok(parse_worktree_branches(output)
+        .into_iter()
+        .map(|(path, branch)| (path, branch.unwrap_or_else(|| "(detached)".to_string())))
+        .collect())
+}
+
+/// Resolve the checked-out branch without conflating detached HEAD with a branch name.
+/// Registration is used so this also works when the worktree directory is absent.
+pub fn worktree_branch_in(worktree_path: &Path, workdir: &Path) -> Result<Option<String>> {
+    let output = Cmd::new("git")
+        .workdir(workdir)
+        .args(&["worktree", "list", "--porcelain"])
+        .run_and_capture_stdout()?;
+    parse_worktree_branches(&output)
+        .into_iter()
+        .find(|(path, _)| path == worktree_path)
+        .map(|(_, branch)| branch)
+        .ok_or_else(|| anyhow!("Worktree '{}' is not registered", worktree_path.display()))
+}
+
+fn parse_worktree_branches(output: &str) -> Vec<(PathBuf, Option<String>)> {
     let mut worktrees = Vec::new();
     for block in output.trim().split("\n\n") {
         let mut path: Option<PathBuf> = None;
         let mut branch: Option<String> = None;
+        let mut detached = false;
 
         for line in block.lines() {
             if let Some(p) = line.strip_prefix("worktree ") {
@@ -242,15 +264,17 @@ pub(super) fn parse_worktree_list_porcelain(output: &str) -> Result<Vec<(PathBuf
             } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
                 branch = Some(b.to_string());
             } else if line.trim() == "detached" {
-                branch = Some("(detached)".to_string());
+                detached = true;
             }
         }
 
-        if let (Some(p), Some(b)) = (path, branch) {
-            worktrees.push((p, b));
+        if let Some(path) = path
+            && (branch.is_some() || detached)
+        {
+            worktrees.push((path, branch));
         }
     }
-    Ok(worktrees)
+    worktrees
 }
 
 /// Get the path to a worktree for a given branch
@@ -617,6 +641,52 @@ pub fn get_main_worktree_root() -> Result<PathBuf> {
 
 /// Get the main worktree root directory from a specific workdir
 pub fn get_main_worktree_root_in(workdir: Option<&Path>) -> Result<PathBuf> {
+    main_worktree_info_in(workdir).map(|(path, _)| path)
+}
+
+/// Resolve the configuration `{project}` name without changing repository paths.
+pub fn config_project_name_in(workdir: Option<&Path>) -> Result<String> {
+    let (root, bare) = main_worktree_info_in(workdir)?;
+    let directory = if bare {
+        // Porcelain reports a bare `.git` directory as its parent. Naming must
+        // inspect the actual directory so the parent's name is used verbatim.
+        crate::util::canon_or_self(&super::get_git_common_dir_in(workdir)?)
+    } else {
+        root
+    };
+    config_project_name(&directory, bare)
+}
+
+fn config_project_name(directory: &Path, bare: bool) -> Result<String> {
+    let name = directory
+        .file_name()
+        .ok_or_else(|| {
+            anyhow!(
+                "Could not determine project name from path: {}",
+                directory.display()
+            )
+        })?
+        .to_string_lossy();
+    if bare && name.starts_with('.') {
+        return directory
+            .parent()
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                anyhow!(
+                    "Could not determine project name from parent of: {}",
+                    directory.display()
+                )
+            });
+    }
+    Ok(if bare {
+        name.strip_suffix(".git").unwrap_or(&name).to_string()
+    } else {
+        name.into_owned()
+    })
+}
+
+fn main_worktree_info_in(workdir: Option<&Path>) -> Result<(PathBuf, bool)> {
     let cmd = Cmd::new("git").args(&["worktree", "list", "--porcelain"]);
     let cmd = match workdir {
         Some(path) => cmd.workdir(path),
@@ -646,7 +716,7 @@ pub fn get_main_worktree_root_in(workdir: Option<&Path>) -> Result<PathBuf> {
         // If this is a bare repo, return its path immediately.
         // Git commands like `git worktree prune` work correctly from bare repo directories.
         if is_bare && let Some(p) = path {
-            return Ok(p);
+            return Ok((p, true));
         }
     }
 
@@ -656,13 +726,13 @@ pub fn get_main_worktree_root_in(workdir: Option<&Path>) -> Result<PathBuf> {
 
     for (path, _) in &worktrees {
         if path.exists() {
-            return Ok(path.clone());
+            return Ok((path.clone(), false));
         }
     }
 
     // Fallback: return the first worktree even if it doesn't exist
     if let Some((path, _)) = worktrees.first() {
-        Ok(path.clone())
+        Ok((path.clone(), false))
     } else {
         Err(anyhow!("No main worktree found"))
     }
@@ -674,6 +744,74 @@ mod tests {
     use crate::test_support;
     use std::path::PathBuf;
     use std::process::Command;
+
+    #[test]
+    fn config_project_names_preserve_regular_names_and_normalize_bare_names() {
+        for (path, bare, expected) in [
+            ("/repos/northwind", false, "northwind"),
+            ("/repos/.northwind", false, ".northwind"),
+            ("/repos/northwind.git", false, "northwind.git"),
+            ("/repos/northwind", true, "northwind"),
+            ("/repos/northwind/.bare", true, "northwind"),
+            ("/repos/northwind/.anything", true, "northwind"),
+            ("/repos/northwind/.git", true, "northwind"),
+            ("/repos/northwind.git", true, "northwind"),
+            ("/repos/northwind.git.git", true, "northwind.git"),
+            ("/repos/northwind.git/.git", true, "northwind.git"),
+            ("/repos/.northwind/.git", true, ".northwind"),
+        ] {
+            assert_eq!(
+                config_project_name(Path::new(path), bare).unwrap(),
+                expected,
+                "{path}"
+            );
+        }
+        assert!(config_project_name(Path::new("/"), false).is_err());
+        assert!(config_project_name(Path::new("/.bare"), true).is_err());
+    }
+
+    #[test]
+    fn config_project_name_resolves_bare_common_dir_through_parent_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let root = temp.path().join("northwind");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(root.join("lane")).unwrap();
+        let git = |args: &[&str], dir: &Path| {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(dir)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        git(&["init", "-q"], &source);
+        git(
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+            &source,
+        );
+        git(
+            &["clone", "-q", "--bare", source.to_str().unwrap(), ".bare"],
+            &root,
+        );
+        std::fs::write(root.join(".git"), "gitdir: ./.bare\n").unwrap();
+
+        // A workdir spelled with `..` must still name the project, whatever form Git reports.
+        let workdir = root.join("lane/../.bare");
+        assert_eq!(config_project_name_in(Some(&workdir)).unwrap(), "northwind");
+    }
 
     #[test]
     fn listing_preserves_bare_anchor_when_first_linked_worktree_changes() {
@@ -715,6 +853,20 @@ mod tests {
         assert_eq!(
             path(only_main.by_handle("proj")),
             Some(PathBuf::from("/code/proj"))
+        );
+    }
+
+    #[test]
+    fn worktree_branches_distinguish_detached_head_from_named_branch() {
+        let branches = parse_worktree_branches(
+            "worktree /detached\nHEAD abc\ndetached\n\nworktree /named\nHEAD abc\nbranch refs/heads/(detached)\n",
+        );
+        assert_eq!(
+            branches,
+            vec![
+                (PathBuf::from("/detached"), None),
+                (PathBuf::from("/named"), Some("(detached)".to_string())),
+            ]
         );
     }
 
