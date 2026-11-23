@@ -5,6 +5,7 @@
 mod launched;
 pub(crate) mod reported;
 pub mod run;
+pub mod sent;
 pub mod store;
 #[cfg(test)]
 pub(crate) mod test_support;

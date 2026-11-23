@@ -1,5 +1,6 @@
 use crate::command::args::{MultiArgs, PlacementArgs, PromptArgs, RescueArgs, SetupFlags};
 use crate::config::{MuxMode, SidebarHeight, SidebarPosition, SidebarWidth};
+use crate::multiplexer::AgentStatus;
 use crate::workflow::pr::{Forge, PrReference};
 use crate::{claude, command, config, git, nerdfont};
 use anyhow::{Context, Result};
@@ -580,8 +581,16 @@ enum Commands {
     },
 
     /// Send a prompt or instruction to a running agent
+    ///
+    /// Nothing is sent to an agent waiting on a dialog, which the input
+    /// would answer, or to a worktree with several agents; target one of
+    /// those by pane ID. Failures print a stable error name and exit with
+    /// its code: agent_waiting (3), ambiguous_target (4), agent_not_found
+    /// (5), send_stalled (6), agent_gone (7), agent_status_unknown (8),
+    /// timeout (124).
     Send {
-        /// Worktree name (supports cross-project with project:handle syntax)
+        /// Worktree name (supports cross-project with project:handle
+        /// syntax), or an agent's pane ID
         #[arg(value_parser = AgentTargetParser::new())]
         name: String,
 
@@ -592,6 +601,25 @@ enum Commands {
         /// Read prompt from file
         #[arg(short, long, conflicts_with = "text")]
         file: Option<String>,
+
+        /// Confirm the agent acted on the prompt, then wait for an --until
+        /// status. An agent that was not working must show activity within
+        /// 5 seconds (send_stalled)
+        #[arg(long)]
+        wait: bool,
+
+        /// Statuses that end --wait, comma-separated [default: done,waiting]
+        #[arg(
+            long,
+            requires = "wait",
+            value_delimiter = ',',
+            value_parser = ["working", "waiting", "done"]
+        )]
+        until: Vec<String>,
+
+        /// Give up --wait after this many seconds (exit 124)
+        #[arg(long, requires = "wait")]
+        timeout: Option<u64>,
     },
 
     /// Open a native Rex shell session in a remote workspace
@@ -611,7 +639,8 @@ enum Commands {
 
     /// Capture terminal output from a running agent
     Capture {
-        /// Worktree name (supports cross-project with project:handle syntax)
+        /// Worktree name (supports cross-project with project:handle
+        /// syntax), or an agent's pane ID
         #[arg(value_parser = AgentTargetParser::new())]
         name: String,
 
@@ -660,7 +689,8 @@ enum Commands {
 
     /// Run a command in a worktree's window
     Run {
-        /// Worktree name (supports cross-project with project:handle syntax)
+        /// Worktree name (supports cross-project with project:handle
+        /// syntax), or an agent's pane ID
         #[arg(value_parser = AgentTargetParser::new())]
         name: String,
 
@@ -1257,8 +1287,30 @@ pub fn run() -> Result<()> {
             reject_remote("path", [&name])?;
             command::path::run(&name)
         }
-        Commands::Send { name, text, file } => {
-            command::send::run(&name, text.as_deref(), file.as_deref())
+        Commands::Send {
+            name,
+            text,
+            file,
+            wait,
+            until,
+            timeout,
+        } => {
+            let wait = if wait {
+                Some(command::send::WaitFor {
+                    until: if until.is_empty() {
+                        vec![AgentStatus::Done, AgentStatus::Waiting]
+                    } else {
+                        until
+                            .iter()
+                            .map(|status| command::wait::parse_status(status))
+                            .collect::<Result<_>>()?
+                    },
+                    timeout: timeout.map(std::time::Duration::from_secs),
+                })
+            } else {
+                None
+            };
+            command::send::run(&name, text.as_deref(), file.as_deref(), wait)
         }
         Commands::Shell { name, host } => command::shell::run(&name, host),
         Commands::Capture { name, lines } => command::capture::run(&name, lines),
@@ -1370,9 +1422,16 @@ pub fn run() -> Result<()> {
 
 /// Refuse `command` for names that are remote workspaces.
 fn reject_remote<'a>(command: &str, names: impl IntoIterator<Item = &'a String>) -> Result<()> {
-    names
-        .into_iter()
-        .try_for_each(|name| crate::remote::cache::reject_remote_handle(name, command))
+    names.into_iter().try_for_each(|name| {
+        if crate::remote::agents::is_remote_pane(name) {
+            anyhow::bail!(
+                "'{name}' is the pane of a remote agent; `{} {command}` takes a local \
+                 worktree or Rex block ID",
+                crate::bin_name::BIN
+            );
+        }
+        crate::remote::cache::reject_remote_handle(name, command)
+    })
 }
 
 fn prune_claude_config() -> Result<()> {
@@ -1455,6 +1514,13 @@ fn print_fish_dynamic_completion() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_refuses_a_remote_pane_id_by_name() {
+        let err = reject_remote("run", [&"%remote-w0123456789ab-2".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("remote agent"), "{err}");
+        assert_eq!(crate::agent_error::kind_of(&err), None);
+    }
 
     #[test]
     fn remote_notice_only_follows_human_facing_commands() {

@@ -20,8 +20,8 @@ pub mod types;
 
 // Public API re-exports
 pub use agent_resolve::{
-    AgentProject, find_worktree_root, match_agents_to_worktree, resolve_worktree_agent,
-    resolve_worktree_agents, resolve_worktree_agents_from_snapshot,
+    AgentProject, AgentTarget, ambiguous, find_worktree_root, match_agents_to_worktree,
+    resolve_agent_target, resolve_worktree_agent, resolve_worktree_agents_from_snapshot,
 };
 pub use cleanup::run_deferred_cleanup_worker;
 pub use create::{create, create_headless, project_suffixed_handle};

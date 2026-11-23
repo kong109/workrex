@@ -1,9 +1,5 @@
 """A Codex stand-in that submits a prompt only when it arrives as a
-bracketed paste followed by Enter, the way Codex's composer needs it.
-
-Run as `python3 SIMULATOR WORKREX READY SUBMITTED INPUT`: it reports
-`waiting` through WORKREX, touches READY once it reads input, logs raw
-input to INPUT, and writes the submitted prompt to SUBMITTED."""
+bracketed paste followed by Enter, the way Codex's composer needs it."""
 
 CODEX_SIMULATOR = (
     """
@@ -16,7 +12,7 @@ import time
 import tty
 
 workrex, ready_path, submitted_path, input_path = sys.argv[1:]
-subprocess.run([workrex, "set-window-status", "waiting"], check=True)
+subprocess.run([workrex, "set-window-status", "done"], check=True)
 fd = sys.stdin.fileno()
 old_settings = termios.tcgetattr(fd)
 tty.setraw(fd)

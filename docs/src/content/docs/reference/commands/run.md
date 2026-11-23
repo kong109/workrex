@@ -11,7 +11,7 @@ workrex run <name> [options] -- <command>...
 
 ## Arguments
 
-- `<name>`: Worktree name. Use `project:handle` to reach a worktree in another project.
+- `<name>`: Worktree name, or an agent's pane ID from `workrex status --json`. Use `project:handle` to reach a worktree in another project. A worktree with several agents needs a pane ID.
 - `<command>...`: The command and its arguments, after `--`. `run` quotes each argument, so argument boundaries survive.
 
 ## Options

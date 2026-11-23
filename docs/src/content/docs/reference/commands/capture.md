@@ -11,7 +11,7 @@ workrex capture <name> [--lines <n>]
 
 ## Arguments
 
-- `<name>`: Worktree name. Use `project:handle` to reach an agent in another project.
+- `<name>`: Worktree name, or an agent's pane ID from `workrex status --json`. Use `project:handle` to reach an agent in another project. A worktree with several agents needs a pane ID.
 
 ## Options
 
