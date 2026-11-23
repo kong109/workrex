@@ -5,6 +5,7 @@ use std::thread;
 
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
+use serde::Serialize;
 
 use crate::config::Config;
 use crate::multiplexer::{create_backend, detect_backend};
@@ -22,6 +23,13 @@ pub struct RemoteArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum RemoteCommand {
+    /// List where new agents can go: `local` and each configured remote,
+    /// default first (no SSH)
+    List {
+        /// Print a JSON array
+        #[arg(long)]
+        json: bool,
+    },
     /// List laptop operation logs, or print one request's output (no SSH)
     Logs {
         /// Remote name
@@ -103,6 +111,7 @@ pub fn run(args: RemoteArgs) -> Result<()> {
     match args.command {
         Some(RemoteCommand::Logs { .. }) => unreachable!(),
         None => list(&config),
+        Some(RemoteCommand::List { json }) => list_targets(&config, json),
         Some(RemoteCommand::Setup { name }) => {
             let spec = RemoteSpec::resolve(&config, &name)?;
             install::setup(&spec)?;
@@ -218,6 +227,66 @@ fn list(config: &Config) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RemoteTargetEntry {
+    pub name: String,
+    pub host: Option<String>,
+    pub is_local: bool,
+    pub is_default: bool,
+}
+
+fn targets(config: &Config) -> Vec<RemoteTargetEntry> {
+    let default = resolve_placement(config, None, false).ok();
+    let local = RemoteTargetEntry {
+        name: "local".to_string(),
+        host: None,
+        is_local: true,
+        is_default: default == Some(Placement::Local),
+    };
+    let remotes = config
+        .remotes
+        .iter()
+        .map(|(name, remote)| RemoteTargetEntry {
+            name: name.clone(),
+            host: Some(remote.host.clone()),
+            is_local: false,
+            is_default: matches!(&default, Some(Placement::Remote(d)) if d == name),
+        });
+    let mut entries: Vec<_> = std::iter::once(local).chain(remotes).collect();
+    entries.sort_by_key(|entry| !entry.is_default);
+    entries
+}
+
+fn list_targets(config: &Config, json: bool) -> Result<()> {
+    let entries = targets(config);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+    let label = |entry: &RemoteTargetEntry| {
+        if entry.is_default {
+            format!("{} (default)", entry.name)
+        } else {
+            entry.name.clone()
+        }
+    };
+    let name_width = entries
+        .iter()
+        .map(|e| label(e).len())
+        .max()
+        .unwrap_or(0)
+        .max(4);
+    println!("{:<name_width$}  HOST", "NAME");
+    for entry in &entries {
+        println!(
+            "{:<name_width$}  {}",
+            label(entry),
+            entry.host.as_deref().unwrap_or("-")
+        );
+    }
+    Ok(())
+}
+
 fn status(config: &Config, name: &str) -> String {
     let check = || -> Result<String> {
         let spec = match RemoteSpec::resolve(config, name) {
@@ -248,4 +317,94 @@ fn status(config: &Config, name: &str) -> String {
         })
     };
     check().unwrap_or_else(|err| format!("error: {err:#}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::RemoteConfig;
+
+    fn config_with(remotes: &[(&str, &str)], placement: Option<&str>) -> Config {
+        Config {
+            remotes: remotes
+                .iter()
+                .map(|(name, host)| {
+                    (
+                        name.to_string(),
+                        RemoteConfig {
+                            host: host.to_string(),
+                            path: None,
+                            isolation: None,
+                            binary: None,
+                            terminal: None,
+                            rex_client: None,
+                        },
+                    )
+                })
+                .collect(),
+            placement: placement.map(str::to_string),
+            ..Config::default()
+        }
+    }
+
+    fn entry(name: &str, host: Option<&str>, is_default: bool) -> RemoteTargetEntry {
+        RemoteTargetEntry {
+            name: name.to_string(),
+            host: host.map(str::to_string),
+            is_local: host.is_none(),
+            is_default,
+        }
+    }
+
+    #[test]
+    fn only_local_without_remotes() {
+        assert_eq!(
+            targets(&config_with(&[], None)),
+            vec![entry("local", None, true)]
+        );
+    }
+
+    #[test]
+    fn local_default_comes_first_then_remotes_by_name() {
+        let config = config_with(&[("winbox", "win.lan"), ("box", "box.lan")], None);
+        assert_eq!(
+            targets(&config),
+            vec![
+                entry("local", None, true),
+                entry("box", Some("box.lan"), false),
+                entry("winbox", Some("win.lan"), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn placement_remote_is_default_and_first() {
+        let config = config_with(&[("winbox", "win.lan"), ("box", "box.lan")], Some("winbox"));
+        assert_eq!(
+            targets(&config),
+            vec![
+                entry("winbox", Some("win.lan"), true),
+                entry("local", None, false),
+                entry("box", Some("box.lan"), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_placement_marks_no_default() {
+        let config = config_with(&[("box", "box.lan")], Some("gpu"));
+        assert!(targets(&config).iter().all(|entry| !entry.is_default));
+    }
+
+    #[test]
+    fn json_schema() {
+        let config = config_with(&[("box", "box.lan")], Some("box"));
+        assert_eq!(
+            serde_json::to_value(targets(&config)).unwrap(),
+            serde_json::json!([
+                {"name": "box", "host": "box.lan", "is_local": false, "is_default": true},
+                {"name": "local", "host": null, "is_local": true, "is_default": false},
+            ])
+        );
+    }
 }
