@@ -499,7 +499,6 @@ pub(crate) fn agent_is_stale(
     is_sleeping: bool,
     is_interrupted: bool,
 ) -> bool {
-    let is_interrupted = is_interrupted && agent.status == Some(AgentStatus::Working);
     is_agent_stale(
         agent.activity_ts(),
         agent.status,

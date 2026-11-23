@@ -267,11 +267,13 @@ done check, quiet circle, and sleeping indicator. Defaults depend on whether you
 | Working  | braille spinner       | braille spinner    |
 | Waiting  | 💬                    | nf-fa-comment      |
 | Done     | ✅                    | nf-md-check_circle |
+| Quiet    | ○                     | ○                  |
 | Sleeping | 💤                    | nf-md-sleep        |
 
 Override per state under top-level `status_icons`. Any value set here
 wins over both the emoji and nerdfont defaults, so you can mix and match.
-Setting `working` also replaces the braille spinner with a static icon:
+The quiet circle has no override. Setting `working` also replaces the
+braille spinner with a static icon:
 
 ```yaml
 status_icons:
