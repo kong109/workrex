@@ -184,14 +184,63 @@ fn run_add_worktree_job(
     }
 }
 
+/// The subproject of a monorepo the dashboard was launched from, such as
+/// `repo/backend` with its own `.workrex.yaml`.
+pub(super) struct LaunchSubproject {
+    repo_key: PathBuf,
+    rel_dir: PathBuf,
+}
+
+impl LaunchSubproject {
+    /// Read from the config the dashboard loaded in the current directory.
+    pub(super) fn detect(location: Option<&crate::config::ConfigLocation>) -> Option<Self> {
+        let rel_dir = location?.rel_dir.clone();
+        if rel_dir.as_os_str().is_empty() {
+            return None;
+        }
+        Some(Self {
+            repo_key: git::get_repository_key_in(None).ok()?,
+            rel_dir,
+        })
+    }
+}
+
+/// Where to look for a worktree's config. A worktree of the launch
+/// repository keeps the launch subproject's config; any other worktree uses
+/// its own project's config.
+fn config_start_dir(
+    worktree: &workflow::types::WorktreeInfo,
+    launch: Option<&LaunchSubproject>,
+) -> PathBuf {
+    if let Some(launch) = launch
+        && launch.repo_key == worktree.repo_key
+    {
+        let dir = worktree.path.join(&launch.rel_dir);
+        if dir.is_dir() {
+            return dir;
+        }
+    }
+    worktree.path.clone()
+}
+
+/// A context for the worktree at `path`, with config found from `config_dir`.
+fn worktree_context(
+    path: &Path,
+    config_dir: &Path,
+    mux: Arc<dyn Multiplexer>,
+) -> anyhow::Result<workflow::WorkflowContext> {
+    let (config, config_location) =
+        crate::config::Config::load_with_location_from(config_dir, None)?;
+    workflow::WorkflowContext::new_in(path, config, mux, config_location)
+}
+
 fn remove_worktree(
     handle: &str,
     path: &Path,
     keep_branch: bool,
     mux: Arc<dyn Multiplexer>,
 ) -> anyhow::Result<workflow::types::RemoveResult> {
-    let (config, config_location) = crate::config::Config::load_with_location_from(path, None)?;
-    let ctx = workflow::WorkflowContext::new_in(path, config, mux, config_location)?;
+    let ctx = worktree_context(path, path, mux)?;
     workflow::remove_quiet(handle, true, keep_branch, &ctx)
 }
 
@@ -948,19 +997,27 @@ impl App {
             return;
         }
 
-        let handle = worktree.handle.clone();
+        let result = (|| -> anyhow::Result<_> {
+            let config_dir = config_start_dir(worktree, self.launch_subproject.as_ref());
+            let ctx = worktree_context(&worktree.path, &config_dir, self.mux.clone())?;
+            let mut options = workflow::types::SetupOptions::new(false, false, true);
+            options.mode = ctx.config.mode();
+            workflow::open(&worktree.handle, &ctx, options, false, None, None, None)
+        })();
 
-        let Ok(ctx) = workflow::WorkflowContext::new(self.config.clone(), self.mux.clone(), None)
-        else {
-            return;
-        };
-
-        let mut options = workflow::types::SetupOptions::new(false, false, true);
-        options.mode = self.config.mode();
-        if workflow::open(&handle, &ctx, options, false, None, None, None).is_ok()
-            && self.should_close_after_jump()
-        {
-            self.should_jump = true;
+        match result {
+            Ok(_) => {
+                self.trigger_worktree_refetch();
+                if self.should_close_after_jump() {
+                    self.should_jump = true;
+                }
+            }
+            Err(e) => {
+                self.status_message = Some((
+                    format!("Failed to open worktree: {e:#}"),
+                    std::time::Instant::now(),
+                ));
+            }
         }
     }
 
@@ -1421,6 +1478,86 @@ mod tests {
             created_at: None,
             base_branch: None,
         }
+    }
+
+    #[test]
+    fn worktree_context_uses_selected_repository_and_config() {
+        let repo = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .arg(repo.path())
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        std::fs::write(
+            repo.path().join(".workrex.yaml"),
+            "main_branch: main\nwindow_prefix: selected-\n",
+        )
+        .unwrap();
+        let mux = crate::multiplexer::create_backend(crate::multiplexer::BackendType::Rex);
+        let ctx = worktree_context(repo.path(), repo.path(), mux).unwrap();
+        assert_eq!(ctx.execution_dir, repo.path().canonicalize().unwrap());
+        assert_eq!(ctx.main_worktree_root, ctx.execution_dir);
+        assert_eq!(ctx.prefix, "selected-");
+        assert_eq!(ctx.config_source_dir, ctx.execution_dir);
+    }
+
+    #[test]
+    fn opening_a_launch_repo_worktree_keeps_the_subproject_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let wt_path = temp.path().join("wt");
+        std::fs::create_dir_all(repo.join("backend")).unwrap();
+        std::fs::write(repo.join(".workrex.yaml"), "window_prefix: root-\n").unwrap();
+        std::fs::write(
+            repo.join("backend/.workrex.yaml"),
+            "window_prefix: backend-\n",
+        )
+        .unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        git(&["init", "--initial-branch=main"]);
+        git(&["add", "."]);
+        git(&["commit", "-m", "init"]);
+        git(&[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            wt_path.to_str().unwrap(),
+        ]);
+
+        let mut wt = worktree("unused", "feature", false);
+        wt.repo_key = git::get_repository_key_in(Some(&repo)).unwrap();
+        wt.path = wt_path.clone();
+        let open = |launch: Option<&LaunchSubproject>| {
+            let mux = crate::multiplexer::create_backend(crate::multiplexer::BackendType::Rex);
+            worktree_context(&wt.path, &config_start_dir(&wt, launch), mux).unwrap()
+        };
+
+        let backend = LaunchSubproject {
+            repo_key: wt.repo_key.clone(),
+            rel_dir: "backend".into(),
+        };
+        let ctx = open(Some(&backend));
+        assert_eq!(ctx.prefix, "backend-");
+        assert_eq!(ctx.config_rel_dir, Path::new("backend"));
+        assert_eq!(ctx.execution_dir, wt_path.canonicalize().unwrap());
+
+        let other_repo = LaunchSubproject {
+            repo_key: "/elsewhere/.git".into(),
+            rel_dir: "backend".into(),
+        };
+        assert_eq!(open(Some(&other_repo)).prefix, "root-");
+        assert_eq!(open(None).prefix, "root-");
     }
 
     fn pr(number: u32) -> PrSummary {

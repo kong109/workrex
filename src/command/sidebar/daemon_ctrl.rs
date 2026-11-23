@@ -1,7 +1,8 @@
 //! Daemon lifecycle management: spawn, kill, signal, health checks.
 
 use anyhow::{Result, anyhow};
-use std::path::PathBuf;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::multiplexer::{Multiplexer, create_backend, detect_backend};
@@ -14,14 +15,19 @@ pub(super) fn ensure_daemon_running() -> Result<PathBuf> {
     let instance_id = mux.instance_id();
     let sock_path = daemon::socket_path(&instance_id);
 
-    if std::os::unix::net::UnixStream::connect(&sock_path).is_ok() {
+    if UnixStream::connect(&sock_path).is_ok() {
+        return Ok(sock_path);
+    }
+
+    let _spawn = super::host::lock_daemon_spawn(&instance_id)?;
+    if UnixStream::connect(&sock_path).is_ok() {
         return Ok(sock_path);
     }
 
     // Stale socket from a crashed daemon
     let _ = std::fs::remove_file(&sock_path);
     spawn_daemon()?;
-    if !wait_for_socket(&instance_id, Duration::from_secs(2)) {
+    if !wait_for_daemon(&sock_path, Duration::from_secs(4)) {
         return Err(anyhow!("Sidebar daemon failed to start"));
     }
     Ok(sock_path)
@@ -39,12 +45,10 @@ fn spawn_daemon() -> Result<()> {
     Ok(())
 }
 
-/// Wait for the daemon's Unix socket to appear.
-fn wait_for_socket(instance_id: &str, timeout: Duration) -> bool {
-    let path = daemon::socket_path(instance_id);
+fn wait_for_daemon(path: &Path, timeout: Duration) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
-        if path.exists() {
+        if UnixStream::connect(path).is_ok() {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));

@@ -1560,7 +1560,9 @@ fn run_add_via_rpc(
         branch_name.map(|s| s.to_string())
     };
 
-    if let Some((root, parent)) = crate::remote::node::spawn::session_parent() {
+    if !crate::sandbox::guest::is_sandbox_guest()
+        && let Some((root, parent)) = crate::remote::node::spawn::session_parent()
+    {
         use crate::remote::node::{NodeRoot, spawn};
         let spawned = spawn::spawn(
             &NodeRoot::at(root)?,
