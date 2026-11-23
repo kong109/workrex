@@ -650,7 +650,7 @@ pub fn config_project_name_in(workdir: Option<&Path>) -> Result<String> {
     let directory = if bare {
         // Porcelain reports a bare `.git` directory as its parent. Naming must
         // inspect the actual directory so the parent's name is used verbatim.
-        super::get_git_common_dir_in(workdir)?
+        crate::util::canon_or_self(&super::get_git_common_dir_in(workdir)?)
     } else {
         root
     };
@@ -768,6 +768,49 @@ mod tests {
         }
         assert!(config_project_name(Path::new("/"), false).is_err());
         assert!(config_project_name(Path::new("/.bare"), true).is_err());
+    }
+
+    #[test]
+    fn config_project_name_resolves_bare_common_dir_through_parent_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let root = temp.path().join("northwind");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(root.join("lane")).unwrap();
+        let git = |args: &[&str], dir: &Path| {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(dir)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        git(&["init", "-q"], &source);
+        git(
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+            &source,
+        );
+        git(
+            &["clone", "-q", "--bare", source.to_str().unwrap(), ".bare"],
+            &root,
+        );
+        std::fs::write(root.join(".git"), "gitdir: ./.bare\n").unwrap();
+
+        // A workdir spelled with `..` must still name the project, whatever form Git reports.
+        let workdir = root.join("lane/../.bare");
+        assert_eq!(config_project_name_in(Some(&workdir)).unwrap(), "northwind");
     }
 
     #[test]

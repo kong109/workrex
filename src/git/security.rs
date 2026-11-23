@@ -124,7 +124,34 @@ fn validate_repository_control_files(common_dir: &Path, admin_dir: &Path) -> Res
 }
 
 fn is_bare_repository_dir(dir: &Path) -> bool {
-    dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("config").is_file()
+    let entry_is = |name: &str, want_dir: bool| {
+        std::fs::symlink_metadata(dir.join(name)).is_ok_and(|metadata| {
+            !metadata.file_type().is_symlink()
+                && if want_dir {
+                    metadata.is_dir()
+                } else {
+                    metadata.is_file()
+                }
+        })
+    };
+    entry_is("HEAD", false) && entry_is("objects", true) && entry_is("config", false)
+}
+
+/// Read `core.bare` from one config file without following includes.
+fn config_declares_bare(config: &Path) -> Result<bool> {
+    let output = unattended_git(None)?
+        .args([
+            OsStr::new("config"),
+            OsStr::new("--file"),
+            config.as_os_str(),
+            OsStr::new("--no-includes"),
+            OsStr::new("--bool"),
+            OsStr::new("--get"),
+            OsStr::new("core.bare"),
+        ])
+        .output()
+        .with_context(|| format!("Failed to read core.bare from {}", config.display()))?;
+    Ok(output.status.success() && output.stdout.trim_ascii() == b"true")
 }
 
 impl RepositoryIdentity {
@@ -173,19 +200,31 @@ impl RepositoryIdentity {
             });
         }
 
-        let admin_dir = read_pointer(&dot_git, Some("gitdir: "), "worktree .git pointer")?
-            .canonicalize()
-            .context("Failed to resolve linked-worktree admin directory")?;
-        if !admin_dir.is_dir() {
+        let raw_admin_dir = read_pointer(&dot_git, Some("gitdir: "), "worktree .git pointer")?;
+        let raw_admin_metadata = std::fs::symlink_metadata(&raw_admin_dir).with_context(|| {
+            format!(
+                "Failed to inspect linked-worktree admin directory {}",
+                raw_admin_dir.display()
+            )
+        })?;
+        if raw_admin_metadata.file_type().is_symlink() || !raw_admin_metadata.is_dir() {
             bail!(
-                "Linked-worktree admin directory is not a directory: {}",
-                admin_dir.display()
+                "Linked-worktree admin directory must be a real directory: {}",
+                raw_admin_dir.display()
             );
         }
+        let admin_dir = raw_admin_dir
+            .canonicalize()
+            .context("Failed to resolve linked-worktree admin directory")?;
         // `gitdir: ./.bare` from the project root of a bare-repo layout: the pointer names the
         // bare repository itself, not a linked-worktree admin dir, so there is no commondir.
-        if is_bare_repository_dir(&admin_dir) {
-            return Self::bare(admin_dir, dot_git);
+        // Only a repository inside this root that declares itself bare qualifies; a main
+        // worktree's `.git` or a submodule's `.git/modules/<name>` must take the checks below.
+        if admin_dir.starts_with(&worktree) && is_bare_repository_dir(&admin_dir) {
+            validate_repository_control_files(&admin_dir, &admin_dir)?;
+            if config_declares_bare(&admin_dir.join("config"))? {
+                return Self::bare(admin_dir, dot_git);
+            }
         }
 
         let commondir_file = admin_dir.join("commondir");
@@ -599,6 +638,109 @@ mod tests {
             root.join(".bare").canonicalize().unwrap()
         );
         assert_eq!(identity.admin_dir, identity.common_dir);
+    }
+
+    /// Bare-clone the `linked_repo` main checkout under `temp` to `path`.
+    fn bare_clone(temp: &Path, path: PathBuf) -> PathBuf {
+        assert!(
+            Command::new("git")
+                .args(["clone", "-q", "--bare"])
+                .arg(temp.join("main"))
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        path
+    }
+
+    #[test]
+    fn identity_rejects_worktree_pointer_to_main_git_dir() {
+        let (temp, worktree) = linked_repo();
+        let main_git = temp.path().join("main/.git");
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", main_git.display()),
+        )
+        .unwrap();
+        assert!(RepositoryIdentity::discover(&worktree).is_err());
+    }
+
+    #[test]
+    fn identity_rejects_bare_pointer_outside_root() {
+        let (temp, _worktree) = linked_repo();
+        let external = bare_clone(temp.path(), temp.path().join("external.git"));
+        let root = temp.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        for pointer in [external.display().to_string(), "../external.git".into()] {
+            std::fs::write(root.join(".git"), format!("gitdir: {pointer}\n")).unwrap();
+            assert!(RepositoryIdentity::discover(&root).is_err(), "{pointer}");
+        }
+    }
+
+    #[test]
+    fn identity_rejects_bare_pointer_to_repository_not_declared_bare() {
+        let (temp, _worktree) = linked_repo();
+        let root = temp.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let bare = bare_clone(temp.path(), root.join(".bare"));
+        Command::new("git")
+            .args(["config", "--file"])
+            .arg(bare.join("config"))
+            .args(["core.bare", "false"])
+            .status()
+            .unwrap();
+        std::fs::write(root.join(".git"), "gitdir: ./.bare\n").unwrap();
+        assert!(RepositoryIdentity::discover(&root).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_rejects_symlinked_bare_target_and_control_entries() {
+        use std::os::unix::fs::symlink;
+        for entry in [".bare", "HEAD", "objects"] {
+            let (temp, _worktree) = linked_repo();
+            let root = temp.path().join("project");
+            std::fs::create_dir(&root).unwrap();
+            let bare = bare_clone(temp.path(), root.join(".bare"));
+            let path = if entry == ".bare" {
+                bare
+            } else {
+                bare.join(entry)
+            };
+            let target = root.join(format!("{entry}-target"));
+            std::fs::rename(&path, &target).unwrap();
+            symlink(&target, &path).unwrap();
+            std::fs::write(root.join(".git"), "gitdir: ./.bare\n").unwrap();
+            assert!(RepositoryIdentity::discover(&root).is_err(), "{entry}");
+        }
+    }
+
+    #[test]
+    fn identity_does_not_classify_submodule_as_bare() {
+        let (temp, _worktree) = linked_repo();
+        let superproject = temp.path().join("super");
+        Command::new("git")
+            .args(["clone", "-q"])
+            .arg(temp.path().join("main"))
+            .arg(&superproject)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["-c", "protocol.file.allow=always", "submodule", "add", "-q"])
+            .arg(temp.path().join("main"))
+            .arg("sub")
+            .current_dir(&superproject)
+            .status()
+            .unwrap();
+        let submodule = superproject.join("sub");
+        assert!(submodule.join(".git").is_file());
+
+        let identity = RepositoryIdentity::discover(&submodule);
+        assert!(
+            identity.as_ref().map_or(true, |identity| !identity.is_bare),
+            "{identity:?}"
+        );
     }
 
     #[test]
