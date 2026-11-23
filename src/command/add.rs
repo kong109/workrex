@@ -635,8 +635,14 @@ pub fn run(
                  piped from stdin"
             );
         }
-        // Fail before the prompt editor or branch-name generation runs.
-        preflight_change_transfer(&rescue, if auto_name { None } else { branch_name })?;
+        if multi.agent.len() > 1 {
+            bail!(
+                "--with-changes cannot be used with multiple --agent flags. Use zero or one --agent."
+            );
+        }
+        // Fail before the prompt editor, branch-name generation or a dry run.
+        let source = std::env::current_dir().context("Failed to get current directory")?;
+        preflight_change_transfer(&rescue, &source, if auto_name { None } else { branch_name })?;
     }
 
     // Determine if we're in explicit multi-worktree mode (before loading prompt)
@@ -709,13 +715,6 @@ pub fn run(
     } else {
         base
     };
-
-    // Validate --with-changes compatibility
-    if rescue.with_changes && multi.agent.len() > 1 {
-        return Err(anyhow!(
-            "--with-changes cannot be used with multiple --agent flags. Use zero or one --agent."
-        ));
-    }
 
     // Validate --name compatibility with multi-worktree generation
     let has_multi_worktree = multi.agent.len() > 1
@@ -906,12 +905,27 @@ pub fn run(
     plan.execute()
 }
 
-/// Check that `--with-changes` has something to move and, when the branch name is already
-/// known, that the branch is new. `create` repeats the branch check authoritatively.
-fn preflight_change_transfer(rescue: &RescueArgs, branch_name: Option<&str>) -> Result<()> {
-    let source = std::env::current_dir().context("Failed to get current directory")?;
-    let has_tracked = git::has_tracked_changes(&source)?;
-    let has_untracked = rescue.include_untracked && git::has_untracked_files(&source)?;
+/// Check that `--with-changes` can move the changes in `source` and, when the branch name
+/// is already known, that it is a valid new branch. `create` repeats the branch checks
+/// authoritatively.
+fn preflight_change_transfer(
+    rescue: &RescueArgs,
+    source: &std::path::Path,
+    branch_name: Option<&str>,
+) -> Result<()> {
+    if git::get_current_branch_in(source)?.is_empty() {
+        bail!(
+            "Cannot move uncommitted changes from a detached HEAD. \
+             Check out a branch first; the new branch starts from it."
+        );
+    }
+    if rescue.patch && git::has_staged_changes(source)? {
+        bail!(
+            "--patch cannot move staged changes; omit --patch to move staged and unstaged changes together"
+        );
+    }
+    let has_tracked = git::has_tracked_changes(source)?;
+    let has_untracked = rescue.include_untracked && git::has_untracked_files(source)?;
     if !has_tracked && !has_untracked {
         return Err(match branch_name {
             Some(branch) => anyhow!(
@@ -921,10 +935,13 @@ fn preflight_change_transfer(rescue: &RescueArgs, branch_name: Option<&str>) -> 
             None => anyhow!("No uncommitted changes to move."),
         });
     }
-    if let Some(branch) = branch_name
-        && git::branch_exists(branch)?
-    {
-        bail!("Branch '{}' already exists.", branch);
+    if let Some(branch) = branch_name {
+        if !git::is_valid_branch_name(branch)? {
+            bail!("'{}' is not a valid branch name", branch);
+        }
+        if git::branch_exists_in(branch, Some(source))? {
+            bail!("Branch '{}' already exists.", branch);
+        }
     }
     Ok(())
 }
@@ -1715,5 +1732,79 @@ mod change_transfer_tests {
         run_git(&repo, &["commit", "-qm", "sub"]);
         std::fs::write(repo.join("left.txt"), "left\n").unwrap();
         assert!(source_has_unmoved_changes(&sub, &base).unwrap());
+    }
+
+    #[test]
+    fn worktrees_under_a_nested_base_are_not_unmoved_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo(&repo);
+        let repo = repo.canonicalize().unwrap();
+        let base = repo.join(".worktrees/lanes");
+        let lane = base.join("foo");
+        run_git(
+            &repo,
+            &["worktree", "add", "-q", "-b", "foo", lane.to_str().unwrap()],
+        );
+
+        assert!(!source_has_unmoved_changes(&repo, &base).unwrap());
+
+        std::fs::write(repo.join(".worktrees/stray.txt"), "left\n").unwrap();
+        assert!(source_has_unmoved_changes(&repo, &base).unwrap());
+    }
+
+    fn transfer(patch: bool) -> RescueArgs {
+        RescueArgs {
+            with_changes: true,
+            patch,
+            include_untracked: false,
+        }
+    }
+
+    #[test]
+    fn preflight_rejects_invalid_branch_names_without_touching_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        init_repo(repo);
+        std::fs::write(repo.join("README.md"), "changed\n").unwrap();
+
+        for name in ["feat ", "foo  bar", "feat\n", "a\tb"] {
+            let error = preflight_change_transfer(&transfer(false), repo, Some(name))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("not a valid branch name"),
+                "{name:?}: {error}"
+            );
+        }
+        assert!(preflight_change_transfer(&transfer(false), repo, Some("feat/café")).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(repo.join("README.md")).unwrap(),
+            "changed\n"
+        );
+    }
+
+    #[test]
+    fn preflight_rejects_patch_with_staged_changes_and_detached_head() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        init_repo(repo);
+        std::fs::write(repo.join("README.md"), "staged\n").unwrap();
+        run_git(repo, &["add", "README.md"]);
+
+        let error = preflight_change_transfer(&transfer(true), repo, Some("next"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("--patch cannot move staged changes"),
+            "{error}"
+        );
+
+        run_git(repo, &["checkout", "-q", "--detach"]);
+        let error = preflight_change_transfer(&transfer(false), repo, Some("next"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("detached HEAD"), "{error}");
     }
 }

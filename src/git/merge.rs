@@ -65,15 +65,19 @@ pub fn switch_branch_in_worktree(worktree_path: &Path, branch_name: &str) -> Res
 /// Stash uncommitted changes in `workdir`, optionally including untracked files or using
 /// patch mode, and return the commit id of the new entry.
 ///
-/// `message` must be unique to this invocation: the entry is found by it in the stash list,
-/// so a concurrent `git stash` in another worktree of the repository is never picked up.
-/// Returns `None` when there was nothing to stash.
+/// The entry's message is `label` followed by an ASCII token unique to this call. The entry
+/// is found by that token alone, so a concurrent `git stash` in another worktree is never
+/// picked up, and whatever Git does to `label` (log encoding, whitespace folding) cannot
+/// hide the entry. Returns `None` when there was nothing to stash.
 pub fn stash_push(
     workdir: &Path,
-    message: &str,
+    label: &str,
     include_untracked: bool,
     patch: bool,
 ) -> Result<Option<String>> {
+    let token = stash_token();
+    let message = format!("{label} {token}");
+    let message = message.as_str();
     if patch {
         if super::has_staged_changes(workdir)? {
             return Err(anyhow!(
@@ -101,7 +105,18 @@ pub fn stash_push(
 
         cmd.run().context("Failed to stash changes")?;
     }
-    stash_commit_by_message(workdir, message)
+    stash_commit_by_token(workdir, &token)
+}
+
+/// An ASCII token that no other stash entry carries.
+fn stash_token() -> String {
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("[stash-id:{}-{nanos}-{call}]", std::process::id())
 }
 
 /// Apply the stash entry with commit id `sha` in `workdir`, keeping the entry.
@@ -114,13 +129,11 @@ pub fn stash_apply(workdir: &Path, sha: &str) -> Result<()> {
     Ok(())
 }
 
-/// Find the commit id of the stash entry whose message is `message`.
-fn stash_commit_by_message(workdir: &Path, message: &str) -> Result<Option<String>> {
-    // Entry subjects read "On <branch>: <message>" (or "WIP on ..." without -m).
-    let suffix = format!(": {message}");
+/// Find the commit id of the stash entry whose message ends with `token`.
+fn stash_commit_by_token(workdir: &Path, token: &str) -> Result<Option<String>> {
     Ok(stash_entries(workdir)?
         .into_iter()
-        .find(|(_, subject)| subject.ends_with(&suffix))
+        .find(|(_, subject)| subject.ends_with(token))
         .map(|(sha, _)| sha))
 }
 
@@ -128,7 +141,7 @@ fn stash_commit_by_message(workdir: &Path, message: &str) -> Result<Option<Strin
 fn stash_entries(workdir: &Path) -> Result<Vec<(String, String)>> {
     let output = Cmd::new("git")
         .workdir(workdir)
-        .args(&["stash", "list", "--format=%H%x00%gs"])
+        .args(&["stash", "list", "--encoding=UTF-8", "--format=%H%x00%gs"])
         .run()
         .context("Failed to list stash entries")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -248,10 +261,31 @@ mod tests {
         git(path, &["stash", "push", "-m", "someone else"]);
         assert_ne!(git(path, &["rev-parse", "stash@{0}"]), ours);
 
-        assert_eq!(
-            stash_commit_by_message(path, "workrex: test [4]").unwrap(),
-            Some(ours)
-        );
+        let subject = git(path, &["log", "-1", "--format=%s", &ours]);
+        let token = &subject[subject.rfind('[').unwrap()..];
+        assert_eq!(stash_commit_by_token(path, token).unwrap(), Some(ours));
+    }
+
+    #[test]
+    fn stash_push_finds_entry_whatever_git_does_to_the_label() {
+        for (label, config) in [
+            ("moving changes to feat/café", Some("latin1")),
+            ("moving changes to feat  two\nlines\t", None),
+        ] {
+            let temp = repo();
+            let path = temp.path();
+            if let Some(encoding) = config {
+                git(path, &["config", "i18n.logOutputEncoding", encoding]);
+                git(path, &["config", "i18n.commitEncoding", encoding]);
+            }
+            std::fs::write(path.join("tracked.txt"), "changed\n").unwrap();
+
+            let sha = stash_push(path, label, false, false)
+                .unwrap()
+                .expect("the stashed entry should be found");
+
+            assert_eq!(sha, git(path, &["rev-parse", "stash@{0}"]), "{label}");
+        }
     }
     #[test]
     fn stash_apply_fails_on_existing_untracked_path_and_keeps_entry() {

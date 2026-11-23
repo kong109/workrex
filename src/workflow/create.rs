@@ -128,10 +128,16 @@ fn create_impl(
         rescue,
     } = args;
 
-    if rescue.is_some() && headless {
-        return Err(anyhow!(
-            "Moving uncommitted changes is not supported for headless worktrees"
-        ));
+    if rescue.is_some() {
+        if headless {
+            return Err(anyhow!(
+                "Moving uncommitted changes is not supported for headless worktrees"
+            ));
+        }
+        // Git would reject the name only after the changes were stashed.
+        if !git::is_valid_branch_name(branch_name)? {
+            return Err(anyhow!("'{}' is not a valid branch name", branch_name));
+        }
     }
 
     info!(
@@ -494,14 +500,10 @@ fn create_impl(
     // nothing is visible yet, so an interrupted --patch selection leaves no trace.
     let moved = match &rescue {
         Some(transfer) => {
-            let message = format!(
-                "{BIN}: moving changes to {} [{}]",
-                branch_name,
-                stash_nonce()
-            );
+            let label = format!("{BIN}: moving changes to {branch_name}");
             let sha = git::stash_push(
                 &transfer.source,
-                &message,
+                &label,
                 transfer.include_untracked,
                 transfer.patch,
             )
@@ -647,23 +649,6 @@ fn create_impl(
         // (prompt files, Rex setup, hooks, etc.)
         drop(_config_lock);
 
-        // Fork conversation into the new worktree if requested.
-        // Must happen after git::create_worktree() (path is finalized) and before
-        // setup_environment() (which launches the agent with resume args).
-        if let Some(fork) = fork_source {
-            let session_id = fork
-                .forker
-                .prepare_fork(&fork.session, &worktree_path)
-                .context("Failed to fork conversation into new worktree")?;
-            options.resume_mode =
-                crate::multiplexer::types::ResumeMode::ForkSession(session_id.clone());
-            info!(
-                session_id = %session_id,
-                target = %worktree_path.display(),
-                "create:forked conversation into new worktree"
-            );
-        }
-
         // Write prompt file to worktree if provided
         let prompt_file_path = if let Some(p) = prompt {
             Some(setup::write_prompt_file(
@@ -725,6 +710,23 @@ fn create_impl(
                 .context("Failed to apply the moved changes in the new worktree")?;
             info!(path = %worktree_path.display(), "create:applied moved changes");
         }
+
+        // Fork conversation into the new worktree if requested. Must happen after the
+        // worktree exists and before setup_environment() launches the agent with resume
+        // args. It runs last here because nothing rolls back the forked session files.
+        if let Some(fork) = fork_source {
+            let session_id = fork
+                .forker
+                .prepare_fork(&fork.session, &worktree_path)
+                .context("Failed to fork conversation into new worktree")?;
+            options_with_prompt.resume_mode =
+                crate::multiplexer::types::ResumeMode::ForkSession(session_id.clone());
+            info!(
+                session_id = %session_id,
+                target = %worktree_path.display(),
+                "create:forked conversation into new worktree"
+            );
+        }
         Ok(options_with_prompt)
     })();
 
@@ -737,7 +739,9 @@ fn create_impl(
                     branch_name,
                     &current_handle,
                     &worktree_path,
-                    worktree_created,
+                    // `git worktree add` can succeed before a later step inside
+                    // create_worktree_in fails.
+                    worktree_created || worktree_path.exists(),
                     moved,
                     error,
                 ),
@@ -839,15 +843,6 @@ struct StashedChanges {
     sha: String,
 }
 
-/// A stash message suffix unique to this invocation.
-fn stash_nonce() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or_default();
-    format!("{}-{}", std::process::id(), nanos)
-}
-
 /// Undo a change transfer that failed before the changes were applied: remove the new
 /// worktree and branch, and put the changes back into the source worktree.
 fn rollback_transfer(
@@ -879,6 +874,14 @@ fn rollback_transfer(
             "Could not remove the new worktree '{}': {cleanup_error:#}",
             worktree_path.display()
         ));
+    }
+    // Deleting the branch drops its config; without a branch, the review base stored
+    // ahead of checkout would be orphaned.
+    if !git::local_branch_exists_in(branch_name, Some(&context.execution_dir)).unwrap_or(true)
+        && let Err(unset_error) =
+            git::unset_branch_base_in(branch_name, Some(&context.execution_dir))
+    {
+        warn!(error = %unset_error, "create:could not remove the stored review base");
     }
 
     match git::stash_apply(&moved.source, &moved.sha) {
