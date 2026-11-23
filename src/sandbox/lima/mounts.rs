@@ -535,7 +535,10 @@ mod tests {
             .iter()
             .find(|m| m.host_path == host_path)
             .expect("copilot agent mount missing");
-        assert!(mount.guest_path.ends_with(".copilot"));
+        let expected_guest_path = lima_guest_home()
+            .map(|h| h.join(".copilot"))
+            .unwrap_or_else(|| host_path.clone());
+        assert_eq!(mount.guest_path, expected_guest_path);
         assert!(!mount.read_only);
     }
 
