@@ -805,6 +805,7 @@ pub(crate) fn push_agent_home(
             "opencode" => "/tmp/.local/share/opencode",
             "pi" => "/tmp/.pi/agent",
             "omp" => "/tmp/.omp/agent",
+            "copilot" => "/tmp/.copilot",
             _ => unreachable!(), // resolved_agent_config_dir returns None for unknown agents
         };
         let _ = std::fs::create_dir_all(&config_dir);
@@ -2383,6 +2384,16 @@ mod tests {
         assert!(
             args.iter()
                 .any(|a| a == "type=tmpfs,destination=/tmp/.local/state")
+        );
+    }
+
+    #[test]
+    fn test_build_args_copilot_agent_credential_mount() {
+        let args = test_build_run_args_for_agent("copilot", &make_config());
+        assert_agent_credential_mount(
+            &args,
+            Some("/tmp/.copilot"),
+            &["target=/tmp/.claude.json", "target=/tmp/.gemini"],
         );
     }
 

@@ -281,6 +281,9 @@ fn run_headless(
     }
 
     check_preconditions(true)?;
+    let (config, config_location) = config::Config::load_with_location(None, config_override)?;
+    let mux = create_backend(detect_backend());
+    let context = workflow::WorkflowContext::new(config, mux, config_location)?;
     let pr_checkout = pr
         .map(|pr_reference| pr_reference.resolve(forge, branch_name, false))
         .transpose()?;
@@ -288,9 +291,6 @@ fn run_headless(
         Some(checkout) => checkout.local_branch.as_str(),
         None => branch_name.context("A branch name is required with --headless")?,
     };
-    let (config, config_location) = config::Config::load_with_location(None, config_override)?;
-    let mux = create_backend(detect_backend());
-    let context = workflow::WorkflowContext::new(config, mux, config_location)?;
     if pr_checkout.is_none()
         && let Some((candidate_remote, _)) = branch_name.split_once('/')
         && git::remote_exists_in(candidate_remote, Some(&context.execution_dir))?

@@ -280,6 +280,7 @@ fn generate_mounts_with_state_root(
             "opencode" => ".local/share/opencode",
             "pi" => ".pi/agent",
             "omp" => ".omp/agent",
+            "copilot" => ".copilot",
             _ => unreachable!(),
         };
         let guest_path = lima_guest_home()
@@ -522,6 +523,20 @@ mod tests {
                 .any(|m| m.host_path.to_string_lossy().contains("pi-agent-bin")),
             "omp agent should not get pi bin overlay"
         );
+    }
+
+    #[test]
+    fn test_copilot_agent_mounts_config_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mounts = project_mounts_for_test(tmp.path(), "test-vm", "copilot");
+
+        let host_path = agent_config_host_path(tmp.path(), "copilot");
+        let mount = mounts
+            .iter()
+            .find(|m| m.host_path == host_path)
+            .expect("copilot agent mount missing");
+        assert!(mount.guest_path.ends_with(".copilot"));
+        assert!(!mount.read_only);
     }
 
     #[test]
