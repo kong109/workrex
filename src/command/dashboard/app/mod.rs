@@ -136,6 +136,8 @@ pub struct App {
     pub scope_mode: ScopeMode,
     /// Session name at launch time (for session scope filtering)
     launch_session: Option<String>,
+    /// The monorepo subproject whose config the dashboard launched with.
+    launch_subproject: Option<worktrees::LaunchSubproject>,
     /// Whether the filter input is active (accepting keystrokes)
     pub filter_active: bool,
     /// Text filter for filtering agents by name. Empty string means no filter.
@@ -208,7 +210,8 @@ impl App {
         cli_session_filter: bool,
         event_tx: mpsc::Sender<AppEvent>,
     ) -> Result<Self> {
-        let config = Config::load(None)?;
+        let (config, config_location) = Config::load_with_location(None, None)?;
+        let launch_subproject = worktrees::LaunchSubproject::detect(config_location.as_ref());
 
         // Get the active pane's directory to indicate the active worktree.
         // Try multiplexer first (handles popup case), fall back to current_dir.
@@ -304,6 +307,7 @@ impl App {
             config_path,
             scope_mode,
             launch_session,
+            launch_subproject,
             filter_active: false,
             filter_text: String::new(),
             pending_kill_target: None,
