@@ -390,6 +390,19 @@ pub fn set_branch_base_in(branch: &str, base: &str, workdir: Option<&Path>) -> R
     Ok(())
 }
 
+/// Remove the stored base of `branch`, if any.
+pub fn unset_branch_base_in(branch: &str, workdir: Option<&Path>) -> Result<()> {
+    let config_key = format!("branch.{}.workrex-base", branch);
+    let cmd = Cmd::new("git").args(&["config", "--local", "--unset-all", &config_key]);
+    let cmd = match workdir {
+        Some(path) => cmd.workdir(path),
+        None => cmd,
+    };
+    // A missing key is the goal state, so only a failure to run git is an error.
+    cmd.run_as_check()?;
+    Ok(())
+}
+
 /// Retrieve the base branch/commit that a branch was created from
 pub fn get_branch_base(branch: &str) -> Result<String> {
     get_branch_base_in(branch, None)
