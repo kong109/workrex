@@ -28,6 +28,19 @@ pub struct CreateArgs<'a> {
     pub prompt_file_only: bool,
     /// Fork a conversation from another worktree into this one
     pub fork_source: Option<ForkSource>,
+    /// Move uncommitted changes from another worktree into the new one (`--with-changes`)
+    pub rescue: Option<ChangeTransfer>,
+}
+
+/// Uncommitted changes to move from a source worktree into a newly created worktree.
+#[derive(Debug, Clone)]
+pub struct ChangeTransfer {
+    /// The worktree that holds the changes
+    pub source: PathBuf,
+    /// Also move untracked files that are not ignored
+    pub include_untracked: bool,
+    /// Let the user pick hunks interactively
+    pub patch: bool,
 }
 
 /// Result of provisioning a worktree without a multiplexer target.
@@ -71,7 +84,7 @@ pub struct MergeResult {
 
 /// Result of removing a worktree
 pub struct RemoveResult {
-    pub branch_removed: String,
+    pub branch_removed: Option<String>,
     pub cleanup_scheduled: bool,
 }
 

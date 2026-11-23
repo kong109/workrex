@@ -15,14 +15,12 @@ pub(crate) fn is_stale(
         return true;
     }
 
-    // Done remains actionable until focus acknowledges and clears the status.
-    if !is_interrupted
-        && matches!(
-            status,
-            Some(AgentStatus::Working | AgentStatus::Waiting | AgentStatus::Done)
-        )
-    {
-        return false;
+    // Waiting and Done stay actionable until focus clears them. An interruption
+    // only overrides Working, since the interrupted set can lag a newer status.
+    match status {
+        Some(AgentStatus::Waiting | AgentStatus::Done) => return false,
+        Some(AgentStatus::Working) if !is_interrupted => return false,
+        _ => {}
     }
 
     activity_ts
@@ -74,6 +72,18 @@ mod tests {
             ));
             assert!(is_stale(activity_ts, None, 10_000, 60, false, false));
         }
+    }
+
+    #[test]
+    fn interruption_only_overrides_working() {
+        let stale =
+            |status, interrupted| is_stale(Some(100), status, 10_000, 60, false, interrupted);
+        assert!(!stale(Some(AgentStatus::Waiting), true));
+        assert!(!stale(Some(AgentStatus::Done), true));
+        assert!(stale(Some(AgentStatus::Working), true));
+        assert!(!stale(Some(AgentStatus::Working), false));
+        assert!(stale(None, true));
+        assert!(stale(None, false));
     }
 
     #[test]

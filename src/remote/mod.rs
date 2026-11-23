@@ -238,6 +238,7 @@ pub fn resolve_placement(
         .filter(|placement| !placement.is_empty() && *placement != "local");
 
     match remote_flag {
+        Some(Some(name)) if name.trim() == "local" => Ok(Placement::Local),
         Some(Some(name)) => {
             if config.remotes.contains_key(name) {
                 Ok(Placement::Remote(name.to_string()))
@@ -407,6 +408,33 @@ mod tests {
         assert!(err.contains("Unknown remote 'feature-x'"), "{err}");
         assert!(err.contains("configured: hetzner"), "{err}");
         assert!(err.contains("branch name"), "{err}");
+    }
+
+    #[test]
+    fn remote_flag_local_overrides_remote_placement() {
+        let config = config_with(&["hetzner", "box"], Some("box"));
+        assert_eq!(
+            resolve_placement(&config, Some(Some("local")), false).unwrap(),
+            Placement::Local
+        );
+    }
+
+    #[test]
+    fn remote_flag_local_without_remotes() {
+        let config = config_with(&[], None);
+        assert_eq!(
+            resolve_placement(&config, Some(Some("local")), false).unwrap(),
+            Placement::Local
+        );
+    }
+
+    #[test]
+    fn remote_flag_local_overrides_unknown_placement() {
+        let config = config_with(&["hetzner"], Some("gpu"));
+        assert_eq!(
+            resolve_placement(&config, Some(Some(" local ")), false).unwrap(),
+            Placement::Local
+        );
     }
 
     #[test]

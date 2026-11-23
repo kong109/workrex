@@ -90,7 +90,7 @@ workrex identifies the server by its address, which stays the same across restar
 - **Jumps.** Jumping to an agent from the sidebar moves the app, like the dashboard. If Rex.app refuses the jump, the sidebar shows `Rex.app did not switch: Remote Control is off. Turn it on in Rex Settings.` above its list until you press a key, and for at least 5 seconds. `workrex sidebar next`, `prev` and `jump` print it once and exit with status 1.
 - **Position.** The sidebar opens on the left. Top-positioned sidebars are not supported.
 - **State.** Rex has no window options, so sidebar preferences are kept in files under `~/.local/state/workrex/sidebar/`, one set per server.
-- **Daemon.** Rex has no hooks to restart the daemon. If it dies, the next `workrex sidebar` command or sidebar start brings it back. The daemon keeps retrying a Rex server that is slow or busy. It exits when nothing listens at the server's socket any more.
+- **Daemon.** Rex has no hooks to restart the daemon. If it dies, the next `workrex sidebar` command or sidebar start brings it back. Startup is serialized with per-server spawn and lifetime locks so concurrent starts keep a single daemon running. The daemon keeps retrying a Rex server that is slow or busy, and exits when nothing listens at the server's socket any more.
 
 ## Known limitations
 

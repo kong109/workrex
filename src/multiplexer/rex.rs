@@ -2576,6 +2576,18 @@ impl Multiplexer for RexBackend {
         self.read_pane(pane_id, false)
     }
 
+    /// State persistence retries this read after a concurrent state change,
+    /// such as a rename. A reused view would commit the old labels again.
+    fn get_live_pane_snapshot(&self, pane_id: &str) -> Result<Option<LivePaneSnapshot>> {
+        let Some(pane) = self.read_pane(pane_id, true)? else {
+            return Ok(None);
+        };
+        Ok(Some(LivePaneSnapshot {
+            pane,
+            boot_id: self.server_boot_id().unwrap_or(None),
+        }))
+    }
+
     /// Runs for a pane the batch read missed, and for one whose command the
     /// batch read says changed. A reused view would repeat the batch's
     /// answer, and a miss prunes the agent.
@@ -4587,6 +4599,26 @@ mod tests {
                 .validate_agent_alive(&agent_in_view(85152))
                 .unwrap()
         );
+    }
+
+    /// State persistence takes a snapshot again after a concurrent rename,
+    /// so each snapshot must show the labels Rex has now, not a reused view.
+    #[test]
+    fn a_state_snapshot_reads_the_session_view_afresh() {
+        let block = "block:01a19e60-6442-727c-b026-9bb98fffd538";
+        let fake = FakeRex::new(&[
+            ("session.view", "$cat \"$dir/view\""),
+            ("target.resolve", RESOLVE),
+            (" process ", PROCESS),
+            (" title ", r#"{"title":""}"#),
+        ])
+        .reusing();
+        fake.write("view", VIEW);
+        let before = fake.rex.get_live_pane_snapshot(block).unwrap().unwrap();
+        assert_eq!(before.pane.session.as_deref(), Some("fixture"));
+        fake.write("view", &VIEW.replacen("\"fixture\"", "\"renamed\"", 1));
+        let after = fake.rex.get_live_pane_snapshot(block).unwrap().unwrap();
+        assert_eq!(after.pane.session.as_deref(), Some("renamed"));
     }
 
     /// An event that arrives while a second look waits on Rex may describe a

@@ -199,6 +199,22 @@ pub(crate) fn seed_claude_json(vm_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Where an agent's config directory is mounted under the guest home, or
+/// `None` for agents whose config directory workrex doesn't mount.
+fn agent_config_guest_subpath(agent: &str) -> Option<&'static str> {
+    match agent {
+        "claude" => Some(".claude"),
+        "copilot" => Some(".copilot"),
+        "gemini" => Some(".gemini"),
+        "agy" => Some(".gemini/antigravity-cli"),
+        "codex" => Some(".codex"),
+        "opencode" => Some(".local/share/opencode"),
+        "pi" => Some(".pi/agent"),
+        "omp" => Some(".omp/agent"),
+        _ => None,
+    }
+}
+
 /// Generate mount points for Lima VM based on isolation level and config.
 ///
 /// The `agent` parameter controls agent-specific mounts (e.g. `~/.claude`
@@ -261,7 +277,14 @@ fn generate_mounts_with_state_root(
 
             // 4. Mount custom worktree directory if configured
             if let Some(custom_template) = config.worktree_dir.as_ref() {
-                let custom_dir = crate::util::expand_worktree_dir(custom_template, &project_root)?;
+                let base = crate::git::get_main_worktree_root_in(Some(worktree))?;
+                let project_name = if custom_template.contains(crate::util::PROJECT_PLACEHOLDER) {
+                    crate::git::config_project_name_in(Some(worktree))?
+                } else {
+                    String::new()
+                };
+                let custom_dir =
+                    crate::util::expand_worktree_dir(custom_template, &base, &project_name)?;
                 std::fs::create_dir_all(&custom_dir)?;
 
                 if custom_dir != worktrees_dir {
@@ -272,16 +295,9 @@ fn generate_mounts_with_state_root(
     }
 
     // Mount agent config directory
-    if let Some(auth_dir) = config.sandbox.resolved_agent_config_dir(agent) {
-        let guest_subpath = match agent {
-            "claude" => ".claude",
-            "gemini" => ".gemini",
-            "codex" => ".codex",
-            "opencode" => ".local/share/opencode",
-            "pi" => ".pi/agent",
-            "omp" => ".omp/agent",
-            _ => unreachable!(),
-        };
+    if let Some(auth_dir) = config.sandbox.resolved_agent_config_dir(agent)
+        && let Some(guest_subpath) = agent_config_guest_subpath(agent)
+    {
         let guest_path = lima_guest_home()
             .map(|h| h.join(guest_subpath))
             .unwrap_or_else(|| auth_dir.clone());
@@ -350,6 +366,60 @@ fn generate_mounts_with_state_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bare_custom_worktree_mounts_use_git_anchor_and_project_name() {
+        for layout in ["northwind/.bare", "northwind/.git", "northwind.git"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            let bare = root.join(layout);
+            assert!(
+                Command::new("git")
+                    .args(["init", "--bare", "-q"])
+                    .arg(&bare)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let anchor = if bare.file_name().unwrap() == ".git" {
+                bare.parent().unwrap()
+            } else {
+                &bare
+            };
+            for (template, expected) in [
+                (
+                    "../out/{project}".to_string(),
+                    anchor.parent().unwrap().join("out/northwind"),
+                ),
+                ("../".to_string(), anchor.parent().unwrap().to_path_buf()),
+                (
+                    format!("{}/absolute/{{project}}", root.display()),
+                    root.join("absolute/northwind"),
+                ),
+            ] {
+                let mut config = Config {
+                    worktree_dir: Some(template),
+                    ..Config::default()
+                };
+                config.sandbox.agent_config_dir = Some(custom_agent_config_dir(&root));
+                let mounts = generate_mounts_with_state_root(
+                    &bare,
+                    IsolationLevel::Project,
+                    &config,
+                    "test-vm",
+                    "pi",
+                    Some(&root),
+                )
+                .unwrap();
+                assert!(
+                    mounts.iter().any(|mount| mount.host_path == expected),
+                    "{layout}: {}",
+                    expected.display()
+                );
+                assert!(expected.is_dir());
+            }
+        }
+    }
 
     #[test]
     fn test_seed_claude_json_writes_onboarding_config() {
@@ -522,6 +592,34 @@ mod tests {
                 .any(|m| m.host_path.to_string_lossy().contains("pi-agent-bin")),
             "omp agent should not get pi bin overlay"
         );
+    }
+
+    #[test]
+    fn test_copilot_and_agy_mount_config_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (agent, subpath) in [("copilot", ".copilot"), ("agy", ".gemini/antigravity-cli")] {
+            let mounts = project_mounts_for_test(tmp.path(), "test-vm", agent);
+            let host_path = agent_config_host_path(tmp.path(), agent);
+            let mount = mounts
+                .iter()
+                .find(|m| m.host_path == host_path)
+                .unwrap_or_else(|| panic!("{agent} config mount missing"));
+            // Without $USER (e.g. the Nix build sandbox) the guest path falls
+            // back to the host path.
+            let expected = lima_guest_home()
+                .map(|h| h.join(subpath))
+                .unwrap_or(host_path);
+            assert_eq!(mount.guest_path, expected);
+            assert!(!mount.read_only);
+        }
+    }
+
+    #[test]
+    fn test_agent_without_guest_subpath_gets_no_config_mount() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mounts = project_mounts_for_test(tmp.path(), "test-vm", "vibe");
+        let vibe_host_path = agent_config_host_path(tmp.path(), "vibe");
+        assert!(!mounts.iter().any(|m| m.host_path == vibe_host_path));
     }
 
     #[test]

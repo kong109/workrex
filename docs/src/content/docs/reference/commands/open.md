@@ -15,6 +15,8 @@ workrex open [name...] [flags]
 
 ## Options
 
+Use `-b` or `--background` to open without switching away from your current Rex window or session. This also applies to existing targets, multiple worktrees, and remote workspaces, where it skips the Rex.app jump.
+
 | Flag                       | Description                                                                                                                                                                                                                                                                        |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-n, --new`                | Force opening in a new window even if one already exists. Creates a duplicate window with a suffix (e.g., `-2`, `-3`). Useful for having multiple terminal views into the same worktree. The duplicate appears after the caller's Rex window. Cannot be used with session mode.    |
@@ -34,11 +36,11 @@ workrex open [name...] [flags]
 ## What happens
 
 1. Verifies that a worktree with `<name>` exists.
-2. If the target exists and `--new` is not set, switches to it.
+2. If the target exists and `--new` is not set, switches to it unless `--background` is set.
 3. Otherwise, creates the managed Rex session or window. `--target-name` can override its label, and `--parent-session` chooses a known session for window mode.
 4. Runs file operations and `post_create` hooks when requested.
 5. Sets up the configured terminal blocks.
-6. Makes the target active in its Rex session. Rex.app stays where it is.
+6. Makes the target active in its Rex session unless `--background` is set. Rex.app stays where it is.
 
 Window placement uses the caller's Rex IDs or an explicitly chosen parent
 session. A repository path is not a session identifier.
@@ -60,6 +62,9 @@ node's Rex server to be reachable by the app and Remote Control enabled.
 ```bash
 # Open or switch to a window for an existing worktree
 workrex open user-auth
+
+# Open without switching away from the current window
+workrex open user-auth --background
 
 # Force open a second window for the same worktree (creates user-auth-2)
 workrex open user-auth --mode window --new

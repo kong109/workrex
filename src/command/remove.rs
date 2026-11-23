@@ -13,6 +13,15 @@ pub fn run(
     force: bool,
     keep_branch: bool,
 ) -> Result<()> {
+    if crate::sandbox::guest::is_sandbox_guest() {
+        if gone || all || keep_branch || names.len() > 1 {
+            anyhow::bail!(
+                "a sandboxed agent can only remove its own workspace, without --gone, --all or --keep-branch"
+            );
+        }
+        let name = super::resolve_name(names.first().map(String::as_str))?;
+        return run_via_rpc(&name, force);
+    }
     if crate::remote::node::operation::in_session() {
         if gone || all || keep_branch {
             anyhow::bail!(
@@ -23,15 +32,6 @@ pub fn run(
             &names,
             crate::remote::node::operation::Operation::Remove { force },
         );
-    }
-    if crate::sandbox::guest::is_sandbox_guest() {
-        if gone || all || keep_branch || names.len() > 1 {
-            anyhow::bail!(
-                "a sandboxed agent can only remove its own workspace, without --gone, --all or --keep-branch"
-            );
-        }
-        let name = super::resolve_name(names.first().map(String::as_str))?;
-        return run_via_rpc(&name, force);
     }
     let config = config::Config::load(None)?;
     let confirm_unmerged = config.confirm_unmerged_removal.unwrap_or(true);
@@ -232,6 +232,7 @@ fn remove_local(
         // Check unmerged (promptable), only if configured and we're deleting the branch
         if confirm_unmerged
             && !keep_branch
+            && git::worktree_branch_in(&path, &context.execution_dir)?.is_some()
             && let Some(base) = is_unmerged(&branch)?
         {
             unmerged.push((handle, branch, base));
@@ -636,16 +637,14 @@ fn remove_worktree(
         .context("Failed to remove worktree")?;
 
     if !result.cleanup_scheduled {
-        if keep_branch {
-            println!(
-                "✓ Removed worktree '{}' (branch '{}' kept)",
-                handle, result.branch_removed
-            );
-        } else {
-            println!(
-                "✓ Removed worktree '{}' and branch '{}'",
-                handle, result.branch_removed
-            );
+        match result.branch_removed.as_deref() {
+            Some(branch) if keep_branch => {
+                println!("✓ Removed worktree '{}' (branch '{}' kept)", handle, branch);
+            }
+            Some(branch) => {
+                println!("✓ Removed worktree '{}' and branch '{}'", handle, branch);
+            }
+            None => println!("✓ Removed worktree '{}'", handle),
         }
         io::stdout().flush()?;
     }

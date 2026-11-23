@@ -403,6 +403,10 @@ enum Commands {
 
     /// Open a Rex window for an existing worktree
     Open {
+        /// Open without switching to the window or session
+        #[arg(short = 'b', long)]
+        background: bool,
+
         /// Worktree name(s) (directory name, visible in Rex window). Optional with --new.
         #[arg(value_parser = WorktreeHandleParser::new(), required_unless_present = "new")]
         names: Vec<String>,
@@ -1200,6 +1204,7 @@ pub fn run() -> Result<()> {
             )
         }
         Commands::Open {
+            background,
             names,
             run_hooks,
             force_files,
@@ -1217,6 +1222,7 @@ pub fn run() -> Result<()> {
                 .or(session.then_some(MuxMode::Session));
             command::open::run(
                 &names,
+                background,
                 run_hooks,
                 force_files,
                 new,

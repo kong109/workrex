@@ -42,6 +42,26 @@ fn resolve_worktree_path(
     Ok(path)
 }
 
+/// The repository's worktree roots, or just `wt_path` once it is gone.
+///
+/// `workrex merge` can remove the worktree between two git calls, leaving a
+/// missing directory or a `.git` file whose metadata is gone. Any failure here
+/// means the worktree is no longer a live checkout, so it stands alone.
+fn current_worktree_roots_or_removed_self(wt_path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let roots = || -> Result<Option<Vec<std::path::PathBuf>>> {
+        if git::get_repo_root_if_present_in(Some(wt_path))?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(
+            git::list_worktrees_with_main_in(Some(wt_path))?.canonical_paths(),
+        ))
+    };
+    match roots() {
+        Ok(Some(roots)) => roots,
+        Ok(None) | Err(_) => vec![util::canon_or_self(wt_path)],
+    }
+}
+
 pub fn parse_status(s: &str) -> Result<AgentStatus> {
     match s {
         "working" => Ok(AgentStatus::Working),
@@ -186,7 +206,8 @@ pub fn run(
                 continue;
             }
 
-            let matching = workflow::match_agents_to_worktree(&agent_panes, wt_path);
+            let roots = current_worktree_roots_or_removed_self(wt_path);
+            let matching = workflow::match_agents_to_worktree(&agent_panes, wt_path, &roots);
 
             if !matching.is_empty() {
                 seen_agent.insert(name.clone());
@@ -338,6 +359,8 @@ fn remote_progress(record: &WorkspaceRecord, target: AgentStatus) -> RemoteProgr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use std::process::Command;
 
     fn agent_at(path: &std::path::Path, pane_id: &str) -> AgentPane {
         serde_json::from_value(serde_json::json!({
@@ -362,5 +385,45 @@ mod tests {
             let err = resolve_worktree_path(name, || Ok(panes.clone())).unwrap_err();
             assert_eq!(crate::agent_error::kind_of(&err), None, "{err}");
         }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    #[test]
+    fn worktree_removed_mid_poll_stands_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let wt = temp.path().join("wt");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "--initial-branch=main"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "init"]);
+        git(
+            &repo,
+            &["worktree", "add", "-b", "feature", wt.to_str().unwrap()],
+        );
+
+        let live = current_worktree_roots_or_removed_self(&wt);
+        assert!(live.contains(&util::canon_or_self(&repo)), "{live:?}");
+        assert!(live.contains(&util::canon_or_self(&wt)), "{live:?}");
+
+        // `workrex merge` has deleted the worktree metadata but not yet the
+        // checkout: its `.git` file points at a missing directory.
+        std::fs::remove_dir_all(repo.join(".git/worktrees")).unwrap();
+        assert_eq!(
+            current_worktree_roots_or_removed_self(&wt),
+            vec![util::canon_or_self(&wt)]
+        );
+
+        std::fs::remove_dir_all(&wt).unwrap();
+        assert_eq!(current_worktree_roots_or_removed_self(&wt), vec![wt]);
     }
 }

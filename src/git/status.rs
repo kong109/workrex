@@ -73,6 +73,46 @@ pub fn has_untracked_files(worktree_path: &Path) -> Result<bool> {
     Ok(false)
 }
 
+/// Untracked, non-ignored paths of the whole worktree as absolute paths, even when
+/// `worktree_path` is a subdirectory. Untracked files are listed one by one, except that
+/// a nested repository or worktree is listed once, as its directory.
+pub fn untracked_paths(worktree_path: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let top_level = bg_git()
+        .workdir(worktree_path)
+        .args(&["rev-parse", "--show-toplevel"])
+        .run_and_capture_stdout()?;
+    // Porcelain paths are relative to the top level, whatever the cwd. Listing files
+    // rather than directories keeps a parent of the worktree base, such as `.worktrees/`
+    // for a base of `.worktrees/lanes`, from hiding which paths are under the base.
+    let output = bg_git()
+        .workdir(worktree_path)
+        .args(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .run()?;
+    let top_level = Path::new(&top_level);
+    Ok(untracked_entries(&String::from_utf8_lossy(&output.stdout))
+        .into_iter()
+        .map(|path| top_level.join(path.trim_end_matches('/')))
+        .collect())
+}
+
+/// The untracked paths in `git status --porcelain=v1 -z` output.
+fn untracked_entries(porcelain: &str) -> Vec<&str> {
+    let mut paths = Vec::new();
+    let mut entries = porcelain.split('\0').filter(|entry| !entry.is_empty());
+    while let Some(entry) = entries.next() {
+        let (Some(status), Some(path)) = (entry.get(..2), entry.get(3..)) else {
+            continue;
+        };
+        if status == "??" {
+            paths.push(path);
+        } else if status.contains(['R', 'C']) {
+            // A rename or copy is followed by its source path as a separate entry.
+            entries.next();
+        }
+    }
+    paths
+}
+
 fn git_diff_has_changes(worktree_path: &Path, args: &[&str]) -> Result<bool> {
     let mut command = super::pinned_git(worktree_path)?;
     command.arg("--no-optional-locks");
@@ -574,6 +614,36 @@ mod tests {
     use std::os::unix::ffi::OsStringExt;
     use std::process::Command;
     use std::time::Duration;
+
+    #[test]
+    fn untracked_entries_skip_the_source_path_of_renames_and_copies() {
+        let porcelain = "R  new.txt\0?? looks-untracked\0 C copy.txt\0?? also-a-source\0\
+                         ?? real.txt\0 M edited.txt\0?? dir/\0";
+
+        assert_eq!(untracked_entries(porcelain), ["real.txt", "dir/"]);
+    }
+
+    #[test]
+    fn untracked_paths_list_files_inside_an_untracked_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path();
+        git(path, &["init", "-q"]);
+        std::fs::create_dir_all(path.join(".worktrees/lanes/lane")).unwrap();
+        std::fs::write(path.join(".worktrees/lanes/lane/file"), "x").unwrap();
+        std::fs::write(path.join(".worktrees/stray"), "x").unwrap();
+        let top = std::fs::canonicalize(path).unwrap();
+
+        let mut paths = untracked_paths(path).unwrap();
+        paths.sort();
+
+        assert_eq!(
+            paths,
+            [
+                top.join(".worktrees/lanes/lane/file"),
+                top.join(".worktrees/stray")
+            ]
+        );
+    }
 
     fn git(path: &Path, args: &[&str]) -> String {
         let output = Command::new("git")

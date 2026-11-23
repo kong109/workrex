@@ -59,6 +59,17 @@ sidebar's controls and [templates](/guide/sidebar/customization/) determine what
 each row displays. Preferences are stored under
 `~/.local/state/workrex/sidebar/`, separately for each Rex server.
 
+## Quiet agents
+
+`○` **Quiet** means no recent output or status updates were observed. The agent
+may have been interrupted or may still be running silently. Quiet rows have no
+elapsed timer and a neutral status stripe; their names remain readable. Quiet
+does not mean the task completed or needs permission.
+
+Quiet detection is separate from stale dimming and folding. A quiet row gets the
+sleep icon when stale styling applies. New output or status updates restore the
+reported status; even a decorative terminal redraw can count as output.
+
 ## Sorting
 
 Sort by recent activity, project, or window order using the sidebar controls.

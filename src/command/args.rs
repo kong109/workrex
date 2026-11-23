@@ -102,8 +102,9 @@ pub struct RescueArgs {
     #[arg(short = 'w', long, conflicts_with_all = ["count", "foreach"])]
     pub with_changes: bool,
 
-    /// Interactively select which changes to move (only applies with --with-changes)
-    #[arg(long, requires = "with_changes")]
+    /// Interactively select which changes to move (only applies with --with-changes).
+    /// `git stash --patch` cannot move untracked files, so it conflicts with -u.
+    #[arg(long, requires = "with_changes", conflicts_with = "include_untracked")]
     pub patch: bool,
 
     /// Also move untracked files (only applies with --with-changes)
@@ -113,8 +114,9 @@ pub struct RescueArgs {
 
 #[derive(clap::Args, Debug, Default)]
 pub struct PlacementArgs {
-    /// Create the agent on a configured remote (default: the `placement` remote,
-    /// or the only configured remote)
+    /// Create the agent on a configured remote, or on this machine with
+    /// `--remote local` (default: the `placement` remote, or the only
+    /// configured remote)
     #[arg(long, value_name = "REMOTE", num_args = 0..=1, conflicts_with = "local")]
     pub remote: Option<Option<String>>,
 
